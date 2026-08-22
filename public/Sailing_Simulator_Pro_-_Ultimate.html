@@ -667,6 +667,7 @@ var ultimateShadow, ultimateSailRig, ultimateSunElevation = 18, ultimateTrim = .
 var ultimateVerticalVelocity = 0, ultimateRoll = 0, ultimatePitch = 0, ultimateRollVelocity = 0, ultimatePitchVelocity = 0;
 var ultimateYawVelocity = 0, ultimateLateralVelocity = 0, ultimateLastTime = 0, ultimateFrame = 0;
 var ultimateWaterNormal, ultimateWind = new THREE.Vector3(), ultimateApparent = new THREE.Vector3();
+var ultimateSeagulls = [];
 var ultimateWaves = [
   { x: .92, z: .39, a: .84, l: 54, s: 1.05, p: .30 },
   { x: -.54, z: .84, a: .48, l: 31, s: 1.68, p: 2.40 },
@@ -894,23 +895,176 @@ window.createDetailedCatamaran = function () {
 };
 
 window.createIslands = function () {
-  var sand = new THREE.Color(0xd7c57d), grass = new THREE.Color(0x3d6c4e), rock = new THREE.Color(0x535f5d);
-  function island(radius, height, cx, cz, seed) {
-    var geo = new THREE.PlaneGeometry(radius, radius, 50, 50); geo.rotateX(-Math.PI / 2);
+  ultimateSeagulls.length = 0;
+  var palmSpecs = [], bushSpecs = [[], []], rockSpecs = [];
+  var sandOuter = new THREE.Color(0xffd86c), sandInner = new THREE.Color(0xe9ba4f);
+  var beachGrass = new THREE.Color(0x78a947), jungle = new THREE.Color(0x176b3a), deepJungle = new THREE.Color(0x0c4e31);
+  var terrainMaterial = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: .92, metalness: 0, emissive: 0x102909, emissiveIntensity: .08
+  });
+  var reefMaterial = new THREE.MeshBasicMaterial({
+    color: 0x2ce1d3, transparent: true, opacity: .25, depthWrite: false, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+  });
+  var shoreFoamMaterial = new THREE.MeshBasicMaterial({
+    color: 0xeaffef, transparent: true, opacity: .42, depthWrite: false, side: THREE.DoubleSide
+  });
+
+  function seeded(seed) {
+    var state = (seed * 100000) >>> 0;
+    return function () { state = (state * 1664525 + 1013904223) >>> 0; return state / 4294967296; };
+  }
+
+  function createTerrain(radius, height, cx, cz, seed, palmCount, birdCount) {
+    var rand = seeded(seed), depth = radius * .62;
+    function shapeDistance(x, z) {
+      var angle = Math.atan2(z / depth, x / radius);
+      var outline = 1 + Math.sin(angle * 5 + seed) * .065 + Math.sin(angle * 9 - seed * 1.7) * .035;
+      return Math.sqrt((x / radius) * (x / radius) + (z / depth) * (z / depth)) / outline;
+    }
+    function groundHeight(x, z) {
+      var d = shapeDistance(x, z);
+      if (d >= 1) return -3.8;
+      var inside = 1 - d;
+      var rise = Math.pow(inside, 2.05) * height;
+      var beachShelf = Math.pow(inside, .58) * 1.25;
+      var variation = (Math.sin(x * .055 + seed) + Math.cos(z * .071 - seed)) * rise * .045;
+      return -.7 + beachShelf + rise + variation;
+    }
+
+    var reef = new THREE.Mesh(new THREE.RingGeometry(.82, 1.1, 96), reefMaterial);
+    reef.rotation.x = -Math.PI / 2; reef.scale.set(radius, depth, 1); reef.position.set(cx, -.04, cz);
+    reef.renderOrder = 1; scene.add(reef);
+    var shoreFoam = new THREE.Mesh(new THREE.RingGeometry(.79, .875, 96), shoreFoamMaterial);
+    shoreFoam.rotation.x = -Math.PI / 2; shoreFoam.scale.set(radius, depth, 1); shoreFoam.position.set(cx, .025, cz);
+    shoreFoam.renderOrder = 2; scene.add(shoreFoam);
+
+    var geo = new THREE.PlaneGeometry(radius * 2.12, depth * 2.12, 62, 42); geo.rotateX(-Math.PI / 2);
     var p = geo.attributes.position, colors = new Float32Array(p.count * 3), c = new THREE.Color();
     for (var i = 0; i < p.count; i++) {
-      var x = p.getX(i), z = p.getZ(i), d = Math.sqrt(x*x + z*z) / (radius*.5);
-      var h = d < 1 ? Math.pow(Math.cos(d*Math.PI*.5), 1.7) * height + Math.sin(x*.08 + seed)*Math.cos(z*.07 - seed)*height*.14 : -8;
-      p.setY(i, h - 1.1);
-      var t = ultimateClamp((h + 1) / (height + 1), 0, 1);
-      if (t < .16) c.copy(sand); else if (t < .68) c.copy(sand).lerp(grass, (t-.16)/.52); else c.copy(grass).lerp(rock, (t-.68)/.32);
-      colors[i*3]=c.r; colors[i*3+1]=c.g; colors[i*3+2]=c.b;
+      var x = p.getX(i), z = p.getZ(i), d = shapeDistance(x, z), h = groundHeight(x, z);
+      p.setY(i, h);
+      if (d > .84) c.copy(sandOuter);
+      else if (d > .70) c.copy(sandOuter).lerp(sandInner, (.84 - d) / .14);
+      else if (d > .58) c.copy(sandInner).lerp(beachGrass, (.70 - d) / .12);
+      else if (d > .27) c.copy(beachGrass).lerp(jungle, (.58 - d) / .31);
+      else c.copy(jungle).lerp(deepJungle, (.27 - d) / .27);
+      colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
     }
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3)); geo.computeVertexNormals();
-    var terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .93 })); terrain.position.set(cx,0,cz); terrain.castShadow = terrain.receiveShadow = true; scene.add(terrain);
+    var terrain = new THREE.Mesh(geo, terrainMaterial); terrain.position.set(cx, 0, cz);
+    terrain.castShadow = terrain.receiveShadow = true; scene.add(terrain);
+
+    for (var palm = 0; palm < palmCount; palm++) {
+      var a = rand() * Math.PI * 2, r = radius * (.12 + Math.sqrt(rand()) * .46);
+      var px = Math.cos(a) * r, pz = Math.sin(a) * r * .62;
+      palmSpecs.push({
+        x: cx + px, y: groundHeight(px, pz), z: cz + pz,
+        height: 10.5 + rand() * 8.5, crown: .72 + rand() * .38,
+        yaw: rand() * Math.PI * 2, leanX: (rand() - .5) * .16, leanZ: (rand() - .5) * .19,
+        fruit: rand() > .52
+      });
+    }
+    for (var bush = 0; bush < Math.round(palmCount * 1.45); bush++) {
+      var ba = rand() * Math.PI * 2, br = radius * (.08 + Math.sqrt(rand()) * .52);
+      var bx = Math.cos(ba) * br, bz = Math.sin(ba) * br * .62;
+      bushSpecs[bush % 2].push({ x: cx + bx, y: groundHeight(bx, bz), z: cz + bz, scale: 1.4 + rand() * 2.6 });
+    }
+    for (var rock = 0; rock < Math.max(5, Math.round(radius / 32)); rock++) {
+      var ra = rand() * Math.PI * 2, rr = radius * (.71 + rand() * .13);
+      var rx = Math.cos(ra) * rr, rz = Math.sin(ra) * rr * .62;
+      rockSpecs.push({ x: cx + rx, y: groundHeight(rx, rz), z: cz + rz, scale: .8 + rand() * 2.2, yaw: rand() * Math.PI });
+    }
+    for (var bird = 0; bird < birdCount; bird++) createSeagull(cx, cz, radius, height, rand, bird);
   }
-  island(330,52,-285,-570,2.2); island(440,76,370,-800,7.3); island(185,28,-470,260,12.9); island(260,44,560,360,20.2);
+
+  function createSeagull(cx, cz, radius, islandHeight, rand, index) {
+    var gull = new THREE.Group();
+    var white = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .72, side: THREE.DoubleSide, emissive: 0x263338, emissiveIntensity: .13 });
+    var dark = new THREE.MeshStandardMaterial({ color: 0x263b43, roughness: .8, side: THREE.DoubleSide });
+    var body = new THREE.Mesh(new THREE.SphereGeometry(.34, 8, 6), white); body.scale.set(.72, .52, 1.42); gull.add(body);
+    function wing(side) {
+      var geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute([0,0,0, side*2.8,.05,.52, side*1.25,-.08,-.72], 3));
+      geometry.setIndex([0,1,2]); geometry.computeVertexNormals();
+      var mesh = new THREE.Mesh(geometry, index % 3 ? white : dark); gull.add(mesh); return mesh;
+    }
+    var left = wing(-1), right = wing(1);
+    var beak = new THREE.Mesh(new THREE.ConeGeometry(.12,.48,5), new THREE.MeshStandardMaterial({ color: 0xf0b533, roughness: .7 }));
+    beak.rotation.x = Math.PI / 2; beak.position.z = -.63; gull.add(beak);
+    gull.scale.setScalar(1.1 + rand() * .45);
+    gull.userData = {
+      cx: cx, cz: cz, radius: radius * (.42 + rand() * .34), verticalRadius: radius * (.20 + rand() * .12),
+      height: islandHeight + 16 + rand() * 17, speed: .075 + rand() * .055,
+      phase: rand() * Math.PI * 2, flap: rand() * Math.PI * 2, left: left, right: right
+    };
+    scene.add(gull); ultimateSeagulls.push(gull);
+  }
+
+  createTerrain(205, 12, -250, -475, 2.2, 16, 4);
+  createTerrain(270, 15, 345, -690, 7.3, 22, 5);
+  createTerrain(125, 7, -420, 245, 12.9, 9, 2);
+  createTerrain(165, 10, 485, 285, 20.2, 12, 3);
+
+  var trunkGeometry = new THREE.CylinderGeometry(.28, .45, 1, 7, 3);
+  var trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x8a5429, roughness: .96, flatShading: true });
+  var trunks = new THREE.InstancedMesh(trunkGeometry, trunkMaterial, palmSpecs.length);
+  var leafGeometry = new THREE.BufferGeometry();
+  leafGeometry.setAttribute("position", new THREE.Float32BufferAttribute([0,0,0,-.75,.1,2.2,-1.05,-.3,5.1,0,-1.28,8.1,1.05,-.3,5.1,.75,.1,2.2],3));
+  leafGeometry.setIndex([0,1,5,1,2,4,1,4,5,2,3,4]); leafGeometry.computeVertexNormals();
+  var lightLeaves = new THREE.InstancedMesh(leafGeometry, new THREE.MeshStandardMaterial({ color: 0x2a9d48, roughness: .86, side: THREE.DoubleSide, emissive: 0x0b2b14, emissiveIntensity: .12 }), palmSpecs.length * 3);
+  var darkLeaves = new THREE.InstancedMesh(leafGeometry, new THREE.MeshStandardMaterial({ color: 0x126c39, roughness: .88, side: THREE.DoubleSide, emissive: 0x071c0e, emissiveIntensity: .12 }), palmSpecs.length * 4);
+  var coconuts = new THREE.InstancedMesh(new THREE.SphereGeometry(.3,7,5), new THREE.MeshStandardMaterial({ color: 0x60411f, roughness: .92 }), palmSpecs.filter(function (palm) { return palm.fruit; }).length * 3);
+  var root = new THREE.Object3D(), local = new THREE.Object3D(), matrix = new THREE.Matrix4();
+  var lightIndex = 0, darkIndex = 0, coconutIndex = 0;
+  for (var palmIndex = 0; palmIndex < palmSpecs.length; palmIndex++) {
+    var spec = palmSpecs[palmIndex];
+    root.position.set(spec.x, spec.y, spec.z); root.rotation.order = "YXZ"; root.rotation.set(spec.leanX, spec.yaw, spec.leanZ); root.scale.set(1,1,1); root.updateMatrix();
+    local.position.set(0, spec.height * .5, 0); local.rotation.set(0,0,0); local.scale.set(1, spec.height, 1); local.updateMatrix();
+    matrix.multiplyMatrices(root.matrix, local.matrix); trunks.setMatrixAt(palmIndex, matrix);
+    for (var frond = 0; frond < 7; frond++) {
+      local.position.set(0, spec.height, 0); local.rotation.set(-.05 + (frond % 2) * .08, spec.yaw * .18 + frond * Math.PI * 2 / 7, (frond % 3 - 1) * .035);
+      local.scale.setScalar(spec.crown); local.updateMatrix(); matrix.multiplyMatrices(root.matrix, local.matrix);
+      if (frond % 2) lightLeaves.setMatrixAt(lightIndex++, matrix); else darkLeaves.setMatrixAt(darkIndex++, matrix);
+    }
+    if (spec.fruit) {
+      for (var fruit = 0; fruit < 3; fruit++) {
+        var fruitAngle = fruit * Math.PI * 2 / 3;
+        local.position.set(Math.cos(fruitAngle) * .42, spec.height - .42, Math.sin(fruitAngle) * .42);
+        local.rotation.set(0,0,0); local.scale.setScalar(1); local.updateMatrix(); matrix.multiplyMatrices(root.matrix, local.matrix);
+        coconuts.setMatrixAt(coconutIndex++, matrix);
+      }
+    }
+  }
+  trunks.castShadow = trunks.receiveShadow = true; lightLeaves.castShadow = darkLeaves.castShadow = true;
+  trunks.instanceMatrix.needsUpdate = lightLeaves.instanceMatrix.needsUpdate = darkLeaves.instanceMatrix.needsUpdate = true;
+  if (coconutIndex) coconuts.instanceMatrix.needsUpdate = true;
+  scene.add(trunks); scene.add(lightLeaves); scene.add(darkLeaves); if (coconutIndex) scene.add(coconuts);
+
+  var bushGeometry = new THREE.IcosahedronGeometry(1, 1), bushColors = [0x277c3b, 0x145d35];
+  for (var bushType = 0; bushType < 2; bushType++) {
+    var bushes = new THREE.InstancedMesh(bushGeometry, new THREE.MeshStandardMaterial({ color: bushColors[bushType], roughness: .94, flatShading: true }), bushSpecs[bushType].length);
+    for (var bi = 0; bi < bushSpecs[bushType].length; bi++) {
+      var bushSpec = bushSpecs[bushType][bi]; local.position.set(bushSpec.x, bushSpec.y + bushSpec.scale * .5, bushSpec.z); local.rotation.set(0, bi * 1.73, 0); local.scale.set(bushSpec.scale, bushSpec.scale * .62, bushSpec.scale); local.updateMatrix(); bushes.setMatrixAt(bi, local.matrix);
+    }
+    bushes.castShadow = bushes.receiveShadow = true; bushes.instanceMatrix.needsUpdate = true; scene.add(bushes);
+  }
+  var rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1,0), new THREE.MeshStandardMaterial({ color: 0x786b52, roughness: .98, flatShading: true }), rockSpecs.length);
+  for (var ri = 0; ri < rockSpecs.length; ri++) {
+    var rockSpec = rockSpecs[ri]; local.position.set(rockSpec.x, rockSpec.y + rockSpec.scale * .32, rockSpec.z); local.rotation.set(.2, rockSpec.yaw, -.13); local.scale.set(rockSpec.scale, rockSpec.scale * .55, rockSpec.scale * .78); local.updateMatrix(); rocks.setMatrixAt(ri, local.matrix);
+  }
+  rocks.castShadow = rocks.receiveShadow = true; rocks.instanceMatrix.needsUpdate = true; scene.add(rocks);
 };
+
+function ultimateUpdateSeagulls(time) {
+  for (var i = 0; i < ultimateSeagulls.length; i++) {
+    var gull = ultimateSeagulls[i], data = gull.userData, angle = data.phase + time * data.speed;
+    gull.position.set(data.cx + Math.cos(angle) * data.radius, data.height + Math.sin(time * .72 + data.phase) * 2.2, data.cz + Math.sin(angle) * data.verticalRadius);
+    gull.rotation.y = -angle + Math.PI * .5;
+    var flap = Math.sin(time * 5.4 + data.flap) * .34;
+    data.left.rotation.z = -.12 - flap; data.right.rotation.z = .12 + flap;
+  }
+}
 
 window.setupInteractions = function () {
   var btn = document.getElementById("btn-engine"), hud = document.getElementById("hud-engine"), wheel = document.getElementById("steering-wheel"), container = document.getElementById("steering-wheel-container");
@@ -1015,6 +1169,7 @@ window.animate = function () {
   requestAnimationFrame(window.animate);
   var now=clock.getElapsedTime(), dt=ultimateLastTime ? Math.min(now-ultimateLastTime,.05) : .016; ultimateLastTime=now; ultimateFrame++;
   window.updatePhysicsAndMovement(now,dt); window.updateOcean(now);
+  ultimateUpdateSeagulls(now);
   if(controls){controls.target.lerp(boat.position.clone().add(new THREE.Vector3(0,2.1,0)),1-Math.exp(-dt*5.2));controls.update();}
   renderer.render(scene,camera);
 };

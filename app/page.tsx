@@ -3,7 +3,7 @@ export default function Home() {
     <main className="simulator-shell">
       <iframe
         className="simulator-frame"
-        src="/Sailing_Simulator_Pro_-_Ultimate.html?v=20260822-3"
+        src="/Sailing_Simulator_Pro_-_Ultimate.html?v=20260822-4"
         title="Sailing Simulator Pro"
         allow="fullscreen; autoplay"
         allowFullScreen
