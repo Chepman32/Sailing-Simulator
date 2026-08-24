@@ -1,29 +1,36 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#061923",
+};
+
 export const metadata: Metadata = {
-  title: "Sailing Simulator Pro — Ultimate",
+  title: "Enhanced Sailing Simulator Pro",
   description:
-    "A high-fidelity interactive catamaran sailing simulator with dynamic sea physics, reflective water, and responsive helm controls.",
-  metadataBase: new URL("https://sailing-simulator-pro.anton-chepur.chatgpt.site"),
+    "A high-fidelity tropical sailing simulator with GPU waves, force-based vessel physics, adaptive quality, and responsive helm controls.",
+  metadataBase: new URL("https://enhanced-sailing-simulator-pro.anton-chepur.chatgpt.site"),
   openGraph: {
-    title: "Sailing Simulator Pro — Ultimate",
+    title: "Enhanced Sailing Simulator Pro",
     description:
-      "Pilot a catamaran through a physically responsive ocean with wind, waves, sail trim, and cinematic lighting.",
+      "Pilot a detailed yacht through a physically responsive tropical ocean with wind, waves, sail trim, wildlife, and cinematic lighting.",
     type: "website",
     images: [
       {
         url: "/og.png",
         width: 1200,
         height: 630,
-        alt: "Sailing Simulator Pro — Ultimate",
+        alt: "Enhanced Sailing Simulator Pro",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Sailing Simulator Pro — Ultimate",
-    description: "High-fidelity interactive catamaran sailing simulator.",
+    title: "Enhanced Sailing Simulator Pro",
+    description: "High-fidelity interactive tropical sailing simulator.",
     images: ["/og.png"],
   },
   icons: {
