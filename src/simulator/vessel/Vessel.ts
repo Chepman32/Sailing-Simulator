@@ -4,6 +4,16 @@ import type { SimulatorControls } from "../types";
 import type { VesselPhysics } from "./VesselPhysics";
 import { SailSystem } from "./SailSystem";
 
+export const MAX_PROPELLER_RPM = 600;
+const MIN_ACTIVE_PROPELLER_RPM = 220;
+const PROPELLER_RESPONSE = 7.5;
+
+export function propellerRpmForThrottle(throttle: number): number {
+  const magnitude = THREE.MathUtils.clamp(Math.abs(throttle), 0, 1);
+  if (magnitude < 0.001) return 0;
+  return Math.sign(throttle) * THREE.MathUtils.lerp(MIN_ACTIVE_PROPELLER_RPM, MAX_PROPELLER_RPM, magnitude);
+}
+
 export class Vessel {
   readonly root = new THREE.Group();
   private readonly model: THREE.Group;
@@ -12,6 +22,7 @@ export class Vessel {
   private readonly propellers: THREE.Mesh[] = [];
   private readonly generatedMeshes: THREE.Mesh[] = [];
   private readonly navigationLights = new THREE.Group();
+  private propellerAngularVelocity = 0;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -106,8 +117,17 @@ export class Vessel {
     this.rudders.forEach((rudder) => {
       rudder.rotation.y = -controls.rudder * 0.58;
     });
+    const targetAngularVelocity = propellerRpmForThrottle(controls.throttle) * Math.PI * 2 / 60;
+    this.propellerAngularVelocity = THREE.MathUtils.damp(
+      this.propellerAngularVelocity,
+      targetAngularVelocity,
+      PROPELLER_RESPONSE,
+      delta,
+    );
     this.propellers.forEach((propeller, index) => {
-      propeller.rotation.z += controls.throttle * delta * (20 + index * 1.4);
+      // Twin screws counter-rotate; astern throttle reverses both directions.
+      const sideDirection = index % 2 === 0 ? 1 : -1;
+      propeller.rotation.z += this.propellerAngularVelocity * delta * sideDirection;
     });
     this.navigationLights.visible = nightFactor > 0.18;
   }

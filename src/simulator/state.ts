@@ -16,6 +16,8 @@ export type SimulatorState = {
   engineMuted: boolean;
 };
 
+export const ENGINE_START_THROTTLE = 0.12;
+
 export function createSimulatorState(): SimulatorState {
   return {
     controls: { throttle: 0, rudder: 0, sailTrim: 0.68 },
@@ -30,7 +32,17 @@ export function createSimulatorState(): SimulatorState {
 
 export function applyEnginePower(state: SimulatorState, running: boolean): void {
   state.engineRunning = running;
-  if (!running) state.controls.throttle = 0;
+  if (!running) {
+    state.controls.throttle = 0;
+  } else {
+    // Starting the engine is an explicit request for an audible engine. A mute
+    // value saved by an earlier session must not silently survive this action;
+    // the user can mute the running engine again from the sound control.
+    state.engineMuted = false;
+    if (Math.abs(state.controls.throttle) <= 0.08) {
+      state.controls.throttle = ENGINE_START_THROTTLE;
+    }
+  }
 }
 
 export const EMPTY_SNAPSHOT: SimulationSnapshot = {

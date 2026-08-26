@@ -6,8 +6,8 @@ const OCEAN_SIZE = 1800;
 const FOCUSED_GRID_SCALE = 140;
 const DAY_DEEP = new THREE.Color(0x036ba9);
 const DAY_SHALLOW = new THREE.Color(0x35cce2);
-const NIGHT_DEEP = new THREE.Color(0x02152f);
-const NIGHT_SHALLOW = new THREE.Color(0x0a3b63);
+const NIGHT_DEEP = new THREE.Color(0x072a52);
+const NIGHT_SHALLOW = new THREE.Color(0x155e87);
 
 function glsl(value: number): string {
   return value.toFixed(6);
@@ -148,6 +148,21 @@ const fragmentShader = /* glsl */ `
     float broadGlint = pow(nDotH, mix(72.0, 42.0, uNight)) * 0.22;
     float sharpGlint = pow(nDotH, mix(420.0, 180.0, uNight)) * 1.08;
     color += (broadGlint + sharpGlint) * mix(vec3(1.0, 0.88, 0.64), vec3(0.56, 0.72, 1.0), uNight);
+
+    // A broken, wave-driven moon path extending from the viewer toward the moon.
+    // This is deliberately broader than the high-frequency Blinn glints above:
+    // real moonlight reads as a long field of separate highlights, not one spot.
+    vec2 cameraToSurface = vWorldPosition.xz - cameraPosition.xz;
+    vec2 surfaceDirection = cameraToSurface / max(length(cameraToSurface), 0.001);
+    vec2 celestialDirection = normalize(uSunDirection.xz);
+    float moonPathAxis = pow(max(dot(surfaceDirection, celestialDirection), 0.0), 42.0);
+    float moonPathRange = smoothstep(4.0, 32.0, cameraDistance) * (1.0 - smoothstep(720.0, 1080.0, cameraDistance));
+    float moonRipple = 0.5 + 0.5 * sin(cameraDistance * 0.34 + broadVariation * 7.0 - uTime * 0.28);
+    float moonBreakup = valueNoise(vWorldPosition.xz * 0.31 + vec2(uTime * 0.055, -uTime * 0.021));
+    float moonSparkles = smoothstep(0.36, 0.82, moonRipple * 0.54 + moonBreakup * 0.68);
+    float moonSpecular = 0.24 + pow(nDotH, 18.0) * 1.65;
+    float moonWalk = uNight * moonPathAxis * moonPathRange * moonSparkles * moonSpecular;
+    color += vec3(0.62, 0.77, 1.0) * moonWalk * 0.82;
 
     float foamNoise;
     if (uDetail > 0.55) {

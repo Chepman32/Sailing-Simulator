@@ -24,7 +24,7 @@ const ASSETS = {
   palms: { url: "/models/palm-trees-quaternius.glb", label: "Planting islands", required: true },
   dolphin: { url: "/models/dolphin-animated.glb", label: "Loading dolphins", required: true },
   shark: { url: "/models/shark-animated.glb", label: "Loading sharks", required: false },
-  whale: { url: "/models/whale-animated.glb", label: "Loading whales", required: false },
+  whale: { url: "/models/blue-whale-rigged-pbr-v2.glb", label: "Loading whale", required: false },
   fishSchool: { url: "/models/tropical-fish-school.glb", label: "Loading tropical fish", required: false },
   seagull: { url: "/models/seagull-animated.glb", label: "Loading seabirds", required: false },
 } satisfies Record<AssetKey, AssetDefinition>;

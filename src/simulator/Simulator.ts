@@ -81,9 +81,19 @@ export class Simulator {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
+    this.renderer.localClippingEnabled = true;
     this.renderer.setClearColor(0x0c7ba6, 1);
     this.assets = new AssetManager(options.onLoading);
     this.hud = new HudController(options.onSnapshot);
+    // Install the gesture listeners before asset loading begins. On iOS the
+    // first trusted tap is often made while the loading screen is still up;
+    // creating AudioSystem later would lose that one chance to unlock audio.
+    this.audio = new AudioSystem(() => {
+      if (this.initialized) this.hud.emit(this.snapshot());
+    });
+    this.audio.setEnabled(this.state.soundEnabled);
+    this.audio.setEngineRunning(this.state.engineRunning);
+    this.audio.setEngineMuted(this.state.engineMuted);
     canvas.addEventListener("webglcontextlost", this.onContextLost, false);
     canvas.addEventListener("webglcontextrestored", this.onContextRestored, false);
   }
@@ -125,12 +135,6 @@ export class Simulator {
         zoom: (delta) => this.camera.zoom(delta),
         recenter: () => this.camera.recenter(),
       });
-      this.audio = new AudioSystem(() => {
-        if (this.initialized) this.hud.emit(this.snapshot());
-      });
-      this.audio.setEnabled(this.state.soundEnabled);
-      this.audio.setEngineRunning(this.state.engineRunning);
-      this.audio.setEngineMuted(this.state.engineMuted);
       this.resizeObserver = new ResizeObserver(this.resize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
       this.resize();
@@ -212,7 +216,11 @@ export class Simulator {
 
   setEngineRunning(running: boolean): void {
     applyEnginePower(this.state, running);
+    this.audio?.setEngineMuted(this.state.engineMuted);
     this.audio?.setEngineRunning(running);
+    // Engine running is session-only, but starting may clear a stale persisted
+    // engine mute preference and that correction must survive the next reload.
+    this.persistState();
     this.hud.emit(this.snapshot());
   }
 

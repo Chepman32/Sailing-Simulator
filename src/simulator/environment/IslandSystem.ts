@@ -16,6 +16,8 @@ const ISLANDS: readonly IslandObstacle[] = [
   { center: new THREE.Vector2(25, 175), beachRadius: 36, scaleZ: 0.68 },
 ] as const;
 
+export const MAX_VISIBLE_TERRAIN_RADIUS_SCALE = 1.06;
+
 export class IslandSystem {
   private readonly group = new THREE.Group();
   private readonly palmWindUniforms: PalmWindUniform[] = [];
@@ -134,25 +136,25 @@ export class IslandSystem {
     islandGroup.position.set(island.center.x, 0, island.center.y);
     islandGroup.name = `TropicalIsland_${index + 1}`;
 
-    const beach = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 64, 32),
-      new THREE.MeshStandardMaterial({ color: 0xd7b96f, roughness: 0.97, metalness: 0 }),
+    const terrain = new THREE.Mesh(
+      this.createIslandTerrain(island, index),
+      new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.97,
+        metalness: 0,
+        transparent: true,
+        alphaTest: 0.015,
+        depthWrite: true,
+      }),
     );
-    beach.scale.set(island.beachRadius, 3.1 + index * 0.35, island.beachRadius * island.scaleZ);
-    beach.position.y = -2.62;
-    beach.receiveShadow = true;
-    beach.name = "MutedYellowBeach";
-    islandGroup.add(beach);
-
-    const interior = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 56, 28),
-      new THREE.MeshStandardMaterial({ color: index === 1 ? 0x32975c : 0x2c9e63, roughness: 0.94 }),
-    );
-    interior.scale.set(island.beachRadius * 0.79, 5.7 + index * 0.55, island.beachRadius * island.scaleZ * 0.78);
-    interior.position.y = -3.65;
-    interior.receiveShadow = true;
-    interior.castShadow = true;
-    islandGroup.add(interior);
+    terrain.receiveShadow = true;
+    terrain.castShadow = false;
+    terrain.name = "IrregularIslandTerrain";
+    // The ocean is rendered immediately after this mesh. Vertex alpha tapers
+    // the submerged apron into the seabed so its final radial edge cannot read
+    // as a large ring (or as a dark, flat animal) through clear tropical water.
+    terrain.renderOrder = 1;
+    islandGroup.add(terrain);
 
     const palms = assets.palms();
     palms.name = `GLB_Palm_Grove_${index + 1}`;
@@ -161,7 +163,7 @@ export class IslandSystem {
     const targetHeight = 13 + index * 1.5;
     const scale = targetHeight / height;
     palms.scale.setScalar(scale);
-    palms.position.set(-island.beachRadius * 0.15, 0.2 - bounds.min.y * scale, 0);
+    palms.position.set(-island.beachRadius * 0.15, 1.15 - bounds.min.y * scale, 0);
     palms.rotation.y = index * 1.94;
     palms.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
@@ -196,6 +198,84 @@ export class IslandSystem {
     });
     islandGroup.add(palms);
     this.group.add(islandGroup);
+  }
+
+  private createIslandTerrain(island: IslandObstacle, index: number): THREE.BufferGeometry {
+    const segments = 72;
+    const rings = 10;
+    const outerRadius = MAX_VISIBLE_TERRAIN_RADIUS_SCALE;
+    const positions: number[] = [0, 1.78 + index * 0.18, 0];
+    const colors: number[] = [];
+    const indices: number[] = [];
+    const green = new THREE.Color(index === 1 ? 0x32975c : 0x2c9e63);
+    const sand = new THREE.Color(0xd7b96f);
+    const deepSand = new THREE.Color(0xb99a60);
+    colors.push(green.r, green.g, green.b, 1);
+
+    for (let ring = 1; ring <= rings; ring += 1) {
+      const radial = outerRadius * ring / rings;
+      for (let segment = 0; segment < segments; segment += 1) {
+        const angle = segment / segments * Math.PI * 2;
+        const edgeNoise =
+          1 +
+          Math.sin(angle * 3 + index * 1.7) * 0.038 +
+          Math.sin(angle * 7 - index * 0.9) * 0.023 +
+          Math.cos(angle * 11 + index * 0.6) * 0.012;
+        const radius = island.beachRadius * radial * edgeNoise;
+        const x = Math.cos(angle) * radius;
+        const z = Math.sin(angle) * radius * island.scaleZ;
+        const y = this.islandTerrainHeight(radial, angle, index);
+        positions.push(x, y, z);
+
+        const color = new THREE.Color();
+        if (radial < 0.68) {
+          color.copy(green).offsetHSL(Math.sin(angle * 5 + index) * 0.006, 0, Math.sin(angle * 4) * 0.018);
+        } else if (radial < 0.88) {
+          color.copy(green).lerp(sand, smoothstep(0.68, 0.88, radial));
+        } else if (radial < 1) {
+          color.copy(sand);
+        } else {
+          color.copy(sand).lerp(deepSand, smoothstep(1, outerRadius, radial));
+        }
+        const alpha = 1 - smoothstep(0.965, outerRadius, radial);
+        colors.push(color.r, color.g, color.b, alpha);
+      }
+    }
+
+    for (let segment = 0; segment < segments; segment += 1) {
+      indices.push(0, 1 + segment, 1 + (segment + 1) % segments);
+    }
+    for (let ring = 1; ring < rings; ring += 1) {
+      const innerStart = 1 + (ring - 1) * segments;
+      const outerStart = 1 + ring * segments;
+      for (let segment = 0; segment < segments; segment += 1) {
+        const next = (segment + 1) % segments;
+        indices.push(
+          innerStart + segment,
+          outerStart + segment,
+          innerStart + next,
+          innerStart + next,
+          outerStart + segment,
+          outerStart + next,
+        );
+      }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 4));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    geometry.computeBoundingSphere();
+    return geometry;
+  }
+
+  private islandTerrainHeight(radial: number, angle: number, index: number): number {
+    const surfaceVariation = Math.sin(angle * 4 + index * 1.3) * 0.12 + Math.cos(angle * 9) * 0.05;
+    if (radial < 0.68) return 1.78 + index * 0.18 - radial * radial * 0.9 + surfaceVariation;
+    if (radial < 0.9) return THREE.MathUtils.lerp(1.36, 0.28, smoothstep(0.68, 0.9, radial)) + surfaceVariation * 0.35;
+    if (radial < 1) return THREE.MathUtils.lerp(0.28, -0.08, smoothstep(0.9, 1, radial));
+    return THREE.MathUtils.lerp(-0.08, -0.42, smoothstep(1, MAX_VISIBLE_TERRAIN_RADIUS_SCALE, radial));
   }
 
 }

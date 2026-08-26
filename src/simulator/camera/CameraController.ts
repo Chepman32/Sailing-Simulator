@@ -11,7 +11,7 @@ export class CameraController {
   private readonly smoothedTarget = new THREE.Vector3();
   private readonly viewDirection = new THREE.Vector3();
   private yawOffset = 0;
-  private pitch = 0.24;
+  private pitch = 0.1;
   private distance = 17;
   private mode: CameraMode = "chase";
 
@@ -44,7 +44,7 @@ export class CameraController {
 
   recenter(): void {
     this.yawOffset = 0;
-    this.pitch = this.mode === "helm" ? 0.02 : this.mode === "drone" ? 0.58 : 0.24;
+    this.pitch = this.mode === "helm" ? 0.02 : this.mode === "drone" ? 0.58 : this.mode === "orbit" ? 0.24 : 0.1;
   }
 
   update(delta: number, physics: VesselPhysics): void {

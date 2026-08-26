@@ -15,7 +15,7 @@ export function deriveTimeOfDay(nightFactor: number): TimeOfDayState {
     normalizedTime: 0.5 + night * 0.5,
     sunElevation: 0.72 - night * 1.18,
     moonElevation: -0.28 + night * (Math.PI / 6 + 0.28),
-    exposure: 1.08 - night * 0.48,
+    exposure: 1.08 - night * 0.24,
     starVisibility: Math.pow(night, 1.6),
     nightFactor: night,
   };

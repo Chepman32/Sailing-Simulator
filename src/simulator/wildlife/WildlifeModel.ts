@@ -19,6 +19,52 @@ export type AnimatedVisual = {
   actions: THREE.AnimationAction[];
 };
 
+export type AnimatedAssetQuality = {
+  triangleCount: number;
+  skinnedMeshCount: number;
+  longestAxis: number;
+  thicknessRatio: number;
+  hasSwimClip: boolean;
+};
+
+export function assessAnimatedAsset(asset: AnimatedAssetInstance): AnimatedAssetQuality {
+  let triangleCount = 0;
+  let skinnedMeshCount = 0;
+  asset.scene.updateMatrixWorld(true);
+  asset.scene.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const position = object.geometry.getAttribute("position");
+    if (position) triangleCount += (object.geometry.index?.count ?? position.count) / 3;
+    if (object instanceof THREE.SkinnedMesh) skinnedMeshCount += 1;
+  });
+
+  const size = new THREE.Box3().setFromObject(asset.scene).getSize(new THREE.Vector3());
+  const dimensions = [size.x, size.y, size.z].sort((left, right) => left - right);
+  const longestAxis = dimensions[2] ?? 0;
+  const thicknessRatio = longestAxis > 0 ? (dimensions[0] ?? 0) / longestAxis : 0;
+  return {
+    triangleCount,
+    skinnedMeshCount,
+    longestAxis,
+    thicknessRatio,
+    hasSwimClip: asset.animations.some((clip) => /swim/i.test(clip.name) && clip.duration > 0.5),
+  };
+}
+
+export function isDetailedSwimAsset(asset: AnimatedAssetInstance, minimumTriangles = 15_000): boolean {
+  const quality = assessAnimatedAsset(asset);
+  return (
+    quality.triangleCount >= minimumTriangles &&
+    quality.triangleCount <= 100_000 &&
+    quality.skinnedMeshCount > 0 &&
+    quality.hasSwimClip &&
+    Number.isFinite(quality.longestAxis) &&
+    quality.longestAxis > 0.001 &&
+    Number.isFinite(quality.thicknessRatio) &&
+    quality.thicknessRatio >= 0.035
+  );
+}
+
 export function createAnimatedVisual(
   asset: AnimatedAssetInstance,
   setup: ModelSetup,

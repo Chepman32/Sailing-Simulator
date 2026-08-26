@@ -73,21 +73,23 @@ export class EnvironmentSystem {
   private readonly stars: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>;
   private readonly sunCore: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   private readonly sunHalo: THREE.Sprite;
-  private readonly moon: THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>;
+  private readonly moon: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   private readonly moonHalo: THREE.Sprite;
   private readonly sunLight: THREE.DirectionalLight;
   private readonly hemisphere: THREE.HemisphereLight;
   private readonly ambient: THREE.AmbientLight;
   private readonly sunDirection = new THREE.Vector3();
   private readonly moonDirection = new THREE.Vector3();
+  private readonly celestialLightDirection = new THREE.Vector3();
   private readonly skyColor = new THREE.Color();
   private readonly horizonColor = new THREE.Color();
-  private readonly nightSkyColor = new THREE.Color(0x020817);
-  private readonly nightHorizonColor = new THREE.Color(0x0a1731);
+  private readonly nightSkyColor = new THREE.Color(0x061a3a);
+  private readonly nightHorizonColor = new THREE.Color(0x17395f);
   private readonly sunsetColor = new THREE.Color(0xff9b58);
-  private readonly moonlightColor = new THREE.Color(0x8eb9ff);
-  private readonly nightHemisphereColor = new THREE.Color(0x21385e);
-  private readonly nightGroundColor = new THREE.Color(0x020815);
+  private readonly moonlightColor = new THREE.Color(0xa9cfff);
+  private readonly nightHemisphereColor = new THREE.Color(0x526f9f);
+  private readonly nightGroundColor = new THREE.Color(0x0b2035);
+  private readonly nightAmbientColor = new THREE.Color(0x789bc8);
   private readonly glowTexture = radialTexture();
   private readonly starsTexture = starTexture();
   private mode: LightingMode = "day";
@@ -178,8 +180,8 @@ export class EnvironmentSystem {
     scene.add(this.sunHalo);
 
     this.moon = new THREE.Mesh(
-      new THREE.SphereGeometry(10, 32, 20),
-      new THREE.MeshStandardMaterial({ color: 0xe3ebfa, roughness: 0.82, emissive: 0x18233d, emissiveIntensity: 0.3 }),
+      new THREE.SphereGeometry(12, 40, 24),
+      new THREE.MeshBasicMaterial({ color: 0xf7f9ff, depthTest: true, depthWrite: true, fog: false, toneMapped: false }),
     );
     this.moon.name = "Moon";
     scene.add(this.moon);
@@ -191,10 +193,11 @@ export class EnvironmentSystem {
         opacity: 0,
         depthTest: true,
         depthWrite: false,
-        blending: THREE.NormalBlending,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
       }),
     );
-    this.moonHalo.scale.set(68, 68, 1);
+    this.moonHalo.scale.set(108, 108, 1);
     this.moonHalo.name = "MoonHalo";
     scene.add(this.moonHalo);
 
@@ -225,8 +228,17 @@ export class EnvironmentSystem {
 
     this.sunDirection.set(0.64, Math.sin(this.state.sunElevation), -0.58).normalize();
     const moonHorizontal = Math.cos(this.state.moonElevation);
+    const moonAzimuth = THREE.MathUtils.degToRad(12);
     this.moonDirection
-      .set(-0.67152 * moonHorizontal, Math.sin(this.state.moonElevation), 0.74099 * moonHorizontal)
+      .set(
+        Math.sin(moonAzimuth) * moonHorizontal,
+        Math.sin(this.state.moonElevation),
+        Math.cos(moonAzimuth) * moonHorizontal,
+      )
+      .normalize();
+    this.celestialLightDirection
+      .copy(this.sunDirection)
+      .lerp(this.moonDirection, THREE.MathUtils.smoothstep(night, 0.35, 0.78))
       .normalize();
     this.skyColor.set(0x159ce0).lerp(this.nightSkyColor, night);
     this.horizonColor.set(0xbdeaf5).lerp(this.nightHorizonColor, night);
@@ -246,25 +258,26 @@ export class EnvironmentSystem {
     this.sunCore.material.color.set(0xfff0b0).lerp(this.sunsetColor, night * 0.45);
     (this.sunHalo.material as THREE.SpriteMaterial).opacity = sunOpacity * 0.54;
     this.moon.visible = night > 0.04;
-    (this.moonHalo.material as THREE.SpriteMaterial).opacity = this.state.starVisibility * 0.32;
+    (this.moonHalo.material as THREE.SpriteMaterial).opacity = this.state.starVisibility * 0.72;
     this.stars.material.opacity = this.state.starVisibility * 0.94;
 
-    this.sunLight.position.copy(focus).addScaledVector(this.sunDirection, 110);
+    this.sunLight.position.copy(focus).addScaledVector(this.celestialLightDirection, 110);
     this.sunLight.target.position.copy(focus);
-    this.sunLight.intensity = 3.2 - night * 2.82;
+    this.sunLight.intensity = THREE.MathUtils.lerp(3.2, 1.25, night);
     this.sunLight.color.set(0xfff2d2).lerp(this.moonlightColor, night);
-    this.hemisphere.intensity = 1.25 - night * 0.83;
+    this.hemisphere.intensity = THREE.MathUtils.lerp(1.25, 0.78, night);
     this.hemisphere.color.set(0xbfeaff).lerp(this.nightHemisphereColor, night);
     this.hemisphere.groundColor.set(0x275960).lerp(this.nightGroundColor, night);
-    this.ambient.intensity = 0.32 - night * 0.12;
+    this.ambient.color.set(0x9bc5da).lerp(this.nightAmbientColor, night);
+    this.ambient.intensity = THREE.MathUtils.lerp(0.32, 0.38, night);
     this.renderer.toneMappingExposure = this.state.exposure;
 
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.color.copy(this.horizonColor);
-      this.scene.fog.density = 0.00115 + night * 0.00045;
+      this.scene.fog.density = 0.00115 + night * 0.0001;
     }
     this.scene.background = this.skyColor;
-    this.ocean.setEnvironment(night, this.sunDirection, this.horizonColor);
+    this.ocean.setEnvironment(night, this.celestialLightDirection, this.horizonColor);
     return this.state;
   }
 
