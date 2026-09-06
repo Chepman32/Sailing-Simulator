@@ -133,7 +133,9 @@ export class Simulator {
       this.touch = new TouchControls(this.canvas, {
         orbit: (x, y) => this.camera.orbit(x, y),
         zoom: (delta) => this.camera.zoom(delta),
-        recenter: () => this.camera.recenter(),
+        recenter: () => {
+          if (!this.options.onSceneDoubleTap?.()) this.camera.recenter();
+        },
       });
       this.resizeObserver = new ResizeObserver(this.resize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);

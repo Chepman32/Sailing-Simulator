@@ -34,6 +34,8 @@ export type SimulatorOptions = {
   onSnapshot?: (snapshot: SimulationSnapshot) => void;
   onLoading?: (state: LoadingState) => void;
   onError?: (message: string) => void;
+  /** Return true when the interface handles the gesture instead of recentering. */
+  onSceneDoubleTap?: () => boolean;
 };
 
 export type SimulatorControls = {

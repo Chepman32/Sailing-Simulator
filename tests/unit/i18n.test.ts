@@ -14,6 +14,8 @@ test("the interface ships complete message packs for 30 languages", () => {
   for (const { code } of LANGUAGE_OPTIONS) {
     assert.deepEqual(Object.keys(getMessages(code)).sort(), englishKeys);
     assert.ok(getMessages(code).engine.length > 0);
+    assert.ok(getMessages(code).photoMode.length > 0);
+    assert.ok(getMessages(code).photoModeHint.length > 0);
   }
 });
 

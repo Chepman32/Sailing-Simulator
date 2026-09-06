@@ -1,3 +1,5 @@
+import { DoubleTapGesture } from "./DoubleTapGesture";
+
 export type TouchCameraActions = {
   orbit: (deltaX: number, deltaY: number) => void;
   zoom: (delta: number) => void;
@@ -9,7 +11,7 @@ type PointerPoint = { x: number; y: number };
 export class TouchControls {
   private readonly pointers = new Map<number, PointerPoint>();
   private pinchDistance = 0;
-  private lastTap = 0;
+  private readonly doubleTap = new DoubleTapGesture();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -19,7 +21,7 @@ export class TouchControls {
     canvas.addEventListener("pointerdown", this.onPointerDown);
     canvas.addEventListener("pointermove", this.onPointerMove);
     canvas.addEventListener("pointerup", this.onPointerUp);
-    canvas.addEventListener("pointercancel", this.onPointerUp);
+    canvas.addEventListener("pointercancel", this.onPointerCancel);
     canvas.addEventListener("wheel", this.onWheel, { passive: false });
   }
 
@@ -27,22 +29,26 @@ export class TouchControls {
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
     this.canvas.removeEventListener("pointermove", this.onPointerMove);
     this.canvas.removeEventListener("pointerup", this.onPointerUp);
-    this.canvas.removeEventListener("pointercancel", this.onPointerUp);
+    this.canvas.removeEventListener("pointercancel", this.onPointerCancel);
     this.canvas.removeEventListener("wheel", this.onWheel);
   }
 
   private readonly onPointerDown = (event: PointerEvent): void => {
+    if (event.button !== 0) return;
     this.canvas.setPointerCapture(event.pointerId);
     this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    if (this.pointers.size === 2) this.pinchDistance = this.currentPinchDistance();
-    const now = performance.now();
-    if (now - this.lastTap < 300 && this.pointers.size === 1) this.actions.recenter();
-    this.lastTap = now;
+    if (this.pointers.size === 1) {
+      this.doubleTap.down(event.pointerId, event.clientX, event.clientY, performance.now());
+    } else {
+      this.doubleTap.cancel();
+      this.pinchDistance = this.currentPinchDistance();
+    }
   };
 
   private readonly onPointerMove = (event: PointerEvent): void => {
     const previous = this.pointers.get(event.pointerId);
     if (!previous) return;
+    this.doubleTap.move(event.pointerId, event.clientX, event.clientY);
     this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (this.pointers.size === 1) {
       this.actions.orbit(event.clientX - previous.x, event.clientY - previous.y);
@@ -54,8 +60,16 @@ export class TouchControls {
   };
 
   private readonly onPointerUp = (event: PointerEvent): void => {
+    if (this.doubleTap.up(event.pointerId, event.clientX, event.clientY, performance.now())) {
+      this.actions.recenter();
+    }
     this.pointers.delete(event.pointerId);
     this.pinchDistance = this.pointers.size === 2 ? this.currentPinchDistance() : 0;
+  };
+
+  private readonly onPointerCancel = (event: PointerEvent): void => {
+    this.doubleTap.cancel();
+    this.onPointerUp(event);
   };
 
   private readonly onWheel = (event: WheelEvent): void => {

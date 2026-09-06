@@ -67,6 +67,55 @@ input:focus-visible {
   height: 100%;
 }
 
+.simulator-interface[hidden] { display: none; }
+.simulator-canvas:focus { outline: none; }
+
+.scene-actions {
+  position: absolute;
+  z-index: 20;
+  top: max(136px, calc(env(safe-area-inset-top) + 118px));
+  left: max(18px, env(safe-area-inset-left));
+  width: 212px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  background: var(--glass);
+}
+
+.scene-action {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 64px;
+  padding: 7px 4px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  color: var(--text);
+  background: rgba(101, 226, 214, 0.08);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.scene-action:disabled { opacity: 0.45; cursor: default; }
+.scene-action:not(:disabled):hover { background: rgba(101, 226, 214, 0.2); }
+.photo-mode-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
 .eyebrow {
   margin: 0;
   color: var(--accent);
@@ -134,8 +183,7 @@ input:focus-visible {
   transition: width 220ms ease;
 }
 
-.error-card button,
-.reset-button {
+.error-card button {
   min-height: 44px;
   margin-top: 18px;
   padding: 0 18px;
@@ -483,8 +531,6 @@ input[type="range"] {
   color: var(--text);
   background: #092c3b;
 }
-
-.reset-button { min-height: 40px; margin: 0; }
 
 .rudder-control {
   position: absolute;
@@ -900,6 +946,24 @@ input[type="range"]:disabled {
 @media (max-width: 680px), (max-height: 560px) and (max-width: 960px) {
   .simulator-shell { min-height: 0; }
 
+  .scene-actions {
+    top: calc(env(safe-area-inset-top) + 132px);
+    left: calc(env(safe-area-inset-left) + 8px);
+    width: 142px;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 7px;
+    background: rgba(4, 29, 40, 0.9);
+  }
+
+  .scene-action {
+    grid-template-columns: 23px minmax(0, 1fr);
+    align-items: center;
+    min-height: 44px;
+    text-align: start;
+  }
+
+  .scene-action span { justify-self: start; }
+
   .heading-card { display: none; }
 
   .audio-unlock {
@@ -1162,6 +1226,12 @@ input[type="range"]:disabled {
 }
 
 @media (max-height: 560px) and (orientation: landscape) {
+  .scene-actions {
+    top: calc(env(safe-area-inset-top) + 78px);
+    left: auto;
+    right: calc(env(safe-area-inset-right) + 8px);
+    width: 142px;
+  }
   .control-panel:not(.is-minimized) {
     z-index: 30;
     top: calc(env(safe-area-inset-top) + 8px);
@@ -1181,7 +1251,7 @@ input[type="range"]:disabled {
   .quiet-button { min-height: 44px; }
   .primary-controls {
     right: auto;
-    width: min(500px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 16px));
+    width: min(500px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 172px));
   }
   .rudder-control {
     width: auto;

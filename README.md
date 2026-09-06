@@ -32,7 +32,9 @@ The simulator is implemented as TypeScript modules under `src/simulator`. The Re
 - Rudder: persistent port/starboard range with an explicit center button.
 - Keyboard: `W`/`S` throttle, `A`/`D` rudder, `Space` center rudder, `R` reset.
 - Camera: swipe or drag to look, pinch or wheel to zoom, double-tap to recenter.
-- Settings: day/night, camera mode, sail trim, quality, sound, engine mute, language, and reset.
+- Reset scene: visible beside Photo mode without opening Settings, and enabled once the scene is ready. Returns the yacht to its starting position, clears its motion and wake, neutralizes rudder/throttle, and recenters the camera. Lighting, sound, quality, and engine state remain as selected.
+- Photo mode: hides every interface overlay while the simulation and camera gestures continue. Press `Escape` or double-click/double-tap the scene to restore the interface without recentering the shot. `Tab` also restores the controls for keyboard navigation. Renderer errors automatically leave photo mode so recovery remains accessible.
+- Settings: day/night, camera mode, sail trim, quality, sound, engine mute, and language.
 
 Browsers require a trusted user gesture before Web Audio can play. If sound is enabled but the audio context is locked, use the visible **Tap for sound** button.
 
