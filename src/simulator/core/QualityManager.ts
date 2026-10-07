@@ -8,6 +8,15 @@ export type QualitySettings = {
   reflectionSize: number;
   foamDensity: number;
   wildlifeCount: number;
+  /** 0–1: enables per-pixel wave detail, capillary ripples and cloud reflections. */
+  oceanDetail: number;
+  /** 0 = three-octave clouds, 1 = five-octave clouds. */
+  skyDetail: number;
+  /** HDR pipeline with bloom, grading and vignette. */
+  postProcessing: boolean;
+  bloomStrength: number;
+  /** Multisample count of the HDR scene target. */
+  msaaSamples: number;
 };
 
 export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
@@ -18,6 +27,11 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     reflectionSize: 256,
     foamDensity: 0.45,
     wildlifeCount: 1,
+    oceanDetail: 0.3,
+    skyDetail: 0,
+    postProcessing: false,
+    bloomStrength: 0,
+    msaaSamples: 0,
   },
   medium: {
     maxDpr: 1.25,
@@ -26,6 +40,11 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     reflectionSize: 384,
     foamDensity: 0.7,
     wildlifeCount: 2,
+    oceanDetail: 0.55,
+    skyDetail: 1,
+    postProcessing: true,
+    bloomStrength: 0.2,
+    msaaSamples: 2,
   },
   high: {
     maxDpr: 1.75,
@@ -34,6 +53,11 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     reflectionSize: 512,
     foamDensity: 0.9,
     wildlifeCount: 2,
+    oceanDetail: 1,
+    skyDetail: 1,
+    postProcessing: true,
+    bloomStrength: 0.26,
+    msaaSamples: 4,
   },
 };
 

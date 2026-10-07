@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { QualitySettings } from "../core/QualityManager";
+import type { EnvironmentPalette } from "../environment/EnvironmentPalette";
 import type { OceanSystem } from "../environment/OceanSystem";
 import type { SimulatorControls } from "../types";
 import type { VesselPhysics } from "./VesselPhysics";
@@ -9,7 +10,54 @@ type WakeSample = {
   heading: number;
   born: number;
   strength: number;
+  /** Sideways spread of a diverging bow wave, in m/s at birth. */
+  driftX: number;
+  driftZ: number;
+  /** Bow-wave samples are narrower than the turbulent stern track. */
+  bow: boolean;
 };
+
+/**
+ * Opacity of one wake decal. A dozen or more decals overlap at any point of
+ * a track, so each contributes only a little.
+ */
+export const WAKE_LAYER_GAIN = 0.3;
+
+/**
+ * Foam lies over the water; it does not add light to it. Each decal's fade is
+ * carried in its instance colour, so the fade is moved into alpha here and the
+ * decal is composited "over" the sea. Unlike additive blending this cannot
+ * blow out where decals overlap, and it looks the same with or without the
+ * HDR pipeline.
+ */
+function useInstanceFadeAsAlpha(material: THREE.MeshBasicMaterial): void {
+  material.onBeforeCompile = (shader: THREE.WebGLProgramParametersWithUniforms) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <color_fragment>",
+      `#include <color_fragment>
+       #ifdef USE_COLOR
+         float decalFade = max(vColor.r, max(vColor.g, vColor.b));
+         diffuseColor.rgb /= max(decalFade, 0.0001);
+         diffuseColor.a *= clamp(decalFade, 0.0, 1.0);
+       #endif`,
+    );
+  };
+  material.customProgramCacheKey = () => "foam-decal-v2";
+}
+
+function fract(value: number): number {
+  return value - Math.floor(value);
+}
+
+/** Below this speed the bows part the water without throwing a wave. */
+export const BOW_WAVE_MIN_SPEED = 1.1;
+/** Speed in m/s at which the bows begin to throw spray. */
+export const BOW_SPRAY_MIN_SPEED = 2.1;
+
+/** Bow spray droplets per second for a given speed and rudder angle. */
+export function bowSprayRate(speed: number, rudder: number): number {
+  return Math.max(0, Math.abs(speed) - BOW_SPRAY_MIN_SPEED) * (2.6 + Math.abs(rudder) * 1.6);
+}
 
 type Particle = {
   active: boolean;
@@ -80,19 +128,42 @@ export function calculateSplashProfile(intensity: number): SplashProfile {
   };
 }
 
+/**
+ * Aerated water is a lace of bubbles, not a soft glow. The texture is built
+ * from many small speckles whose density falls off toward the edge, so
+ * overlapping decals read as churned foam.
+ */
 function foamTexture(): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = 128;
-  canvas.height = 64;
+  canvas.height = 128;
   const context = canvas.getContext("2d");
   if (!context) return new THREE.CanvasTexture(canvas);
-  const gradient = context.createRadialGradient(64, 32, 2, 64, 32, 62);
-  gradient.addColorStop(0, "rgba(255,255,255,.95)");
-  gradient.addColorStop(0.32, "rgba(222,251,255,.62)");
-  gradient.addColorStop(0.7, "rgba(178,235,246,.18)");
-  gradient.addColorStop(1, "rgba(160,220,240,0)");
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, 128, 64);
+  const base = context.createRadialGradient(64, 64, 2, 64, 64, 62);
+  base.addColorStop(0, "rgba(255,255,255,.34)");
+  base.addColorStop(0.45, "rgba(236,250,255,.16)");
+  base.addColorStop(1, "rgba(220,244,255,0)");
+  context.fillStyle = base;
+  context.fillRect(0, 0, 128, 128);
+  let seed = 7331;
+  const random = (): number => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+  for (let index = 0; index < 520; index += 1) {
+    const angle = random() * Math.PI * 2;
+    const distance = Math.pow(random(), 0.72) * 58;
+    const x = 64 + Math.cos(angle) * distance;
+    const y = 64 + Math.sin(angle) * distance;
+    const falloff = 1 - distance / 60;
+    const radius = 0.8 + random() * 3.4 * (0.4 + falloff);
+    const speck = context.createRadialGradient(x, y, 0, x, y, radius);
+    const opacity = (0.16 + random() * 0.5) * Math.max(0, falloff);
+    speck.addColorStop(0, `rgba(255,255,255,${opacity})`);
+    speck.addColorStop(1, "rgba(255,255,255,0)");
+    context.fillStyle = speck;
+    context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  }
   return new THREE.CanvasTexture(canvas);
 }
 
@@ -128,6 +199,7 @@ export class WakeSystem {
   private readonly scale = new THREE.Vector3();
   private readonly scratchPosition = new THREE.Vector3();
   private readonly scratchColor = new THREE.Color();
+  private readonly litColor = new THREE.Color(1, 1, 1);
   private readonly foam = foamTexture();
   private readonly ringTexture = splashRingTexture();
   private readonly splashRings: THREE.InstancedMesh;
@@ -152,7 +224,8 @@ export class WakeSystem {
     this.group.name = "PhysicalWakeSystem";
     scene.add(this.group);
     const capacity = Math.round(145 * quality.foamDensity);
-    this.hullCapacity = capacity * 2;
+    // Two stern tracks plus two diverging bow waves.
+    this.hullCapacity = capacity * 4;
     this.propCapacity = capacity;
     const plane = new THREE.PlaneGeometry(1, 1.9);
     plane.rotateX(-Math.PI / 2);
@@ -162,19 +235,24 @@ export class WakeSystem {
       transparent: true,
       opacity: 0.92,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      vertexColors: true,
-      toneMapped: false,
+      blending: THREE.NormalBlending,
     });
+    useInstanceFadeAsAlpha(material);
     this.hullWake = new THREE.InstancedMesh(plane, material, this.hullCapacity);
     this.hullWake.count = 0;
+    // Per-instance colour carries each decal's fade. Creating the attribute
+    // up front lets the first compiled program include it.
+    this.hullWake.setColorAt(0, this.scratchColor.setRGB(0, 0, 0));
     this.hullWake.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.hullWake.frustumCulled = false;
     this.hullWake.renderOrder = 4;
     this.group.add(this.hullWake);
 
-    this.propWake = new THREE.InstancedMesh(plane.clone(), material.clone(), this.propCapacity);
+    const propMaterial = material.clone();
+    useInstanceFadeAsAlpha(propMaterial);
+    this.propWake = new THREE.InstancedMesh(plane.clone(), propMaterial, this.propCapacity);
     this.propWake.count = 0;
+    this.propWake.setColorAt(0, this.scratchColor.setRGB(0, 0, 0));
     this.propWake.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.propWake.frustumCulled = false;
     this.propWake.renderOrder = 4;
@@ -189,12 +267,12 @@ export class WakeSystem {
       transparent: true,
       opacity: 0.92,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      toneMapped: false,
-      vertexColors: true,
+      blending: THREE.NormalBlending,
     });
+    useInstanceFadeAsAlpha(splashMaterial);
     this.splashRings = new THREE.InstancedMesh(splashPlane, splashMaterial, splashCapacity);
     this.splashRings.count = 0;
+    this.splashRings.setColorAt(0, this.scratchColor.setRGB(0, 0, 0));
     this.splashRings.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.splashRings.frustumCulled = false;
     this.splashRings.renderOrder = 6;
@@ -204,8 +282,10 @@ export class WakeSystem {
     const foamMaterial = splashMaterial.clone();
     foamMaterial.map = this.foam;
     foamMaterial.opacity = 0.72;
+    useInstanceFadeAsAlpha(foamMaterial);
     this.splashFoam = new THREE.InstancedMesh(splashPlane.clone(), foamMaterial, foamCapacity);
     this.splashFoam.count = 0;
+    this.splashFoam.setColorAt(0, this.scratchColor.setRGB(0, 0, 0));
     this.splashFoam.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.splashFoam.frustumCulled = false;
     this.splashFoam.renderOrder = 5;
@@ -224,7 +304,6 @@ export class WakeSystem {
     this.particleGeometry.setAttribute("particleOpacity", new THREE.BufferAttribute(this.particleOpacities, 1));
     const particleMaterial = new THREE.ShaderMaterial({
       uniforms: {
-        pointTexture: { value: this.foam },
         sprayColor: { value: new THREE.Color(0xdffaff) },
       },
       vertexShader: `
@@ -239,22 +318,22 @@ export class WakeSystem {
         }
       `,
       fragmentShader: `
-        uniform sampler2D pointTexture;
         uniform vec3 sprayColor;
         varying float vOpacity;
         void main() {
-          vec4 spray = texture2D(pointTexture, gl_PointCoord);
-          float softEdge = 1.0 - smoothstep(0.68, 1.0, length(gl_PointCoord - 0.5) * 2.0);
-          float alpha = spray.a * softEdge * vOpacity;
+          // A droplet cloud: dense core, soft edge.
+          float radius = length(gl_PointCoord - 0.5) * 2.0;
+          float alpha = (1.0 - smoothstep(0.1, 1.0, radius)) * vOpacity * 0.85;
           if (alpha < 0.015) discard;
-          gl_FragColor = vec4(sprayColor * (0.78 + spray.rgb * 0.36), alpha);
+          gl_FragColor = vec4(sprayColor, alpha);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
       transparent: true,
       depthWrite: false,
       depthTest: true,
-      blending: THREE.AdditiveBlending,
-      toneMapped: false,
+      blending: THREE.NormalBlending,
     });
     this.particlePoints = new THREE.Points(this.particleGeometry, particleMaterial);
     this.particlePoints.frustumCulled = false;
@@ -295,8 +374,32 @@ export class WakeSystem {
             heading: physics.heading,
             born: time,
             strength: emission.hullStrength,
+            driftX: 0,
+            driftZ: 0,
+            bow: false,
           });
         });
+        if (speed > BOW_WAVE_MIN_SPEED) {
+          // Each bow sheds a wave that peels away from the track at the
+          // Kelvin angle, drawing the V that marks a displacement hull.
+          const direction = Math.sign(physics.telemetry.forwardSpeed) || 1;
+          const spread = Math.min(1.5, 0.34 * speed);
+          const bowStrength = emission.hullStrength * THREE.MathUtils.smoothstep(speed, BOW_WAVE_MIN_SPEED, 3.4);
+          [-1, 1].forEach((side) => {
+            this.hullSamples.unshift({
+              position: physics.position
+                .clone()
+                .addScaledVector(right, side * 1.95)
+                .addScaledVector(physics.forward, direction * 3.3),
+              heading: physics.heading + side * direction * 0.34,
+              born: time,
+              strength: bowStrength,
+              driftX: right.x * side * spread,
+              driftZ: right.z * side * spread,
+              bow: true,
+            });
+          });
+        }
       }
       if (emission.emitProp) {
         this.propSamples.unshift({
@@ -304,13 +407,16 @@ export class WakeSystem {
           heading: physics.heading,
           born: time,
           strength: emission.propStrength,
+          driftX: 0,
+          driftZ: 0,
+          bow: false,
         });
       }
       this.hullSamples.length = Math.min(this.hullSamples.length, this.hullCapacity);
       this.propSamples.length = Math.min(this.propSamples.length, this.propCapacity);
     }
 
-    const sprayRate = Math.max(0, speed - 3.2) * (1.1 + Math.abs(controls.rudder) * 0.7);
+    const sprayRate = bowSprayRate(speed, controls.rudder);
     this.spawnRemainder += sprayRate * delta;
     while (this.spawnRemainder >= 1) {
       this.spawnBowParticle(physics, speed);
@@ -326,6 +432,26 @@ export class WakeSystem {
     this.lastVisualUpdate = time;
     this.updateInstances(this.hullWake, this.hullSamples, time, false);
     this.updateInstances(this.propWake, this.propSamples, time, true);
+  }
+
+  /**
+   * Foam and spray are lit surfaces: they dim at dusk and take on moonlight
+   * instead of glowing at a fixed brightness.
+   */
+  setEnvironment(palette: EnvironmentPalette): void {
+    const red = palette.ambientColor[0] * 1.1 + palette.lightColor[0] * 0.24;
+    const green = palette.ambientColor[1] * 1.1 + palette.lightColor[1] * 0.24;
+    const blue = palette.ambientColor[2] * 1.1 + palette.lightColor[2] * 0.24;
+    if (Math.abs(red - this.litColor.r) + Math.abs(green - this.litColor.g) + Math.abs(blue - this.litColor.b) < 1e-4) {
+      return;
+    }
+    this.litColor.setRGB(red, green, blue, THREE.LinearSRGBColorSpace);
+    [this.hullWake, this.propWake, this.splashRings, this.splashFoam].forEach((mesh) => {
+      (mesh.material as THREE.MeshBasicMaterial).color.copy(this.litColor);
+    });
+    ((this.particlePoints.material as THREE.ShaderMaterial).uniforms.sprayColor.value as THREE.Color).copy(
+      this.litColor,
+    );
   }
 
   splash(position: THREE.Vector3, intensity = 1): void {
@@ -437,17 +563,31 @@ export class WakeSystem {
       const sample = samples[index];
       const age = time - sample.born;
       const normalized = Math.min(1, age / life);
-      const width = (prop ? 1.15 : 0.92) + normalized * (prop ? 2.75 : 2.25);
-      const length = (prop ? 1.75 : 1.55) + normalized * 2.9;
-      const oceanHeight = this.ocean.sample(sample.position.x, sample.position.z).height;
+      const width = sample.bow
+        ? 0.5 + normalized * 1.5
+        : (prop ? 1.15 : 0.92) + normalized * (prop ? 2.75 : 2.25);
+      const length = sample.bow ? 2.1 + normalized * 2.6 : (prop ? 1.75 : 1.55) + normalized * 2.9;
+      // The diverging wave slows as it spreads: integrate a decaying drift.
+      const travelled = (1 - Math.exp(-age * 0.3)) / 0.3;
       this.scratchPosition.copy(sample.position);
+      this.scratchPosition.x += sample.driftX * travelled;
+      this.scratchPosition.z += sample.driftZ * travelled;
+      const oceanHeight = this.ocean.sample(this.scratchPosition.x, this.scratchPosition.z).height;
       this.scratchPosition.y = oceanHeight + 0.11;
-      this.quaternion.setFromAxisAngle(this.yAxis, sample.heading);
-      this.scale.set(width, 1, length);
+      // Many decals overlap along a track. Giving each its own turn, size and
+      // weight makes the sum read as churned, patchy foam, not a painted band.
+      const grainA = fract(Math.sin(sample.born * 91.7 + sample.position.x * 3.1) * 43758.5453);
+      const grainB = fract(Math.sin(sample.born * 37.3 + sample.position.z * 5.7) * 24634.6345);
+      this.quaternion.setFromAxisAngle(this.yAxis, sample.heading + (grainA - 0.5) * (sample.bow ? 0.3 : 1.1));
+      this.scale.set(width * (0.8 + grainB * 0.5), 1, length * (0.8 + grainA * 0.45));
       this.matrix.compose(this.scratchPosition, this.quaternion, this.scale);
       mesh.setMatrixAt(index, this.matrix);
-      const fade = Math.pow(Math.max(0, 1 - normalized), 1.25);
-      const brightness = fade * (0.55 + sample.strength * 0.45);
+      // Fresh foam is dense and collapses quickly; a faint slick lingers.
+      const fresh = Math.exp(-age * (sample.bow ? 1.1 : prop ? 0.75 : 0.55));
+      const lingering = Math.pow(Math.max(0, 1 - normalized), 1.6) * 0.3;
+      const fade = fresh * 0.7 + lingering;
+      const brightness =
+        fade * (0.45 + sample.strength * 0.55) * (0.45 + grainB * 1.1) * (sample.bow ? WAKE_LAYER_GAIN * 0.8 : WAKE_LAYER_GAIN);
       mesh.setColorAt(index, this.scratchColor.setRGB(brightness * 0.82, brightness * 0.97, brightness));
     }
     mesh.instanceMatrix.needsUpdate = true;

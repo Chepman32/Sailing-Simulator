@@ -33,6 +33,7 @@ export class SailSystem {
   private readonly uniforms: SailUniforms[] = [];
   private readonly sails: SailNode[] = [];
   private bend = 0;
+  private swing = 0;
 
   constructor(model: THREE.Object3D) {
     model.updateMatrixWorld(true);
@@ -121,7 +122,7 @@ export class SailSystem {
         };
         material.customProgramCacheKey = () => "deformable-sail-v3";
         if (material instanceof THREE.MeshStandardMaterial) {
-          material.roughness = 0.72;
+          material.roughness = 0.82;
           material.metalness = 0;
           material.side = THREE.DoubleSide;
           material.transparent = false;
@@ -134,12 +135,28 @@ export class SailSystem {
     });
   }
 
-  update(time: number, apparentWindAngle: number, apparentWindSpeed: number, trim: number, delta: number): void {
-    const side = Math.sign(apparentWindAngle || 1);
-    const targetBend = side * Math.min(0.78, apparentWindSpeed * 0.028) * trim;
+  /**
+   * @param leewardSide +1 when the wind fills the sails toward starboard.
+   * @param sheetAngle Boom angle off the centreline in radians.
+   * @param luff 0 drawing … 1 flogging head to wind.
+   */
+  update(
+    time: number,
+    leewardSide: number,
+    apparentWindSpeed: number,
+    sheetAngle: number,
+    luff: number,
+    trim: number,
+    delta: number,
+  ): void {
+    const side = leewardSide >= 0 ? 1 : -1;
+    const drawing = 1 - luff;
+    // A drawing sail bellies to leeward in proportion to the pressure on it;
+    // a luffing sail goes slack and shakes.
+    const targetBend = side * Math.min(0.82, apparentWindSpeed * 0.03) * (0.35 + trim * 0.65) * drawing;
     this.bend = damp(this.bend, targetBend, 3.4, delta);
-    const luff = Math.abs(apparentWindAngle) < 0.52 || trim < 0.3;
-    const flutter = luff ? Math.min(0.13, apparentWindSpeed * 0.008) : 0.006;
+    this.swing = damp(this.swing, side * Math.min(sheetAngle, 1.25) * 0.26, 2.6, delta);
+    const flutter = Math.min(0.14, apparentWindSpeed * 0.009) * luff + 0.006;
     this.uniforms.forEach((uniforms) => {
       uniforms.time.value = time;
       uniforms.bend.value = this.bend;
@@ -148,7 +165,7 @@ export class SailSystem {
     this.sails.forEach(({ object, baseRotationY, allowRotation }, index) => {
       if (!allowRotation) return;
       const delay = 1 - index * 0.08;
-      object.rotation.y = baseRotationY + side * trim * 0.18 * delay;
+      object.rotation.y = baseRotationY + this.swing * delay;
     });
   }
 }

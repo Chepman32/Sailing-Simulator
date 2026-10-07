@@ -76,13 +76,13 @@ export class CameraController {
       this.desiredPosition.y = Math.max(this.desiredPosition.y, waterHeight + 0.65);
       const spring = this.mode === "chase" ? 4.8 : 3.1;
       this.camera.position.lerp(this.desiredPosition, 1 - Math.exp(-spring * delta));
-      this.lookTarget.copy(focus).addScaledVector(physics.forward, Math.min(6, Math.abs(physics.telemetry.forwardSpeed) * 0.25));
+      this.lookTarget.copy(focus).addScaledVector(physics.forward, Math.min(5, Math.abs(physics.telemetry.forwardSpeed) * 0.7));
       this.lookTarget.y += 1.35;
       this.lookTarget.y += clamp(-this.pitch - 0.02, 0, 0.22) * distance * 0.9;
       this.smoothedTarget.lerp(this.lookTarget, 1 - Math.exp(-5.5 * delta));
     }
     this.camera.lookAt(this.smoothedTarget);
-    const targetFov = this.mode === "helm" ? 64 : 50 + Math.min(10, Math.abs(physics.telemetry.forwardSpeed) * 0.28);
+    const targetFov = this.mode === "helm" ? 64 : 50 + Math.min(9, Math.abs(physics.telemetry.forwardSpeed) * 1.15);
     this.camera.fov = damp(this.camera.fov, targetFov, 2.6, delta);
     this.camera.updateProjectionMatrix();
   }

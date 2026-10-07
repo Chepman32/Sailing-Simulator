@@ -110,21 +110,27 @@ export class AudioSystem {
     }
   }
 
-  update(delta: number, speed: number, throttle: number, apparentWind: number): void {
+  /**
+   * @param speed Hull speed through the water in m/s.
+   * @param shaft Signed propeller shaft speed as a fraction of maximum.
+   * @param apparentWind Apparent wind speed in m/s.
+   */
+  update(delta: number, speed: number, shaft: number, apparentWind: number): void {
+    const throttle = shaft;
     if (!this.context || this.context.state !== "running") return;
     this.updateElapsed += delta;
     if (this.updateElapsed < 0.05) return;
     this.updateElapsed = 0;
     const now = this.context.currentTime;
-    const rpm = this.engineRunning ? clamp(Math.abs(throttle) * 0.78 + speed / 44, 0, 1.25) : 0;
+    const rpm = this.engineRunning ? clamp(Math.abs(throttle) * 0.92 + speed / 60, 0, 1.25) : 0;
     this.engineLow?.frequency.setTargetAtTime(88 + rpm * 112, now, 0.12);
     this.engineHigh?.frequency.setTargetAtTime(176 + rpm * 224, now, 0.1);
     this.engineLowGain?.gain.setTargetAtTime(Math.abs(throttle) < 0.02 ? 0.085 : 0.08 + rpm * 0.12, now, 0.15);
     this.engineHighGain?.gain.setTargetAtTime(Math.abs(throttle) < 0.02 ? 0.028 : 0.025 + rpm * 0.06, now, 0.12);
     this.engineNoiseGain?.gain.setTargetAtTime(Math.abs(throttle) < 0.02 ? 0.024 : 0.022 + rpm * 0.055, now, 0.14);
-    this.waveGain?.gain.setTargetAtTime(0.24 + clamp(speed / 28, 0, 1) * 0.2, now, 0.3);
+    this.waveGain?.gain.setTargetAtTime(0.24 + clamp(speed / 7, 0, 1) * 0.2, now, 0.3);
     this.windGain?.gain.setTargetAtTime(0.1 + clamp(apparentWind / 18, 0, 1) * 0.17, now, 0.35);
-    this.hullGain?.gain.setTargetAtTime(clamp(speed / 18, 0, 1) * 0.18, now, 0.18);
+    this.hullGain?.gain.setTargetAtTime(clamp(speed / 6, 0, 1) * 0.18, now, 0.18);
   }
 
   splash(intensity = 1): void {

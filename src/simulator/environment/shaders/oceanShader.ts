@@ -1,0 +1,351 @@
+import {
+  ISLAND_DEFINITIONS,
+  OPEN_WATER_DEPTH,
+  SHELF_SLOPE,
+  SHORE_DEPTH,
+  WATERLINE_RADIAL,
+} from "../IslandMath";
+import { OCEAN_DETAIL_WAVES, OCEAN_WAVES } from "../OceanMath";
+import { SKY_FUNCTIONS, SKY_UNIFORM_DECLARATIONS } from "./skyShader";
+
+/**
+ * Ocean surface shaders.
+ *
+ * Vertex stage: displaces a camera-focused grid with the shared Gerstner
+ * spectrum from OceanMath, so the rendered surface is the surface physics
+ * samples.
+ *
+ * Fragment stage: rebuilds the surface slope analytically per pixel from the
+ * same spectrum plus a capillary detail spectrum, then shades it as water:
+ * Fresnel reflection of the shared analytic sky, a GGX sun/moon glitter path
+ * whose width follows the unresolved wave energy, depth-dependent body colour
+ * from the island bathymetry, forward scattering through wave crests,
+ * whitecaps, shore wash, and an exact fade into the sky's horizon.
+ */
+
+/**
+ * A wave is displaced only where the local grid cell is smaller than these
+ * fractions of its wavelength; between them it fades out.
+ */
+export const RESOLVED_CELL_FRACTION = 0.18;
+export const UNRESOLVED_CELL_FRACTION = 0.42;
+/** Distance from the camera at which the surface has fully become horizon. */
+export const HORIZON_FADE_START = 520;
+export const HORIZON_FADE_END = 860;
+
+function glsl(value: number): string {
+  return Number.isInteger(value) ? `${value}.0` : value.toFixed(6);
+}
+
+function unit(x: number, z: number): [number, number] {
+  const length = Math.hypot(x, z) || 1;
+  return [x / length, z / length];
+}
+
+const displacementCalls = OCEAN_WAVES.map((wave) => {
+  const [dx, dz] = unit(wave.directionX, wave.directionZ);
+  return `    offset += gerstnerOffset(vec2(${glsl(dx)}, ${glsl(dz)}), ${glsl(wave.amplitude)}, ${glsl(
+    wave.wavelength,
+  )}, ${glsl(wave.speed)}, ${glsl(wave.steepness)}, worldBase.xz, cellSize);`;
+}).join("\n");
+
+const maximumFold = OCEAN_WAVES.reduce(
+  (total, wave) => total + wave.steepness * wave.amplitude * ((Math.PI * 2) / wave.wavelength),
+  0,
+);
+
+const swellCalls = OCEAN_WAVES.map((wave) => {
+  const [dx, dz] = unit(wave.directionX, wave.directionZ);
+  return `    swellWave(vec2(${glsl(dx)}, ${glsl(dz)}), ${glsl(wave.amplitude)}, ${glsl(wave.wavelength)}, ${glsl(
+    wave.speed,
+  )}, ${glsl(wave.steepness)}, base, footprint, slope, fold, lostVariance);`;
+}).join("\n");
+
+const detailCalls = OCEAN_DETAIL_WAVES.map((wave, index) => {
+  const [dx, dz] = unit(wave.directionX, wave.directionZ);
+  return `    detailWave(vec2(${glsl(dx)}, ${glsl(dz)}), ${glsl(wave.slope)}, ${glsl(wave.wavelength)}, ${glsl(
+    wave.speed,
+  )}, ${glsl(index * 1.7)}, base, footprint, gust, warp, slope, lostVariance);`;
+}).join("\n");
+
+const islandDistanceCalls = ISLAND_DEFINITIONS.map(
+  (island, index) =>
+    `    nearest = min(nearest, islandDistance(position, vec2(${glsl(island.centerX)}, ${glsl(
+      island.centerZ,
+    )}), ${glsl(island.beachRadius)}, ${glsl(island.scaleZ)}, ${glsl(index)}));`,
+).join("\n");
+
+export const oceanVertexShader = /* glsl */ `
+  uniform float uTime;
+  attribute float cellSpacing;
+  varying vec3 vWorldPosition;
+  varying vec2 vBase;
+
+  const float OCEAN_PI = 3.141592653589793;
+
+  vec3 gerstnerOffset(
+    vec2 direction, float amplitude, float wavelength, float speed, float steepness, vec2 base, float cellSize
+  ) {
+    float k = 2.0 * OCEAN_PI / wavelength;
+    float omega = sqrt(9.81 * k) * speed;
+    float phase = k * dot(direction, base) - omega * uTime;
+    float cosine = cos(phase);
+    // Cells too coarse for this wavelength would alias it, so it flattens
+    // there and the fragment stage keeps shading it.
+    float resolved = 1.0 - smoothstep(
+      wavelength * ${glsl(RESOLVED_CELL_FRACTION)}, wavelength * ${glsl(UNRESOLVED_CELL_FRACTION)}, cellSize
+    );
+    return resolved * vec3(
+      direction.x * steepness * amplitude * cosine,
+      amplitude * sin(phase),
+      direction.y * steepness * amplitude * cosine
+    );
+  }
+
+  void main() {
+    vec3 worldBase = (modelMatrix * vec4(position, 1.0)).xyz;
+    vec3 offset = vec3(0.0);
+    float cellSize = cellSpacing;
+${displacementCalls}
+    vec3 world = worldBase + offset;
+    vWorldPosition = world;
+    vBase = worldBase.xz;
+    gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
+  }
+`;
+
+export const oceanFragmentShader = /* glsl */ `
+  ${SKY_UNIFORM_DECLARATIONS}
+  uniform vec3 uDeepColor;
+  uniform vec3 uShallowColor;
+  uniform vec3 uSandColor;
+  uniform vec3 uScatterColor;
+  uniform vec3 uLightColor;
+  uniform vec3 uAmbientColor;
+  uniform float uTime;
+  uniform float uFoamDensity;
+  uniform float uDetail;
+  uniform vec3 uVesselPosition;
+  uniform vec2 uVesselForward;
+  varying vec3 vWorldPosition;
+  varying vec2 vBase;
+
+  const float OCEAN_PI = 3.141592653589793;
+  const float MAX_FOLD = ${glsl(maximumFold)};
+
+  ${SKY_FUNCTIONS}
+
+  // Shared displacement spectrum, evaluated per pixel for a crisp normal.
+  void swellWave(
+    vec2 direction, float amplitude, float wavelength, float speed, float steepness,
+    vec2 base, float footprint, inout vec2 slope, inout float fold, inout float lostVariance
+  ) {
+    float k = 2.0 * OCEAN_PI / wavelength;
+    float omega = sqrt(9.81 * k) * speed;
+    float phase = k * dot(direction, base) - omega * uTime;
+    float resolved = 1.0 - smoothstep(wavelength * 0.12, wavelength * 0.36, footprint);
+    float peakSlope = amplitude * k;
+    slope += direction * peakSlope * cos(phase) * resolved;
+    fold += steepness * peakSlope * sin(phase) * resolved;
+    lostVariance += 0.5 * peakSlope * peakSlope * (1.0 - resolved * resolved);
+  }
+
+  // Capillary detail: shading only. Energy that falls below the pixel
+  // footprint is not dropped; it widens the specular lobe instead.
+  void detailWave(
+    vec2 direction, float peakSlope, float wavelength, float speed, float seed,
+    vec2 base, float footprint, float gust, float warp, inout vec2 slope, inout float lostVariance
+  ) {
+    float k = 2.0 * OCEAN_PI / wavelength;
+    float omega = sqrt(9.81 * k) * speed;
+    // A slow phase warp bends the crest lines so short waves never read as
+    // ruled, parallel stripes.
+    float phase = k * dot(direction, base) - omega * uTime + seed + warp * (1.0 + seed * 0.21);
+    float resolved = 1.0 - smoothstep(wavelength * 0.12, wavelength * 0.36, footprint);
+    float strength = peakSlope * gust;
+    slope += direction * strength * cos(phase) * resolved;
+    lostVariance += 0.5 * strength * strength * (1.0 - resolved * resolved);
+  }
+
+  // Capillary ripples: the gradient of drifting value noise. featureSize is
+  // the approximate ripple spacing in metres.
+  void rippleLayer(
+    vec2 position, float featureSize, float peakSlope, float footprint, float gust,
+    inout vec2 slope, inout float lostVariance
+  ) {
+    float resolved = 1.0 - smoothstep(featureSize * 0.2, featureSize * 0.6, footprint);
+    float strength = peakSlope * gust;
+    if (resolved > 0.001) {
+      const float STEP = 0.3;
+      float centre = skyNoise(position);
+      vec2 gradient = vec2(skyNoise(position + vec2(STEP, 0.0)) - centre, skyNoise(position + vec2(0.0, STEP)) - centre);
+      slope += gradient * (strength * resolved / STEP);
+    }
+    lostVariance += 0.25 * strength * strength * (1.0 - resolved * resolved);
+  }
+
+  float islandDistance(vec2 position, vec2 center, float beachRadius, float scaleZ, float index) {
+    vec2 local = vec2(position.x - center.x, (position.y - center.y) / scaleZ);
+    float angle = atan(local.y, local.x);
+    float edge = 1.0
+      + sin(angle * 3.0 + index * 1.7) * 0.038
+      + sin(angle * 7.0 - index * 0.9) * 0.023
+      + cos(angle * 11.0 + index * 0.6) * 0.012;
+    return length(local) - beachRadius * edge * ${glsl(WATERLINE_RADIAL)};
+  }
+
+  // Metres from the rendered waterline of the nearest island.
+  float shoreDistance(vec2 position) {
+    float nearest = 1.0e5;
+${islandDistanceCalls}
+    return nearest;
+  }
+
+  void main() {
+    vec2 base = vBase;
+    vec3 toCamera = cameraPosition - vWorldPosition;
+    float viewDistance = length(toCamera);
+    vec3 viewDirection = toCamera / max(viewDistance, 0.001);
+    float footprint = max(length(dFdx(base)), length(dFdy(base)));
+
+    // Wind gusts travel across the water as darker, rougher patches.
+    float gustNoise = skyNoise(base * 0.011 + vec2(uTime * 0.035, uTime * 0.021));
+    float gust = 0.68 + 0.74 * gustNoise;
+
+    vec2 slope = vec2(0.0);
+    float fold = 0.0;
+    float lostVariance = 0.0;
+${swellCalls}
+    if (uDetail > 0.2) {
+      float warp = skyNoise(base * 0.085 + vec2(uTime * 0.02, 3.7)) * 5.5;
+${detailCalls}
+      rippleLayer(base * 2.1 + uTime * vec2(0.52, 0.29), 0.48, 0.085, footprint, gust, slope, lostVariance);
+      if (uDetail > 0.6) {
+        rippleLayer(base * 5.7 - uTime * vec2(0.38, 0.71), 0.18, 0.06, footprint, gust, slope, lostVariance);
+      }
+    } else {
+      lostVariance += 0.006;
+    }
+
+    vec3 normal = normalize(vec3(-slope.x, 1.0, -slope.y));
+    float nDotV = clamp(dot(normal, viewDirection), 0.02, 1.0);
+    float roughness = clamp(sqrt(0.0014 + lostVariance * 2.0), 0.035, 0.42);
+
+    // --- Reflection -------------------------------------------------------
+    float fresnel = 0.02 + 0.98 * pow(1.0 - nDotV, 5.0);
+    // Rough distant water reflects a blur of sky from higher up than a mirror
+    // would, which is why a real sea horizon is darker than the sky above it.
+    fresnel *= 1.0 - roughness * 0.55;
+    vec3 reflected = reflect(-viewDirection, normal);
+    reflected.y = abs(reflected.y) + roughness * 0.55;
+    reflected = normalize(reflected);
+    vec3 reflection = skyAtmosphere(reflected);
+    if (uDetail > 0.6) {
+      // Clouds are mirrored through a partly calmed normal: the full ripple
+      // field would smear them into streaks, where the eye expects shapes.
+      vec3 calmNormal = normalize(mix(normal, vec3(0.0, 1.0, 0.0), 0.5));
+      vec3 calmReflected = reflect(-viewDirection, calmNormal);
+      calmReflected.y = abs(calmReflected.y) + 0.02;
+      vec4 clouds = skyClouds(normalize(calmReflected), 0.0);
+      reflection = mix(reflection, clouds.rgb, clouds.a * 0.85);
+    }
+
+    // --- Water body -------------------------------------------------------
+    float shore = shoreDistance(base);
+    float depth = min(${glsl(OPEN_WATER_DEPTH)}, ${glsl(SHORE_DEPTH)} + max(shore, 0.0) * ${glsl(SHELF_SLOPE)});
+    float shallow = exp(-depth * 0.2);
+    float bottom = exp(-depth * 0.85);
+    float broad = skyNoise(base * 0.045 + vec2(uTime * 0.012, -uTime * 0.009));
+    vec3 body = mix(uDeepColor, uShallowColor, clamp(shallow + (broad - 0.5) * 0.06, 0.0, 1.0));
+    body = mix(body, uSandColor, bottom * 0.62);
+    float lightFacing = max(dot(normal, uLightDirection), 0.0);
+    vec3 irradiance = uAmbientColor + uLightColor * (0.35 + 0.65 * lightFacing) * 0.2;
+    body *= irradiance;
+
+    // Sunlight entering the back of a crest scatters toward the viewer.
+    float crest = clamp(fold / MAX_FOLD, -1.0, 1.0);
+    float throughWave = pow(max(dot(viewDirection, -normalize(uLightDirection + normal * 0.45)), 0.0), 3.0);
+    float scatter = throughWave * smoothstep(-0.15, 0.85, crest) * (1.0 - nDotV * 0.6);
+    body += uScatterColor * uLightColor * scatter * 0.085;
+
+    // Shallow-water caustic shimmer on the sand.
+    if (bottom > 0.02) {
+      float causticA = skyNoise(base * 0.9 + vec2(uTime * 0.31, uTime * 0.17));
+      float causticB = skyNoise(base * 1.3 - vec2(uTime * 0.23, uTime * 0.29));
+      float caustic = pow(1.0 - abs(causticA - causticB), 8.0);
+      body += uSandColor * uLightColor * caustic * bottom * 0.05;
+    }
+
+    vec3 color = mix(body, reflection, clamp(fresnel, 0.0, 1.0));
+
+    // --- Sun and moon glitter ---------------------------------------------
+    vec3 halfVector = normalize(viewDirection + uLightDirection);
+    float nDotH = max(dot(normal, halfVector), 0.0);
+    float nDotL = max(dot(normal, uLightDirection), 0.0);
+    float alpha2 = roughness * roughness;
+    alpha2 *= alpha2;
+    float ggxDenominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
+    float distribution = alpha2 / (OCEAN_PI * ggxDenominator * ggxDenominator);
+    float specularFresnel = 0.02 + 0.98 * pow(1.0 - max(dot(viewDirection, halfVector), 0.0), 5.0);
+    float visibility = 0.25 / max(mix(nDotL * nDotV, 1.0, 0.25), 0.05);
+    float specular = min(distribution * specularFresnel * visibility * nDotL, 48.0);
+    color += uLightColor * specular;
+
+    // --- Foam --------------------------------------------------------------
+    // Foam is sampled in a wind-aligned frame and stretched along the wind,
+    // the way real foam is drawn out into streaks.
+    vec2 windFrame = vec2(dot(base, vec2(0.851, 0.526)), dot(base, vec2(-0.526, 0.851)));
+    float foamFine = skyNoise(windFrame * vec2(3.4, 7.2) + vec2(uTime * 0.06, -uTime * 0.04));
+    float foamMedium = skyNoise(windFrame * vec2(0.9, 2.0) - vec2(uTime * 0.03, uTime * 0.02));
+    float foamTexture = foamFine * 0.55 + foamMedium * 0.45;
+    // Whitecaps break only on the steepest crests, mostly inside gusts: a
+    // 15-knot breeze leaves the sea flecked with white, not covered in it.
+    float breaking = crest * 0.86 + (gust - 1.0) * 0.2;
+    float whitecap = smoothstep(0.66, 1.0, breaking);
+    float foam = whitecap * whitecap * (0.5 + 0.5 * foamTexture) * 1.5;
+    // A frayed, speckled fringe dissolves around each patch.
+    foam += smoothstep(0.02, 0.5, whitecap) * smoothstep(0.58, 0.86, foamTexture) * 0.45;
+    foam += smoothstep(0.36, 0.8, breaking) * smoothstep(0.66, 0.9, foamTexture) * 0.16;
+    foam = min(foam, 0.88) * uFoamDensity;
+
+    // Shore wash: bands of foam running up the sand, then a wet swash line.
+    float washPhase = shore * 1.15 + uTime * 0.85 + foamMedium * 2.6;
+    float washBand = smoothstep(0.55, 0.98, sin(washPhase) * 0.5 + 0.5);
+    float surfZone = 1.0 - smoothstep(0.4, 5.5, shore);
+    float shoreFoam = washBand * surfZone * smoothstep(0.3, 0.75, foamTexture + surfZone * 0.35);
+    shoreFoam += (1.0 - smoothstep(0.0, 0.9, shore)) * smoothstep(0.25, 0.7, foamTexture) * 0.85;
+    foam = clamp(foam + shoreFoam * step(-1.5, shore), 0.0, 1.0);
+
+    vec3 foamColor = (uAmbientColor * 1.15 + uLightColor * (0.2 + 0.8 * nDotL) * 0.3) * vec3(0.94, 0.98, 1.0);
+    color = mix(color, foamColor, foam);
+
+    // --- Hull contact shadow ----------------------------------------------
+    vec2 vesselForward = normalize(uVesselForward);
+    vec2 vesselRight = vec2(vesselForward.y, -vesselForward.x);
+    vec2 relativeToVessel = vWorldPosition.xz - uVesselPosition.xz;
+    vec2 vesselSpace = vec2(dot(relativeToVessel, vesselRight), dot(relativeToVessel, vesselForward));
+    float portShape = max(abs((vesselSpace.x + 1.55) / 0.78), abs(vesselSpace.y / 4.5));
+    float starboardShape = max(abs((vesselSpace.x - 1.55) / 0.78), abs(vesselSpace.y / 4.5));
+    float hullShadow = max(1.0 - smoothstep(0.5, 1.0, portShape), 1.0 - smoothstep(0.5, 1.0, starboardShape));
+    color *= 1.0 - hullShadow * 0.34;
+
+    // --- Transparency -------------------------------------------------------
+    // Looking down into clear tropical water shows what swims beneath it;
+    // grazing views and deep water close up.
+    float clarity = mix(0.24, 0.05, smoothstep(0.025, 0.4, fresnel));
+    clarity = mix(clarity, 0.6, bottom * (1.0 - smoothstep(0.02, 0.3, fresnel)));
+    float alpha = clamp(1.0 - clarity + foam * 0.5 + hullShadow * 0.12, 0.3, 1.0);
+
+    // --- Aerial perspective -------------------------------------------------
+    vec3 horizonDirection = normalize(vec3(-viewDirection.x, 0.0, -viewDirection.z) + vec3(0.0, 1.0e-4, 0.0));
+    vec3 horizon = skyAtmosphere(horizonDirection);
+    float haze = 1.0 - exp(-pow(viewDistance * 0.0011, 1.6));
+    haze = max(haze * 0.9, smoothstep(${glsl(HORIZON_FADE_START)}, ${glsl(HORIZON_FADE_END)}, viewDistance));
+    color = mix(color, horizon, haze);
+    alpha = mix(alpha, 1.0, smoothstep(60.0, 260.0, viewDistance));
+
+    gl_FragColor = vec4(max(color, 0.0), alpha);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }
+`;

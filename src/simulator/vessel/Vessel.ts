@@ -22,6 +22,7 @@ export class Vessel {
   private readonly propellers: THREE.Mesh[] = [];
   private readonly generatedMeshes: THREE.Mesh[] = [];
   private readonly navigationLights = new THREE.Group();
+  private readonly navigationLamps = new THREE.Group();
   private propellerAngularVelocity = 0;
 
   constructor(
@@ -58,8 +59,8 @@ export class Vessel {
         if (material instanceof THREE.MeshStandardMaterial) {
           const name = material.name.toLowerCase();
           if (name.includes("cloth")) {
-            material.color.set(0xf5f0df);
-            material.roughness = 0.76;
+            material.color.set(0xdcd8ca);
+            material.roughness = 0.82;
             material.metalness = 0;
             material.side = THREE.DoubleSide;
             material.transparent = false;
@@ -69,21 +70,26 @@ export class Vessel {
             material.emissive.set(0x000000);
             material.emissiveIntensity = 0;
           } else if (name.includes("fiberglass")) {
-            material.color.set(0xf2f4f2);
-            material.roughness = 0.3;
-            material.metalness = 0.04;
+            // Polished gelcoat: a glossy dielectric that mirrors sky and sea.
+            material.color.set(0xd9dcdb);
+            material.roughness = 0.24;
+            material.metalness = 0;
+            material.envMapIntensity = 1.15;
           } else if (name.includes("stainless")) {
-            material.metalness = 0.88;
-            material.roughness = 0.2;
+            material.metalness = 1;
+            material.roughness = 0.16;
+            material.envMapIntensity = 1.3;
           } else if (name === "glass") {
-            material.color.set(0x173e4b);
+            // Tinted glazing shows mostly reflection at deck-level angles.
+            material.color.set(0x0c2a36);
             material.transparent = true;
-            material.opacity = 0.38;
-            material.roughness = 0.12;
-            material.metalness = 0.08;
+            material.opacity = 0.62;
+            material.roughness = 0.04;
+            material.metalness = 0;
+            material.envMapIntensity = 1.8;
             material.depthWrite = false;
           } else if (name.includes("rough_white")) {
-            material.color.set(0xe9e8e1);
+            material.color.set(0xcfcec7);
             material.roughness = 0.72;
           }
         }
@@ -109,15 +115,21 @@ export class Vessel {
     this.root.rotation.set(physics.pitch, physics.heading, -physics.roll, "YXZ");
     this.sailSystem.update(
       time,
-      physics.telemetry.apparentWindAngle,
+      physics.telemetry.leewardSide,
       physics.telemetry.apparentWindSpeed,
+      physics.telemetry.sheetAngle,
+      physics.telemetry.sailLuff,
       controls.sailTrim,
       delta,
     );
     this.rudders.forEach((rudder) => {
       rudder.rotation.y = -controls.rudder * 0.58;
     });
-    const targetAngularVelocity = propellerRpmForThrottle(controls.throttle) * Math.PI * 2 / 60;
+    // Follow the simulated shaft so the screws spool up and down with the
+    // engines instead of snapping to the lever position.
+    const shaft = physics.engineShaft;
+    const targetAngularVelocity =
+      Math.abs(shaft) < 0.001 ? 0 : Math.sign(shaft) * MAX_PROPELLER_RPM * Math.abs(shaft) * Math.PI * 2 / 60;
     this.propellerAngularVelocity = THREE.MathUtils.damp(
       this.propellerAngularVelocity,
       targetAngularVelocity,
@@ -130,6 +142,7 @@ export class Vessel {
       propeller.rotation.z += this.propellerAngularVelocity * delta * sideDirection;
     });
     this.navigationLights.visible = nightFactor > 0.18;
+    this.navigationLamps.visible = nightFactor > 0.18;
   }
 
   worldPoint(local: THREE.Vector3, target: THREE.Vector3): THREE.Vector3 {
@@ -181,5 +194,24 @@ export class Vessel {
     this.navigationLights.add(red, green, stern);
     this.navigationLights.visible = false;
     this.root.add(this.navigationLights);
+
+    // Visible lamp lenses. Their colours are brighter than white so the
+    // bloom pass gives each one a small coloured halo.
+    const lampGeometry = new THREE.SphereGeometry(0.055, 12, 8);
+    const lamps: Array<[THREE.PointLight, number, number, number]> = [
+      [red, 4.2, 0.16, 0.24],
+      [green, 0.22, 3.8, 1.2],
+      [stern, 2.6, 2.9, 3.3],
+    ];
+    lamps.forEach(([light, r, g, b]) => {
+      const material = new THREE.MeshBasicMaterial({ fog: false });
+      material.color.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
+      const lamp = new THREE.Mesh(lampGeometry, material);
+      lamp.position.copy(light.position);
+      this.navigationLamps.add(lamp);
+      this.generatedMeshes.push(lamp);
+    });
+    this.navigationLamps.visible = false;
+    this.root.add(this.navigationLamps);
   }
 }

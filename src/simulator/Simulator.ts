@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { AudioSystem } from "./audio/AudioSystem";
 import { CameraController } from "./camera/CameraController";
 import { AssetManager } from "./core/AssetManager";
+import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
 import { RenderLoop } from "./core/RenderLoop";
 import { EnvironmentSystem } from "./environment/EnvironmentSystem";
@@ -48,10 +49,12 @@ export class Simulator {
   private camera!: CameraController;
   private input!: InputController;
   private touch!: TouchControls;
+  private post!: PostProcessing;
   private audio!: AudioSystem;
   private loop!: RenderLoop;
   private resizeObserver?: ResizeObserver;
   private elapsed = 0;
+  private frameDelta = 1 / 60;
   private fps = 60;
   private status: SimulationSnapshot["status"] = "loading";
   private initialized = false;
@@ -104,7 +107,9 @@ export class Simulator {
       this.quality = new QualityManager(this.renderer, this.state.quality, (preset) => {
         this.state.quality = preset;
         this.environment?.setShadowMapSize(this.quality.settings.shadowMapSize);
+        this.environment?.setSkyDetail(this.quality.settings.skyDetail);
         this.ocean?.setQuality(this.quality.settings);
+        this.post?.setQuality(this.quality.settings);
         this.persistState();
       });
       this.state.quality = this.quality.current;
@@ -113,6 +118,7 @@ export class Simulator {
       this.environment = new EnvironmentSystem(this.scene, this.renderer, this.ocean);
       this.environment.setMode(this.state.lightingMode);
       this.environment.setShadowMapSize(this.quality.settings.shadowMapSize);
+      this.environment.setSkyDetail(this.quality.settings.skyDetail);
       this.islands = new IslandSystem(this.scene, this.assets);
       this.physics = new VesselPhysics(this.ocean, this.islands);
       this.vessel = new Vessel(this.scene, this.assets);
@@ -129,6 +135,7 @@ export class Simulator {
       );
       this.camera = new CameraController(this.canvas.clientWidth / Math.max(1, this.canvas.clientHeight), this.ocean);
       this.camera.setMode(this.state.cameraMode);
+      this.post = new PostProcessing(this.renderer, this.scene, this.camera.camera, this.quality.settings);
       this.input = new InputController(this.state.controls, () => this.reset());
       this.touch = new TouchControls(this.canvas, {
         orbit: (x, y) => this.camera.orbit(x, y),
@@ -243,6 +250,7 @@ export class Simulator {
     this.input?.dispose();
     this.audio?.dispose();
     this.wildlife?.dispose();
+    this.post?.dispose();
     this.wake?.dispose();
     this.vessel?.dispose();
     this.islands?.dispose();
@@ -265,24 +273,31 @@ export class Simulator {
   };
 
   private readonly update = (delta: number): void => {
+    this.frameDelta = delta;
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading);
     this.islands.update(this.elapsed);
     this.vessel.update(this.physics, this.state.controls, this.elapsed, delta, this.environmentState.nightFactor);
     this.wildlife.update(delta, this.physics);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics);
-    this.environmentState = this.environment.update(delta, this.camera.camera, this.physics.position);
+    this.environmentState = this.environment.update(
+      delta,
+      this.camera.camera,
+      this.physics.position,
+      this.elapsed,
+    );
+    this.wake.setEnvironment(this.environment.current.palette);
     this.audio.update(
       delta,
       Math.abs(this.physics.telemetry.forwardSpeed),
-      this.state.controls.throttle,
+      this.physics.telemetry.engineShaft,
       this.physics.telemetry.apparentWindSpeed,
     );
     this.hud.update(delta, () => this.snapshot());
   };
 
   private readonly render = (): void => {
-    this.renderer.render(this.scene, this.camera.camera);
+    this.post.render(this.frameDelta, this.elapsed);
   };
 
   private readonly onFps = (fps: number): void => {
@@ -296,6 +311,7 @@ export class Simulator {
     const height = Math.max(1, parent?.clientHeight ?? window.innerHeight);
     this.renderer.setSize(width, height, false);
     this.camera?.resize(width, height);
+    this.post?.setSize(width, height);
   };
 
   private snapshot(): SimulationSnapshot {
@@ -305,8 +321,8 @@ export class Simulator {
       depthMeters: telemetry?.depth ?? 18,
       headingDegrees: wrapDegrees(THREE.MathUtils.radToDeg(this.physics?.heading ?? 0)),
       heelDegrees: THREE.MathUtils.radToDeg(telemetry?.heel ?? 0),
-      apparentWindKnots: (telemetry?.apparentWindSpeed ?? 7.2) * 1.943844,
-      apparentWindAngle: THREE.MathUtils.radToDeg(telemetry?.apparentWindAngle ?? 0.6),
+      apparentWindKnots: (telemetry?.apparentWindSpeed ?? 8) * 1.943844,
+      apparentWindAngle: THREE.MathUtils.radToDeg(telemetry?.apparentWindAngle ?? 1),
       rudderDegrees: this.state.controls.rudder * 35,
       throttle: this.state.controls.throttle,
       sailTrim: this.state.controls.sailTrim,

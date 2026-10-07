@@ -4,11 +4,13 @@ An interactive React and Three.js tropical sailing simulator built for desktop a
 
 ## Features
 
-- GPU-displaced Gerstner ocean with a matching CPU sampler for buoyancy and surface effects
-- Force-based catamaran motion with ten buoyancy samples, engine thrust, sail force, drag, rudder torque, heel, and island collision
+- Physically shaded ocean: a shared six-wave Gerstner spectrum drives both the GPU surface and the CPU sampler, with per-pixel analytic normals, capillary detail, Fresnel sky reflection, a GGX sun and moon glitter path, crest scattering, whitecaps, shore wash, and bathymetry-driven shallow-water colour
+- Analytic sky with procedural clouds, a warm dusk, and image-based lighting captured from the same sky, so the yacht, islands, and water all agree
+- HDR rendering with multisampling, bloom on real light sources, filmic tone mapping, and a restrained lens finish; bypassed automatically on the low preset
+- Force-based catamaran: a real sail polar (no-go zone, fastest on a reach), gusting true wind, engine shafts that spool, propeller-race steering, lifting keels and leeway, heel to leeward, wave surge, damped heave, pitch and roll, and soft grounding in shoal water
 - Detailed local GLB yacht, palms, dolphins, sharks, whale, tropical fish, and seagulls
-- Twin-hull wake, independent propeller wash, bow spray, and pooled wildlife splash particles
-- Unified day/night lighting with depth-correct sun and moon, stars, navigation lights, and a moonlight path on the water
+- Twin-hull wake with diverging bow waves, independent propeller wash, bow spray, and pooled wildlife splash particles, all lit by the time of day
+- Unified day/night lighting with depth-correct sun and moon, stars, navigation lights with glowing lenses, and a moonlit glitter path on the water
 - Layered Web Audio for engine, waves, wind, hull water, and splashes
 - Chase, helm, orbit, and drone cameras with swipe, pinch, wheel, and double-tap gestures
 - Responsive semantic controls and automatic system-language selection across 30 languages

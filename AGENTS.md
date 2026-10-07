@@ -74,24 +74,33 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/math.ts` | Allocation-free scalar helpers |
 | `src/simulator/core/RenderLoop.ts` | Visibility-aware requestAnimationFrame loop with 60 Hz fixed-step accumulator |
 | `src/simulator/core/AssetManager.ts` | Manifest, parallel GLB loading, required/optional behavior, cloning, progress, disposal |
-| `src/simulator/core/QualityManager.ts` | Low/medium/high settings, DPR, shadows, ocean tessellation, adaptive quality |
+| `src/simulator/core/QualityManager.ts` | Low/medium/high settings, DPR, shadows, ocean tessellation and shader detail, post-processing switches, adaptive quality |
+| `src/simulator/core/PostProcessing.ts` | HDR scene target, bloom, lens finish, tone mapping; bypassed on the low preset |
 
 ### Environment
 
 | Path | Responsibility |
 | --- | --- |
-| `src/simulator/environment/OceanMath.ts` | CPU companion for shared Gerstner waves |
-| `src/simulator/environment/OceanSystem.ts` | GPU-displaced ocean, material shading, transparency, sun/moon glints, vessel shadow |
+| `src/simulator/environment/OceanMath.ts` | Shared Gerstner spectrum, shading-only detail spectrum, CPU sampler |
+| `src/simulator/environment/OceanGrid.ts` | Pure builder for the camera-focused grid and its per-vertex cell size |
+| `src/simulator/environment/OceanSystem.ts` | Ocean mesh, uniforms, whole-cell re-centring, quality changes |
+| `src/simulator/environment/shaders/oceanShader.ts` | Ocean GLSL generated from the shared spectra and island definitions |
+| `src/simulator/environment/shaders/skyShader.ts` | Analytic sky and clouds shared by the dome, the lighting capture, and ocean reflections |
+| `src/simulator/environment/SkyUniforms.ts` | Uniform objects shared by reference between sky and ocean |
 | `src/simulator/environment/EnvironmentMath.ts` | Pure day/night state derivation |
-| `src/simulator/environment/EnvironmentSystem.ts` | Sky, fog, exposure, sun, moon, stars, ambient/directional lighting |
-| `src/simulator/environment/IslandSystem.ts` | Terrain, palms, seabed, bathymetry, collision, avoidance, shore direction |
+| `src/simulator/environment/EnvironmentPalette.ts` | Pure scene-linear colour palette for day, dusk, and night |
+| `src/simulator/environment/WindMath.ts` | Pure, deterministic true-wind gusts and shifts |
+| `src/simulator/environment/EnvironmentSystem.ts` | Sky dome, image-based lighting capture, fog, exposure, sun, moon, stars, directional light |
+| `src/simulator/environment/IslandMath.ts` | Pure island definitions, bathymetry, coastline noise, terrain noise |
+| `src/simulator/environment/IslandSystem.ts` | Terrain, palms, seabed, collision, shore direction |
 
 ### Vessel
 
 | Path | Responsibility |
 | --- | --- |
 | `src/simulator/vessel/Vessel.ts` | Detailed yacht GLB normalization, materials, transform, nav lights, visual pose |
-| `src/simulator/vessel/VesselPhysics.ts` | Propeller and sail forces, drag, rudder torque, buoyancy, heave, pitch, roll, island collision |
+| `src/simulator/vessel/VesselPhysics.ts` | Engines, sails, windage, hull and keel hydrodynamics, rudders, seakeeping, grounding |
+| `src/simulator/vessel/SailAerodynamics.ts` | Pure sail lift/drag polar and automatic sheeting |
 | `src/simulator/vessel/SailSystem.ts` | Sail material and wind/trim deformation |
 | `src/simulator/vessel/WakeSystem.ts` | Twin hull tracks, prop wash, bow droplets, wildlife splash rings and foam patches |
 
@@ -198,10 +207,11 @@ The loop clamps a long frame to 50 ms, caps the accumulator at five fixed steps,
 4. update wildlife movement and animation mixers;
 5. rebuild visible wake instances at a throttled rate;
 6. update camera spring and FOV;
-7. derive and apply environment state;
-8. automate audio parameters;
-9. publish HUD state on its own cadence;
-10. render once.
+7. derive and apply environment state, and refresh the lighting capture when the time of day has moved;
+8. light the wake foam from the same palette;
+9. automate audio parameters;
+10. publish HUD state on its own cadence;
+11. render once through `PostProcessing`.
 
 Do not run physics from React renders, HUD timers, GLB animation clip events, or arbitrary pointer event frequency.
 
@@ -227,32 +237,35 @@ React receives immutable `SimulationSnapshot` values. A UI control must invoke a
 
 ## 9. Ocean system
 
-The ocean is a focused `1800 × 1800` meter grid. Vertex density is concentrated around the vessel so near-field waves receive more geometry without applying the same density at the horizon.
+The ocean is a focused `1800 × 1800` meter grid built by `OceanGrid.ts`. Its centre is a uniform lattice (about 1.25 m cells on high, 1.7 m on low) and the cells grow smoothly toward the horizon. The mesh is re-centred on the yacht in whole inner cells, so the dense lattice is locked to the world and never slides across the waves. Every vertex stores the size of its largest neighbouring cell; the vertex shader fades a wave out wherever the local cells can no longer resolve it.
 
-Four wave definitions in `OceanMath.ts` are the shared source for:
+Six wave definitions in `OceanMath.ts` (`OCEAN_WAVES`) are the shared source for:
 
 - GLSL Gerstner displacement;
+- the per-pixel analytic surface normal;
 - CPU height and normal sampling;
 - ten yacht buoyancy points;
 - wake and splash placement;
 - wildlife surface contact;
 - camera water-floor protection.
 
-If a wave parameter changes, verify GPU and CPU calculations still use the same direction, amplitude, wavelength, speed, steepness, phase convention, and world coordinates.
+They describe a moderate trade-wind sea aligned with the true wind. Every displaced wavelength stays above 5 m. If a wave parameter changes, verify GPU and CPU calculations still use the same direction, amplitude, wavelength, speed, steepness, phase convention, and world coordinates, and keep `maximumOceanSlope()` under the tested limit.
 
-The fragment shader combines:
+`OCEAN_DETAIL_WAVES` are shorter waves that only perturb the shading normal. They have no CPU companion on purpose: they are too small to move the yacht.
 
-- geometric wave normals;
-- procedural micro-normal detail;
-- Fresnel reflection;
-- tropical shallow/deep transmission colors;
-- broad low-cost color variation;
-- caustic hints;
-- sun or moon glints;
-- a broken night moonlight path;
-- crest foam;
-- a local shadow below both hulls;
-- distance/view-dependent alpha.
+`shaders/oceanShader.ts` generates both stages from those tables, so there is exactly one copy of each number. The fragment stage:
+
+- rebuilds the slope of all shared waves analytically per pixel, so normals are crisp regardless of tessellation;
+- adds the detail spectrum and two drifting capillary ripple layers, each faded against the pixel footprint, with the faded energy converted into specular roughness instead of being dropped;
+- reflects the shared analytic sky (and, on high, its clouds) with Schlick Fresnel;
+- draws the sun and moon glitter path with a GGX lobe whose width follows the unresolved wave energy;
+- colours the water body from the island bathymetry: deep blue offshore, turquoise over the shelf, sand showing through at the beach;
+- scatters sunlight forward through wave crests;
+- breaks whitecaps on the steepest crests inside gusts, and runs shore wash up each beach along the rendered, irregular waterline;
+- keeps a local contact shadow under both hulls;
+- fades into the sky's own horizon colour so sea and sky meet without a seam.
+
+All colours are scene-linear and the shader ends with the renderer's tone-mapping and colour-space chunks, so it renders identically with and without the HDR pipeline.
 
 The ocean material is transparent, depth-tested, and does not write depth. Its render order is `2`. Any transparent terrain below it must be deliberately ordered before the ocean.
 
@@ -260,25 +273,25 @@ Never return to CPU-deforming the full ocean grid. CPU work should remain limite
 
 ## 10. Vessel physics
 
-`VesselPhysics` is a purpose-built force model, not a generic rigid-body engine.
+`VesselPhysics` is a purpose-built force model, not a generic rigid-body engine. Surge, sway, and yaw are integrated from summed forces; heave, pitch, and roll are damped oscillators with the natural periods of a cruising catamaran. All tunable numbers are named constants at the top of the file.
 
-Current major parameters:
+Forces and moments, in the order they are computed each fixed step:
 
-- mass: `6200 kg`;
-- yaw inertia: `112000` in simulator units;
-- ten buoyancy points: bow, midship, and stern samples on both hulls;
-- true wind vector: `(6.8, 0, 4.2) m/s`;
-- stronger forward than reverse propeller force;
-- twin visual propellers counter-rotate, reverse with astern throttle, accelerate smoothly, idle visibly above 220 RPM, and reach exactly 600 RPM at full throttle;
-- quadratic forward drag;
-- strong lateral drag to limit unrealistic side-slip;
-- speed-dependent rudder effectiveness;
-- sail force based on apparent wind, trim, no-go attenuation, and projected lift;
-- shore avoidance before collision and hard water constraint at the beach boundary.
+- **True wind** from `WindMath.sampleWind`: about 8 m/s toward `(6.8, 0, 4.2)`, with deterministic gusts, lulls, and slow shifts. It is a closed-form function of simulation time, so integration stays reproducible at any step size.
+- **Sails** from `SailAerodynamics.solveSail`: the crew sheets the sail to the angle of attack the trim control asks for, limited by the tightest sheeting angle and by the shrouds. Lift and drag follow a real polar, so the yacht cannot sail closer than roughly 35° to the true wind, is fastest on a reach, and runs downwind as a drag device. "Sail trim" keeps its meaning: more trim, more power.
+- **Windage** on hulls and rig, which makes a stopped yacht drift and lets the bow fall off the wind.
+- **Engines**: the helm sets a shaft-speed target; the shafts spool up and down at finite rates. Thrust follows shaft speed squared and fades as the hull catches up with the propeller race. Bollard thrust is 6.8 kN ahead and 4.2 kN astern, for a top speed near 8–9 kn under power.
+- **Hull resistance**, quadratic plus a small linear term, rising in shoal water.
+- **Keels** as lifting foils: they resist leeway in proportion to boat speed, stall if overloaded, and cost induced drag. A slow yacht therefore slides sideways more than a fast one.
+- **Rudders** with authority from water flow, including the propeller race, so a burst of throttle turns a nearly stopped yacht. They also act as fixed fins that damp yaw.
+- **Seaway**: the slope of the water plane under the hulls surges and sways the yacht, so she slows climbing a wave and accelerates down its face.
+- **Grounding**: in very shallow water the keels drag through sand, the yacht stops without bouncing, and the sloping bottom eases her back toward deep water. `IslandSystem.constrainToWater` remains the final inelastic boundary.
 
-Buoyancy computes average surface height plus separate bow/stern and port/starboard averages. Heave uses a damped response to the moving water target. Pitch and roll align the yacht with the same sampled wave surface. Avoid directly setting yacht visual `y` from a different wave formula; that creates the appearance that the boat is hanging in the air.
+Sign conventions: positive pitch lowers the bow; positive roll lowers the starboard hull; `telemetry.apparentWindAngle` is the signed angle the wind comes *from* (0 = head to wind, positive = over the starboard side); `telemetry.leewardSide` is the side the sails fill toward. The yacht heels to leeward.
 
-Physics must remain finite. Any new force should be bounded, unit-tested, and stable at both 60 Hz and 120 Hz integration in the existing comparison test.
+Buoyancy samples ten points and derives the water plane under the hulls. Heave, pitch, and roll are driven toward that plane plus the steady trim caused by sail, engine, and turning loads. Avoid directly setting yacht visual `y` from a different wave formula; that creates the appearance that the boat is hanging in the air.
+
+Physics must remain finite. Any new force should be bounded, unit-tested, and stable at both 60 Hz and 120 Hz integration in the existing comparison test. The polar, top-speed, helm-sense, grounding, and seaway tests in `tests/unit/simulator.test.ts` are the acceptance criteria for retuning.
 
 ## 11. Yacht visual and sails
 
@@ -307,12 +320,16 @@ The wake is intentionally divided into separate effects:
 The current wake contract is:
 
 - hull tracks begin above `0.06 m/s`;
+- above about `1.1 m/s` each bow also sheds a diverging wave that drifts outward and slows, drawing the V of a displacement hull;
+- bow spray begins near `2.1 m/s` (`bowSprayRate`);
 - prop wash begins when absolute throttle is above `0.04`, even before the hull has accelerated;
 - track history samples after approximately `0.28 m` of movement;
 - a maximum time interval supplements distance sampling so stationary prop wash and very slow motion remain visible;
 - slow or stationary maximum interval is `0.55 s`; moving interval is `0.22 s`;
 - wake decals follow the current sampled ocean height plus a small surface offset;
-- wake and splash materials are additive, untone-mapped, and rendered after the ocean;
+- wake and splash decals are composited over the ocean with normal blending; each decal's fade is carried in its instance colour and moved into alpha by `useInstanceFadeAsAlpha`, so overlapping decals cannot blow out;
+- each decal gets its own turn, size, and weight, fresh foam collapses quickly and a faint slick lingers;
+- foam and spray are lit from the environment palette, so they dim at dusk and take on moonlight;
 - hull tracks live about 12 seconds; prop tracks about 8 seconds.
 
 Distance remains the primary spacing rule. The time fallback exists only to make active prop wash and slow-ahead foam visible; do not replace the distance rule with frame-dependent spawning.
@@ -325,12 +342,16 @@ A wildlife splash position must be an actual world-space water-contact position,
 
 Three island definitions provide center, beach radius, and elliptical Z scale. `IslandSystem.depthAt()` derives a shallow-water profile near each beach and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint, and direction back toward open water.
 
-The rendered island uses irregular radial geometry and a short submerged apron. The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
+Island definitions, bathymetry, coastline noise, and terrain noise live in the pure module `IslandMath.ts`. The ocean shader compiles the same definitions, so shore wash and shallow-water colour follow the rendered coast.
+
+The rendered island uses irregular radial geometry and a short submerged apron. Terrain triangles are wound counter-clockwise seen from above so the top face is the lit front face. Vegetation, dry grass, dunes, and wet sand come from low-frequency terrain noise.
+
+The palm asset is a row of five tree variants. `plantPalms` lifts each tree out of that row and plants it individually inside the vegetated zone; never place the whole asset group as one object, or the trees trail out to sea. All palms share one material per source material and one wind uniform, and sway in world space. The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
 
 Island constraints:
 
 - keep the visible terrain radius scale at or below the tested limit;
-- keep the hard collision boundary approximately two meters outside the nominal beach radius;
+- keep the hard collision boundary approximately two meters outside the nominal beach radius, and keep it inelastic;
 - render the transparent terrain before the transparent ocean;
 - do not add a wide opaque underwater disc;
 - keep beach color warm muted yellow, not pure white or neon yellow;
@@ -340,7 +361,17 @@ Island constraints:
 
 ## 14. Unified day and night environment
 
-`EnvironmentMath.deriveTimeOfDay()` produces a bounded state consumed by `EnvironmentSystem` and `OceanSystem`. One lighting mode drives sky, sun, moon, stars, fog, exposure, water colors, directional lights, ambient light, and navigation lights.
+`EnvironmentMath.deriveTimeOfDay()` produces a bounded state. `EnvironmentPalette.deriveEnvironmentPalette()` turns that state into every colour the scene uses, in scene-linear RGB: zenith, horizon, sun tint, dominant light, ambient light, cloud colours, and water colours, including a warm twilight as the sun crosses the horizon. This palette is the only place day, dusk, and night colours are defined.
+
+One analytic sky function (`shaders/skyShader.ts`) is evaluated by three consumers:
+
+- the visible sky dome, with procedural fair-weather clouds lit from the sun or moon;
+- the image-based-lighting capture, which `EnvironmentSystem` prefilters with `PMREMGenerator` and assigns to `scene.environment` so PBR materials are lit by, and reflect, the sky that is on screen (below the horizon the capture shows the sea);
+- the ocean, which reflects it and fades into its horizon.
+
+The capture is refreshed only when the night factor has moved, at most a few times per second during a day/night transition, and the previous target is disposed.
+
+Lighting: one directional light carries the palette's dominant light and casts a tight shadow frustum (about ±17 m) that follows the yacht for crisp self-shadowing; a weak hemisphere light lifts shadowed faces. There is no separate ambient light; ambient comes from the capture.
 
 Night requirements:
 
@@ -349,18 +380,24 @@ Night requirements:
 - moon core is depth-tested;
 - moon halo is soft and controlled;
 - small stars use varied low intensity and glow, not large flat dots;
-- moonlight creates a broken elongated reflection path on the water;
-- yacht navigation lights activate with night factor;
+- moonlight creates a broken elongated glitter path on the water;
+- yacht navigation lights and their lamp lenses activate with night factor;
 - no stale dark sky sector may remain after repeated day/night switching.
 
 Sun requirements:
 
 - the solar core passes the depth test;
 - a sail or mast can occlude it;
-- halo and rays must not be unconditionally drawn over foreground geometry;
+- the wide solar glow is part of the sky itself, so it is naturally behind all geometry;
 - avoid excessive sail transparency or emissive brightness that makes the sun appear through canvas.
 
-Do not independently set `scene.background`, fog, sky dome, ocean night, and exposure from multiple event handlers. Environment ownership is centralized.
+Do not independently set `scene.background`, fog, sky dome, ocean colours, lighting capture, and exposure from multiple event handlers. Environment ownership is centralized.
+
+### Presentation pipeline
+
+`PostProcessing` renders the scene into a multisampled half-float target, applies bloom only to pixels brighter than `BLOOM_THRESHOLD`, then runs one finishing pass: slight corner fringing, saturation, vignette, the renderer's ACES tone curve, the display transfer, and fine grain. On the low preset, or on a GPU that cannot render to half-float, the scene renders directly and every material tone-maps itself. Custom shaders must therefore output scene-linear colour and end with `#include <tonemapping_fragment>` and `#include <colorspace_fragment>`.
+
+Values above 1 are meaningful: the solar disc, sun glitter, and lamp lenses are deliberately brighter than white so they bloom. Do not mark such materials `toneMapped: false`.
 
 ## 15. Wildlife assets and validation
 
@@ -383,7 +420,7 @@ General motion rules:
 
 ### Dolphins
 
-Dolphins normally cruise rapidly and smoothly. A breach can start only with sufficiently fast forward motion and an expired cooldown. The state sequence is:
+Dolphins normally cruise rapidly and smoothly. A breach can start only when the yacht is making at least `DOLPHIN_BREACH_MIN_BOAT_SPEED` (about 6 kn, a realistic bow-riding speed) and the cooldown has expired. The state sequence is:
 
 `swim → approach → breach_ascent → airborne → reentry → splash → dive → swim`
 
@@ -510,11 +547,13 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 
 ## 20. Quality and performance
 
-| Preset | Max DPR | Ocean segments | Shadow map | Foam density | Wildlife multiplier/count |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Low | 1.0 | 96 | 512 | 0.45 | 1 |
-| Medium | 1.25 | 144 | 1024 | 0.70 | 2 |
-| High | 1.75 | 224 | 2048 | 0.90 | 2 |
+| Preset | Max DPR | Ocean segments | Shadow map | Foam density | Wildlife count | Ocean detail | Sky detail | HDR pipeline | Bloom | MSAA |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| Low | 1.0 | 96 | 512 | 0.45 | 1 | 0.30 | 0 | off | – | – |
+| Medium | 1.25 | 144 | 1024 | 0.70 | 2 | 0.55 | 1 | on | 0.20 | 2× |
+| High | 1.75 | 224 | 2048 | 0.90 | 2 | 1.00 | 1 | on | 0.26 | 4× |
+
+Ocean detail gates fragment work: above 0.2 the detail spectrum and one ripple layer are shaded; above 0.6 the second ripple layer and cloud reflections are added. Sky detail selects three- or five-octave clouds.
 
 Coarse devices start low. Adaptive quality observes FPS windows, steps down quickly when slow, and requires a long stable period above 58 FPS before stepping up. Coarse devices never automatically step to high.
 
@@ -522,8 +561,9 @@ Important implementation caveats:
 
 - changing ocean segments replaces and disposes geometry at runtime;
 - shadows can change with quality;
+- a preset change resizes the HDR targets and their sample count;
 - wake pool and wildlife counts are currently sized at construction and do not rebuild after a preset change;
-- `reflectionSize` is reserved in settings but the custom ocean does not currently allocate a reflection render target;
+- `reflectionSize` is reserved in settings; reflections are analytic and need no render target;
 - animation mixers are advanced at approximately 30 Hz while movement remains per-frame;
 - wake instance transforms are refreshed at approximately 30 Hz;
 - the render loop and Web Audio suspend when the document is hidden.
@@ -582,10 +622,13 @@ The Sites checkpoint performs its own production build and rendered smoke verifi
 
 ### Unit-test expectations by subsystem
 
-- Ocean: finite height/normal samples over a large world range and CPU/GPU companion invariants.
-- Environment: bounded day/night state, moon at 30 degrees, readable night exposure.
+- Ocean: finite height/normal samples over a large world range, bounded summed slope, resolvable wavelengths, and a focused grid with a uniform centre and upward-facing triangles.
+- Environment: bounded day/night state, moon at 30 degrees, readable night exposure, a finite palette that warms at dusk and stays readable at night.
+- Wind: bounded, deterministic gusts and shifts.
+- Islands: bathymetry that shoals toward a coast matching the rendered waterline.
+- Quality: presets that scale cost monotonically, with no post-processing on low.
 - Engine: start from neutral selects slow ahead, active throttle is preserved, stop returns neutral.
-- Physics: engine produces forward motion, no NaN, comparable outcomes at 60/120 Hz, buoyancy follows sloped samples.
+- Physics: engine produces forward motion with believable inertia, no NaN, comparable outcomes at 60/120 Hz, buoyancy follows sloped samples, a correct sailing polar (no-go zone, fastest on a reach, heel to leeward, bounded leeway), realistic top speed, prop-wash steerage, correct helm sense, shaft spool-down, grounding without a bounce, and a long seaway passage that stays finite and on the rendered surface.
 - Wake: low-speed hull wake, stationary prop wash, monotonic strength, reverse symmetry, stronger whale splash profile.
 - Wildlife: complete dolphin/whale transitions, breach speed gate, forward-only dynamics, bounded acceleration/turn/pitch/bank.
 - Assets: detailed whale rig/clip/PBR/triangle/byte limits, visible island radius constraint, future model budgets.
@@ -728,7 +771,8 @@ Do not commit every exploratory change. The standing project preference is to pu
 - preserve slow-ahead engine movement;
 - verify reverse behavior;
 - test NaN recovery and 60/120 Hz similarity;
-- check collision and automatic return to open water;
+- check grounding in shoal water and the inelastic shore boundary;
+- re-run the sailing-polar, top-speed, and seaway tests after any retune;
 - update telemetry only after integration.
 
 ### Changing wake or particles
@@ -790,10 +834,11 @@ Do not commit every exploratory change. The standing project preference is to pu
 The following are known constraints, not invitations to bypass the architecture:
 
 - audio is synthesized rather than based on recorded engine/wave stems;
-- the yacht force model is intentionally lightweight and not a full six-degree-of-freedom naval solver;
-- the custom ocean has no planar reflection render target despite a reserved `reflectionSize` setting;
+- the yacht force model is intentionally lightweight and not a full six-degree-of-freedom naval solver: sails are sheeted automatically, the two engines are not independently controllable, and heave, pitch, and roll are oscillators driven by the water plane rather than integrated hull pressures;
+- ocean reflections are analytic sky only: the yacht, islands, and wildlife are not mirrored in the water, and there is no refraction or depth-based absorption because the scene depth is not sampled;
+- whitecaps are a function of the instantaneous wave field and leave no persistent foam history;
 - wake and wildlife capacities do not rebuild when changing quality after initialization;
-- palms use one GLB grove plus runtime vertex wind rather than full LOD/impostor vegetation;
+- palms are individually planted GLB trees with runtime vertex wind rather than full LOD/impostor vegetation;
 - yacht sail deformation is simplified compared with cloth simulation;
 - camera collision guards water but does not perform general mesh collision with mast/islands;
 - asset loading is parallel but does not yet use Draco, Meshopt, or KTX2 decoders;
@@ -811,6 +856,8 @@ Never knowingly ship any of these regressions:
 - wake becomes one giant painted ribbon or a frame-rate-dependent trail;
 - yacht heave uses a different surface than the rendered ocean;
 - island geometry exposes a large circular underwater edge;
+- island terrain is back-face culled from above, or palms stand in the sea;
+- a custom shader skips the tone-mapping and colour-space chunks and so differs between the HDR and direct paths;
 - sun or moon renders through the opaque sail;
 - part of the sky stays dark after returning to day;
 - night is unreadably black or moon is missing from the 30-degree elevation;

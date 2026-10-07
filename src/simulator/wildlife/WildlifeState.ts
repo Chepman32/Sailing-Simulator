@@ -36,8 +36,11 @@ export function nextDolphinState(state: DolphinState): DolphinState {
   }
 }
 
+/** Yacht speed in m/s (about 6 kn) at which dolphins start riding the bow. */
+export const DOLPHIN_BREACH_MIN_BOAT_SPEED = 3.1;
+
 export function canStartBreach(forwardSpeed: number, cooldown: number): boolean {
-  return forwardSpeed >= 6.2 && cooldown <= 0;
+  return forwardSpeed >= DOLPHIN_BREACH_MIN_BOAT_SPEED && cooldown <= 0;
 }
 
 export type WhalePhase = "cruise" | "tail_rise" | "tail_strike" | "dive";
