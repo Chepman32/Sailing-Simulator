@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { injectAfter, injectBefore, patchMaterialShader } from "../core/ShaderPatch";
 import type { EnvironmentPalette, Rgb } from "./EnvironmentPalette";
+import { OCEAN_SURFACE_HEIGHT_FAST_GLSL } from "./shaders/oceanShader";
 
 /**
  * Light travelling through sea water.
@@ -11,12 +12,15 @@ import type { EnvironmentPalette, Rgb } from "./EnvironmentPalette";
  * keels, propellers, the island aprons and the seabed) applies the same
  * Beer–Lambert transmittance so they read as *in* the water instead of
  * behind glass.
+ *
+ * Depth is measured from the local wave surface, evaluated per vertex from
+ * the shared spectrum: a whale's fluke lifting through a crest clears the
+ * water exactly where the crest is drawn, and a body lying under a trough is
+ * less veiled than one under a crest.
  */
 
 /** Absorption coefficients per metre for red, green and blue. */
 export const UNDERWATER_ABSORPTION: Rgb = [0.42, 0.065, 0.045];
-/** Mean sea level; individual waves are a few decimetres either side. */
-export const UNDERWATER_SURFACE_LEVEL = 0;
 /** Depth over which the effect fades in, so the waterline has no hard edge. */
 export const UNDERWATER_FADE_DEPTH = 0.35;
 
@@ -46,7 +50,13 @@ function glslVector(color: Rgb): string {
 export class UnderwaterLight {
   readonly uniforms = {
     uUnderwaterColor: { value: new THREE.Color(0.01, 0.06, 0.12) },
+    uUnderwaterTime: { value: 0 },
   };
+
+  /** Keeps the waterline in step with the ocean. */
+  setTime(time: number): void {
+    this.uniforms.uUnderwaterTime.value = time;
+  }
 
   /** In-scattered water colour for the current time of day. */
   setPalette(palette: EnvironmentPalette): void {
@@ -59,12 +69,16 @@ export class UnderwaterLight {
   /** Decorates a lit or unlit built-in material; works with skinning and instancing. */
   apply(material: THREE.Material): void {
     const uniforms = this.uniforms;
-    patchMaterialShader(material, "underwater-v1", (shader) => {
+    patchMaterialShader(material, "underwater-v2", (shader) => {
       shader.uniforms.uUnderwaterColor = uniforms.uUnderwaterColor;
+      shader.uniforms.uUnderwaterTime = uniforms.uUnderwaterTime;
       shader.vertexShader = injectAfter(
         shader.vertexShader,
         "common",
-        "varying vec3 vUnderwaterWorld;",
+        `uniform float uUnderwaterTime;
+        varying vec3 vUnderwaterWorld;
+        varying float vUnderwaterSurface;
+        ${OCEAN_SURFACE_HEIGHT_FAST_GLSL}`,
       );
       shader.vertexShader = injectAfter(
         shader.vertexShader,
@@ -73,19 +87,21 @@ export class UnderwaterLight {
         #ifdef USE_INSTANCING
           underwaterWorld = instanceMatrix * underwaterWorld;
         #endif
-        vUnderwaterWorld = (modelMatrix * underwaterWorld).xyz;`,
+        vUnderwaterWorld = (modelMatrix * underwaterWorld).xyz;
+        vUnderwaterSurface = oceanSurfaceHeightFast(vUnderwaterWorld.xz, uUnderwaterTime);`,
       );
       shader.fragmentShader = injectAfter(
         shader.fragmentShader,
         "common",
         `uniform vec3 uUnderwaterColor;
-        varying vec3 vUnderwaterWorld;`,
+        varying vec3 vUnderwaterWorld;
+        varying float vUnderwaterSurface;`,
       );
       shader.fragmentShader = injectBefore(
         shader.fragmentShader,
         "tonemapping_fragment",
         `{
-          float underwaterDepth = ${UNDERWATER_SURFACE_LEVEL.toFixed(2)} - vUnderwaterWorld.y;
+          float underwaterDepth = vUnderwaterSurface - vUnderwaterWorld.y;
           if (underwaterDepth > 0.0) {
             vec3 toFragment = vUnderwaterWorld - cameraPosition;
             float viewDistance = length(toFragment);

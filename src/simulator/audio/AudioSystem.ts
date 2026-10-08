@@ -168,22 +168,77 @@ export class AudioSystem {
     rattle.stop(now + 0.2);
   }
 
-  splash(intensity = 1): void {
+  /**
+   * One-shot water sound.
+   *
+   * @param intensity splash energy (dolphin re-entry ≈ 1, fluke slap ≈ 5)
+   * @param kind how the body met the surface
+   * @param distance metres from the listener; distant splashes are quieter
+   */
+  splash(intensity = 1, kind: "entry" | "exit" | "slap" | "breath" | "blow" = "entry", distance = 0): void {
     if (!this.context || !this.wildlifeBus || this.context.state !== "running" || !this.enabled) return;
-    const source = this.context.createBufferSource();
-    source.buffer = this.createNoiseBuffer(0.7);
-    const filter = this.context.createBiquadFilter();
-    filter.type = "bandpass";
-    filter.frequency.value = 850;
-    filter.Q.value = 0.62;
-    const gain = this.context.createGain();
+    const attenuation = 1 / (1 + Math.max(0, distance) / 28);
+    const level = Math.min(2.4, Math.max(0.05, intensity)) * attenuation;
+    if (level < 0.015) return;
     const now = this.context.currentTime;
-    gain.gain.setValueAtTime(0.001, now);
-    gain.gain.exponentialRampToValueAtTime(0.16 * intensity, now + 0.018);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.58);
-    source.connect(filter).connect(gain).connect(this.wildlifeBus);
-    source.start(now);
-    source.stop(now + 0.65);
+    const noise = (
+      duration: number,
+      type: BiquadFilterType,
+      frequency: number,
+      q: number,
+      peak: number,
+      attack: number,
+      decay: number,
+    ): void => {
+      if (!this.context || !this.wildlifeBus) return;
+      const source = this.context.createBufferSource();
+      source.buffer = this.createNoiseBuffer(duration);
+      const filter = this.context.createBiquadFilter();
+      filter.type = type;
+      filter.frequency.value = frequency;
+      filter.Q.value = q;
+      const gain = this.context.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), now + attack);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + attack + decay);
+      source.connect(filter).connect(gain).connect(this.wildlifeBus);
+      source.start(now);
+      source.stop(now + duration);
+    };
+    switch (kind) {
+      case "blow":
+        // A long, breathy exhalation rather than a splash.
+        noise(1.8, "bandpass", 620, 0.45, 0.2 * level, 0.09, 1.5);
+        noise(1.2, "highpass", 2400, 0.3, 0.05 * level, 0.05, 0.9);
+        return;
+      case "slap": {
+        // A sharp crack over a heavy, low body of water.
+        noise(0.4, "bandpass", 1500, 0.8, 0.22 * level, 0.004, 0.3);
+        noise(1.6, "lowpass", 420, 0.7, 0.32 * level, 0.012, 1.3);
+        const thump = this.context.createOscillator();
+        thump.type = "sine";
+        thump.frequency.setValueAtTime(140, now);
+        thump.frequency.exponentialRampToValueAtTime(62, now + 0.35);
+        const thumpGain = this.context.createGain();
+        thumpGain.gain.setValueAtTime(0.0001, now);
+        thumpGain.gain.exponentialRampToValueAtTime(0.28 * level, now + 0.01);
+        thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
+        thump.connect(thumpGain).connect(this.wildlifeBus);
+        thump.start(now);
+        thump.stop(now + 0.5);
+        return;
+      }
+      case "exit":
+        // Water pouring off a body.
+        noise(0.9, "bandpass", 1250, 0.55, 0.1 * level, 0.03, 0.7);
+        return;
+      case "breath":
+        noise(0.5, "bandpass", 1050, 0.6, 0.07 * level, 0.02, 0.35);
+        return;
+      case "entry":
+        noise(0.7, "bandpass", 850, 0.62, 0.16 * level, 0.018, 0.56);
+        return;
+    }
   }
 
   dispose(): void {

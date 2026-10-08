@@ -1,408 +1,334 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
 import type { OceanSystem } from "../environment/OceanSystem";
-import { clamp, damp } from "../math";
-import type { VesselPhysics } from "../vessel/VesselPhysics";
+import { animationInterval, BodyPoint, filterClip, findBone, ProceduralBone } from "./BodyRig";
 import {
-  forwardBiasedHeading,
-  shortestAngleDifference,
-  stepSwimmerKinematics,
-  stepVerticalMotion,
-  swimmerBank,
-  swimmerPitch,
-  type SwimmerKinematics,
-  type SwimmerLimits,
-} from "./SwimmerDynamics";
-import { canStartBreach, DOLPHIN_STATE_DURATION, nextDolphinState, type DolphinState } from "./WildlifeState";
-import { createAnimatedVisual, headingTo, setRandomAnimationTime, type AnimatedVisual } from "./WildlifeModel";
+  createDolphinPod,
+  DOLPHIN_LENGTH,
+  stepDolphinPod,
+  type DolphinAgent,
+  type DolphinObstacle,
+  type DolphinPod,
+} from "./DolphinBehavior";
+import { CONTACT_MASS, contactIntensity, SurfacePoint, type MarineWorld, type VesselState, type WaterEffects } from "./WaterContact";
+import { createAnimatedVisual, type AnimatedVisual } from "./WildlifeModel";
 
-const DOLPHIN_LIMITS: SwimmerLimits = {
-  minSpeed: 4.8,
-  maxSpeed: 9.2,
-  acceleration: 1.15,
-  deceleration: 1.45,
-  maxTurnRate: 0.42,
-  maxYawAcceleration: 0.38,
-  turnResponse: 0.9,
+/**
+ * Renders the dolphin pod described by {@link DolphinBehavior}.
+ *
+ * The rig's authored clip flaps the pectoral fins like wings and leaves the
+ * spine still, so the swimming motion is procedural: a dorsoventral wave
+ * runs from the head to the flukes, growing toward the tail, its frequency
+ * set by the dolphin's speed. In the air the strokes stop and the body takes
+ * the curve of its ballistic path. The rig is rooted at the tail, so after
+ * bending, the model is shifted to keep the mid-body on the swimming path.
+ */
+
+/** Spine from the tail forward, with each segment's centre along the body (m). */
+const SPINE = [
+  { name: "Bone_00", centre: -0.41, amplitude: 0.16, lag: 1.7 },
+  { name: "Bone.001_01", centre: 0.05, amplitude: 0.05, lag: 1 },
+  { name: "Bone.002_02", centre: 0.39, amplitude: 0.016, lag: 0.5 },
+  { name: "Bone.003_03", centre: 0.71, amplitude: 0.022, lag: 0 },
+] as const;
+const FLUKE = { name: "Bone.005_018", centre: -1, amplitude: 0.38, lag: 2.6 } as const;
+/** Bones the authored clip must leave alone. */
+const PROCEDURAL_TRACKS = ["Bone.005_018", "Bone_00", "Bone.001_01", "Bone.002_02", "Bone.003_03"] as const;
+
+type TrackedPoint = {
+  point: BodyPoint;
+  tracker: SurfacePoint;
+  position: THREE.Vector3;
+  previous: THREE.Vector3;
+  velocity: THREE.Vector3;
+  trailDistance: number;
 };
 
-const GRAVITY = 9.81;
-
-type Dolphin = {
+type DolphinVisual = {
   root: THREE.Group;
   visual: AnimatedVisual;
-  motion: SwimmerKinematics;
-  state: DolphinState;
-  stateElapsed: number;
-  cooldown: number;
-  jumpElapsed: number;
-  side: number;
-  phase: number;
-  target: THREE.Vector3;
-  waypointAge: number;
-  waypointDuration: number;
-  initialized: boolean;
-  jumpOrigin: THREE.Vector3;
-  jumpDirection: THREE.Vector3;
-  jumpHeading: number;
-  jumpSpeed: number;
-  splashTriggered: boolean;
+  secondary?: THREE.AnimationAction;
+  spine: ProceduralBone[];
+  fluke?: ProceduralBone;
+  anchor?: BodyPoint;
+  anchorRest: THREE.Vector3;
+  modelBase: THREE.Vector3;
+  rostrum?: TrackedPoint;
+  blowhole?: TrackedPoint;
+  dorsal?: TrackedPoint;
+  tail?: TrackedPoint;
+  animationClock: number;
+  shedTime: number;
 };
 
 export class DolphinController {
-  private readonly dolphins: Dolphin[] = [];
-  private readonly target = new THREE.Vector3();
-  private readonly jumpPosition = new THREE.Vector3();
-  private readonly steering = new THREE.Vector3();
-  private readonly avoidance = new THREE.Vector3();
-  private readonly separation = new THREE.Vector3();
+  private readonly visuals: DolphinVisual[] = [];
+  private readonly count: number;
+  private readonly anchorWorld = new THREE.Vector3();
+  private readonly surfacePoint = new THREE.Vector3();
+  private readonly cameraPosition = new THREE.Vector3();
+  private readonly angles = new Float32Array(SPINE.length);
+  private readonly yaws = new Float32Array(SPINE.length);
+  private podState: DolphinPod | null = null;
 
   constructor(
     private readonly group: THREE.Group,
     private readonly ocean: OceanSystem,
+    private readonly world: MarineWorld,
     assets: AssetManager,
     count: number,
-    private readonly onSplash: (position: THREE.Vector3, intensity: number) => void,
+    private readonly effects: WaterEffects,
   ) {
-    for (let index = 0; index < count; index += 1) {
-      this.dolphins.push(this.createDolphin(assets, index));
-    }
+    this.count = count;
+    for (let index = 0; index < count; index += 1) this.visuals.push(this.createVisual(assets, index));
   }
 
-  update(delta: number, physics: VesselPhysics, animationDelta = delta): void {
-    this.dolphins.forEach((dolphin, index) => {
-      const animationRate = dolphin.state === "swim" ? 1 : dolphin.state === "approach" ? 1.16 : 0.94;
-      if (animationDelta > 0) dolphin.visual.mixer?.update(animationDelta * animationRate);
-      dolphin.stateElapsed += delta;
-      dolphin.cooldown -= delta;
-      dolphin.waypointAge += delta;
-
-      if (dolphin.state === "swim") {
-        this.updateSwim(dolphin, index, delta, physics);
-        if (
-          canStartBreach(physics.telemetry.forwardSpeed, dolphin.cooldown) &&
-          this.canApproachForBreach(dolphin, physics)
-        ) {
-          this.transition(dolphin, "approach");
-        }
-      } else if (dolphin.state === "approach") {
-        this.updateApproach(dolphin, delta, physics);
-        const targetHeading = headingTo(dolphin.root.position, this.target);
-        const aligned = Math.cos(shortestAngleDifference(dolphin.motion.heading, targetHeading)) > 0.9;
-        const closeEnough = dolphin.root.position.distanceToSquared(this.target) < 11 * 11;
-        if (dolphin.stateElapsed >= DOLPHIN_STATE_DURATION.approach && aligned && closeEnough) {
-          this.beginJump(dolphin);
-        } else if (dolphin.stateElapsed > 3.1) {
-          dolphin.cooldown = 4 + Math.random() * 3;
-          this.transition(dolphin, "swim");
-        }
-      } else if (
-        dolphin.state === "breach_ascent" ||
-        dolphin.state === "airborne" ||
-        dolphin.state === "reentry"
-      ) {
-        this.updateJump(dolphin, delta);
-        const duration = DOLPHIN_STATE_DURATION[dolphin.state];
-        if (dolphin.stateElapsed >= duration) this.transition(dolphin, nextDolphinState(dolphin.state));
-      } else if (dolphin.state === "splash") {
-        if (!dolphin.splashTriggered) {
-          dolphin.splashTriggered = true;
-          this.onSplash(dolphin.root.position, 0.8);
-        }
-        this.updateDive(dolphin, delta, 0.72);
-        if (dolphin.stateElapsed >= DOLPHIN_STATE_DURATION.splash) this.transition(dolphin, "dive");
-      } else if (dolphin.state === "dive") {
-        this.updateDive(dolphin, delta, 1.8);
-        if (dolphin.stateElapsed >= DOLPHIN_STATE_DURATION.dive) {
-          dolphin.cooldown = 8 + index * 3.4 + Math.random() * 5;
-          this.transition(dolphin, "swim");
-        }
-      }
-    });
-  }
-
-  /** World positions of every dolphin, for prey that must avoid them. */
+  /** Positions of every dolphin, for prey that must avoid them. */
   collectPositions(target: THREE.Vector3[]): void {
-    this.dolphins.forEach((dolphin) => target.push(dolphin.root.position));
+    this.visuals.forEach((visual) => target.push(visual.root.position));
+  }
+
+  /** Agents, for tests and tuning tools. */
+  get agents(): readonly DolphinAgent[] {
+    return this.podState?.agents ?? [];
+  }
+
+  update(delta: number, vessel: VesselState, obstacles: readonly DolphinObstacle[], camera: THREE.Camera): void {
+    if (delta <= 0 || this.visuals.length === 0) return;
+    if (!this.podState) this.podState = createDolphinPod(this.count, vessel, this.world, Math.random);
+    const pod = this.podState;
+    stepDolphinPod(pod, this.world, vessel, obstacles, delta, Math.random);
+    camera.getWorldPosition(this.cameraPosition);
+    pod.agents.forEach((agent, index) => {
+      const visual = this.visuals[index];
+      if (visual) this.apply(agent, visual, delta);
+    });
   }
 
   dispose(): void {
-    this.dolphins.forEach((dolphin) => {
-      dolphin.visual.mixer?.stopAllAction();
-      this.group.remove(dolphin.root);
+    this.visuals.forEach((visual) => {
+      visual.visual.mixer?.stopAllAction();
+      this.group.remove(visual.root);
     });
-    this.dolphins.length = 0;
+    this.visuals.length = 0;
   }
 
-  private createDolphin(assets: AssetManager, index: number): Dolphin {
+  private createVisual(assets: AssetManager, index: number): DolphinVisual {
     const visual = createAnimatedVisual(
       assets.dolphin(),
-      {
-        targetSize: 2.8,
-        measureAxis: "x",
-        // This rig's rostrum points along +X; the runtime forward axis is +Z.
-        yaw: -Math.PI / 2,
-        castShadow: false,
-      },
-      [/swim/i],
+      // The rig's rostrum points along +X; turned to +Z and scaled by its
+      // length (not the span of its pectoral fins) to a 2.7 m bottlenose.
+      { targetSize: DOLPHIN_LENGTH, measureAxis: "z", yaw: -Math.PI / 2, castShadow: false },
+      [],
     );
-    setRandomAnimationTime(visual, 1.85 + index * 0.14);
     visual.model.name = `Rigged_Dolphin_${index + 1}`;
+    // The source paints the back a saturated teal; a bottlenose is slate grey.
+    visual.model.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((material) => {
+        if (material instanceof THREE.MeshStandardMaterial && /body/iu.test(material.name)) {
+          material.color.setRGB(0.07, 0.085, 0.1, THREE.LinearSRGBColorSpace);
+          material.roughness = 0.38;
+        }
+      });
+    });
+    visual.actions.forEach((action) => action.stop());
+    visual.mixer?.stopAllAction();
+    const swim = visual.clips[0];
+    const secondary = swim && visual.mixer ? visual.mixer.clipAction(filterClip(swim, PROCEDURAL_TRACKS)) : undefined;
+    secondary?.setLoop(THREE.LoopRepeat, Number.POSITIVE_INFINITY);
+    secondary?.play();
+    if (secondary) {
+      secondary.time = Math.random() * secondary.getClip().duration;
+      secondary.setEffectiveWeight(0.3);
+    }
+
     const root = new THREE.Group();
+    root.name = `Dolphin_Behaviour_Root_${index + 1}`;
     root.rotation.order = "YXZ";
     root.add(visual.model);
     this.group.add(root);
+    root.updateMatrixWorld(true);
 
-    const initialSpeed = 6.4 + index * 0.45 + Math.random() * 0.4;
+    const spine = SPINE.flatMap(({ name }) => {
+      const bone = findBone(visual.model, name);
+      return bone ? [new ProceduralBone(bone, root)] : [];
+    });
+    if (spine.length !== SPINE.length) console.warn("Dolphin spine rig is incomplete; swimming will be reduced.");
+    const flukeBone = findBone(visual.model, FLUKE.name);
+    const midBone = findBone(visual.model, "Bone.001_01");
+    const headBone = findBone(visual.model, "Bone.003_03");
+    const anchorRest = new THREE.Vector3(0, 0.08, 0.05);
+    const track = (bone: THREE.Object3D | undefined, x: number, y: number, z: number): TrackedPoint | undefined =>
+      bone
+        ? {
+            point: new BodyPoint(bone, root, new THREE.Vector3(x, y, z)),
+            tracker: new SurfacePoint(),
+            position: new THREE.Vector3(),
+            previous: new THREE.Vector3(Number.NaN, 0, 0),
+            velocity: new THREE.Vector3(),
+            trailDistance: 0,
+          }
+        : undefined;
     return {
       root,
       visual,
-      motion: {
-        heading: 0,
-        yawRate: 0,
-        speed: initialSpeed,
-        velocityX: 0,
-        velocityZ: initialSpeed,
-        verticalSpeed: 0,
-      },
-      state: "swim",
-      stateElapsed: 0,
-      cooldown: 5 + index * 4,
-      jumpElapsed: 0,
-      side: index % 2 === 0 ? -1 : 1,
-      phase: index * 2.4,
-      target: new THREE.Vector3(),
-      waypointAge: 0,
-      waypointDuration: 8,
-      initialized: false,
-      jumpOrigin: new THREE.Vector3(),
-      jumpDirection: new THREE.Vector3(0, 0, 1),
-      jumpHeading: 0,
-      jumpSpeed: 7.8,
-      splashTriggered: false,
+      secondary,
+      spine,
+      fluke: flukeBone ? new ProceduralBone(flukeBone, root) : undefined,
+      anchor: midBone ? new BodyPoint(midBone, root, anchorRest) : undefined,
+      anchorRest,
+      modelBase: visual.model.position.clone(),
+      rostrum: track(headBone, 0, 0.02, 1.36),
+      blowhole: track(headBone, 0, 0.23, 0.83),
+      dorsal: track(midBone, 0, 0.5, 0.2),
+      tail: track(flukeBone, 0, -0.12, -1.25),
+      animationClock: 0,
+      shedTime: 0,
     };
   }
 
-  private updateSwim(dolphin: Dolphin, index: number, delta: number, physics: VesselPhysics): void {
-    if (!dolphin.initialized || dolphin.root.position.distanceToSquared(physics.position) > 150 * 150) {
-      this.initialize(dolphin, index, physics);
+  private apply(agent: DolphinAgent, visual: DolphinVisual, delta: number): void {
+    const motion = agent.motion;
+    const root = visual.root;
+    root.position.set(motion.x, motion.y, motion.z);
+    root.rotation.set(-motion.pitch, motion.heading, agent.roll, "YXZ");
+    const cameraDistance = this.cameraPosition.distanceTo(root.position);
+    const visible = cameraDistance < 320;
+    visual.visual.model.visible = visible;
+    if (!visible) {
+      root.updateMatrixWorld(true);
+      return;
     }
-    if (
-      dolphin.root.position.distanceToSquared(dolphin.target) < 8 * 8 ||
-      dolphin.waypointAge >= dolphin.waypointDuration ||
-      dolphin.root.position.distanceToSquared(physics.position) > 72 * 72
-    ) {
-      this.chooseWaypoint(dolphin, index, physics);
+
+    // Skeleton: authored fins at a reduced rate far away, procedural spine every frame.
+    visual.spine.forEach((bone) => bone.restore());
+    visual.fluke?.restore();
+    visual.animationClock += delta;
+    if (visual.secondary && visual.animationClock >= animationInterval(cameraDistance)) {
+      const airborne = agent.phase === "leap" || agent.phase === "airborne" || agent.phase === "reentry";
+      visual.secondary.setEffectiveWeight(airborne ? 0.12 : 0.3);
+      visual.secondary.timeScale = 0.6 + motion.speed * 0.08;
+      visual.visual.mixer?.update(visual.animationClock);
+      visual.animationClock = 0;
+      visual.spine.forEach((bone) => bone.capture());
+      visual.fluke?.capture();
     }
 
-    const desiredHeading = this.steeredHeading(
-      dolphin,
-      headingTo(dolphin.root.position, dolphin.target),
-      physics,
-    );
-    const distanceToVessel = dolphin.root.position.distanceTo(physics.position);
-    const cruiseSpeed = 6.6 + index * 0.48 + (distanceToVessel < 8 ? 0.7 : 0);
-    stepSwimmerKinematics(dolphin.motion, desiredHeading, cruiseSpeed, delta, DOLPHIN_LIMITS);
-    this.advance(dolphin, delta);
+    // Absolute segment angles: a travelling wave plus the curve of the path.
+    const stroke = agent.strokeAmplitude;
+    SPINE.forEach((segment, index) => {
+      this.angles[index] =
+        stroke * segment.amplitude * Math.sin(agent.strokePhase - segment.lag) + agent.curvature * segment.centre;
+      this.yaws[index] = agent.lateralCurvature * segment.centre;
+    });
+    let previousPitch = 0;
+    let previousYaw = 0;
+    visual.spine.forEach((bone, index) => {
+      const pitch = this.angles[index] ?? 0;
+      const yaw = this.yaws[index] ?? 0;
+      bone.rotate("pitch", pitch - previousPitch);
+      bone.rotate("yaw", yaw - previousYaw);
+      previousPitch = pitch;
+      previousYaw = yaw;
+    });
+    if (visual.fluke) {
+      visual.fluke.rotate(
+        "pitch",
+        stroke * FLUKE.amplitude * Math.sin(agent.strokePhase - FLUKE.lag) + agent.curvature * FLUKE.centre,
+      );
+      visual.fluke.rotate("yaw", agent.lateralCurvature * FLUKE.centre);
+    }
 
-    const surface = this.ocean.sample(dolphin.root.position.x, dolphin.root.position.z).height;
-    const targetDepth = surface - 0.72 + Math.sin(dolphin.stateElapsed * 0.7 + dolphin.phase) * 0.06;
-    dolphin.root.position.y = stepVerticalMotion(
-      dolphin.root.position.y,
-      dolphin.motion,
-      targetDepth,
-      delta,
-      7.2,
-      5.1,
-      4.8,
-    );
-    this.applyUnderwaterOrientation(dolphin, delta, 0.16, 0.17);
+    // Keep the mid-body on the path: the rig pivots about its tail.
+    visual.visual.model.position.copy(visual.modelBase);
+    root.updateMatrixWorld(true);
+    if (visual.anchor) {
+      visual.anchor.world(this.anchorWorld);
+      root.worldToLocal(this.anchorWorld);
+      visual.visual.model.position.sub(this.anchorWorld.sub(visual.anchorRest));
+      root.updateMatrixWorld(true);
+    }
+
+    this.updateContacts(agent, visual, delta);
   }
 
-  private initialize(dolphin: Dolphin, index: number, physics: VesselPhysics): void {
-    dolphin.root.position
-      .copy(physics.position)
-      .addScaledVector(physics.right, dolphin.side * (10 + index * 2.6))
-      .addScaledVector(physics.forward, 4 - index * 2.2);
-    dolphin.root.position.y = this.ocean.sample(dolphin.root.position.x, dolphin.root.position.z).height - 0.72;
-    dolphin.motion.heading = physics.heading + dolphin.side * (0.1 + index * 0.035);
-    dolphin.motion.yawRate = 0;
-    dolphin.motion.verticalSpeed = 0;
-    dolphin.motion.velocityX = Math.sin(dolphin.motion.heading) * dolphin.motion.speed;
-    dolphin.motion.velocityZ = Math.cos(dolphin.motion.heading) * dolphin.motion.speed;
-    dolphin.root.rotation.set(0, dolphin.motion.heading, 0, "YXZ");
-    dolphin.initialized = true;
-    this.chooseWaypoint(dolphin, index, physics);
+  private sample(tracked: TrackedPoint, delta: number): string | null {
+    tracked.point.world(tracked.position);
+    if (Number.isFinite(tracked.previous.x)) {
+      tracked.velocity.copy(tracked.position).sub(tracked.previous).divideScalar(Math.max(delta, 1e-3));
+    } else {
+      tracked.velocity.set(0, 0, 0);
+    }
+    tracked.previous.copy(tracked.position);
+    return tracked.tracker.update(tracked.position.y, this.ocean.sample(tracked.position.x, tracked.position.z).height, delta);
   }
 
-  private chooseWaypoint(dolphin: Dolphin, index: number, physics: VesselPhysics): void {
-    this.target
-      .copy(physics.position)
-      .addScaledVector(physics.forward, 24 + index * 4.5)
-      .addScaledVector(physics.right, dolphin.side * (10 + index * 2.8));
-    const formationHeading = headingTo(dolphin.root.position, this.target);
-    const gentleCorrection = forwardBiasedHeading(dolphin.motion.heading, formationHeading, 0.38);
-    const wander = Math.sin(dolphin.phase + dolphin.stateElapsed * 0.18) * 0.07 + (Math.random() - 0.5) * 0.12;
-    const course = gentleCorrection + wander;
-    const distance = 38 + Math.random() * 18;
-    dolphin.target.set(
-      dolphin.root.position.x + Math.sin(course) * distance,
-      0,
-      dolphin.root.position.z + Math.cos(course) * distance,
-    );
-    dolphin.target.y = this.ocean.sample(dolphin.target.x, dolphin.target.z).height - 0.72;
-    dolphin.waypointAge = 0;
-    dolphin.waypointDuration = 7.5 + Math.random() * 3.5;
+  private onSurface(position: THREE.Vector3): THREE.Vector3 {
+    return this.surfacePoint.set(position.x, this.ocean.sample(position.x, position.z).height, position.z);
   }
 
-  private steeredHeading(
-    dolphin: Dolphin,
-    requestedHeading: number,
-    physics: VesselPhysics,
-  ): number {
-    this.steering.set(Math.sin(requestedHeading), 0, Math.cos(requestedHeading));
-    const distanceToVessel = dolphin.root.position.distanceTo(physics.position);
-    if (distanceToVessel < 10) {
-      this.avoidance.copy(dolphin.root.position).sub(physics.position).setY(0);
-      const length = this.avoidance.length();
-      if (length > 0.001) {
-        const weight = ((10 - distanceToVessel) / 10) * 1.5;
-        this.steering.addScaledVector(this.avoidance.multiplyScalar(1 / length), weight);
+  private updateContacts(agent: DolphinAgent, visual: DolphinVisual, delta: number): void {
+    const leaping = agent.phase === "leap" || agent.phase === "airborne" || agent.phase === "reentry" || agent.phase === "dive";
+    const speed = agent.motion.speed;
+
+    if (visual.rostrum) {
+      const crossing = this.sample(visual.rostrum, delta);
+      if (crossing === "exit" && agent.phase === "leap") {
+        // The head breaks through: a sheet of water is dragged up along the body.
+        this.effects.splash(
+          this.onSurface(visual.rostrum.position),
+          contactIntensity(CONTACT_MASS.dolphin, speed) * 0.55,
+          "exit",
+          visual.rostrum.velocity,
+        );
+      } else if (crossing === "entry" && (agent.phase === "reentry" || agent.phase === "airborne")) {
+        this.effects.splash(
+          this.onSurface(visual.rostrum.position),
+          contactIntensity(CONTACT_MASS.dolphin, speed),
+          "entry",
+          visual.rostrum.velocity,
+        );
       }
     }
 
-    this.separation.set(0, 0, 0);
-    this.dolphins.forEach((other) => {
-      if (other === dolphin || !other.initialized) return;
-      const distanceSquared = dolphin.root.position.distanceToSquared(other.root.position);
-      if (distanceSquared <= 0.001 || distanceSquared >= 5.5 * 5.5) return;
-      this.avoidance.copy(dolphin.root.position).sub(other.root.position).setY(0);
-      const distance = Math.sqrt(distanceSquared);
-      this.separation.addScaledVector(this.avoidance, (5.5 - distance) / (5.5 * distance));
-    });
-    this.steering.addScaledVector(this.separation, 1.15);
-    if (this.steering.lengthSq() < 0.0001) return dolphin.motion.heading;
-    this.steering.normalize();
-    return Math.atan2(this.steering.x, this.steering.z);
-  }
+    if (visual.tail) {
+      const crossing = this.sample(visual.tail, delta);
+      if (crossing === "exit" && leaping) {
+        visual.shedTime = 0.35;
+        this.effects.splash(this.onSurface(visual.tail.position), 0.35, "exit", visual.tail.velocity);
+      } else if (crossing === "entry" && leaping) {
+        this.effects.splash(this.onSurface(visual.tail.position), 0.3, "breath", visual.tail.velocity);
+      }
+      if (visual.shedTime > 0 && visual.tail.tracker.clearance > 0.05) {
+        // Water streams off the flukes for a moment after they clear.
+        visual.shedTime -= delta;
+        if (Math.random() < delta * 40) this.effects.shed(visual.tail.position, visual.tail.velocity, 2, 0.07);
+      }
+    }
 
-  private canApproachForBreach(dolphin: Dolphin, physics: VesselPhysics): boolean {
-    const distance = dolphin.root.position.distanceTo(physics.position);
-    if (distance < 6 || distance > 34) return false;
-    return Math.cos(shortestAngleDifference(dolphin.motion.heading, physics.heading)) > 0.72;
-  }
+    if (visual.blowhole) {
+      const crossing = this.sample(visual.blowhole, delta);
+      if (crossing === "exit" && !leaping && agent.phase !== "accelerate" && agent.phase !== "approach_surface") {
+        // A breath at the surface: a quick chuff of mist and a ripple.
+        const position = this.onSurface(visual.blowhole.position);
+        this.effects.splash(position, 0.25, "blow");
+        this.effects.splash(position, 0.3, "breath", visual.blowhole.velocity);
+      }
+    }
 
-  private updateApproach(dolphin: Dolphin, delta: number, physics: VesselPhysics): void {
-    this.target
-      .copy(physics.position)
-      .addScaledVector(physics.right, dolphin.side * 4.3)
-      .addScaledVector(physics.forward, 7.5);
-    this.target.y = this.ocean.sample(this.target.x, this.target.z).height - 0.2;
-    const desiredHeading = this.steeredHeading(
-      dolphin,
-      headingTo(dolphin.root.position, this.target),
-      physics,
-    );
-    stepSwimmerKinematics(dolphin.motion, desiredHeading, 8.4, delta, DOLPHIN_LIMITS);
-    this.advance(dolphin, delta);
-    dolphin.root.position.y = stepVerticalMotion(
-      dolphin.root.position.y,
-      dolphin.motion,
-      this.target.y,
-      delta,
-      8.5,
-      5.4,
-      6,
-    );
-    this.applyUnderwaterOrientation(dolphin, delta, 0.18, 0.17);
-  }
-
-  private beginJump(dolphin: Dolphin): void {
-    dolphin.jumpOrigin.copy(dolphin.root.position);
-    dolphin.jumpDirection.set(Math.sin(dolphin.motion.heading), 0, Math.cos(dolphin.motion.heading));
-    dolphin.jumpHeading = dolphin.motion.heading;
-    dolphin.jumpSpeed = clamp(dolphin.motion.speed, 7.2, 8.8);
-    dolphin.jumpElapsed = 0;
-    dolphin.splashTriggered = false;
-    dolphin.motion.verticalSpeed = GRAVITY * (
-      DOLPHIN_STATE_DURATION.breach_ascent +
-      DOLPHIN_STATE_DURATION.airborne +
-      DOLPHIN_STATE_DURATION.reentry
-    ) * 0.5;
-    this.transition(dolphin, "breach_ascent");
-  }
-
-  private updateJump(dolphin: Dolphin, delta: number): void {
-    dolphin.jumpElapsed += delta;
-    const totalDuration =
-      DOLPHIN_STATE_DURATION.breach_ascent + DOLPHIN_STATE_DURATION.airborne + DOLPHIN_STATE_DURATION.reentry;
-    const t = clamp(dolphin.jumpElapsed / totalDuration, 0, 1);
-    const travel = dolphin.jumpSpeed * totalDuration;
-    this.jumpPosition.copy(dolphin.jumpOrigin).addScaledVector(dolphin.jumpDirection, travel * t);
-    const waterHeight = this.ocean.sample(this.jumpPosition.x, this.jumpPosition.z).height;
-    const arcHeight = 0.5 * GRAVITY * totalDuration * totalDuration * t * (1 - t);
-    const verticalSpeed = GRAVITY * totalDuration * (0.5 - t);
-    this.jumpPosition.y = waterHeight + arcHeight - 0.14;
-    dolphin.root.position.copy(this.jumpPosition);
-    dolphin.motion.verticalSpeed = verticalSpeed;
-    dolphin.motion.velocityX = dolphin.jumpDirection.x * dolphin.jumpSpeed;
-    dolphin.motion.velocityZ = dolphin.jumpDirection.z * dolphin.jumpSpeed;
-    dolphin.root.rotation.y = dolphin.jumpHeading;
-    dolphin.root.rotation.x = damp(
-      dolphin.root.rotation.x,
-      swimmerPitch(verticalSpeed, dolphin.jumpSpeed, 0.72),
-      9,
-      delta,
-    );
-    dolphin.root.rotation.z = damp(dolphin.root.rotation.z, 0, 6, delta);
-  }
-
-  private updateDive(dolphin: Dolphin, delta: number, depth: number): void {
-    stepSwimmerKinematics(dolphin.motion, dolphin.jumpHeading, 6.4, delta, DOLPHIN_LIMITS);
-    this.advance(dolphin, delta);
-    const targetDepth = this.ocean.sample(dolphin.root.position.x, dolphin.root.position.z).height - depth;
-    dolphin.root.position.y = stepVerticalMotion(
-      dolphin.root.position.y,
-      dolphin.motion,
-      targetDepth,
-      delta,
-      9,
-      4.2,
-      8.5,
-    );
-    this.applyUnderwaterOrientation(dolphin, delta, 0.38, 0.08);
-  }
-
-  private applyUnderwaterOrientation(
-    dolphin: Dolphin,
-    delta: number,
-    pitchLimit: number,
-    bankLimit: number,
-  ): void {
-    dolphin.root.rotation.y = dolphin.motion.heading;
-    dolphin.root.rotation.x = damp(
-      dolphin.root.rotation.x,
-      swimmerPitch(dolphin.motion.verticalSpeed, dolphin.motion.speed, pitchLimit),
-      4.8,
-      delta,
-    );
-    dolphin.root.rotation.z = damp(
-      dolphin.root.rotation.z,
-      swimmerBank(dolphin.motion.yawRate, dolphin.motion.speed, bankLimit),
-      4.2,
-      delta,
-    );
-  }
-
-  private transition(dolphin: Dolphin, state: DolphinState): void {
-    dolphin.state = state;
-    dolphin.stateElapsed = 0;
-    if (state === "splash") dolphin.motion.verticalSpeed = Math.min(dolphin.motion.verticalSpeed, -3.2);
-    if (state === "swim") dolphin.waypointAge = Number.POSITIVE_INFINITY;
-  }
-
-  private advance(dolphin: Dolphin, delta: number): void {
-    dolphin.root.position.x += dolphin.motion.velocityX * delta;
-    dolphin.root.position.z += dolphin.motion.velocityZ * delta;
+    if (visual.dorsal) {
+      this.sample(visual.dorsal, delta);
+      // Only a fin actually standing out of the water leaves a line of foam.
+      const cutting = visual.dorsal.tracker.clearance > 0.02 && visual.dorsal.tracker.clearance < 0.45;
+      if (cutting && !leaping && speed > 1) {
+        visual.dorsal.trailDistance += speed * delta;
+        if (visual.dorsal.trailDistance > 1.5) {
+          visual.dorsal.trailDistance = 0;
+          this.effects.trail(this.onSurface(visual.dorsal.position), agent.motion.heading, 0.12 + speed * 0.02, 0.32);
+        }
+      }
+    }
   }
 }

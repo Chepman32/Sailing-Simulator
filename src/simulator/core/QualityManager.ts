@@ -8,6 +8,8 @@ export type QualitySettings = {
   reflectionSize: number;
   foamDensity: number;
   wildlifeCount: number;
+  /** Dolphins in the pod; pairs can leap together from two upward. */
+  dolphinCount: number;
   /** 0–1: enables per-pixel wave detail, capillary ripples and cloud reflections. */
   oceanDetail: number;
   /** 0 = three-octave clouds, 1 = five-octave clouds. */
@@ -29,6 +31,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     reflectionSize: 256,
     foamDensity: 0.45,
     wildlifeCount: 1,
+    dolphinCount: 2,
     oceanDetail: 0.3,
     fishDensity: 0.35,
     skyDetail: 0,
@@ -43,6 +46,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     reflectionSize: 384,
     foamDensity: 0.7,
     wildlifeCount: 2,
+    dolphinCount: 3,
     oceanDetail: 0.55,
     fishDensity: 0.6,
     skyDetail: 1,
@@ -57,6 +61,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     reflectionSize: 512,
     foamDensity: 0.9,
     wildlifeCount: 2,
+    dolphinCount: 4,
     oceanDetail: 1,
     fishDensity: 1,
     skyDetail: 1,

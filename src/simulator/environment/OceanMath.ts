@@ -70,29 +70,109 @@ export function maximumOceanSlope(waves: readonly OceanWave[] = OCEAN_WAVES): nu
   return slope;
 }
 
-export function sampleOcean(x: number, z: number, time: number): OceanSample {
+/** Precomputed per-wave constants; the spectrum is evaluated thousands of times a second. */
+type WaveTerm = {
+  directionX: number;
+  directionZ: number;
+  amplitude: number;
+  waveNumber: number;
+  angularSpeed: number;
+  /** Horizontal Gerstner excursion, `steepness · amplitude`. */
+  excursion: number;
+  steepness: number;
+};
+
+const WAVE_TERMS: readonly WaveTerm[] = OCEAN_WAVES.map((wave) => {
+  const directionLength = Math.hypot(wave.directionX, wave.directionZ) || 1;
+  const waveNumber = (Math.PI * 2) / wave.wavelength;
+  return {
+    directionX: wave.directionX / directionLength,
+    directionZ: wave.directionZ / directionLength,
+    amplitude: wave.amplitude,
+    waveNumber,
+    angularSpeed: Math.sqrt(9.81 * waveNumber) * wave.speed,
+    excursion: wave.steepness * wave.amplitude,
+    steepness: wave.steepness,
+  };
+});
+
+/**
+ * Fixed-point steps used to find which undisplaced grid point the rendered
+ * surface carries over a given world position. The horizontal Gerstner
+ * excursion contracts by Σ steepness·k·A ≈ 0.08 per step, so two steps leave
+ * an error of a few millimetres.
+ */
+export const SURFACE_INVERSION_ITERATIONS = 2;
+
+/**
+ * The GPU moves every surface vertex sideways as well as up (Gerstner
+ * crests sharpen toward each other). The water standing over world point
+ * (x, z) therefore belongs to a slightly different base point. This returns
+ * that base point, so a sample describes the surface actually drawn there.
+ */
+export function surfaceBasePoint(x: number, z: number, time: number, target: { x: number; z: number }): void {
+  let baseX = x;
+  let baseZ = z;
+  for (let iteration = 0; iteration < SURFACE_INVERSION_ITERATIONS; iteration += 1) {
+    let offsetX = 0;
+    let offsetZ = 0;
+    for (const wave of WAVE_TERMS) {
+      const phase = wave.waveNumber * (wave.directionX * baseX + wave.directionZ * baseZ) - wave.angularSpeed * time;
+      const cosine = Math.cos(phase);
+      offsetX += wave.directionX * wave.excursion * cosine;
+      offsetZ += wave.directionZ * wave.excursion * cosine;
+    }
+    baseX = x - offsetX;
+    baseZ = z - offsetZ;
+  }
+  target.x = baseX;
+  target.z = baseZ;
+}
+
+const scratchBase = { x: 0, z: 0 };
+
+/**
+ * Height and normal of the rendered sea surface above world point (x, z).
+ *
+ * `depth` (metres below the mean surface, default 0) returns instead the
+ * vertical excursion of the water particle that sits at that depth: linear
+ * wave theory attenuates each component by e^(−k·depth). A whale cruising
+ * at eight metres is barely lifted by the swell; a dolphin at the surface
+ * rides it fully.
+ */
+export function sampleOcean(x: number, z: number, time: number, depth = 0): OceanSample {
+  surfaceBasePoint(x, z, time, scratchBase);
+  const baseX = scratchBase.x;
+  const baseZ = scratchBase.z;
+  const submerged = Math.max(0, depth);
   let height = 0;
   let slopeX = 0;
   let slopeZ = 0;
+  let compression = 0;
 
-  for (const wave of OCEAN_WAVES) {
-    const directionLength = Math.hypot(wave.directionX, wave.directionZ) || 1;
-    const directionX = wave.directionX / directionLength;
-    const directionZ = wave.directionZ / directionLength;
-    const waveNumber = (Math.PI * 2) / wave.wavelength;
-    const angularSpeed = Math.sqrt(9.81 * waveNumber) * wave.speed;
-    const phase = waveNumber * (directionX * x + directionZ * z) - angularSpeed * time;
+  for (const wave of WAVE_TERMS) {
+    const phase = wave.waveNumber * (wave.directionX * baseX + wave.directionZ * baseZ) - wave.angularSpeed * time;
+    const sine = Math.sin(phase);
     const cosine = Math.cos(phase);
-    height += wave.amplitude * Math.sin(phase);
-    slopeX += wave.amplitude * waveNumber * directionX * cosine;
-    slopeZ += wave.amplitude * waveNumber * directionZ * cosine;
+    const attenuation = submerged > 0 ? Math.exp(-wave.waveNumber * submerged) : 1;
+    const peakSlope = wave.amplitude * wave.waveNumber * attenuation;
+    height += wave.amplitude * attenuation * sine;
+    slopeX += peakSlope * wave.directionX * cosine;
+    slopeZ += peakSlope * wave.directionZ * cosine;
+    compression += wave.steepness * peakSlope * sine;
   }
 
-  const inverseLength = 1 / Math.hypot(slopeX, 1, slopeZ);
+  // Gerstner surface normal: the crests are compressed horizontally, which
+  // shortens the vertical component under them.
+  const normalY = 1 - compression;
+  const inverseLength = 1 / Math.hypot(slopeX, normalY, slopeZ);
   return {
     height,
     normalX: -slopeX * inverseLength,
-    normalY: inverseLength,
+    normalY: normalY * inverseLength,
     normalZ: -slopeZ * inverseLength,
   };
 }
+
+/** Dominant wavenumber of the swell, for quick attenuation estimates. */
+export const SWELL_WAVENUMBER = (Math.PI * 2) / (OCEAN_WAVES[0]?.wavelength ?? 44);

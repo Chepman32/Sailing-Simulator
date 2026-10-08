@@ -4,6 +4,7 @@ import type { EnvironmentPalette } from "./EnvironmentPalette";
 import { createOceanGrid } from "./OceanGrid";
 import { OCEAN_WAVES, sampleOcean, type OceanSample } from "./OceanMath";
 import { createSkyUniforms, setLinearColor, type SkyUniforms } from "./SkyUniforms";
+import { MAX_IMPACT_STRENGTH, MAX_SURFACE_IMPACTS, surfaceImpactLife } from "./SurfaceImpacts";
 import { oceanFragmentShader, oceanVertexShader } from "./shaders/oceanShader";
 
 function createFocusedOceanGeometry(segments: number): { geometry: THREE.BufferGeometry; cellSize: number } {
@@ -21,7 +22,7 @@ export class OceanSystem {
   /** Shared by reference with the sky dome so reflections match the sky. */
   readonly skyUniforms: SkyUniforms = createSkyUniforms();
   private readonly uniforms: Record<string, THREE.IUniform>;
-  private time = 0;
+  private currentTime = 0;
   private segments: number;
   private cellSize: number;
 
@@ -40,6 +41,7 @@ export class OceanSystem {
       uVesselPosition: { value: new THREE.Vector3() },
       uVesselForward: { value: new THREE.Vector2(0, 1) },
       uVesselSpeed: { value: 0 },
+      uImpacts: { value: Array.from({ length: MAX_SURFACE_IMPACTS }, () => new THREE.Vector4(0, 0, 0, 0)) },
     };
     const material = new THREE.ShaderMaterial({
       name: "OceanSurface",
@@ -61,12 +63,48 @@ export class OceanSystem {
     scene.add(this.mesh);
   }
 
-  sample(x: number, z: number): OceanSample {
-    return sampleOcean(x, z, this.time);
+  /** Simulation time the surface is currently drawn at. */
+  get time(): number {
+    return this.currentTime;
+  }
+
+  /**
+   * Height and normal of the rendered surface above (x, z). With `depth`,
+   * the vertical excursion of the water that far below the mean surface.
+   */
+  sample(x: number, z: number, depth = 0): OceanSample {
+    return sampleOcean(x, z, this.currentTime, depth);
+  }
+
+  /**
+   * Starts a ring wave and slick at (x, z). The oldest or weakest impact is
+   * replaced when all slots are in use, so a burst of splashes stays bounded.
+   */
+  addImpact(x: number, z: number, strength: number): void {
+    const bounded = Math.min(MAX_IMPACT_STRENGTH, Math.max(0, strength));
+    if (bounded <= 0.02) return;
+    const impacts = this.uniforms.uImpacts.value as THREE.Vector4[];
+    let slot = impacts[0]!;
+    let lowestRemaining = Number.POSITIVE_INFINITY;
+    for (const impact of impacts) {
+      const remaining =
+        impact.w > 0 ? surfaceImpactLife(impact.w) - (this.currentTime - impact.z) : Number.NEGATIVE_INFINITY;
+      // Prefer an empty or expired slot, then the one closest to fading out.
+      const weight = remaining <= 0 ? Number.NEGATIVE_INFINITY : remaining * (0.5 + impact.w);
+      if (weight < lowestRemaining) {
+        lowestRemaining = weight;
+        slot = impact;
+      }
+    }
+    slot.set(x, z, this.currentTime, bounded);
+  }
+
+  clearImpacts(): void {
+    (this.uniforms.uImpacts.value as THREE.Vector4[]).forEach((impact) => impact.set(0, 0, 0, 0));
   }
 
   update(time: number, focus: THREE.Vector3, heading = 0, speed = 0): void {
-    this.time = time;
+    this.currentTime = time;
     this.uniforms.uVesselSpeed.value = Math.abs(speed);
     this.uniforms.uTime.value = time;
     (this.uniforms.uVesselPosition.value as THREE.Vector3).copy(focus);

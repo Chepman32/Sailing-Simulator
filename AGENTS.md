@@ -16,7 +16,8 @@ The experience should communicate the following at a glance:
 - day and night are coherent environment states rather than unrelated color filters;
 - islands are tropical land masses with shallow water and collision boundaries, not circular platforms;
 - wildlife uses authored, licensed, rigged 3D models and moves forward with inertia;
-- whales remain mostly submerged and expose an articulated fluke for a tail slap;
+- whales stay hidden at depth most of the time; a surfacing is a rare event in which only the back, the blowhole and, when lobtailing, the peduncle and flukes clear the water;
+- dolphins leap only at real speed, in one continuous ballistic arc; sharks are mostly a dark shape below the surface;
 - mobile controls remain readable, reachable, and independent from camera gestures;
 - sound is a layered simulation channel that unlocks from a trusted browser gesture.
 
@@ -82,7 +83,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 
 | Path | Responsibility |
 | --- | --- |
-| `src/simulator/environment/OceanMath.ts` | Shared Gerstner spectrum, shading-only detail spectrum, CPU sampler |
+| `src/simulator/environment/OceanMath.ts` | Shared Gerstner spectrum, shading-only detail spectrum, CPU sampler of the displaced surface and of the water's motion at depth |
+| `src/simulator/environment/SurfaceImpacts.ts` | Ring waves and slicks from impacts, as a pure function and its GLSL twin |
 | `src/simulator/environment/OceanGrid.ts` | Pure builder for the camera-focused grid and its per-vertex cell size |
 | `src/simulator/environment/OceanSystem.ts` | Ocean mesh, uniforms, whole-cell re-centring, quality changes |
 | `src/simulator/environment/shaders/oceanShader.ts` | Ocean GLSL generated from the shared spectra and island definitions |
@@ -107,21 +109,25 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/vessel/VesselPhysics.ts` | Engines, sails, windage, hull and keel hydrodynamics, rudders, seakeeping, grounding |
 | `src/simulator/vessel/SailAerodynamics.ts` | Pure sail lift/drag polar and automatic sheeting |
 | `src/simulator/vessel/SailSystem.ts` | Sail material and wind/trim deformation |
-| `src/simulator/vessel/WakeSystem.ts` | Twin hull tracks, prop wash, bow droplets, wildlife splash rings and foam patches |
+| `src/simulator/vessel/WakeSystem.ts` | Twin hull tracks, prop wash, bow droplets; wildlife splashes by contact kind: droplets, mist, crown sheets, rings, foam fields, fin trails, whale blows |
 
 ### Wildlife
 
 | Path | Responsibility |
 | --- | --- |
-| `src/simulator/wildlife/WildlifeSystem.ts` | Owns wildlife controllers and throttles animation mixers to approximately 30 Hz |
-| `DolphinController.ts` | Dolphin group movement and gated breach state machine |
-| `SharkController.ts` | Forward-only shark cruise behavior |
-| `WhaleController.ts` | Submerged whale cruise, articulated fluke rise/strike, physical water-contact splash |
+| `src/simulator/wildlife/WildlifeSystem.ts` | Owns every animal and the shared `MarineWorld` (rendered surface, bathymetry, yacht, each other) |
+| `WhaleBehavior.ts` | Pure whale state machine, depth keeping, tail-chain springs, lobtail planning, tail forward kinematics |
+| `WhaleController.ts` | Whale rig: procedural tail bends, flipper clip, tracked blowhole/back/fluke contact points |
+| `DolphinBehavior.ts` | Pure pod modes, per-dolphin leap state machine, speed gates, ballistics, hull clearance |
+| `DolphinController.ts` | Dolphin rig: procedural dorsoventral body wave, path-following arc, contact points |
+| `SharkBehavior.ts` | Pure shark state machine: patrol, investigate, close pass, burst, retreat, deep swim, fin show |
+| `SharkController.ts` | Shark rig: clip phase and weight from the behaviour, turn curvature, countershading, fin contact |
+| `WaterContact.ts` | `MarineWorld`, `WaterEffects`, surface-crossing hysteresis, contact energy, deep-water steering |
+| `BodyRig.ts` | Procedural bones in the animal frame, body points, clip filtering, animation LOD intervals |
 | `ReefFishController.ts` | Instanced reef fish extracted from the school asset, vertex-shader swimming |
 | `ReefFishMath.ts` | Pure boids schooling, depth band, flight from threats, tail-beat rules |
 | `GullFlockController.ts` | Animated aerial flock behavior |
-| `SwimmerDynamics.ts` | Shared bounded speed, acceleration, yaw-rate, pitch, bank, and vertical dynamics |
-| `WildlifeState.ts` | Pure dolphin and whale states, durations, transitions, tail-slap pose |
+| `SwimmerDynamics.ts` | Shared forward-only swimmer: turn radius, bounded rates, pitch steering and overshoot-free depth holding |
 | `WildlifeModel.ts` | GLB normalization, animation selection, asset validation, heading helpers |
 
 ### Input, camera, audio, and HUD
@@ -144,7 +150,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `build/sites-vite-plugin.ts` | Sites-specific Vite behavior |
 | `worker/index.ts` | Cloudflare Worker entrypoint |
 | `.openai/hosting.json` | Sites project configuration and deployment identity |
-| `tests/unit/simulator.test.ts` | Environment, engine, wake, physics, wildlife, and stability invariants |
+| `tests/unit/simulator.test.ts` | Environment, engine, wake, physics, and stability invariants |
+| `tests/unit/wildlife.test.ts` | Shared surface, impacts, contact, whale/dolphin/shark behaviour runs against the real sea |
 | `tests/unit/assets.test.ts` | GLB quality/rig/animation/weight constraints and island geometry constraint |
 | `tests/unit/i18n.test.ts` | Language coverage, aliases, fallback, and preference semantics |
 | `tests/rendered-html.test.mjs` | Built-route smoke test |
@@ -256,7 +263,11 @@ Six wave definitions in `OceanMath.ts` (`OCEAN_WAVES`) are the shared source for
 - wildlife surface contact;
 - camera water-floor protection.
 
-They describe a moderate trade-wind sea aligned with the true wind. Every displaced wavelength stays above 5 m. If a wave parameter changes, verify GPU and CPU calculations still use the same direction, amplitude, wavelength, speed, steepness, phase convention, and world coordinates, and keep `maximumOceanSlope()` under the tested limit.
+They describe a moderate trade-wind sea aligned with the true wind. Every displaced wavelength stays above 5 m.
+
+The GPU moves each vertex sideways as well as up, so `sampleOcean` first inverts the horizontal Gerstner excursion (two fixed-point steps, `surfaceBasePoint`) and returns the height and normal of the surface actually drawn over the queried point; `OCEAN_SURFACE_HEIGHT_GLSL` does the same in shaders. With a `depth` argument it instead returns the vertical motion of the water that far down (each wave attenuated by e^(−k·depth)): heavy swimmers ride this, so a whale at ten metres is barely moved by the swell and one at the surface rides it fully.
+
+`SurfaceImpacts.ts` adds up to eight ring-wave impacts (`OceanSystem.addImpact`): a group of crests spreading from each splash and a glassy slick behind it that damps the wind ripples, lasting up to about twenty seconds for a fluke slap. Like the detail spectrum they only shape the normal. If a wave parameter changes, verify GPU and CPU calculations still use the same direction, amplitude, wavelength, speed, steepness, phase convention, and world coordinates, and keep `maximumOceanSlope()` under the tested limit.
 
 `OCEAN_DETAIL_WAVES` are shorter waves that only perturb the shading normal. They have no CPU companion on purpose: they are too small to move the yacht.
 
@@ -326,7 +337,7 @@ The wake is intentionally divided into separate effects:
 1. two hull tracks, emitted from the port and starboard stern positions;
 2. one central propeller wash, emitted whenever throttle magnitude exceeds the prop threshold;
 3. bow droplets at higher forward speed;
-4. reusable splash rings, foam patches, and ballistic droplets for wildlife impacts.
+4. wildlife contact effects from bounded pools: droplets, mist, crown sheets, rings, foam fields, fin trails and whale blows.
 
 The current wake contract is:
 
@@ -349,6 +360,8 @@ Distance remains the primary spacing rule. The time fallback exists only to make
 Wake visuals use bounded `InstancedMesh` capacity derived from quality at construction time. Splash droplets use a bounded `Points` pool. New effects must reuse these pools or introduce another bounded pool rather than allocating a mesh per frame.
 
 A wildlife splash position must be an actual world-space water-contact position, not a hard-coded distance from the animal root.
+
+`WakeSystem.splash(position, intensity, kind, velocity)` shapes the water by how the body met the surface (`SplashKind`): `entry` opens a crown that rises and falls back, `exit` drags a sheet of spray along the body's own velocity, `slap` blasts water out and leaves a foam field that lasts tens of seconds, `breath` is a back or fin breaking the surface, and `blow` is a whale's (or a dolphin's tiny) exhalation that drifts downwind as mist. Intensity is contact energy from `contactIntensity(mass, speed)`: a dolphin re-entering at speed is about 1, a fluke slap about 5. Heavier contacts throw more and finer droplets plus a soft mist cloud, never bigger balls. Each splash also starts a ring-wave impact in the ocean shader. `trail()`, `shed()` and `ripple()` add fin trails, water running off a body in the air, and a spray-free slick. Crowns, trails and particles are fixed-size pools sized by quality.
 
 ## 13. Islands and bathymetry
 
@@ -387,7 +400,7 @@ Lighting: one directional light carries the palette's dominant light and casts a
 
 ### Under the surface
 
-`UnderwaterLight` applies the same Beer–Lambert transmittance to every material below sea level: wildlife, the reef fish, the hulls' underwater parts, the appendages, the island aprons and the seabed. Red is absorbed within a few metres, blue last, and the water's own colour is scattered back in, so submerged things read as in the water rather than behind glass. The in-scattered colour follows the palette.
+`UnderwaterLight` applies the same Beer–Lambert transmittance to every material below the local wave surface (evaluated per vertex from the shared spectrum): wildlife, the reef fish, the hulls' underwater parts, the appendages, the island aprons and the seabed. Red is absorbed within a few metres, blue last, and the water's own colour is scattered back in, so submerged things read as in the water rather than behind glass. The in-scattered colour follows the palette.
 
 Navigation lights stay in the scene at zero intensity by day. Toggling their visibility would change the scene's light count and recompile every lit shader at dusk.
 
@@ -425,28 +438,36 @@ The simulator loads external rigged GLBs for all visible living objects. There a
 
 General motion rules:
 
-- translation is always along the model's normalized forward direction;
-- speed remains positive;
-- acceleration, deceleration, yaw rate, and yaw acceleration are bounded;
-- target heading uses the shortest angular path but cannot instantaneously flip 180 degrees;
-- bank derives from turn rate and remains small;
-- pitch derives from bounded vertical speed and never rapidly inverts the body;
-- depth follows a damped acceleration model rather than teleporting;
-- waypoints last long enough to produce legible arcs;
-- animation clips may accelerate with swim speed, but clip speed cannot replace actual translation;
-- distant respawn preserves coherent orientation on the first visible frame.
+- every animal is a forward-only swimmer (`SwimmerDynamics`): velocity is always along the body axis, speed stays positive, and the turn rate is limited by a minimum turning radius at the current speed, so nothing pivots in place;
+- yaw and pitch rates change with bounded acceleration; bank follows turn rate and stays small;
+- heavy swimmers (whales, sharks, cruising dolphins) hold depth with a critically damped, bounded vertical controller (`stepSwimmerAtDepth`) and take their pitch from the resulting path, so depth changes never overshoot; leaping dolphins steer by pitch;
+- depth is kept relative to the mean surface, and the water's own motion at that depth (`sampleOcean(x, z, t, depth)`) carries the body on top: nothing bobs on a sine of its own;
+- behaviour is pure (`*Behavior.ts`: state machine, steering, kinematics, pose parameters) and unit-tested against the real sea and bathymetry; controllers only map it onto the rig and the effects;
+- tails and spines are bent procedurally through the real joints with `ProceduralBone`, in the animal's own frame, on top of whatever the mixer last wrote; authored clips are filtered (`filterClip`) to the secondary motion they do well;
+- surface contact is tracked at named body points (`BodyPoint` + `SurfacePoint` with hysteresis), never at the model centre; splash energy comes from mass and speed through the surface;
+- animals keep off islands with `headingTowardDeepWater`, keep each other at a distance, and never occupy the yacht's hull and keel box;
+- an animal left far behind a moving yacht is moved ahead of her only while it is deep and out of sight;
+- skeletal sampling slows with camera distance (`animationInterval`) and animals hidden by depth or distance are not drawn.
 
 ### Dolphins
 
-Dolphins normally cruise rapidly and smoothly. A breach can start only when the yacht is making at least `DOLPHIN_BREACH_MIN_BOAT_SPEED` (about 6 kn, a realistic bow-riding speed) and the cooldown has expired. The state sequence is:
+`DolphinBehavior` runs a pod and its members. The pod roams calmly around a stopped or slow yacht, escorts her abeam, rides the pressure wave just ahead of her bows, or crosses ahead of her and loops back, depending on her speed. Pod members keep loose slots with individual speed, depth and timing, surge ahead and drop back when playful, and rise to breathe with a small chuff of mist.
 
-`swim → approach → breach_ascent → airborne → reentry → splash → dive → swim`
+Each dolphin runs:
 
-Each phase has a finite duration, continuous position, continuous velocity, and timeout. Airborne motion must not pause. Orientation follows trajectory tangent without rolling upside down. Reentry creates foam, droplets, and sound.
+`cruise → accelerate → approach_surface → leap → airborne → reentry → dive → recover → cruise`
+
+Leaps are speed gated twice. A dolphin only commits to one (`canCommitToLeap`) in a playful pod (yacht at least `DOLPHIN_PLAY_VESSEL_SPEED`, about 4.7 kn), after its cooldown, already swimming at `DOLPHIN_LEAP_ENTRY_SPEED` or more, over deep water and clear of the hulls. It then accelerates at depth and only leaves the water if it has actually reached `DOLPHIN_LEAP_MIN_SPEED`; otherwise it levels off. A calm pod never leaps. The run-up depth (`leapRunDepth`) is what lets the body rotate to its exit angle before the rostrum breaks the surface. From that moment the motion is ballistic, the body axis lies along the velocity and arches with the path's curvature, the strokes stop, and the dolphin re-enters head first carrying its momentum into a dive that the water slows. Variants: low porpoising arcs, high arcs, paired leaps started a fraction of a second apart, and rare spinner leaps that complete one or two rolls before re-entry.
+
+The rig is rooted at the tail and its authored clip only flaps the pectoral fins, so the dorsoventral body wave is procedural (frequency from speed, larger toward the flukes) and the model is shifted to keep the mid-body on the path. The model is scaled by its length to a 2.7 m bottlenose.
 
 ### Sharks
 
-Sharks cruise below the surface with positive speed, limited turn rate, gradual bank, and gentle depth corrections. Do not use the authored bite clip as a locomotion substitute. A shark may pass the yacht at a safe distance but must not reverse or pivot in place.
+`SharkBehavior` runs:
+
+`cruise ⇄ patrol → investigate → approach → accelerate → retreat → deep_swim`, with an occasional `fin_show`.
+
+The shark patrols wide circles, cruises with slow changes of course, spirals in to look at the yacht and turns away, and drops into the deep where it disappears. Rarely (`SHARK_CLOSE_PASS_COOLDOWN`) it curves in and passes under the hulls below `SHARK_UNDER_KEEL_DEPTH`, sometimes followed by a burst; occasionally it rises until its dorsal fin cuts the surface for a few seconds, leaving a thin foam line. It never jumps, never chases the yacht for long and dives quickly if she comes over it. The authored swim clip is kept but driven: its phase is the shark's own tail-beat phase (faster with speed and effort) and its weight is the effort, so a gliding shark barely strokes and a bursting one thrashes; the spine curves into turns. The source ships white, so the material is countershaded (dark back, pale belly), which is what makes it a dark shape from above. Do not use the bite clip for locomotion.
 
 ### Reef fish
 
@@ -456,15 +477,15 @@ The licensed school asset holds nine rigged fish of four species in one choreogr
 
 ### Whales
 
-Whales remain submerged. The normal behavior is a slow cruise followed by an articulated tail sequence:
+`WhaleBehavior` runs one whale:
 
-`cruise → tail_rise → tail_strike → dive → cruise`
+`deep_swim → ascend → surface → prepare_tail_slap → tail_slap → submerge → cooldown → deep_swim`
 
-`WhaleController` owns exactly one whale. It follows a broad, inertial orbit around the yacht, remains between 50 and 100 horizontal meters away, and silently repositions below the surface if a fast yacht leaves that viewing band.
+The whale spends most of its time deep (about ten metres), where the water hides it completely; it is not hidden by any material trick. It surfaces only when the moment is right: at a comfortable distance from a stopped yacht on a course that will not carry it into her, or timed to come up abeam of a moving one (closest approach in about twenty to forty seconds). It climbs slowly and levels off near the surface (an 18 m body climbing steeply would lift its head metres out), breathes two or three times with only a sliver of back and the blowhole clear, each breath a blow of mist that drifts downwind, lies along the swell, and circles a stopped yacht rather than heading at her.
 
-Only the fluke should clear the water. Keep the complete PBR mesh volumetric and place the torso deeply enough that it remains below every nearby wave. Because the tropical ocean is intentionally translucent, the whale material uses a short dithered alpha-hash fade against the locally sampled water plane: underwater fragments disappear smoothly while the raised fluke remains fully 3D. A hard material clipping plane is forbidden because its exposed slice reads as a flat dark silhouette. Tail joints `locator4`, `locator5`, and `locator6` receive weighted procedural flex on top of the authored swim clip.
+After surfacing it may lobtail (almost always the first time, then more likely the longer it has gone without; never within `WHALE_SLAP_COOLDOWN`): it slows, tips its head down, and its peduncle lifts the flukes two to four metres clear while the torso stays under; water pours off them. It holds, then strikes one to three times with varying force, height and body angle. The tail is a chain of three real joints (`locator4`, `locator5`, `locator6`) whose bends follow damped springs, stiff at the root and laggier toward the flukes, so every stroke starts in the body and whips through to the tip; a strike is about twice as powerful as a lift. Otherwise it sounds, sometimes lifting its flukes as it goes down. A sounding whale leaves a glassy footprint.
 
-Splash emission is armed only after the final tail joint is above local water and fires when that same joint crosses downward through the sampled surface during `tail_strike`. The impact generates multiple foam rings, patches, many droplets, and a stronger splash sound. Do not trigger a whale splash from an arbitrary elapsed-time threshold or a hard-coded offset behind the root.
+The slap fires once per downstroke when a tracked fluke point crosses down through the rendered surface fast enough, at that point, with energy from the fluke's mass and speed. `WHALE_SHALLOWEST_DEPTH` is a hard limit on the body centre; the seabed may squeeze the whale up but never out of the sea, and it steers for water at least 13.5 m deep. The authored swim clip beats the flukes through seven metres, so only its flipper and eye tracks are played.
 
 ## 16. Audio system
 
@@ -571,11 +592,11 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 
 ## 20. Quality and performance
 
-| Preset | Max DPR | Ocean segments | Shadow map | Foam density | Wildlife count | Reef fish | Ocean detail | Sky detail | HDR pipeline | Bloom | MSAA |
+| Preset | Max DPR | Ocean segments | Shadow map | Foam density | Gulls / dolphins | Reef fish | Ocean detail | Sky detail | HDR pipeline | Bloom | MSAA |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
-| Low | 1.0 | 96 | 512 | 0.45 | 1 | 35% | 0.30 | 0 | off | – | – |
-| Medium | 1.25 | 144 | 1024 | 0.70 | 2 | 60% | 0.55 | 1 | on | 0.20 | 2× |
-| High | 1.75 | 224 | 2048 | 0.90 | 2 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
+| Low | 1.0 | 96 | 512 | 0.45 | 2 / 2 | 35% | 0.30 | 0 | off | – | – |
+| Medium | 1.25 | 144 | 1024 | 0.70 | 4 / 3 | 60% | 0.55 | 1 | on | 0.20 | 2× |
+| High | 1.75 | 224 | 2048 | 0.90 | 4 / 4 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
 
 Ocean detail gates fragment work: above 0.2 the detail spectrum and one ripple layer are shaded; above 0.6 the second ripple layer and cloud reflections are added. Sky detail selects three- or five-octave clouds.
 
@@ -654,8 +675,9 @@ The Sites checkpoint performs its own production build and rendered smoke verifi
 - Quality: presets that scale cost monotonically, with no post-processing on low.
 - Engine: start from neutral selects slow ahead, active throttle is preserved, stop returns neutral.
 - Physics: engine produces forward motion with believable inertia, no NaN, comparable outcomes at 60/120 Hz, buoyancy follows sloped samples, a correct sailing polar (no-go zone, fastest on a reach, heel to leeward, bounded leeway), realistic top speed, prop-wash steerage, correct helm sense, shaft spool-down, grounding without a bounce, and a long seaway passage that stays finite and on the rendered surface.
-- Wake: low-speed hull wake, stationary prop wash, monotonic strength, reverse symmetry, stronger whale splash profile.
-- Wildlife: complete dolphin/whale transitions, breach speed gate, forward-only dynamics, bounded acceleration/turn/pitch/bank; reef fish that swim forward with bounded turns, stay between reef and surface, keep off the beach, flee together and calm down.
+- Wake: low-speed hull wake, stationary prop wash, monotonic strength, reverse symmetry; splash kinds scaled by contact energy, a slap far larger and longer-lived than a dolphin entry.
+- Water contact: the sampler returns the displaced surface, motion fades with depth, ring waves spread and stay gentle, crossings have hysteresis.
+- Wildlife: forward-only swimmers with a real turning radius and overshoot-free depth holding; whales complete surfacing and lobtail, stay hidden most of the time, never raise the torso, never repeat displays back to back; dolphins never leap when calm or slow, leap only at speed in a continuous arc with the body along the path and re-enter head first, never enter the hull box; sharks stay mostly deep, show the fin rarely, never leave the water, never graze the keels, and beat their tails harder when accelerating; reef fish that swim forward with bounded turns, stay between reef and surface, keep off the beach, flee together and calm down.
 - Rig: boom settles at the sheeting angle on the correct side, gybes slam and tacks do not, mirrored pivot pose is exact.
 - Underwater light: red absorbed first, nothing above the surface, path bounded by view distance.
 - Assets: detailed whale rig/clip/PBR/triangle/byte limits, visible island radius constraint, future model budgets.
@@ -678,9 +700,9 @@ When visual/browser testing is requested or available, cover at least:
 - moon and moon path visible at night;
 - island edge through transparent water;
 - approach and collision with a beach;
-- dolphin cruise, breach, reentry, and splash;
-- shark long turn without reverse/upside-down motion;
-- whale body submerged, fluke rise, physical strike, strong splash;
+- dolphin cruise, bow ride, breath, leap at speed (low, high, paired, spinner), re-entry and splash; no leaps beside a slow yacht;
+- shark silhouette at depth, fin at the surface, pass under the hulls, burst, long turns without reverse/upside-down motion;
+- whale hidden at depth, surfacing with blows, fluke rise, physical strike, strong splash with lingering foam and rings, sounding;
 - all four camera modes, swipe, pinch, double-tap;
 - portrait and landscape safe areas;
 - RTL language layout;
@@ -817,11 +839,12 @@ Do not commit every exploratory change. The standing project preference is to pu
 - use a licensed rigged GLB;
 - normalize the forward axis;
 - preserve positive forward speed;
-- use bounded turn/vertical dynamics;
-- avoid random new targets every frame;
+- use bounded turn/vertical dynamics and the shared swimmer, never a sine on the model's height;
+- keep behaviour in a pure `*Behavior.ts` module and run it against the real sea in tests;
+- avoid random new targets every frame; gate rare events with conditions, probabilities and cooldowns;
 - keep state transitions finite;
-- derive splash from physical contact;
-- prevent opaque underwater silhouettes;
+- derive splash from tracked body points crossing the rendered surface;
+- let the water hide what is submerged; never mask a body with a clipping plane or alpha cut;
 - test the relevant pure helpers and asset constraints.
 
 ### Changing audio
@@ -864,7 +887,7 @@ The following are known constraints, not invitations to bypass the architecture:
 - the yacht force model is intentionally lightweight and not a full six-degree-of-freedom naval solver: sails are sheeted automatically, the two engines are not independently controllable, and heave, pitch, and roll are oscillators driven by the water plane rather than integrated hull pressures;
 - ocean reflections are analytic sky only: the yacht, islands, and wildlife are not mirrored in the water, and there is no refraction or depth-based absorption because the scene depth is not sampled;
 - whitecaps are a function of the instantaneous wave field and leave no persistent foam history;
-- underwater absorption measures depth from mean sea level rather than the local wave, and the ocean's own transparency is a constant blend rather than a refraction;
+- the ocean's own transparency is a blend rather than a refraction, and underwater absorption uses the uninverted wave height per vertex (a few centimetres of error);
 - the yacht's three cabin meshes overlap substantially (about 140k triangles together); merging them needs an asset rework;
 - reef fish are lifted from one rigged asset and animated procedurally; they do not use the asset's authored clip;
 - wake and wildlife capacities do not rebuild when changing quality after initialization;
@@ -892,7 +915,9 @@ Never knowingly ship any of these regressions:
 - part of the sky stays dark after returning to day;
 - night is unreadably black or moon is missing from the 30-degree elevation;
 - dolphins or sharks translate backward, flip upside down, pivot instantly, or freeze in place;
-- a whale fully breaches, becomes a flat dark blob, or splashes without its fluke contacting water;
+- a whale fully breaches, shows its torso, repeats a display back to back, or splashes without its fluke contacting water;
+- a dolphin leaps at low speed, leaves the water outside a leap, or passes through a hull;
+- an animal is hidden or revealed by a material trick instead of the water;
 - procedural primitive animals replace failed GLBs;
 - mobile settings open over the scene by default;
 - engine switch, rudder, wheel indicator, or throttle disappears at a phone breakpoint;

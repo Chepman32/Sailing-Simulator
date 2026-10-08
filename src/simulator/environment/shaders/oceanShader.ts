@@ -5,7 +5,8 @@ import {
   SHORE_DEPTH,
   WATERLINE_RADIAL,
 } from "../IslandMath";
-import { OCEAN_DETAIL_WAVES, OCEAN_WAVES } from "../OceanMath";
+import { OCEAN_DETAIL_WAVES, OCEAN_WAVES, SURFACE_INVERSION_ITERATIONS } from "../OceanMath";
+import { SURFACE_IMPACT_GLSL } from "../SurfaceImpacts";
 import { SKY_FUNCTIONS, SKY_UNIFORM_DECLARATIONS } from "./skyShader";
 
 /**
@@ -84,21 +85,56 @@ const islandDistanceCalls = ISLAND_DEFINITIONS.map(
 const heightTerms = OCEAN_WAVES.map((wave) => {
   const [dx, dz] = unit(wave.directionX, wave.directionZ);
   const k = (Math.PI * 2) / wave.wavelength;
-  return `    height += ${glsl(wave.amplitude)} * sin(${glsl(k)} * dot(vec2(${glsl(dx)}, ${glsl(dz)}), position) - ${glsl(
+  return `    height += ${glsl(wave.amplitude)} * sin(${glsl(k)} * dot(vec2(${glsl(dx)}, ${glsl(dz)}), base) - ${glsl(
     Math.sqrt(9.81 * k) * wave.speed,
   )} * time);`;
 }).join("\n");
 
+const excursionTerms = OCEAN_WAVES.map((wave) => {
+  const [dx, dz] = unit(wave.directionX, wave.directionZ);
+  const k = (Math.PI * 2) / wave.wavelength;
+  return `      offset += vec2(${glsl(dx)}, ${glsl(dz)}) * ${glsl(wave.steepness * wave.amplitude)} * cos(${glsl(
+    k,
+  )} * dot(vec2(${glsl(dx)}, ${glsl(dz)}), base) - ${glsl(Math.sqrt(9.81 * k) * wave.speed)} * time);`;
+}).join("\n");
+
 /**
  * GLSL twin of `sampleOcean(...).height`, for materials that need to know
- * where the water meets them (the wet band on the hulls).
+ * where the water meets them (the wet band on the hulls, the waterline on
+ * swimming animals). Like the CPU sampler it first finds which undisplaced
+ * grid point the Gerstner waves carry over `position`.
  */
 export const OCEAN_SURFACE_HEIGHT_GLSL = /* glsl */ `
+  #ifndef OCEAN_SURFACE_HEIGHT
+  #define OCEAN_SURFACE_HEIGHT
   float oceanSurfaceHeight(vec2 position, float time) {
+    vec2 base = position;
+    for (int iteration = 0; iteration < ${SURFACE_INVERSION_ITERATIONS}; iteration++) {
+      vec2 offset = vec2(0.0);
+${excursionTerms}
+      base = position - offset;
+    }
     float height = 0.0;
 ${heightTerms}
     return height;
   }
+  #endif
+`;
+
+/**
+ * Per-vertex approximation of {@link OCEAN_SURFACE_HEIGHT_GLSL} that skips
+ * the horizontal inversion (an error of a few centimetres). Used where every
+ * vertex of large or instanced meshes needs the local waterline.
+ */
+export const OCEAN_SURFACE_HEIGHT_FAST_GLSL = /* glsl */ `
+  #ifndef OCEAN_SURFACE_HEIGHT_FAST
+  #define OCEAN_SURFACE_HEIGHT_FAST
+  float oceanSurfaceHeightFast(vec2 base, float time) {
+    float height = 0.0;
+${heightTerms}
+    return height;
+  }
+  #endif
 `;
 
 export const oceanVertexShader = /* glsl */ `
@@ -165,6 +201,7 @@ export const oceanFragmentShader = /* glsl */ `
   const float HULL_HALF_BEAM = ${glsl(HULL_HALF_BEAM)};
 
   ${SKY_FUNCTIONS}
+  ${SURFACE_IMPACT_GLSL}
 
   // Shared displacement spectrum, evaluated per pixel for a crisp normal.
   void swellWave(
@@ -258,6 +295,9 @@ ${islandDistanceCalls}
     float fold = 0.0;
     float lostVariance = 0.0;
 ${swellCalls}
+    // Everything below is wind ripple; an impact's slick smooths it away.
+    vec2 swellSlope = slope;
+    float swellVariance = lostVariance;
     if (uDetail > 0.2) {
       float warp = skyNoise(base * 0.085 + vec2(uTime * 0.02, 3.7)) * 5.5;
 ${detailCalls}
@@ -268,6 +308,11 @@ ${detailCalls}
     } else {
       lostVariance += 0.006;
     }
+    vec2 rippleSlope = slope - swellSlope;
+    float rippleVariance = lostVariance - swellVariance;
+    float calm = surfaceImpacts(vWorldPosition.xz, footprint, swellSlope);
+    slope = swellSlope + rippleSlope * (1.0 - calm * 0.82);
+    lostVariance = swellVariance + rippleVariance * (1.0 - calm * 0.82);
 
     vec3 normal = normalize(vec3(-slope.x, 1.0, -slope.y));
     float nDotV = clamp(dot(normal, viewDirection), 0.02, 1.0);
@@ -360,7 +405,7 @@ ${detailCalls}
     // A frayed, speckled fringe dissolves around each patch.
     foam += smoothstep(0.02, 0.5, whitecap) * smoothstep(0.58, 0.86, foamTexture) * 0.45;
     foam += smoothstep(0.36, 0.8, breaking) * smoothstep(0.66, 0.9, foamTexture) * 0.16;
-    foam = min(foam, 0.88) * uFoamDensity;
+    foam = min(foam, 0.88) * uFoamDensity * (1.0 - calm * 0.6);
 
     // Shore wash: bands of foam running up the sand, then a wet swash line.
     float washPhase = shore * 1.15 + uTime * 0.85 + foamMedium * 2.6;

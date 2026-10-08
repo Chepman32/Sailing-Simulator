@@ -129,12 +129,21 @@ export class Simulator {
         this.scene,
         this.ocean,
         this.assets,
-        this.quality.settings.wildlifeCount,
-        this.quality.settings.fishDensity,
+        {
+          dolphins: this.quality.settings.dolphinCount,
+          gulls: this.quality.settings.wildlifeCount,
+          fishDensity: this.quality.settings.fishDensity,
+        },
         this.underwater,
-        (position, intensity) => {
-          this.wake.splash(position, intensity);
-          this.audio?.splash(intensity);
+        {
+          splash: (position, intensity, kind, velocity) => {
+            this.wake.splash(position, intensity, kind, velocity);
+            const distance = this.camera ? this.camera.camera.position.distanceTo(position) : 0;
+            this.audio?.splash(intensity, kind, distance);
+          },
+          trail: (position, heading, strength, width) => this.wake.trail(position, heading, strength, width),
+          shed: (position, velocity, count, size) => this.wake.shed(position, velocity, count, size),
+          ripple: (position, strength) => this.wake.ripple(position, strength),
         },
       );
       this.camera = new CameraController(this.canvas.clientWidth / Math.max(1, this.canvas.clientHeight), this.ocean);
@@ -299,6 +308,7 @@ export class Simulator {
     );
     this.wake.setEnvironment(this.environment.current.palette);
     this.underwater.setPalette(this.environment.current.palette);
+    this.underwater.setTime(this.elapsed);
     this.audio.update(
       delta,
       Math.abs(this.physics.telemetry.forwardSpeed),

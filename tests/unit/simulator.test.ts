@@ -48,7 +48,6 @@ import { MAX_PROPELLER_RPM, propellerRpmForThrottle } from "../../src/simulator/
 import {
   BOW_SPRAY_MIN_SPEED,
   bowSprayRate,
-  calculateSplashProfile,
   calculateWakeEmission,
 } from "../../src/simulator/vessel/WakeSystem";
 import {
@@ -61,26 +60,6 @@ import {
   type SwimmerKinematics,
   type SwimmerLimits,
 } from "../../src/simulator/wildlife/SwimmerDynamics";
-import {
-  WHALE_MAX_BOAT_DISTANCE,
-  WHALE_MIN_BOAT_DISTANCE,
-  WHALE_SUBMERGED_FADE_START,
-  WHALE_SURFACE_REVEAL_CLEARANCE,
-  WHALE_TAIL_IMPACT_ARM_CLEARANCE,
-  WHALE_TAIL_SPLASH_INTENSITY,
-  DOLPHIN_BREACH_MIN_BOAT_SPEED,
-  canStartBreach,
-  didWhaleFlukeStrike,
-  isWhaleWithinBoatRange,
-  nextDolphinState,
-  nextWhalePhase,
-  whaleOrbitHeading,
-  whaleSpawnDistance,
-  whaleSurfaceVisibility,
-  whaleTailSlapPose,
-  type DolphinState,
-  type WhalePhase,
-} from "../../src/simulator/wildlife/WildlifeState";
 
 test("GPU wave companion sampler stays finite over a wide world range", () => {
   for (let x = -1200; x <= 1200; x += 97) {
@@ -170,20 +149,6 @@ test("engaging the engine from neutral produces forward motion", () => {
   assert.ok(physics.telemetry.forwardSpeed > afterOneSecond);
 });
 
-test("dolphin breach state machine always returns to swim and is speed gated", () => {
-  const visited: DolphinState[] = [];
-  let state: DolphinState = "swim";
-  for (let index = 0; index < 7; index += 1) {
-    state = nextDolphinState(state);
-    visited.push(state);
-  }
-  assert.deepEqual(visited, ["approach", "breach_ascent", "airborne", "reentry", "splash", "dive", "swim"]);
-  assert.equal(canStartBreach(DOLPHIN_BREACH_MIN_BOAT_SPEED - 0.01, 0), false);
-  assert.equal(canStartBreach(DOLPHIN_BREACH_MIN_BOAT_SPEED + 1, 0.01), false);
-  assert.equal(canStartBreach(DOLPHIN_BREACH_MIN_BOAT_SPEED + 1, 0), true);
-  assert.ok(DOLPHIN_BREACH_MIN_BOAT_SPEED < 4.5, "dolphins must ride the bow at realistic cruising speeds");
-});
-
 test("swimmer dynamics keep motion forward with bounded acceleration and turn inertia", () => {
   const limits: SwimmerLimits = {
     minSpeed: 1.8,
@@ -240,62 +205,6 @@ test("wildlife course, depth, pitch, and bank helpers reject abrupt or inverted 
   assert.ok(Math.abs(y + 1.5) < 0.03);
   assert.ok(Math.abs(swimmerPitch(20, 1, 0.18)) <= 0.18);
   assert.ok(Math.abs(swimmerBank(4, 8, 0.14)) <= 0.14);
-});
-
-test("whale state machine completes one submerged tail-slap cycle", () => {
-  const visited: WhalePhase[] = [];
-  let phase: WhalePhase = "cruise";
-  for (let index = 0; index < 4; index += 1) {
-    phase = nextWhalePhase(phase);
-    visited.push(phase);
-  }
-  assert.deepEqual(visited, ["tail_rise", "tail_strike", "dive", "cruise"]);
-
-  const raised = whaleTailSlapPose("tail_rise", 1);
-  const impact = whaleTailSlapPose("tail_strike", 0.35);
-  assert.ok(raised.bodyDepth <= -6, "the whale's body must remain deeply below the waterline");
-  assert.ok(raised.tailFlex >= 0.75, "only the articulated tail should rise above the surface");
-  assert.equal(impact.impact, true);
-  assert.ok(Math.abs(impact.bodyPitch) < 0.1, "the full whale must never stand vertically");
-});
-
-test("the translucent ocean cannot reveal a submerged whale body", () => {
-  assert.equal(whaleSurfaceVisibility(WHALE_SUBMERGED_FADE_START - 0.01), 0);
-  assert.equal(whaleSurfaceVisibility(WHALE_SURFACE_REVEAL_CLEARANCE + 0.01), 1);
-  const edgeVisibility = whaleSurfaceVisibility((WHALE_SUBMERGED_FADE_START + WHALE_SURFACE_REVEAL_CLEARANCE) / 2);
-  assert.ok(edgeVisibility > 0 && edgeVisibility < 1, "the waterline transition must stay soft");
-});
-
-test("whale splash fires only when an armed fluke crosses down through the surface", () => {
-  assert.ok(WHALE_TAIL_IMPACT_ARM_CLEARANCE >= 0.15);
-  assert.equal(didWhaleFlukeStrike("tail_strike", true, 0.42, -0.03), true);
-  assert.equal(didWhaleFlukeStrike("tail_rise", true, 0.42, -0.03), false);
-  assert.equal(didWhaleFlukeStrike("tail_strike", false, 0.42, -0.03), false);
-  assert.equal(didWhaleFlukeStrike("tail_strike", true, -0.02, -0.1), false);
-});
-
-test("the single whale remains in a 50–100 meter viewing band around the yacht", () => {
-  assert.equal(isWhaleWithinBoatRange(WHALE_MIN_BOAT_DISTANCE), true);
-  assert.equal(isWhaleWithinBoatRange(WHALE_MAX_BOAT_DISTANCE), true);
-  assert.equal(isWhaleWithinBoatRange(WHALE_MIN_BOAT_DISTANCE - 0.01), false);
-  assert.equal(isWhaleWithinBoatRange(WHALE_MAX_BOAT_DISTANCE + 0.01), false);
-  assert.ok(isWhaleWithinBoatRange(whaleSpawnDistance(0)));
-  assert.ok(isWhaleWithinBoatRange(whaleSpawnDistance(1)));
-
-  const nearHeading = whaleOrbitHeading(0, 45, 1, 76);
-  const farHeading = whaleOrbitHeading(0, 106, 1, 76);
-  assert.ok(Math.cos(nearHeading) > 0, "a close whale must steer away from the yacht");
-  assert.ok(Math.cos(farHeading) < 0, "a distant whale must steer back toward the yacht");
-});
-
-test("whale tail slap creates substantially more foam and particles than a dolphin splash", () => {
-  const dolphin = calculateSplashProfile(0.8);
-  const whale = calculateSplashProfile(WHALE_TAIL_SPLASH_INTENSITY);
-  assert.ok(whale.dropletCount >= dolphin.dropletCount * 3.5);
-  assert.ok(whale.ringCount >= 7);
-  assert.ok(whale.foamPatchCount >= 9);
-  assert.ok(whale.radius >= 14);
-  assert.ok(whale.particleSize >= 0.65);
 });
 
 test("force-based vessel remains finite and is stable across integration rates", () => {

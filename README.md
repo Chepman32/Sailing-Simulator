@@ -11,9 +11,13 @@ An interactive React and Three.js tropical sailing simulator built for desktop a
 - Detailed local GLB yacht with a working rig: the boom swings to the sheeting angle, crosses on every tack and slams on a gybe
 - Antifouling, boot stripe, wet band, non-skid deck and sail seams painted in the yacht's own frame, plus saildrive propellers and spade rudders
 - Reef fish: four species, about 140 instanced fish schooling over the island shelves, swimming with a body wave and fleeing the hulls, dolphins and shark
-- Water absorbs light realistically: everything below the surface turns blue with depth
+- Water absorbs light realistically: everything below the local wave surface turns blue with depth, so a shark is a dark shape and a deep whale vanishes
+- A whale that stays hidden at depth, surfaces now and then to breathe (blows drifting downwind), and lobtails: the peduncle lifts the flukes clear while the body stays under, then slaps the sea one to three times, leaving spray, a long-lived foam field and spreading ring waves
+- A dolphin pod that roams, escorts the yacht, rides her bow wave and crosses ahead; dolphins swim with a real body wave and leap only at speed, in one continuous ballistic arc (low porpoising, high arcs, paired leaps and rare spinners), re-entering head first
+- A shark that patrols, investigates, passes under the hulls, bursts away and sinks into the deep; now and then its dorsal fin cuts the surface
+- Every animal contact with the sea happens where the body actually crosses the rendered waves: crowns, droplets, mist, foam trails and ring waves scaled by mass and speed
 - Detailed local GLB palms, dolphins, sharks, whale, and seagulls
-- Twin-hull wake with diverging bow waves, independent propeller wash, bow spray, and pooled wildlife splash particles, all lit by the time of day
+- Twin-hull wake with diverging bow waves, independent propeller wash, bow spray, and pooled wildlife splash effects, all lit by the time of day
 - Unified day/night lighting with depth-correct sun and moon, stars, navigation lights with glowing lenses, and a moonlit glitter path on the water
 - Layered Web Audio for engine, waves, wind, hull water, and splashes
 - Chase, helm, orbit, and drone cameras with swipe, pinch, wheel, and double-tap gestures
