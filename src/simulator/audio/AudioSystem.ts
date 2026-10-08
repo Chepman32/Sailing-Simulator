@@ -133,6 +133,41 @@ export class AudioSystem {
     this.hullGain?.gain.setTargetAtTime(clamp(speed / 6, 0, 1) * 0.18, now, 0.18);
   }
 
+  /**
+   * The boom fetching up on its sheet after a gybe: a short, low thud with a
+   * rattle of blocks on top.
+   */
+  boomSlam(intensity = 1): void {
+    if (!this.context || !this.wildlifeBus || this.context.state !== "running" || !this.enabled) return;
+    const now = this.context.currentTime;
+    const strength = Math.min(1, Math.max(0.1, intensity));
+    const thud = this.context.createOscillator();
+    thud.type = "sine";
+    thud.frequency.setValueAtTime(150, now);
+    thud.frequency.exponentialRampToValueAtTime(70, now + 0.16);
+    const thudGain = this.context.createGain();
+    thudGain.gain.setValueAtTime(0.0001, now);
+    thudGain.gain.exponentialRampToValueAtTime(0.32 * strength, now + 0.01);
+    thudGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
+    thud.connect(thudGain).connect(this.wildlifeBus);
+    thud.start(now);
+    thud.stop(now + 0.26);
+
+    const rattle = this.context.createBufferSource();
+    rattle.buffer = this.createNoiseBuffer(0.2);
+    const rattleFilter = this.context.createBiquadFilter();
+    rattleFilter.type = "bandpass";
+    rattleFilter.frequency.value = 2200;
+    rattleFilter.Q.value = 1.4;
+    const rattleGain = this.context.createGain();
+    rattleGain.gain.setValueAtTime(0.0001, now);
+    rattleGain.gain.exponentialRampToValueAtTime(0.09 * strength, now + 0.006);
+    rattleGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+    rattle.connect(rattleFilter).connect(rattleGain).connect(this.wildlifeBus);
+    rattle.start(now);
+    rattle.stop(now + 0.2);
+  }
+
   splash(intensity = 1): void {
     if (!this.context || !this.wildlifeBus || this.context.state !== "running" || !this.enabled) return;
     const source = this.context.createBufferSource();

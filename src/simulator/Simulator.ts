@@ -9,6 +9,7 @@ import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
 import { OceanSystem } from "./environment/OceanSystem";
+import { UnderwaterLight } from "./environment/UnderwaterLight";
 import { InputController } from "./input/InputController";
 import { TouchControls } from "./input/TouchControls";
 import { wrapDegrees } from "./math";
@@ -51,6 +52,7 @@ export class Simulator {
   private touch!: TouchControls;
   private post!: PostProcessing;
   private audio!: AudioSystem;
+  private readonly underwater = new UnderwaterLight();
   private loop!: RenderLoop;
   private resizeObserver?: ResizeObserver;
   private elapsed = 0;
@@ -119,15 +121,17 @@ export class Simulator {
       this.environment.setMode(this.state.lightingMode);
       this.environment.setShadowMapSize(this.quality.settings.shadowMapSize);
       this.environment.setSkyDetail(this.quality.settings.skyDetail);
-      this.islands = new IslandSystem(this.scene, this.assets);
+      this.islands = new IslandSystem(this.scene, this.assets, this.underwater);
       this.physics = new VesselPhysics(this.ocean, this.islands);
-      this.vessel = new Vessel(this.scene, this.assets);
+      this.vessel = new Vessel(this.scene, this.assets, this.underwater);
       this.wake = new WakeSystem(this.scene, this.ocean, this.quality.settings);
       this.wildlife = new WildlifeSystem(
         this.scene,
         this.ocean,
         this.assets,
         this.quality.settings.wildlifeCount,
+        this.quality.settings.fishDensity,
+        this.underwater,
         (position, intensity) => {
           this.wake.splash(position, intensity);
           this.audio?.splash(intensity);
@@ -147,6 +151,7 @@ export class Simulator {
       this.resizeObserver = new ResizeObserver(this.resize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
       this.resize();
+      await this.prewarmShaders();
       this.loop = new RenderLoop({
         fixedUpdate: this.fixedUpdate,
         update: this.update,
@@ -265,7 +270,7 @@ export class Simulator {
 
   private readonly fixedUpdate = (fixedDelta: number): void => {
     this.elapsed += fixedDelta;
-    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading);
+    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.input.update(fixedDelta);
     if (!this.state.engineRunning) this.state.controls.throttle = 0;
     this.physics.fixedUpdate(fixedDelta, this.state.controls);
@@ -274,10 +279,16 @@ export class Simulator {
 
   private readonly update = (delta: number): void => {
     this.frameDelta = delta;
-    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading);
+    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.islands.update(this.elapsed);
-    this.vessel.update(this.physics, this.state.controls, this.elapsed, delta, this.environmentState.nightFactor);
-    this.wildlife.update(delta, this.physics);
+    this.vessel.update(this.physics, this.state.controls, this.elapsed, delta, this.environmentState.nightFactor, {
+      camera: this.camera.camera,
+      lightDirection: this.environment.lightDirection,
+      palette: this.environment.current.palette,
+    });
+    const slam = this.vessel.consumeBoomSlam();
+    if (slam > 0) this.audio.boomSlam(slam);
+    this.wildlife.update(delta, this.physics, this.camera.camera);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics);
     this.environmentState = this.environment.update(
@@ -287,6 +298,7 @@ export class Simulator {
       this.elapsed,
     );
     this.wake.setEnvironment(this.environment.current.palette);
+    this.underwater.setPalette(this.environment.current.palette);
     this.audio.update(
       delta,
       Math.abs(this.physics.telemetry.forwardSpeed),
@@ -295,6 +307,26 @@ export class Simulator {
     );
     this.hud.update(delta, () => this.snapshot());
   };
+
+  /**
+   * Compiles every shader program before the first visible frame, so nothing
+   * hitches the first time a lamp, a splash, the moon or a fish appears.
+   * `compileAsync` visits every material whether or not its object is
+   * currently visible; one render through the active pipeline then builds
+   * the shadow-depth and post-processing programs.
+   */
+  private async prewarmShaders(): Promise<void> {
+    try {
+      this.update(1 / 60);
+      const previousTarget = this.renderer.getRenderTarget();
+      this.renderer.setRenderTarget(this.post.sceneTarget);
+      await this.renderer.compileAsync(this.scene, this.camera.camera);
+      this.renderer.setRenderTarget(previousTarget);
+      this.post.render(0, 0);
+    } catch (error) {
+      console.warn("Shader prewarm skipped; programs will compile on first use.", error);
+    }
+  }
 
   private readonly render = (): void => {
     this.post.render(this.frameDelta, this.elapsed);

@@ -39,6 +39,7 @@ export class OceanSystem {
       uDetail: { value: quality.oceanDetail },
       uVesselPosition: { value: new THREE.Vector3() },
       uVesselForward: { value: new THREE.Vector2(0, 1) },
+      uVesselSpeed: { value: 0 },
     };
     const material = new THREE.ShaderMaterial({
       name: "OceanSurface",
@@ -64,8 +65,9 @@ export class OceanSystem {
     return sampleOcean(x, z, this.time);
   }
 
-  update(time: number, focus: THREE.Vector3, heading = 0): void {
+  update(time: number, focus: THREE.Vector3, heading = 0, speed = 0): void {
     this.time = time;
+    this.uniforms.uVesselSpeed.value = Math.abs(speed);
     this.uniforms.uTime.value = time;
     (this.uniforms.uVesselPosition.value as THREE.Vector3).copy(focus);
     (this.uniforms.uVesselForward.value as THREE.Vector2).set(Math.sin(heading), Math.cos(heading));

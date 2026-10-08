@@ -12,6 +12,8 @@ export type QualitySettings = {
   oceanDetail: number;
   /** 0 = three-octave clouds, 1 = five-octave clouds. */
   skyDetail: number;
+  /** Fraction of the full reef-fish school sizes. */
+  fishDensity: number;
   /** HDR pipeline with bloom, grading and vignette. */
   postProcessing: boolean;
   bloomStrength: number;
@@ -28,6 +30,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     foamDensity: 0.45,
     wildlifeCount: 1,
     oceanDetail: 0.3,
+    fishDensity: 0.35,
     skyDetail: 0,
     postProcessing: false,
     bloomStrength: 0,
@@ -41,6 +44,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     foamDensity: 0.7,
     wildlifeCount: 2,
     oceanDetail: 0.55,
+    fishDensity: 0.6,
     skyDetail: 1,
     postProcessing: true,
     bloomStrength: 0.2,
@@ -54,6 +58,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     foamDensity: 0.9,
     wildlifeCount: 2,
     oceanDetail: 1,
+    fishDensity: 1,
     skyDetail: 1,
     postProcessing: true,
     bloomStrength: 0.26,

@@ -138,6 +138,11 @@ export class SharkController {
     );
   }
 
+  /** World position of the shark, for prey that must avoid it. */
+  collectPositions(target: THREE.Vector3[]): void {
+    if (this.shark) target.push(this.shark.root.position);
+  }
+
   dispose(): void {
     if (!this.shark) return;
     this.shark.visual.mixer?.stopAllAction();

@@ -76,6 +76,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/core/AssetManager.ts` | Manifest, parallel GLB loading, required/optional behavior, cloning, progress, disposal |
 | `src/simulator/core/QualityManager.ts` | Low/medium/high settings, DPR, shadows, ocean tessellation and shader detail, post-processing switches, adaptive quality |
 | `src/simulator/core/PostProcessing.ts` | HDR scene target, bloom, lens finish, tone mapping; bypassed on the low preset |
+| `src/simulator/core/ShaderPatch.ts` | Composable `onBeforeCompile` patches for built-in materials |
 
 ### Environment
 
@@ -93,12 +94,16 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/EnvironmentSystem.ts` | Sky dome, image-based lighting capture, fog, exposure, sun, moon, stars, directional light |
 | `src/simulator/environment/IslandMath.ts` | Pure island definitions, bathymetry, coastline noise, terrain noise |
 | `src/simulator/environment/IslandSystem.ts` | Terrain, palms, seabed, collision, shore direction |
+| `src/simulator/environment/UnderwaterLight.ts` | Beer–Lambert absorption for everything below the surface |
 
 ### Vessel
 
 | Path | Responsibility |
 | --- | --- |
-| `src/simulator/vessel/Vessel.ts` | Detailed yacht GLB normalization, materials, transform, nav lights, visual pose |
+| `src/simulator/vessel/Vessel.ts` | Detailed yacht GLB normalization, part classification, boom pivot, appendages, nav lights, visual pose |
+| `src/simulator/vessel/BoomDynamics.ts` | Pure boom swing on its sheet, gybe slam, mirrored pivot pose |
+| `src/simulator/vessel/Appendages.ts` | Procedural saildrive legs, three-bladed propellers and spade rudders |
+| `src/simulator/vessel/YachtShading.ts` | Antifouling, boot stripe, wet band, non-skid deck, sail seams and translucency |
 | `src/simulator/vessel/VesselPhysics.ts` | Engines, sails, windage, hull and keel hydrodynamics, rudders, seakeeping, grounding |
 | `src/simulator/vessel/SailAerodynamics.ts` | Pure sail lift/drag polar and automatic sheeting |
 | `src/simulator/vessel/SailSystem.ts` | Sail material and wind/trim deformation |
@@ -112,7 +117,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `DolphinController.ts` | Dolphin group movement and gated breach state machine |
 | `SharkController.ts` | Forward-only shark cruise behavior |
 | `WhaleController.ts` | Submerged whale cruise, articulated fluke rise/strike, physical water-contact splash |
-| `FishSchoolController.ts` | Local animated tropical fish group |
+| `ReefFishController.ts` | Instanced reef fish extracted from the school asset, vertex-shader swimming |
+| `ReefFishMath.ts` | Pure boids schooling, depth band, flight from threats, tail-beat rules |
 | `GullFlockController.ts` | Animated aerial flock behavior |
 | `SwimmerDynamics.ts` | Shared bounded speed, acceleration, yaw-rate, pitch, bank, and vertical dynamics |
 | `WildlifeState.ts` | Pure dolphin and whale states, durations, transitions, tail-slap pose |
@@ -178,8 +184,9 @@ When introducing a model, document its native axis, units, expected bounding dim
 11. attach keyboard/gamepad input;
 12. attach canvas camera gestures;
 13. install resize observation;
-14. construct and start the render loop;
-15. emit the first running snapshot.
+14. compile every shader program against the active render target (`prewarmShaders`);
+15. construct and start the render loop;
+16. emit the first running snapshot.
 
 `AudioSystem` is constructed earlier, in the `Simulator` constructor, so gesture listeners exist while assets are loading. This is intentional for iOS/WebKit, where a user may tap the loading screen before `init()` finishes.
 
@@ -203,8 +210,8 @@ The loop clamps a long frame to 50 ms, caps the accumulator at five fixed steps,
 
 1. refresh ocean focus/uniforms;
 2. animate palms;
-3. interpolate yacht and sails;
-4. update wildlife movement and animation mixers;
+3. interpolate yacht and sails, and swing the boom; a gybe slam is passed to audio;
+4. update wildlife movement and animation mixers, and the reef-fish schools (which flee the hulls, dolphins and shark);
 5. rebuild visible wake instances at a throttled rate;
 6. update camera spring and FOV;
 7. derive and apply environment state, and refresh the lighting capture when the time of day has moved;
@@ -297,6 +304,10 @@ Physics must remain finite. Any new force should be bounded, unit-tested, and st
 
 The primary yacht is `public/models/yacht-sailboat-pbr.glb`. It is a detailed optimized catamaran, not a procedural assembly. At runtime `Vessel` normalizes its dimensions and orientation, configures PBR materials, and adds simulator-owned effects such as navigation lights.
 
+The source file's node names are generic, so `Vessel.classifyParts` finds the hulls, deck, mast, boom and sail by their shape and material. The boom and sail are re-parented to a pivot on the mast axis; `BoomDynamics` swings them to the angle the physics' sheeting chooses, on the side the sail fills from. On the other tack the pivot mirrors the rig across the centreline so the cloth's camber always faces leeward. A gybe slams the boom across and the audio system plays the thud.
+
+The model ships without underwater appendages or textures. `Appendages` builds a saildrive leg with a three-bladed bronze propeller and a balanced NACA-section spade rudder for each hull, placed from the measured hull bottom. `YachtShading` paints antifouling, a boot stripe, a cove line, a wet band that follows the real wave surface, a non-skid deck and sail seams in vessel space; sailcloth passes a little diffuse light when the sun is behind it.
+
 Rules for yacht work:
 
 - preserve named or semantically discoverable hull, mast, sail, cockpit, and rigging nodes;
@@ -330,7 +341,8 @@ The current wake contract is:
 - wake and splash decals are composited over the ocean with normal blending; each decal's fade is carried in its instance colour and moved into alpha by `useInstanceFadeAsAlpha`, so overlapping decals cannot blow out;
 - each decal gets its own turn, size, and weight, fresh foam collapses quickly and a faint slick lingers;
 - foam and spray are lit from the environment palette, so they dim at dusk and take on moonlight;
-- hull tracks live about 12 seconds; prop tracks about 8 seconds.
+- hull tracks live about 12 seconds; prop tracks about 8 seconds;
+- the ocean shader itself draws the water piling against each hull's waterplane: a lapping line at rest, a bow wave and a ribbon of aerated water along the sides that grow with speed.
 
 Distance remains the primary spacing rule. The time fallback exists only to make active prop wash and slow-ahead foam visible; do not replace the distance rule with frame-dependent spawning.
 
@@ -372,6 +384,12 @@ One analytic sky function (`shaders/skyShader.ts`) is evaluated by three consume
 The capture is refreshed only when the night factor has moved, at most a few times per second during a day/night transition, and the previous target is disposed.
 
 Lighting: one directional light carries the palette's dominant light and casts a tight shadow frustum (about ±17 m) that follows the yacht for crisp self-shadowing; a weak hemisphere light lifts shadowed faces. There is no separate ambient light; ambient comes from the capture.
+
+### Under the surface
+
+`UnderwaterLight` applies the same Beer–Lambert transmittance to every material below sea level: wildlife, the reef fish, the hulls' underwater parts, the appendages, the island aprons and the seabed. Red is absorbed within a few metres, blue last, and the water's own colour is scattered back in, so submerged things read as in the water rather than behind glass. The in-scattered colour follows the palette.
+
+Navigation lights stay in the scene at zero intensity by day. Toggling their visibility would change the scene's light count and recompile every lit shader at dusk.
 
 Night requirements:
 
@@ -429,6 +447,12 @@ Each phase has a finite duration, continuous position, continuous velocity, and 
 ### Sharks
 
 Sharks cruise below the surface with positive speed, limited turn rate, gradual bank, and gentle depth corrections. Do not use the authored bite clip as a locomotion substitute. A shark may pass the yacht at a safe distance but must not reverse or pivot in place.
+
+### Reef fish
+
+The licensed school asset holds nine rigged fish of four species in one choreographed loop. `ReefFishController` lifts one fish of each species out of it at load time (grouping vertices by the bone that weighs on them most, and using that fish's head and tail bones for its axis) and draws every fish as an instance of that geometry. The swimming body wave and its effect on normals are computed in the vertex shader from a per-instance phase and amplitude.
+
+`ReefFishMath` gives each species its own schooling (separation, alignment, cohesion), a patch of reef on the shelf of the island nearest the yacht, a depth band between the reef and the surface, and flight from the hulls, dolphins and shark; the alarm passes through the school. Fish obey the same rules as larger animals: positive speed, bounded turn rate and pitch, no instantaneous reversal. Schools far from the camera are neither simulated nor drawn.
 
 ### Whales
 
@@ -547,11 +571,11 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 
 ## 20. Quality and performance
 
-| Preset | Max DPR | Ocean segments | Shadow map | Foam density | Wildlife count | Ocean detail | Sky detail | HDR pipeline | Bloom | MSAA |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
-| Low | 1.0 | 96 | 512 | 0.45 | 1 | 0.30 | 0 | off | – | – |
-| Medium | 1.25 | 144 | 1024 | 0.70 | 2 | 0.55 | 1 | on | 0.20 | 2× |
-| High | 1.75 | 224 | 2048 | 0.90 | 2 | 1.00 | 1 | on | 0.26 | 4× |
+| Preset | Max DPR | Ocean segments | Shadow map | Foam density | Wildlife count | Reef fish | Ocean detail | Sky detail | HDR pipeline | Bloom | MSAA |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| Low | 1.0 | 96 | 512 | 0.45 | 1 | 35% | 0.30 | 0 | off | – | – |
+| Medium | 1.25 | 144 | 1024 | 0.70 | 2 | 60% | 0.55 | 1 | on | 0.20 | 2× |
+| High | 1.75 | 224 | 2048 | 0.90 | 2 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
 
 Ocean detail gates fragment work: above 0.2 the detail spectrum and one ripple layer are shaded; above 0.6 the second ripple layer and cloud reflections are added. Sky detail selects three- or five-octave clouds.
 
@@ -565,6 +589,7 @@ Important implementation caveats:
 - wake pool and wildlife counts are currently sized at construction and do not rebuild after a preset change;
 - `reflectionSize` is reserved in settings; reflections are analytic and need no render target;
 - animation mixers are advanced at approximately 30 Hz while movement remains per-frame;
+- all shader programs are compiled during loading against the render target the scene actually uses; nothing should compile during play (check `renderer.info.programs` before and after a day/night cycle);
 - wake instance transforms are refreshed at approximately 30 Hz;
 - the render loop and Web Audio suspend when the document is hidden.
 
@@ -581,7 +606,7 @@ The authoritative license text is `public/models/README.md`. Keep it synchronize
 | `dolphin` | `dolphin-animated.glb` | 171,552 | 3,728 triangles, rigged | Yes | Swim and breach pod |
 | `shark` | `shark-animated.glb` | 1,739,400 | 51,199 triangles, authored clips | No | Subsurface shark |
 | `whale` | `blue-whale-rigged-pbr-v2.glb` | 1,422,856 | 38,784 triangles, rigged PBR | No | Submerged blue whale tail slap |
-| `fishSchool` | `tropical-fish-school.glb` | 3,277,364 | 8,932 triangles, four species | No | Animated local fish school |
+| `fishSchool` | `tropical-fish-school.glb` | 3,277,364 | 8,932 triangles, four species | No | Source of the four instanced reef-fish species |
 | `seagull` | `seagull-animated.glb` | 133,248 | 1,174 triangles, authored clips | No | Aerial flock |
 
 Unused legacy files currently retained for provenance or possible comparison:
@@ -630,7 +655,9 @@ The Sites checkpoint performs its own production build and rendered smoke verifi
 - Engine: start from neutral selects slow ahead, active throttle is preserved, stop returns neutral.
 - Physics: engine produces forward motion with believable inertia, no NaN, comparable outcomes at 60/120 Hz, buoyancy follows sloped samples, a correct sailing polar (no-go zone, fastest on a reach, heel to leeward, bounded leeway), realistic top speed, prop-wash steerage, correct helm sense, shaft spool-down, grounding without a bounce, and a long seaway passage that stays finite and on the rendered surface.
 - Wake: low-speed hull wake, stationary prop wash, monotonic strength, reverse symmetry, stronger whale splash profile.
-- Wildlife: complete dolphin/whale transitions, breach speed gate, forward-only dynamics, bounded acceleration/turn/pitch/bank.
+- Wildlife: complete dolphin/whale transitions, breach speed gate, forward-only dynamics, bounded acceleration/turn/pitch/bank; reef fish that swim forward with bounded turns, stay between reef and surface, keep off the beach, flee together and calm down.
+- Rig: boom settles at the sheeting angle on the correct side, gybes slam and tacks do not, mirrored pivot pose is exact.
+- Underwater light: red absorbed first, nothing above the surface, path bounded by view distance.
 - Assets: detailed whale rig/clip/PBR/triangle/byte limits, visible island radius constraint, future model budgets.
 - Localization: exactly thirty language entries, complete message keys, locale aliases, manual preference precedence, RTL set.
 
@@ -837,6 +864,9 @@ The following are known constraints, not invitations to bypass the architecture:
 - the yacht force model is intentionally lightweight and not a full six-degree-of-freedom naval solver: sails are sheeted automatically, the two engines are not independently controllable, and heave, pitch, and roll are oscillators driven by the water plane rather than integrated hull pressures;
 - ocean reflections are analytic sky only: the yacht, islands, and wildlife are not mirrored in the water, and there is no refraction or depth-based absorption because the scene depth is not sampled;
 - whitecaps are a function of the instantaneous wave field and leave no persistent foam history;
+- underwater absorption measures depth from mean sea level rather than the local wave, and the ocean's own transparency is a constant blend rather than a refraction;
+- the yacht's three cabin meshes overlap substantially (about 140k triangles together); merging them needs an asset rework;
+- reef fish are lifted from one rigged asset and animated procedurally; they do not use the asset's authored clip;
 - wake and wildlife capacities do not rebuild when changing quality after initialization;
 - palms are individually planted GLB trees with runtime vertex wind rather than full LOD/impostor vegetation;
 - yacht sail deformation is simplified compared with cloth simulation;

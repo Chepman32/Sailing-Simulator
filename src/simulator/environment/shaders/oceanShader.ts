@@ -29,6 +29,12 @@ import { SKY_FUNCTIONS, SKY_UNIFORM_DECLARATIONS } from "./skyShader";
  */
 export const RESOLVED_CELL_FRACTION = 0.18;
 export const UNRESOLVED_CELL_FRACTION = 0.42;
+/** Waterplane of each hull in vessel space, matched to the yacht model. */
+export const HULL_OFFSET_X = 1.71;
+export const HULL_CENTER_Z = 0.34;
+export const HULL_HALF_LENGTH = 4.32;
+export const HULL_HALF_BEAM = 0.46;
+
 /** Distance from the camera at which the surface has fully become horizon. */
 export const HORIZON_FADE_START = 520;
 export const HORIZON_FADE_END = 860;
@@ -74,6 +80,26 @@ const islandDistanceCalls = ISLAND_DEFINITIONS.map(
       island.centerZ,
     )}), ${glsl(island.beachRadius)}, ${glsl(island.scaleZ)}, ${glsl(index)}));`,
 ).join("\n");
+
+const heightTerms = OCEAN_WAVES.map((wave) => {
+  const [dx, dz] = unit(wave.directionX, wave.directionZ);
+  const k = (Math.PI * 2) / wave.wavelength;
+  return `    height += ${glsl(wave.amplitude)} * sin(${glsl(k)} * dot(vec2(${glsl(dx)}, ${glsl(dz)}), position) - ${glsl(
+    Math.sqrt(9.81 * k) * wave.speed,
+  )} * time);`;
+}).join("\n");
+
+/**
+ * GLSL twin of `sampleOcean(...).height`, for materials that need to know
+ * where the water meets them (the wet band on the hulls).
+ */
+export const OCEAN_SURFACE_HEIGHT_GLSL = /* glsl */ `
+  float oceanSurfaceHeight(vec2 position, float time) {
+    float height = 0.0;
+${heightTerms}
+    return height;
+  }
+`;
 
 export const oceanVertexShader = /* glsl */ `
   uniform float uTime;
@@ -127,11 +153,16 @@ export const oceanFragmentShader = /* glsl */ `
   uniform float uDetail;
   uniform vec3 uVesselPosition;
   uniform vec2 uVesselForward;
+  uniform float uVesselSpeed;
   varying vec3 vWorldPosition;
   varying vec2 vBase;
 
   const float OCEAN_PI = 3.141592653589793;
   const float MAX_FOLD = ${glsl(maximumFold)};
+  const float HULL_OFFSET_X = ${glsl(HULL_OFFSET_X)};
+  const float HULL_CENTER_Z = ${glsl(HULL_CENTER_Z)};
+  const float HULL_HALF_LENGTH = ${glsl(HULL_HALF_LENGTH)};
+  const float HULL_HALF_BEAM = ${glsl(HULL_HALF_BEAM)};
 
   ${SKY_FUNCTIONS}
 
@@ -182,6 +213,17 @@ export const oceanFragmentShader = /* glsl */ `
       slope += gradient * (strength * resolved / STEP);
     }
     lostVariance += 0.25 * strength * strength * (1.0 - resolved * resolved);
+  }
+
+  // Waterplane of one hull: a fine entry at the bow, a transom at the stern.
+  // local.x is across the hull, local.y along it (bow positive). Negative
+  // inside the hull.
+  float hullDistance(vec2 local) {
+    float along = clamp(local.y / HULL_HALF_LENGTH, -1.0, 1.0);
+    float entry = sqrt(max(0.0, 1.0 - pow(max(along, 0.0), 2.4)));
+    float run = along < 0.0 ? mix(1.0, 0.78, -along) : 1.0;
+    float halfWidth = HULL_HALF_BEAM * entry * run;
+    return max(abs(local.x) - halfWidth, abs(local.y) - HULL_HALF_LENGTH);
   }
 
   float islandDistance(vec2 position, vec2 center, float beachRadius, float scaleZ, float index) {
@@ -291,6 +333,18 @@ ${detailCalls}
     float specular = min(distribution * specularFresnel * visibility * nDotL, 48.0);
     color += uLightColor * specular;
 
+    // --- Hulls -------------------------------------------------------------
+    vec2 vesselForward = normalize(uVesselForward);
+    vec2 vesselRight = vec2(vesselForward.y, -vesselForward.x);
+    vec2 relativeToVessel = vWorldPosition.xz - uVesselPosition.xz;
+    vec2 vesselSpace = vec2(dot(relativeToVessel, vesselRight), dot(relativeToVessel, vesselForward));
+    float hullAlong = (vesselSpace.y - HULL_CENTER_Z) / HULL_HALF_LENGTH;
+    float hullGap = min(
+      hullDistance(vec2(vesselSpace.x + HULL_OFFSET_X, vesselSpace.y - HULL_CENTER_Z)),
+      hullDistance(vec2(vesselSpace.x - HULL_OFFSET_X, vesselSpace.y - HULL_CENTER_Z))
+    );
+    float hullShadow = 1.0 - smoothstep(-0.3, 0.2, hullGap);
+
     // --- Foam --------------------------------------------------------------
     // Foam is sampled in a wind-aligned frame and stretched along the wind,
     // the way real foam is drawn out into streaks.
@@ -316,17 +370,19 @@ ${detailCalls}
     shoreFoam += (1.0 - smoothstep(0.0, 0.9, shore)) * smoothstep(0.25, 0.7, foamTexture) * 0.85;
     foam = clamp(foam + shoreFoam * step(-1.5, shore), 0.0, 1.0);
 
+    // Water piling against the hulls: a lapping line at rest, a bow wave and
+    // a ribbon of aerated water along each side once the yacht is moving.
+    float hullSpeed = smoothstep(0.4, 4.5, uVesselSpeed);
+    float bowZone = smoothstep(0.3, 0.95, hullAlong);
+    float contactWidth = 0.1 + hullSpeed * (0.22 + bowZone * 0.55);
+    float contact = (1.0 - smoothstep(0.0, contactWidth, hullGap)) * step(-0.25, hullGap);
+    float hullFoam = contact * smoothstep(0.22, 0.62, foamTexture + 0.18 + hullSpeed * 0.2)
+      * (0.3 + hullSpeed * (0.45 + bowZone * 0.4));
+    foam = max(foam, min(hullFoam, 0.92));
+
     vec3 foamColor = (uAmbientColor * 1.15 + uLightColor * (0.2 + 0.8 * nDotL) * 0.3) * vec3(0.94, 0.98, 1.0);
     color = mix(color, foamColor, foam);
 
-    // --- Hull contact shadow ----------------------------------------------
-    vec2 vesselForward = normalize(uVesselForward);
-    vec2 vesselRight = vec2(vesselForward.y, -vesselForward.x);
-    vec2 relativeToVessel = vWorldPosition.xz - uVesselPosition.xz;
-    vec2 vesselSpace = vec2(dot(relativeToVessel, vesselRight), dot(relativeToVessel, vesselForward));
-    float portShape = max(abs((vesselSpace.x + 1.55) / 0.78), abs(vesselSpace.y / 4.5));
-    float starboardShape = max(abs((vesselSpace.x - 1.55) / 0.78), abs(vesselSpace.y / 4.5));
-    float hullShadow = max(1.0 - smoothstep(0.5, 1.0, portShape), 1.0 - smoothstep(0.5, 1.0, starboardShape));
     color *= 1.0 - hullShadow * 0.34;
 
     // --- Transparency -------------------------------------------------------

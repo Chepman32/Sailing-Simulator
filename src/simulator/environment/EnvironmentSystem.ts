@@ -267,6 +267,11 @@ export class EnvironmentSystem {
     this.update(0, null, new THREE.Vector3(), 0);
   }
 
+  /** Direction toward the dominant light (sun by day, moon by night). */
+  get lightDirection(): THREE.Vector3 {
+    return this.celestialLightDirection;
+  }
+
   get current(): { state: TimeOfDayState; palette: EnvironmentPalette } {
     return { state: this.state, palette: this.palette };
   }

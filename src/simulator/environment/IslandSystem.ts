@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
 import { smoothstep } from "../math";
+import type { UnderwaterLight } from "./UnderwaterLight";
 import { ISLAND_DEFINITIONS, islandEdgeNoise, terrainNoise, waterDepthAt } from "./IslandMath";
 
 type IslandObstacle = {
@@ -33,6 +34,7 @@ export class IslandSystem {
   constructor(
     private readonly scene: THREE.Scene,
     assets: AssetManager,
+    private readonly underwater: UnderwaterLight,
   ) {
     this.group.name = "TropicalIslandSystem";
     scene.add(this.group);
@@ -122,8 +124,8 @@ export class IslandSystem {
   private createSeabed(): void {
     const seabed = new THREE.Mesh(
       new THREE.PlaneGeometry(1400, 1400, 1, 1),
-      // Seen through eighteen metres of water the sand reads as deep blue.
-      new THREE.MeshStandardMaterial({ color: 0x0c3552, roughness: 1, metalness: 0 }),
+      // Sand; eighteen metres of water above it turn it deep blue.
+      new THREE.MeshStandardMaterial({ color: 0x9c8a62, roughness: 1, metalness: 0 }),
     );
     seabed.rotation.x = -Math.PI / 2;
     seabed.position.y = -18;
@@ -131,6 +133,7 @@ export class IslandSystem {
     // could reach the bottom.
     seabed.receiveShadow = false;
     seabed.name = "DeepTropicalSeabed";
+    this.underwater.apply(seabed.material);
     this.group.add(seabed);
   }
 
@@ -153,6 +156,8 @@ export class IslandSystem {
     terrain.receiveShadow = true;
     terrain.castShadow = false;
     terrain.name = "IrregularIslandTerrain";
+    // The submerged apron fades into the water like any other seabed.
+    this.underwater.apply(terrain.material);
     // The ocean is rendered immediately after this mesh. Vertex alpha tapers
     // the submerged apron into the seabed so its final radial edge cannot read
     // as a large ring (or as a dark, flat animal) through clear tropical water.

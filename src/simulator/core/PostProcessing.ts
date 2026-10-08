@@ -132,6 +132,15 @@ export class PostProcessing {
     return this.active;
   }
 
+  /**
+   * The target the scene is drawn into. Shader programs differ between a
+   * render target (linear, no tone mapping) and the screen, so prewarming
+   * must compile against the same one.
+   */
+  get sceneTarget(): THREE.WebGLRenderTarget | null {
+    return this.active ? this.composer.renderTarget1 : null;
+  }
+
   setCamera(camera: THREE.Camera): void {
     this.camera = camera;
     this.renderPass.camera = camera;

@@ -8,13 +8,17 @@ An interactive React and Three.js tropical sailing simulator built for desktop a
 - Analytic sky with procedural clouds, a warm dusk, and image-based lighting captured from the same sky, so the yacht, islands, and water all agree
 - HDR rendering with multisampling, bloom on real light sources, filmic tone mapping, and a restrained lens finish; bypassed automatically on the low preset
 - Force-based catamaran: a real sail polar (no-go zone, fastest on a reach), gusting true wind, engine shafts that spool, propeller-race steering, lifting keels and leeway, heel to leeward, wave surge, damped heave, pitch and roll, and soft grounding in shoal water
-- Detailed local GLB yacht, palms, dolphins, sharks, whale, tropical fish, and seagulls
+- Detailed local GLB yacht with a working rig: the boom swings to the sheeting angle, crosses on every tack and slams on a gybe
+- Antifouling, boot stripe, wet band, non-skid deck and sail seams painted in the yacht's own frame, plus saildrive propellers and spade rudders
+- Reef fish: four species, about 140 instanced fish schooling over the island shelves, swimming with a body wave and fleeing the hulls, dolphins and shark
+- Water absorbs light realistically: everything below the surface turns blue with depth
+- Detailed local GLB palms, dolphins, sharks, whale, and seagulls
 - Twin-hull wake with diverging bow waves, independent propeller wash, bow spray, and pooled wildlife splash particles, all lit by the time of day
 - Unified day/night lighting with depth-correct sun and moon, stars, navigation lights with glowing lenses, and a moonlit glitter path on the water
 - Layered Web Audio for engine, waves, wind, hull water, and splashes
 - Chase, helm, orbit, and drone cameras with swipe, pinch, wheel, and double-tap gestures
 - Responsive semantic controls and automatic system-language selection across 30 languages
-- Adaptive Low/Medium/High quality presets for mobile and desktop hardware
+- Adaptive Low/Medium/High quality presets for mobile and desktop hardware, with every shader compiled during loading so play never hitches
 
 ## Run locally
 

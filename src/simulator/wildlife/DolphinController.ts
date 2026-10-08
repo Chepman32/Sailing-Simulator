@@ -121,6 +121,11 @@ export class DolphinController {
     });
   }
 
+  /** World positions of every dolphin, for prey that must avoid them. */
+  collectPositions(target: THREE.Vector3[]): void {
+    this.dolphins.forEach((dolphin) => target.push(dolphin.root.position));
+  }
+
   dispose(): void {
     this.dolphins.forEach((dolphin) => {
       dolphin.visual.mixer?.stopAllAction();
