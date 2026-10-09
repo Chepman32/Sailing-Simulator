@@ -61,6 +61,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `app/page.tsx` | Top-level route; renders the simulator component |
 | `app/layout.tsx` | Document metadata and root layout |
 | `app/components/SailingSimulator.tsx` | Canvas lifecycle, responsive HUD, controls, settings, sound-unlock affordance, simulator bridge |
+| `app/components/SoundPrompt.tsx` | The “tap for sound” capsule and its dust animation into the corner sound button |
 | `app/components/i18n.ts` | Thirty language definitions, system-language resolution, aliases, RTL helpers |
 | `app/globals.css` | Full-screen layout, mobile breakpoints, safe areas, control sizing, UI states |
 | `app/chatgpt-auth.ts` | Sites/ChatGPT runtime integration; do not remove without understanding the host contract |
@@ -546,8 +547,9 @@ Browsers, especially iOS Safari and embedded web views, require a trusted gestur
 - supports `AudioContext` and `webkitAudioContext`;
 - retries construction without options on older WebKit;
 - releases a stuck resume lock after a short timeout;
-- shows a prominent localized “Tap for sound” button while sound is enabled but context is not running;
-- treats the entire sound-unlock capsule as one touch target and performs the complete enable/resume path on `pointerdown`, with `click` retained as the keyboard fallback;
+- shows a prominent localized “Tap for sound” capsule once the scene is ready while sound is enabled but the context is not running; after `SOUND_PROMPT_SECONDS` (or as soon as sound starts or it is tapped) the capsule crumbles into dust that streams into the permanent mute/unmute button at the start of the scene actions (top left), which glows as it arrives (`SoundPrompt`: fragments of the capsule animated with the Web Animations API; a plain fade with reduced motion);
+- the corner button pulses while sound is enabled but still locked; one press unlocks and plays, the next mutes;
+- treats the sound-unlock capsule and the corner button as single touch targets and performs the complete enable/resume path on `pointerdown`, with `click` retained as the keyboard fallback;
 - tracks `statechange`, visibility, page hide/show, and focus;
 - suspends on a hidden page and waits for the next trusted gesture to resume.
 

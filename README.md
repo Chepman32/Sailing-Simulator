@@ -54,7 +54,7 @@ The simulator is implemented as TypeScript modules under `src/simulator`. The Re
 - Photo mode: hides every interface overlay while the simulation and camera gestures continue; a short hint says how to leave it. Tap or click the scene once (a drag still frames the shot), or press `Escape`, and the interface fades back in. `Tab` also restores the controls for keyboard navigation. Renderer errors automatically leave photo mode so recovery remains accessible.
 - Settings: day/night, camera mode, sail trim, quality, sound, engine mute, and language.
 
-Browsers require a trusted user gesture before Web Audio can play. If sound is enabled but the audio context is locked, use the visible **Tap for sound** button.
+Browsers require a trusted user gesture before Web Audio can play. When the scene is ready a **Tap for sound** capsule appears for a moment, then crumbles into dust that flies into the mute/unmute button in the top-left corner; that button pulses while sound is still locked, and one press turns it on (the next mutes).
 
 ## Verification
 

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
 import type { CameraMode, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
+import { SoundPrompt } from "./SoundPrompt";
 import {
   getMessages,
   isLanguageCode,
@@ -147,6 +148,17 @@ export function SailingSimulator() {
   const rudderDragging = useRef(false);
   const throttleDragging = useRef(false);
   const soundReadyAtPress = useRef(false);
+  const soundDockRef = useRef<HTMLButtonElement>(null);
+  const soundDockUnlocked = useRef(false);
+  const [soundArrived, setSoundArrived] = useState(false);
+  const soundArrivedTimer = useRef<number | undefined>(undefined);
+  const onSoundPromptArrived = useCallback(() => {
+    // The dust has settled into the corner button: let it glow for a moment.
+    setSoundArrived(true);
+    if (soundArrivedTimer.current !== undefined) window.clearTimeout(soundArrivedTimer.current);
+    soundArrivedTimer.current = window.setTimeout(() => setSoundArrived(false), 900);
+  }, []);
+  useEffect(() => () => window.clearTimeout(soundArrivedTimer.current), []);
   const engineNoticeTimer = useRef<number | undefined>(undefined);
 
   const exitPhotoMode = useCallback(() => {
@@ -342,6 +354,13 @@ export function SailingSimulator() {
     navigator.vibrate?.(running ? 24 : 14);
   };
 
+  const soundLocked = snapshot.soundEnabled && !snapshot.audioReady;
+  const soundLabel = snapshot.soundEnabled
+    ? snapshot.audioReady
+      ? `${messages.sound}: ${messages.on}`
+      : messages.tapSound
+    : `${messages.sound}: ${messages.off}`;
+
   const toggleSound = () => {
     const simulator = simulatorRef.current;
     if (!simulator) return;
@@ -415,20 +434,13 @@ export function SailingSimulator() {
         {/* Transient prompts share one centred column, so they never collide
             with each other or with the controls at any screen size. */}
         <div className="notice-stack">
-          {loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error && (
-            <button
-              type="button"
-              className="audio-unlock"
-              onPointerDown={(event) => {
-                event.preventDefault();
-                unlockSound();
-              }}
-              onClick={unlockSound}
-            >
-              <span aria-hidden="true">♪</span>
-              <strong>{messages.tapSound}</strong>
-            </button>
-          )}
+          <SoundPrompt
+            active={loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error}
+            targetRef={soundDockRef}
+            label={messages.tapSound}
+            onUnlock={unlockSound}
+            onArrived={onSoundPromptArrived}
+          />
           {engineNotice && <div className="engine-notice" role="status">{engineNotice}</div>}
           {snapshot.shoreGuardActive && loading.ready && !error && (
             <div className="engine-notice shore-guard-notice" role="status">{messages.shoreGuard}</div>
@@ -441,6 +453,37 @@ export function SailingSimulator() {
         </div>
 
         <div className="scene-actions">
+          {/* Permanent mute/unmute. While the browser still holds sound back it
+              pulses; one press both unlocks and plays. */}
+          <button
+            ref={soundDockRef}
+            type="button"
+            className={`scene-action sound-dock${soundLocked ? " is-locked" : ""}${soundArrived ? " is-arriving" : ""}`}
+            disabled={!loading.ready || Boolean(error)}
+            aria-label={soundLabel}
+            title={soundLabel}
+            aria-pressed={snapshot.soundEnabled && snapshot.audioReady}
+            onPointerDown={() => {
+              soundDockUnlocked.current = false;
+              if (!snapshot.soundEnabled || !snapshot.audioReady) {
+                // Unlock inside the trusted pointer gesture (iOS needs it here).
+                soundDockUnlocked.current = true;
+                unlockSound();
+              }
+            }}
+            onClick={() => {
+              if (soundDockUnlocked.current) {
+                soundDockUnlocked.current = false;
+                return;
+              }
+              const simulator = simulatorRef.current;
+              if (!simulator) return;
+              if (!snapshot.soundEnabled || !snapshot.audioReady) unlockSound();
+              else simulator.setSoundEnabled(false);
+            }}
+          >
+            <ControlIcon name={snapshot.soundEnabled && snapshot.audioReady ? "sound-on" : "sound-off"} />
+          </button>
           <button
             type="button"
             className="scene-action"

@@ -386,6 +386,56 @@ input:focus-visible {
 
 .audio-unlock > * { pointer-events: none; }
 
+/* The prompt crumbling into the corner sound button (see SoundPrompt). */
+.audio-unlock-dust {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+}
+
+.audio-unlock-fragment {
+  position: fixed;
+  box-sizing: border-box;
+  margin: 0;
+  pointer-events: none;
+  will-change: transform, opacity, filter;
+  /* A clipped shadow would show as grey slivers around each piece. */
+  box-shadow: none;
+}
+
+/* The permanent mute/unmute button, first in the scene actions. */
+.sound-dock {
+  position: relative;
+  padding: 0;
+  width: 44px;
+}
+
+.sound-dock.is-locked::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 2px solid rgba(130, 255, 240, 0.7);
+  border-radius: 16px;
+  animation: sound-dock-pulse 1.6s ease-out infinite;
+  pointer-events: none;
+}
+
+.sound-dock.is-arriving {
+  animation: sound-dock-arrive 0.9s ease-out;
+}
+
+@keyframes sound-dock-pulse {
+  0% { opacity: 0.9; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.35); }
+}
+
+@keyframes sound-dock-arrive {
+  0% { transform: scale(1); box-shadow: 0 10px 28px rgba(0, 12, 18, 0.22); }
+  35% { transform: scale(1.22); box-shadow: 0 0 0 4px rgba(130, 255, 240, 0.55), 0 0 32px rgba(130, 255, 240, 0.65); }
+  100% { transform: scale(1); box-shadow: 0 10px 28px rgba(0, 12, 18, 0.22); }
+}
+
 /* A long translation wraps inside the pill rather than being cut off. */
 .audio-unlock strong {
   font: inherit;
