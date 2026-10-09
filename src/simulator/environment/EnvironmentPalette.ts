@@ -1,5 +1,6 @@
 import { clamp, smoothstep } from "../math";
 import type { TimeOfDayState } from "./EnvironmentMath";
+import { FAIR_CLOUD_COVER, type WeatherSample } from "./WeatherMath";
 
 /**
  * Art direction for the whole scene, derived from the single time-of-day
@@ -68,25 +69,41 @@ function scale(color: Rgb, factor: number): Rgb {
   return [color[0] * factor, color[1] * factor, color[2] * factor];
 }
 
-export function deriveEnvironmentPalette(state: TimeOfDayState): EnvironmentPalette {
+function greyed(color: Rgb, amount: number): Rgb {
+  const luminance = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
+  return mix(color, [luminance * 1.05, luminance * 1.08, luminance * 1.14], amount);
+}
+
+const FAIR_WEATHER: WeatherSample = { cloudCover: FAIR_CLOUD_COVER, overcast: 0 };
+
+export function deriveEnvironmentPalette(state: TimeOfDayState, weather: WeatherSample = FAIR_WEATHER): EnvironmentPalette {
   const night = clamp(state.nightFactor, 0, 1);
+  // A cloudy spell softens and dims the light and greys the sky; fair
+  // weather leaves the palette untouched.
+  const overcast = clamp(weather.overcast, 0, 1);
   // The sun is within roughly a hand's width of the horizon.
   const twilight = Math.exp(-Math.pow(state.sunElevation / 0.2, 2));
   const sunUp = smoothstep(-0.1, 0.12, state.sunElevation);
   const moonBlend = smoothstep(0.35, 0.78, night);
 
-  const zenith = mix(mix(DAY_ZENITH, NIGHT_ZENITH, night), DUSK_ZENITH, twilight * 0.5);
-  const horizon = mix(mix(DAY_HORIZON, NIGHT_HORIZON, night), DUSK_HORIZON, twilight * 0.62);
+  const zenith = greyed(mix(mix(DAY_ZENITH, NIGHT_ZENITH, night), DUSK_ZENITH, twilight * 0.5), overcast * 0.45);
+  const horizon = greyed(mix(mix(DAY_HORIZON, NIGHT_HORIZON, night), DUSK_HORIZON, twilight * 0.62), overcast * 0.35);
   const sunColor = mix(NOON_SUN, DUSK_SUN, clamp(twilight * 1.1, 0, 1));
 
   const sunLight = scale(sunColor, SUN_IRRADIANCE * sunUp);
   const moonLight = scale(MOONLIGHT, MOON_IRRADIANCE * smoothstep(0.02, 0.4, state.moonElevation));
-  const lightColor = mix(sunLight, moonLight, moonBlend);
+  const lightColor = scale(mix(sunLight, moonLight, moonBlend), 1 - overcast * 0.45);
   const daylight = clamp((lightColor[0] + lightColor[1] + lightColor[2]) / (3 * SUN_IRRADIANCE * 0.9), 0, 1);
 
-  const ambientColor = mix(mix(DAY_AMBIENT, NIGHT_AMBIENT, night), scale(DUSK_HORIZON, 0.34), twilight * 0.45);
-  const cloudLit = mix(mix(DAY_CLOUD_LIT, NIGHT_CLOUD_LIT, night), DUSK_CLOUD_LIT, twilight * 0.8);
-  const cloudShade = mix(mix(DAY_CLOUD_SHADE, NIGHT_CLOUD_SHADE, night), DUSK_CLOUD_SHADE, twilight * 0.7);
+  const ambientColor = greyed(
+    mix(mix(DAY_AMBIENT, NIGHT_AMBIENT, night), scale(DUSK_HORIZON, 0.34), twilight * 0.45),
+    overcast * 0.3,
+  );
+  const cloudLit = scale(mix(mix(DAY_CLOUD_LIT, NIGHT_CLOUD_LIT, night), DUSK_CLOUD_LIT, twilight * 0.8), 1 - overcast * 0.22);
+  const cloudShade = scale(
+    mix(mix(DAY_CLOUD_SHADE, NIGHT_CLOUD_SHADE, night), DUSK_CLOUD_SHADE, twilight * 0.7),
+    1 - overcast * 0.3,
+  );
 
   return {
     zenith,
@@ -96,7 +113,7 @@ export function deriveEnvironmentPalette(state: TimeOfDayState): EnvironmentPale
     ambientColor,
     cloudLit,
     cloudShade,
-    cloudCover: 0.43 - night * 0.06,
+    cloudCover: clamp(weather.cloudCover - night * 0.04, 0, 1),
     deepWater: [0.004, 0.032, 0.095],
     shallowWater: [0.03, 0.5, 0.52],
     sand: [0.8, 0.72, 0.5],

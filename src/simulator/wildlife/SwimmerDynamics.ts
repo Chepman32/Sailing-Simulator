@@ -125,6 +125,11 @@ export type DepthControl = {
   frequency: number;
   maxVerticalSpeed: number;
   maxVerticalAcceleration: number;
+  /**
+   * Below this forward speed vertical motion is hovering (sculling with the
+   * flippers) rather than a climb along the body axis; default 0.35 m/s.
+   */
+  hoverSpeed?: number;
 };
 
 export type Swimmer3DLimits = SwimmerLimits & {
@@ -219,7 +224,7 @@ export function stepSwimmerAtDepth(
     control.maxVerticalSpeed,
   );
   const previousPitch = state.pitch;
-  const pathAngle = Math.atan2(state.verticalSpeed, Math.max(0.35, state.speed));
+  const pathAngle = Math.atan2(state.verticalSpeed, Math.max(control.hoverSpeed ?? 0.35, state.speed));
   state.pitch = clamp(pathAngle, -limits.maxPitch, limits.maxPitch);
   state.pitchRate = (state.pitch - previousPitch) / dt;
 

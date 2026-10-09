@@ -5,6 +5,7 @@ import type { OceanSystem } from "../environment/OceanSystem";
 import { MEAN_WIND_X, MEAN_WIND_Z } from "../environment/WindMath";
 import type { SimulatorControls } from "../types";
 import type { VesselPhysics } from "./VesselPhysics";
+import { StampKind, WakeField } from "./WakeField";
 
 type WakeSample = {
   position: THREE.Vector3;
@@ -16,35 +17,26 @@ type WakeSample = {
   driftZ: number;
   /** Bow-wave samples are narrower than the turbulent stern track. */
   bow: boolean;
+  /** Distance the yacht had travelled when this sample was laid, metres. */
+  odometer: number;
+  /** Track length this sample stands for, metres (its share of the overlap). */
+  spacing: number;
 };
 
-/**
- * Opacity of one wake decal. A dozen or more decals overlap at any point of
- * a track, so each contributes only a little.
- */
-export const WAKE_LAYER_GAIN = 0.3;
+/** tan 19.47°: half-angle of the Kelvin wedge behind any displacement hull. */
+export const KELVIN_TANGENT = Math.tan((19.47 * Math.PI) / 180);
 
-/**
- * Foam lies over the water; it does not add light to it. Each decal's fade is
- * carried in its instance colour, so the fade is moved into alpha here and the
- * decal is composited "over" the sea. Unlike additive blending this cannot
- * blow out where decals overlap, and it looks the same with or without the
- * HDR pipeline.
- */
-function useInstanceFadeAsAlpha(material: THREE.MeshBasicMaterial): void {
-  material.onBeforeCompile = (shader: THREE.WebGLProgramParametersWithUniforms) => {
-    shader.fragmentShader = shader.fragmentShader.replace(
-      "#include <color_fragment>",
-      `#include <color_fragment>
-       #ifdef USE_COLOR
-         float decalFade = max(vColor.r, max(vColor.g, vColor.b));
-         diffuseColor.rgb /= max(decalFade, 0.0001);
-         diffuseColor.a *= clamp(decalFade, 0.0, 1.0);
-       #endif`,
-    );
-  };
-  material.customProgramCacheKey = () => "foam-decal-v2";
+/** Distance the yacht travels between wake samples, metres. */
+export function wakeSampleSpacing(speed: number): number {
+  return Math.min(1, Math.max(0.28, Math.abs(speed) * 0.14));
 }
+
+/** Seconds a stern track and a propeller wash stay visible. */
+export const HULL_TRACK_LIFE = 12;
+export const PROP_TRACK_LIFE = 8;
+/** Gaussian along-track width of one stamp, metres: overlapping stamps are normalised by it. */
+const TRACK_SIGMA = 1.0;
+const SQRT_PI = Math.sqrt(Math.PI);
 
 function fract(value: number): number {
   return value - Math.floor(value);
@@ -264,62 +256,6 @@ export function calculateSplashProfile(intensity: number, kind: SplashKind = "en
   }
 }
 
-/**
- * Aerated water is a lace of bubbles, not a soft glow. The texture is built
- * from many small speckles whose density falls off toward the edge, so
- * overlapping decals read as churned foam.
- */
-function foamTexture(): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 128;
-  canvas.height = 128;
-  const context = canvas.getContext("2d");
-  if (!context) return new THREE.CanvasTexture(canvas);
-  const base = context.createRadialGradient(64, 64, 2, 64, 64, 62);
-  base.addColorStop(0, "rgba(255,255,255,.34)");
-  base.addColorStop(0.45, "rgba(236,250,255,.16)");
-  base.addColorStop(1, "rgba(220,244,255,0)");
-  context.fillStyle = base;
-  context.fillRect(0, 0, 128, 128);
-  let seed = 7331;
-  const random = (): number => {
-    seed = (seed * 16807) % 2147483647;
-    return (seed - 1) / 2147483646;
-  };
-  for (let index = 0; index < 520; index += 1) {
-    const angle = random() * Math.PI * 2;
-    const distance = Math.pow(random(), 0.72) * 58;
-    const x = 64 + Math.cos(angle) * distance;
-    const y = 64 + Math.sin(angle) * distance;
-    const falloff = 1 - distance / 60;
-    const radius = 0.8 + random() * 3.4 * (0.4 + falloff);
-    const speck = context.createRadialGradient(x, y, 0, x, y, radius);
-    const opacity = (0.16 + random() * 0.5) * Math.max(0, falloff);
-    speck.addColorStop(0, `rgba(255,255,255,${opacity})`);
-    speck.addColorStop(1, "rgba(255,255,255,0)");
-    context.fillStyle = speck;
-    context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-  }
-  return new THREE.CanvasTexture(canvas);
-}
-
-function splashRingTexture(): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 128;
-  canvas.height = 128;
-  const context = canvas.getContext("2d");
-  if (!context) return new THREE.CanvasTexture(canvas);
-  const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 63);
-  gradient.addColorStop(0, "rgba(225,251,255,0)");
-  gradient.addColorStop(0.48, "rgba(225,251,255,0)");
-  gradient.addColorStop(0.6, "rgba(238,254,255,.9)");
-  gradient.addColorStop(0.72, "rgba(191,239,248,.34)");
-  gradient.addColorStop(1, "rgba(170,224,238,0)");
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, 128, 128);
-  return new THREE.CanvasTexture(canvas);
-}
-
 /** Extra size of a splash's mist puffs for heavier impacts, metres. */
 function strengthSize(intensity: number): number {
   return Math.min(0.9, Math.max(0, intensity) * 0.16);
@@ -418,24 +354,21 @@ const crownFragmentShader = /* glsl */ `
 
 export class WakeSystem {
   private readonly group = new THREE.Group();
-  private readonly hullWake: THREE.InstancedMesh;
-  private readonly propWake: THREE.InstancedMesh;
+  private readonly field: WakeField;
   private readonly hullCapacity: number;
   private readonly propCapacity: number;
   private readonly hullSamples: WakeSample[] = [];
   private readonly propSamples: WakeSample[] = [];
   private readonly lastSample = new THREE.Vector3(Number.POSITIVE_INFINITY, 0, 0);
   private readonly matrix = new THREE.Matrix4();
+  private readonly focus = new THREE.Vector3();
+  private odometer = 0;
+  private speed = 0;
   private readonly quaternion = new THREE.Quaternion();
   private readonly yAxis = new THREE.Vector3(0, 1, 0);
   private readonly scale = new THREE.Vector3();
   private readonly scratchPosition = new THREE.Vector3();
-  private readonly scratchColor = new THREE.Color();
   private readonly litColor = new THREE.Color(1, 1, 1);
-  private readonly foam = foamTexture();
-  private readonly ringTexture = splashRingTexture();
-  private readonly splashRings: THREE.InstancedMesh;
-  private readonly splashFoam: THREE.InstancedMesh;
   private readonly rings: SplashDecal[] = [];
   private readonly foamPatches: SplashDecal[] = [];
   private readonly particles: Particle[] = [];
@@ -448,7 +381,6 @@ export class WakeSystem {
   private readonly crowns: CrownSheet[] = [];
   private readonly crownMesh: THREE.InstancedMesh;
   private readonly crownState: THREE.InstancedBufferAttribute;
-  private readonly trailMesh: THREE.InstancedMesh;
   private readonly trails: SplashDecal[] = [];
   private spawnRemainder = 0;
   private lastVisualUpdate = Number.NEGATIVE_INFINITY;
@@ -458,6 +390,7 @@ export class WakeSystem {
     private readonly scene: THREE.Scene,
     private readonly ocean: OceanSystem,
     quality: QualitySettings,
+    private readonly renderer: THREE.WebGLRenderer,
   ) {
     this.group.name = "PhysicalWakeSystem";
     scene.add(this.group);
@@ -465,71 +398,23 @@ export class WakeSystem {
     // Two stern tracks plus two diverging bow waves.
     this.hullCapacity = capacity * 4;
     this.propCapacity = capacity;
-    const plane = new THREE.PlaneGeometry(1, 1.9);
-    plane.rotateX(-Math.PI / 2);
-    const material = new THREE.MeshBasicMaterial({
-      color: 0xe9fdff,
-      map: this.foam,
-      transparent: true,
-      opacity: 0.92,
-      depthWrite: false,
-      blending: THREE.NormalBlending,
-    });
-    useInstanceFadeAsAlpha(material);
-    this.hullWake = new THREE.InstancedMesh(plane, material, this.hullCapacity);
-    this.hullWake.count = 0;
-    // Per-instance colour carries each decal's fade. Creating the attribute
-    // up front lets the first compiled program include it.
-    this.hullWake.setColorAt(0, this.scratchColor.setRGB(0, 0, 0));
-    this.hullWake.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.hullWake.frustumCulled = false;
-    this.hullWake.renderOrder = 4;
-    this.group.add(this.hullWake);
-
-    const propMaterial = material.clone();
-    useInstanceFadeAsAlpha(propMaterial);
-    this.propWake = new THREE.InstancedMesh(plane.clone(), propMaterial, this.propCapacity);
-    this.propWake.count = 0;
-    this.propWake.setColorAt(0, this.scratchColor.setRGB(0, 0, 0));
-    this.propWake.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.propWake.frustumCulled = false;
-    this.propWake.renderOrder = 4;
-    this.group.add(this.propWake);
-
     const splashCapacity = Math.max(18, Math.round(36 * quality.foamDensity));
-    const splashPlane = new THREE.PlaneGeometry(1, 1);
-    splashPlane.rotateX(-Math.PI / 2);
-    const splashMaterial = new THREE.MeshBasicMaterial({
-      color: 0xe9fdff,
-      map: this.ringTexture,
-      transparent: true,
-      opacity: 0.92,
-      depthWrite: false,
-      blending: THREE.NormalBlending,
-    });
-    useInstanceFadeAsAlpha(splashMaterial);
-    this.splashRings = new THREE.InstancedMesh(splashPlane, splashMaterial, splashCapacity);
-    this.splashRings.count = 0;
-    this.splashRings.setColorAt(0, this.scratchColor.setRGB(0, 0, 0));
-    this.splashRings.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.splashRings.frustumCulled = false;
-    this.splashRings.renderOrder = 6;
-    this.group.add(this.splashRings);
-
     const foamCapacity = Math.max(12, Math.round(24 * quality.foamDensity));
-    const foamMaterial = splashMaterial.clone();
-    foamMaterial.map = this.foam;
-    foamMaterial.opacity = 0.72;
-    useInstanceFadeAsAlpha(foamMaterial);
-    this.splashFoam = new THREE.InstancedMesh(splashPlane.clone(), foamMaterial, foamCapacity);
-    this.splashFoam.count = 0;
-    this.splashFoam.setColorAt(0, this.scratchColor.setRGB(0, 0, 0));
-    this.splashFoam.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.splashFoam.frustumCulled = false;
-    this.splashFoam.renderOrder = 5;
-    this.group.add(this.splashFoam);
     for (let index = 0; index < splashCapacity; index += 1) this.rings.push(this.createSplashDecal());
     for (let index = 0; index < foamCapacity; index += 1) this.foamPatches.push(this.createSplashDecal());
+    const trailCapacity = Math.max(24, Math.round(64 * quality.foamDensity));
+    for (let index = 0; index < trailCapacity; index += 1) this.trails.push(this.createSplashDecal());
+
+    // The wake is drawn into the water itself (see WakeField). Its texture
+    // resolution follows quality; the area follows the yacht.
+    const resolution = quality.foamDensity >= 0.85 ? 512 : quality.foamDensity >= 0.6 ? 384 : 256;
+    this.field = new WakeField(
+      renderer,
+      resolution,
+      150,
+      this.hullCapacity + this.propCapacity + splashCapacity + foamCapacity + trailCapacity,
+    );
+    ocean.setWakeField(this.field.target.texture, this.field.area, this.field.texel);
 
     const particleCount = Math.max(280, Math.round(520 * quality.foamDensity));
     this.particlePositions = new Float32Array(particleCount * 3);
@@ -638,23 +523,13 @@ export class WakeSystem {
       });
     }
 
-    // Short foam trails where a fin or a back cuts the surface.
-    const trailCapacity = Math.max(24, Math.round(64 * quality.foamDensity));
-    const trailMaterial = material.clone();
-    trailMaterial.opacity = 0.8;
-    useInstanceFadeAsAlpha(trailMaterial);
-    this.trailMesh = new THREE.InstancedMesh(plane.clone(), trailMaterial, trailCapacity);
-    this.trailMesh.count = 0;
-    this.trailMesh.setColorAt(0, this.scratchColor.setRGB(0, 0, 0));
-    this.trailMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.trailMesh.frustumCulled = false;
-    this.trailMesh.renderOrder = 4;
-    this.group.add(this.trailMesh);
-    for (let index = 0; index < trailCapacity; index += 1) this.trails.push(this.createSplashDecal());
   }
 
   fixedUpdate(delta: number, physics: VesselPhysics, controls: SimulatorControls, time: number): void {
     const speed = Math.abs(physics.telemetry.forwardSpeed);
+    this.speed = speed;
+    this.odometer += speed * delta;
+    this.focus.copy(physics.position);
     const emission = calculateWakeEmission(speed, controls.throttle, controls.rudder);
     const sampleDeltaX = this.lastSample.x - physics.position.x;
     const sampleDeltaZ = this.lastSample.z - physics.position.z;
@@ -662,10 +537,14 @@ export class WakeSystem {
     // decals at the same x/z position while the yacht rides a wave.
     const sampleDistance = sampleDeltaX * sampleDeltaX + sampleDeltaZ * sampleDeltaZ;
     const maximumInterval = speed < 0.12 ? 0.55 : 0.22;
+    // Samples are spaced by distance; faster yachts space them wider so the
+    // bounded pool still holds the whole twelve seconds of wake.
+    const sampleSpacing = wakeSampleSpacing(speed);
     const shouldSample =
       (emission.emitHull || emission.emitProp) &&
-      (sampleDistance > 0.28 * 0.28 || time - this.lastSampleTime >= maximumInterval);
+      (sampleDistance > sampleSpacing * sampleSpacing || time - this.lastSampleTime >= maximumInterval);
     if (shouldSample) {
+      const spacing = Number.isFinite(sampleDistance) ? THREE.MathUtils.clamp(Math.sqrt(sampleDistance), 0.05, 1.5) : 0.28;
       this.lastSample.copy(physics.position);
       this.lastSampleTime = time;
       const right = physics.right;
@@ -679,13 +558,17 @@ export class WakeSystem {
             driftX: 0,
             driftZ: 0,
             bow: false,
+            odometer: this.odometer,
+            spacing,
           });
         });
         if (speed > BOW_WAVE_MIN_SPEED) {
           // Each bow sheds a wave that peels away from the track at the
           // Kelvin angle, drawing the V that marks a displacement hull.
           const direction = Math.sign(physics.telemetry.forwardSpeed) || 1;
-          const spread = Math.min(1.5, 0.34 * speed);
+          // Each crest moves out sideways at v·tan 19.5°, so the arms of the V
+          // lie on the Kelvin angle whatever the speed.
+          const spread = KELVIN_TANGENT * speed;
           const bowStrength = emission.hullStrength * THREE.MathUtils.smoothstep(speed, BOW_WAVE_MIN_SPEED, 3.4);
           [-1, 1].forEach((side) => {
             this.hullSamples.unshift({
@@ -699,6 +582,8 @@ export class WakeSystem {
               driftX: right.x * side * spread,
               driftZ: right.z * side * spread,
               bow: true,
+              odometer: this.odometer,
+              spacing,
             });
           });
         }
@@ -712,6 +597,8 @@ export class WakeSystem {
           driftX: 0,
           driftZ: 0,
           bow: false,
+          odometer: this.odometer,
+          spacing,
         });
       }
       this.hullSamples.length = Math.min(this.hullSamples.length, this.hullCapacity);
@@ -725,17 +612,21 @@ export class WakeSystem {
       this.spawnRemainder -= 1;
     }
     this.updateParticles(delta);
-    this.updateSplashDecals(this.splashRings, this.rings, delta, true);
-    this.updateSplashDecals(this.splashFoam, this.foamPatches, delta, false);
-    this.updateSplashDecals(this.trailMesh, this.trails, delta, false);
+    this.ageDecals(this.rings, delta);
+    this.ageDecals(this.foamPatches, delta);
+    this.ageDecals(this.trails, delta);
     this.updateCrowns(delta);
   }
 
+  /** Redraws the wake field, at most thirty times a second. */
   update(time: number): void {
     if (time - this.lastVisualUpdate < 1 / 30) return;
     this.lastVisualUpdate = time;
-    this.updateInstances(this.hullWake, this.hullSamples, time, false);
-    this.updateInstances(this.propWake, this.propSamples, time, true);
+    this.field.begin(this.focus.x, this.focus.z);
+    this.stampTracks(this.hullSamples, time, false);
+    this.stampTracks(this.propSamples, time, true);
+    this.stampDecals();
+    this.field.render(this.renderer);
   }
 
   /**
@@ -750,9 +641,6 @@ export class WakeSystem {
       return;
     }
     this.litColor.setRGB(red, green, blue, THREE.LinearSRGBColorSpace);
-    [this.hullWake, this.propWake, this.splashRings, this.splashFoam, this.trailMesh].forEach((mesh) => {
-      (mesh.material as THREE.MeshBasicMaterial).color.copy(this.litColor);
-    });
     ((this.crownMesh.material as THREE.ShaderMaterial).uniforms.uColor.value as THREE.Color).copy(this.litColor);
     ((this.particlePoints.material as THREE.ShaderMaterial).uniforms.sprayColor.value as THREE.Color).copy(
       this.litColor,
@@ -958,8 +846,7 @@ export class WakeSystem {
   reset(): void {
     this.hullSamples.length = 0;
     this.propSamples.length = 0;
-    this.hullWake.count = 0;
-    this.propWake.count = 0;
+    this.odometer = 0;
     this.lastVisualUpdate = Number.NEGATIVE_INFINITY;
     this.lastSampleTime = Number.NEGATIVE_INFINITY;
     this.lastSample.set(Number.POSITIVE_INFINITY, 0, 0);
@@ -978,12 +865,9 @@ export class WakeSystem {
     this.foamPatches.forEach((patch) => {
       patch.active = false;
     });
-    this.splashRings.count = 0;
-    this.splashFoam.count = 0;
     this.trails.forEach((trail) => {
       trail.active = false;
     });
-    this.trailMesh.count = 0;
     this.crowns.forEach((crown) => {
       crown.active = false;
     });
@@ -993,108 +877,121 @@ export class WakeSystem {
 
   dispose(): void {
     this.scene.remove(this.group);
-    this.hullWake.geometry.dispose();
-    (Array.isArray(this.hullWake.material) ? this.hullWake.material : [this.hullWake.material])
-      .forEach((material) => material.dispose());
-    this.propWake.geometry.dispose();
-    (Array.isArray(this.propWake.material) ? this.propWake.material : [this.propWake.material])
-      .forEach((material) => material.dispose());
-    this.splashRings.geometry.dispose();
-    (Array.isArray(this.splashRings.material) ? this.splashRings.material : [this.splashRings.material])
-      .forEach((material) => material.dispose());
-    this.splashFoam.geometry.dispose();
-    (Array.isArray(this.splashFoam.material) ? this.splashFoam.material : [this.splashFoam.material])
-      .forEach((material) => material.dispose());
+    this.field.dispose();
     this.particleGeometry.dispose();
     (this.particlePoints.material as THREE.Material).dispose();
     this.crownMesh.geometry.dispose();
     (this.crownMesh.material as THREE.Material).dispose();
-    this.trailMesh.geometry.dispose();
-    (this.trailMesh.material as THREE.Material).dispose();
-    this.foam.dispose();
-    this.ringTexture.dispose();
   }
 
-  private updateInstances(mesh: THREE.InstancedMesh, samples: WakeSample[], time: number, prop: boolean): void {
-    const life = prop ? 8 : 12;
+  /**
+   * Stamps the hull tracks, the diverging bow waves and the propeller wash
+   * into the wake field.
+   */
+  private stampTracks(samples: WakeSample[], time: number, prop: boolean): void {
+    const life = prop ? PROP_TRACK_LIFE : HULL_TRACK_LIFE;
     while (samples.length > 0 && time - samples[samples.length - 1].born >= life) samples.pop();
-    const capacity = prop ? this.propCapacity : this.hullCapacity;
-    const activeCount = Math.min(samples.length, capacity);
-    mesh.count = activeCount;
-    for (let index = 0; index < activeCount; index += 1) {
-      const sample = samples[index];
+    const speed = this.speed;
+    // Transverse waves travel with the yacht, so their wavenumber is g / v².
+    const transverse = THREE.MathUtils.smoothstep(speed, 1.2, 3.6);
+    const wavenumber = speed > 0.5 ? Math.min(6, 9.81 / (speed * speed)) : 0;
+    for (const sample of samples) {
       const age = time - sample.born;
       const normalized = Math.min(1, age / life);
-      const width = sample.bow
-        ? 0.5 + normalized * 1.5
-        : (prop ? 1.15 : 0.92) + normalized * (prop ? 2.75 : 2.25);
-      const length = sample.bow ? 2.1 + normalized * 2.6 : (prop ? 1.75 : 1.55) + normalized * 2.9;
-      // The diverging wave slows as it spreads: integrate a decaying drift.
-      const travelled = (1 - Math.exp(-age * 0.3)) / 0.3;
-      this.scratchPosition.copy(sample.position);
-      this.scratchPosition.x += sample.driftX * travelled;
-      this.scratchPosition.z += sample.driftZ * travelled;
-      const oceanHeight = this.ocean.sample(this.scratchPosition.x, this.scratchPosition.z).height;
-      this.scratchPosition.y = oceanHeight + 0.11;
-      // Many decals overlap along a track. Giving each its own turn, size and
-      // weight makes the sum read as churned, patchy foam, not a painted band.
-      const grainA = fract(Math.sin(sample.born * 91.7 + sample.position.x * 3.1) * 43758.5453);
-      const grainB = fract(Math.sin(sample.born * 37.3 + sample.position.z * 5.7) * 24634.6345);
-      this.quaternion.setFromAxisAngle(this.yAxis, sample.heading + (grainA - 0.5) * (sample.bow ? 0.3 : 1.1));
-      this.scale.set(width * (0.8 + grainB * 0.5), 1, length * (0.8 + grainA * 0.45));
-      this.matrix.compose(this.scratchPosition, this.quaternion, this.scale);
-      mesh.setMatrixAt(index, this.matrix);
-      // Fresh foam is dense and collapses quickly; a faint slick lingers.
-      const fresh = Math.exp(-age * (sample.bow ? 1.1 : prop ? 0.75 : 0.55));
-      const lingering = Math.pow(Math.max(0, 1 - normalized), 1.6) * 0.3;
-      const fade = fresh * 0.7 + lingering;
-      const brightness =
-        fade * (0.45 + sample.strength * 0.55) * (0.45 + grainB * 1.1) * (sample.bow ? WAKE_LAYER_GAIN * 0.8 : WAKE_LAYER_GAIN);
-      mesh.setColorAt(index, this.scratchColor.setRGB(brightness * 0.82, brightness * 0.97, brightness));
+      // Overlapping stamps are weighted by the track length each stands for,
+      // so the wake's density does not depend on how often it was sampled.
+      const share = sample.spacing / (TRACK_SIGMA * SQRT_PI);
+      const fresh = Math.exp(-age * (sample.bow ? 1.0 : prop ? 0.7 : 0.5));
+      const lingering = Math.pow(1 - normalized, 1.5);
+      const grain = fract(Math.sin(sample.born * 91.7 + sample.position.x * 3.1) * 43758.5453);
+      if (sample.bow) {
+        // The diverging wave slows as it spreads: integrate a decaying drift.
+        const travelled = age;
+        const x = sample.position.x + sample.driftX * travelled;
+        const z = sample.position.z + sample.driftZ * travelled;
+        const amplitude = 0.11 * sample.strength * Math.exp(-age * 0.13) * share * 2.2;
+        this.field.push(
+          x,
+          z,
+          sample.heading,
+          StampKind.BowWave,
+          1.4 + normalized * 1.6,
+          2.4 + normalized * 2.4,
+          sample.strength * fresh * share * 1.4 * THREE.MathUtils.smoothstep(speed, 2.2, 4.5),
+          sample.strength * lingering * share * 0.35,
+          amplitude,
+        );
+        continue;
+      }
+      const behind = this.odometer - sample.odometer;
+      const width = (prop ? 1.0 : 0.85) + normalized * (prop ? 2.2 : 1.9) + (prop ? 0 : behind * 0.05);
+      // White water right behind the transoms that collapses within seconds,
+      // then thin streaks of bubbles.
+      const foam = sample.strength * (fresh * 1.5 + lingering * 0.16) * share * (0.6 + grain * 0.8);
+      const slick = sample.strength * lingering * share * (prop ? 1.3 : 1.0);
+      if (prop) {
+        this.field.push(sample.position.x, sample.position.z, sample.heading, StampKind.PropWash, width, 1.6, foam * 1.1, slick);
+        continue;
+      }
+      // Transverse crests spread to the Kelvin wedge (19.5°) behind the stern.
+      const wedge = 1.6 + behind * 0.35;
+      const amplitude = 0.14 * transverse * sample.strength * share * Math.exp(-age * 0.1) / (1 + behind / 40);
+      this.field.push(
+        sample.position.x,
+        sample.position.z,
+        sample.heading,
+        StampKind.Track,
+        Math.max(width, wedge),
+        1.5,
+        foam * (width / Math.max(width, wedge)),
+        slick,
+        amplitude,
+        wavenumber * 1.5,
+        wavenumber * behind,
+      );
     }
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
 
-  private updateSplashDecals(
-    mesh: THREE.InstancedMesh,
-    decals: SplashDecal[],
-    delta: number,
-    ring: boolean,
-  ): void {
-    let activeCount = 0;
-    decals.forEach((decal) => {
-      if (!decal.active) return;
-      decal.life += delta;
-      const age = decal.life - decal.delay;
-      if (age < 0) return;
-      if (age >= decal.maxLife) {
-        decal.active = false;
-        return;
-      }
+  /** Splash foam, fin trails and ring waves. */
+  private stampDecals(): void {
+    for (const decal of this.foamPatches) this.stampDecal(decal, StampKind.Foam);
+    for (const decal of this.trails) this.stampDecal(decal, StampKind.Foam);
+    for (const decal of this.rings) this.stampDecal(decal, StampKind.Ring);
+  }
 
-      const normalized = age / decal.maxLife;
-      const expansion = ring
-        ? 1 - Math.pow(1 - normalized, 2.2)
-        : normalized * normalized * (3 - 2 * normalized);
-      const radius = THREE.MathUtils.lerp(decal.startRadius, decal.endRadius, expansion);
-      this.scratchPosition.copy(decal.position);
-      this.scratchPosition.y = this.ocean.sample(decal.position.x, decal.position.z).height + (ring ? 0.065 : 0.052);
-      this.quaternion.setFromAxisAngle(this.yAxis, decal.heading);
-      this.scale.set(radius * 2, 1, radius * 2 * decal.stretch);
-      this.matrix.compose(this.scratchPosition, this.quaternion, this.scale);
-      mesh.setMatrixAt(activeCount, this.matrix);
-      const fade = Math.pow(Math.max(0, 1 - normalized), ring ? 1.15 : 1.6);
-      const brightness = decal.brightness * fade;
-      mesh.setColorAt(
-        activeCount,
-        this.scratchColor.setRGB(brightness * 0.8, brightness * 0.96, brightness),
-      );
-      activeCount += 1;
-    });
-    mesh.count = activeCount;
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  private stampDecal(decal: SplashDecal, kind: StampKind): void {
+    if (!decal.active) return;
+    const age = decal.life - decal.delay;
+    if (age < 0) return;
+    const normalized = Math.min(1, age / decal.maxLife);
+    const ring = kind === StampKind.Ring;
+    const expansion = ring ? 1 - Math.pow(1 - normalized, 2.2) : normalized * normalized * (3 - 2 * normalized);
+    const radius = THREE.MathUtils.lerp(decal.startRadius, decal.endRadius, expansion);
+    const fade = Math.pow(1 - normalized, ring ? 1.15 : 1.6);
+    if (ring) {
+      // A ring of crests, steep while it is small and flattening as it grows.
+      const amplitude = 0.05 * decal.brightness * fade;
+      this.field.push(decal.position.x, decal.position.z, 0, kind, radius * 1.3, radius * 1.3, decal.brightness * fade * 0.5, 0, amplitude, 9 * radius);
+      return;
+    }
+    this.field.push(
+      decal.position.x,
+      decal.position.z,
+      decal.heading,
+      kind,
+      radius,
+      radius * decal.stretch,
+      decal.brightness * fade * 1.6,
+      decal.brightness * Math.pow(1 - normalized, 0.8) * 0.8,
+    );
+  }
+
+  private ageDecals(decals: SplashDecal[], delta: number): void {
+    for (const decal of decals) {
+      if (!decal.active) continue;
+      decal.life += delta;
+      if (decal.life - decal.delay >= decal.maxLife) decal.active = false;
+    }
   }
 
   private createSplashDecal(): SplashDecal {

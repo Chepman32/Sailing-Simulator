@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
-import { waterDepthAt } from "../environment/IslandMath";
+import { distanceFromWaterline, waterDepthAt } from "../environment/IslandMath";
 import type { OceanSystem } from "../environment/OceanSystem";
 import type { UnderwaterLight } from "../environment/UnderwaterLight";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
@@ -10,6 +10,7 @@ import { GullFlockController } from "./GullFlockController";
 import { ReefFishController } from "./ReefFishController";
 import { SharkController } from "./SharkController";
 import type { MarineWorld, VesselState, WaterEffects } from "./WaterContact";
+import { WhaleBreachController } from "./WhaleBreachController";
 import { WhaleController } from "./WhaleController";
 
 export type WildlifeCounts = {
@@ -29,6 +30,7 @@ export class WildlifeSystem {
   private readonly dolphins: DolphinController;
   private readonly sharks: SharkController;
   private readonly whales: WhaleController;
+  private readonly breach: WhaleBreachController;
   private readonly fish: ReefFishController;
   private readonly gulls: GullFlockController;
   private readonly predators: THREE.Vector3[] = [];
@@ -54,6 +56,7 @@ export class WildlifeSystem {
       surfaceHeight: (x, z) => ocean.sample(x, z).height,
       orbitalHeight: (x, z, depth) => ocean.sample(x, z, depth).height,
       seabedDepth: waterDepthAt,
+      shoreDistance: distanceFromWaterline,
     };
     this.whales = new WhaleController(this.marineGroup, ocean, this.world, assets, effects);
     this.sharks = new SharkController(this.marineGroup, ocean, this.world, assets, effects);
@@ -70,6 +73,11 @@ export class WildlifeSystem {
         underwater.apply(material);
       });
     });
+    // The distant breacher flies through the air, so it lives outside the
+    // underwater group (it shows in the water's mirror); it is still seen
+    // through the water whenever it is below the surface.
+    this.breach = new WhaleBreachController(this.group, ocean, this.world, assets, effects);
+    this.breach.materials.forEach((material) => underwater.apply(material));
     this.fish = new ReefFishController(this.marineGroup, ocean, assets, underwater, counts.fishDensity);
     this.gulls = new GullFlockController(this.group, assets, counts.gulls);
   }
@@ -87,6 +95,7 @@ export class WildlifeSystem {
     vessel.speed = Math.max(0, physics.telemetry.forwardSpeed);
 
     this.whales.update(delta, vessel, camera);
+    this.breach.update(delta, vessel, camera);
     const whale = this.whales.obstacle();
     this.sharkObstacles.length = 0;
     if (whale) this.sharkObstacles.push({ x: whale.position.x, z: whale.position.z, radius: whale.radius });
@@ -114,6 +123,11 @@ export class WildlifeSystem {
     this.gulls.update(delta, physics, gullAnimation);
   }
 
+  /** Where each gull is flying, for their calls. */
+  get gullPositions(): readonly THREE.Vector3[] {
+    return this.gulls.positions;
+  }
+
   /** Current whale phase, for diagnostics. */
   get whalePhase(): string | undefined {
     return this.whales.phase;
@@ -123,6 +137,7 @@ export class WildlifeSystem {
     this.dolphins.dispose();
     this.sharks.dispose();
     this.whales.dispose();
+    this.breach.dispose();
     this.fish.dispose();
     this.gulls.dispose();
     this.scene.remove(this.group);

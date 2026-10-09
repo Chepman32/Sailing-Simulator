@@ -7,7 +7,10 @@ import {
   type Swimmer3D,
   type Swimmer3DLimits,
 } from "./SwimmerDynamics";
-import { headingTowardDeepWater, type MarineWorld, type VesselState } from "./WaterContact";
+import { confineToDeepWater, createShallowsSteering, WHALE_SHORE, steerClearOfShallows } from "./ShoreAvoidance";
+import type { MarineWorld, VesselState } from "./WaterContact";
+
+const shallows = createShallowsSteering();
 
 /**
  * Behaviour of one large baleen whale.
@@ -76,7 +79,7 @@ export const WHALE_BEND_LIMITS = [
 
 /** Model-centre depths, metres below the surface. */
 export const WHALE_DEEP_DEPTH = { min: 9.5, max: 11.5 } as const;
-export const WHALE_SURFACE_BREATH_DEPTH = 1.78;
+export const WHALE_SURFACE_BREATH_DEPTH = 1.84;
 export const WHALE_SURFACE_REST_DEPTH = 2.85;
 export const WHALE_LOBTAIL_DEPTH = 3.35;
 /**
@@ -377,8 +380,9 @@ export function stepWhale(
     desiredHeading = blendHeading(desiredHeading, away, weight);
   }
   // Reef shelves and beaches: an 18 m whale needs deep water well ahead.
-  const deepWater = headingTowardDeepWater(world, motion.x, motion.z, desiredHeading, 70, 13.5);
-  if (deepWater !== null) desiredHeading = deepWater;
+  steerClearOfShallows(world, motion.x, motion.z, motion.heading, desiredHeading, motion.speed, WHALE_SHORE, shallows);
+  desiredHeading = shallows.heading;
+  desiredSpeed *= 1 - shallows.urgency * 0.4;
 
   // Depth is kept relative to the mean surface; the waves carry the body on top.
   const seabedLimit = -(world.seabedDepth(motion.x, motion.z) - WHALE_KEEL_DEPTH - 1);
@@ -389,11 +393,16 @@ export function stepWhale(
   const control = depthControl(agent.phase);
   scratchControl.frequency = control.frequency;
   scratchControl.maxVerticalAcceleration = control.maxVerticalAcceleration;
+  scratchControl.hoverSpeed = control.hoverSpeed;
   scratchControl.maxVerticalSpeed =
     targetY > motion.y
-      ? clamp(0.08 + 0.09 * (-motion.y - WHALE_SHALLOWEST_DEPTH), 0.08, control.maxVerticalSpeed)
+      ? // A slow whale drifts up even more gently, or its path would tilt the head out.
+        clamp(0.08 + 0.09 * (-motion.y - WHALE_SHALLOWEST_DEPTH), 0.08, control.maxVerticalSpeed) *
+        clamp(motion.speed / 1.4, 0.45, 1)
       : control.maxVerticalSpeed;
   stepSwimmerAtDepth(motion, desiredHeading, targetY, desiredSpeed, dt, WHALE_LIMITS, scratchControl);
+  // Hard limit: never onto the shelf or the beach, never by a jump.
+  confineToDeepWater(world, motion, WHALE_SHORE.minDepth * 0.75, 1.5, dt);
   if (motion.y > -WHALE_SHALLOWEST_DEPTH) {
     motion.y = -WHALE_SHALLOWEST_DEPTH;
     motion.verticalSpeed = Math.min(0, motion.verticalSpeed);
@@ -414,7 +423,7 @@ export function stepWhale(
 /** How briskly the whale changes depth: lazily at depth, deliberately at the surface. */
 const DEEP_DEPTH_CONTROL: DepthControl = { frequency: 0.32, maxVerticalSpeed: 0.5, maxVerticalAcceleration: 0.06 };
 const SURFACE_DEPTH_CONTROL: DepthControl = { frequency: 0.95, maxVerticalSpeed: 0.55, maxVerticalAcceleration: 0.28 };
-const LOBTAIL_DEPTH_CONTROL: DepthControl = { frequency: 0.7, maxVerticalSpeed: 0.4, maxVerticalAcceleration: 0.16 };
+const LOBTAIL_DEPTH_CONTROL: DepthControl = { frequency: 0.7, maxVerticalSpeed: 0.4, maxVerticalAcceleration: 0.16, hoverSpeed: 1.2 };
 
 const scratchControl: DepthControl = { ...DEEP_DEPTH_CONTROL };
 
@@ -573,7 +582,9 @@ export function whaleBendTargets(agent: WhaleAgent): [number, number, number] {
   const swim = agent.strokeAmplitude;
   const stroke = (index: number, amplitude: number) =>
     swim * amplitude * Math.sin(agent.strokePhase - index * 0.75);
-  const base: [number, number, number] = [n0 + stroke(0, 0.03), n1 + stroke(1, 0.065), n2 + stroke(2, 0.11)];
+  // Up and down strokes of the flukes: small at the root, growing toward the
+  // tip, each joint a little later than the one before.
+  const base: [number, number, number] = [n0 + stroke(0, 0.05), n1 + stroke(1, 0.11), n2 + stroke(2, 0.2)];
   const lift = agent.slap.lift;
   const raised: [number, number, number] = [n0 + 0.1 * lift, n1 + 0.24 * lift, n2 + 0.2 * lift];
   const struck: [number, number, number] = [n0 - 0.02, n1 - 0.12 * agent.slap.force, n2 - 0.46 * agent.slap.force];
@@ -623,9 +634,12 @@ function stepPose(agent: WhaleAgent, dt: number): void {
   const motion = agent.motion;
   const lobtailing = agent.phase === "prepare_tail_slap" || agent.phase === "tail_slap";
   // Fluke strokes: slow and deep at cruising speed, quieter when slowing.
-  const frequency = 0.1 + 0.055 * motion.speed;
+  // A blue whale beats its flukes every four to eight seconds; harder when it
+  // speeds up or climbs, barely at all while gliding down.
+  const frequency = 0.12 + 0.065 * motion.speed;
   agent.strokePhase += Math.PI * 2 * frequency * dt;
-  const targetAmplitude = lobtailing ? 0 : clamp(0.35 + motion.speed * 0.32, 0.35, 1);
+  const effort = clamp(motion.verticalSpeed * 1.2, -0.3, 0.35);
+  const targetAmplitude = lobtailing ? 0 : clamp(0.45 + motion.speed * 0.3 + effort, 0.3, 1.15);
   agent.strokeAmplitude += (targetAmplitude - agent.strokeAmplitude) * (1 - Math.exp(-0.8 * dt));
 
   const bodyTarget = bodyAngleTarget(agent);
@@ -655,7 +669,8 @@ function stepPose(agent: WhaleAgent, dt: number): void {
 export function whalePose(agent: WhaleAgent): WhalePose {
   const lobtailing = agent.phase === "prepare_tail_slap" || agent.phase === "tail_slap";
   return {
-    bodyAngle: agent.bodyAngle - agent.wavePitch,
+    // Each stroke rocks the body a little: the head dips as the flukes rise.
+    bodyAngle: agent.bodyAngle - agent.wavePitch + agent.strokeAmplitude * 0.01 * Math.sin(agent.strokePhase + 1.2),
     bends: [agent.tail[0]!.angle, agent.tail[1]!.angle, agent.tail[2]!.angle],
     secondaryWeight: lobtailing ? 0.55 : 0.32,
   };

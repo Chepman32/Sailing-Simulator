@@ -140,6 +140,82 @@ export const skyVertexShader = /* glsl */ `
   }
 `;
 
+/**
+ * Sun, moon and stars, drawn into the sky itself so the clouds pass in front
+ * of them and every piece of geometry (a sail, the mast, an island) hides
+ * them simply by being drawn later. HDR: the solar disc is far brighter than
+ * white so the bloom pass turns it into a light source.
+ */
+const CELESTIAL_FUNCTIONS = /* glsl */ `
+  uniform vec3 uSunDisc;
+  uniform vec3 uMoonDisc;
+  uniform float uStars;
+  uniform float uCelestial;
+
+  const float SUN_RADIUS = 0.0125;
+  const float MOON_RADIUS = 0.0155;
+
+  // Angular position of a direction in a body's own tangent frame, in radians.
+  vec2 bodyFrame(vec3 direction, vec3 axis) {
+    vec3 side = normalize(cross(abs(axis.y) > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0), axis));
+    vec3 up = cross(axis, side);
+    return vec2(dot(direction, side), dot(direction, up));
+  }
+
+  vec3 skyCelestial(vec3 direction) {
+    vec3 light = vec3(0.0);
+    // Pixel size in radians, for edges that stay crisp but never alias.
+    float pixel = max(length(fwidth(direction)), 1.0e-5);
+    // Stars on a stereographic grid: one candidate per cell, most cells empty.
+    // Derivatives are taken here, outside any branch.
+    vec2 grid = direction.xz / (1.0 + max(direction.y, 0.0)) * 230.0;
+    float cellPixel = max(max(fwidth(grid.x), fwidth(grid.y)), 1.0e-4);
+
+    if (dot(uSunDisc, uSunDisc) > 0.0) {
+      vec2 local = bodyFrame(direction, uSunDirection);
+      float radial = length(local) / SUN_RADIUS;
+      float edge = 1.0 - smoothstep(1.0 - pixel / SUN_RADIUS, 1.0 + pixel / SUN_RADIUS, radial);
+      if (dot(direction, uSunDirection) > 0.0 && edge > 0.0) {
+        // Limb darkening: the disc's rim is cooler and dimmer than its centre.
+        float mu = sqrt(max(0.0, 1.0 - radial * radial));
+        vec3 limb = vec3(1.0 - 0.45 * (1.0 - mu), 1.0 - 0.55 * (1.0 - mu), 1.0 - 0.7 * (1.0 - mu));
+        light += uSunDisc * limb * edge;
+      }
+    }
+
+    if (dot(uMoonDisc, uMoonDisc) > 0.0 && dot(direction, uMoonDirection) > 0.0) {
+      vec2 local = bodyFrame(direction, uMoonDirection) / MOON_RADIUS;
+      float radial = length(local);
+      float edge = 1.0 - smoothstep(1.0 - pixel / MOON_RADIUS, 1.0 + pixel / MOON_RADIUS, radial);
+      if (edge > 0.0) {
+        // Maria: soft dark seas in the bright highlands, and a gentle limb.
+        float maria = smoothstep(0.42, 0.72, skyFbm3(local * 2.4 + vec2(3.1, 7.7)));
+        float craters = skyNoise(local * 9.0 + 1.7);
+        float albedo = 1.0 - maria * 0.32 - (craters - 0.5) * 0.08;
+        float mu = sqrt(max(0.0, 1.0 - radial * radial));
+        light += uMoonDisc * albedo * (0.72 + 0.28 * mu) * edge;
+      }
+    }
+
+    if (uStars > 0.0 && direction.y > 0.0) {
+      vec2 cell = floor(grid);
+      float seed = skyHash(cell);
+      if (seed < 0.06) {
+        vec2 centre = cell + 0.2 + 0.6 * vec2(skyHash(cell + 17.3), skyHash(cell - 9.1));
+        float distance = length(grid - centre) / cellPixel;
+        float magnitude = skyHash(cell + 3.7);
+        float brightness = 0.06 + pow(magnitude, 7.0) * 2.2;
+        float twinkle = 0.78 + 0.22 * sin(uCloudTime * (1.3 + magnitude * 2.4) + seed * 300.0);
+        vec3 tint = mix(vec3(0.72, 0.82, 1.0), vec3(1.0, 0.88, 0.7), skyHash(cell + 41.0));
+        float core = exp(-distance * distance * 1.6);
+        float glow = exp(-distance * 0.9) * 0.12 * smoothstep(0.6, 1.0, magnitude);
+        light += tint * brightness * twinkle * (core + glow) * uStars * smoothstep(0.03, 0.22, direction.y);
+      }
+    }
+    return light * uCelestial;
+  }
+`;
+
 export const skyFragmentShader = /* glsl */ `
   ${SKY_UNIFORM_DECLARATIONS}
   uniform float uSkyDetail;
@@ -149,10 +225,16 @@ export const skyFragmentShader = /* glsl */ `
   uniform float uBelowMix;
   varying vec3 vWorldDirection;
   ${SKY_FUNCTIONS}
+  ${CELESTIAL_FUNCTIONS}
 
   void main() {
     vec3 direction = normalize(vWorldDirection);
-    vec3 sky = skyRadiance(direction, uSkyDetail);
+    vec3 sky = skyAtmosphere(direction);
+    vec4 clouds = skyClouds(direction, uSkyDetail);
+    // Clouds drift across the sun, the moon and the stars; thin edges let
+    // them show through, dimmed.
+    vec3 bodies = skyCelestial(direction) * pow(1.0 - clouds.a, 3.0);
+    sky = mix(sky, clouds.rgb, clouds.a) + bodies;
     sky = mix(sky, uBelowColor, uBelowMix * smoothstep(0.02, -0.1, direction.y));
     // Break up 8-bit banding in the smooth gradient.
     sky += (skyHash(gl_FragCoord.xy) - 0.5) * 0.004;

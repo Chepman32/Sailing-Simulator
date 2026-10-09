@@ -9,6 +9,7 @@ import {
   type Swimmer3D,
   type Swimmer3DLimits,
 } from "./SwimmerDynamics";
+import { confineToDeepWater, createShallowsSteering, DOLPHIN_SHORE, freeRun, steerClearOfShallows } from "./ShoreAvoidance";
 import type { MarineWorld, VesselState } from "./WaterContact";
 
 /**
@@ -64,6 +65,9 @@ export const DOLPHIN_MAX_SPEED = 10.5;
 export const DOLPHIN_LEAP_MIN_WATER = 7;
 
 const GRAVITY = 9.81;
+/** Metres of deep water a dolphin wants ahead before it commits to a leap. */
+const LEAP_CLEAR_RUN = 32;
+const shallows = createShallowsSteering();
 
 export const DOLPHIN_LIMITS: Swimmer3DLimits = {
   minSpeed: 1.2,
@@ -168,6 +172,8 @@ export type DolphinPod = {
   centreX: number;
   centreZ: number;
   wander: number;
+  /** Seconds before the pod may switch sides again to stay seaward. */
+  sideClock: number;
 };
 
 export type DolphinObstacle = { x: number; y: number; z: number; radius: number };
@@ -186,7 +192,9 @@ export function createDolphinPod(
 ): DolphinPod {
   const forwardX = Math.sin(vessel.heading);
   const forwardZ = Math.cos(vessel.heading);
-  const side = random() < 0.5 ? -1 : 1;
+  let side = random() < 0.5 ? -1 : 1;
+  // Start on the seaward side of the yacht.
+  if (world.seabedDepth(vessel.x + forwardZ * side * 10, vessel.z - forwardX * side * 10) < POD_MIN_WATER) side = -side;
   const agents: DolphinAgent[] = [];
   for (let index = 0; index < count; index += 1) {
     const lateral = side * (9 + index * 2.2);
@@ -236,6 +244,7 @@ export function createDolphinPod(
     centreX: vessel.x + forwardZ * side * 22,
     centreZ: vessel.z - forwardX * side * 22,
     wander: random() * 100,
+    sideClock: 0,
   };
 }
 
@@ -327,11 +336,11 @@ export function stepDolphinPod(
 ): void {
   const dt = clamp(delta, 0, 0.05);
   if (dt <= 0) return;
-  updatePodMode(pod, vessel, dt, random);
+  updatePodMode(pod, world, vessel, dt, random);
   for (const agent of pod.agents) stepDolphin(agent, pod, world, vessel, obstacles, dt, random);
 }
 
-function updatePodMode(pod: DolphinPod, vessel: VesselState, dt: number, random: RandomSource): void {
+function updatePodMode(pod: DolphinPod, world: MarineWorld, vessel: VesselState, dt: number, random: RandomSource): void {
   pod.modeClock -= dt;
   pod.wander += dt;
   const playful = isPlayful(vessel.speed);
@@ -372,10 +381,36 @@ function updatePodMode(pod: DolphinPod, vessel: VesselState, dt: number, random:
     const radial = (desired - distance) * 0.08;
     pod.centreX += (tangentX * 1.8 + (dx / distance) * radial) * dt;
     pod.centreZ += (tangentZ * 1.8 + (dz / distance) * radial) * dt;
+    // The circle never takes the pod over the reef: it turns back the other way
+    // and its centre drifts out to sea.
+    if (world.seabedDepth(pod.centreX, pod.centreZ) < POD_MIN_WATER) {
+      pod.side *= -1;
+      centreScratch.x = pod.centreX;
+      centreScratch.z = pod.centreZ;
+      confineToDeepWater(world, centreScratch, POD_MIN_WATER, 4, dt);
+      pod.centreX = centreScratch.x;
+      pod.centreZ = centreScratch.z;
+    }
   }
+  // Escorting along a coast, the pod takes the seaward side of the yacht.
+  if ((pod.mode === "escort" || pod.mode === "cross") && pod.sideClock <= 0) {
+    const forwardX = Math.sin(vessel.heading);
+    const forwardZ = Math.cos(vessel.heading);
+    const reach = pod.mode === "cross" ? 18 : 9;
+    const sideDepth = (side: number): number =>
+      world.seabedDepth(vessel.x + forwardZ * side * reach + forwardX * 6, vessel.z - forwardX * side * reach + forwardZ * 6);
+    if (sideDepth(pod.side) < POD_MIN_WATER && sideDepth(-pod.side) >= POD_MIN_WATER) {
+      pod.side *= -1;
+      pod.sideClock = 6;
+    }
+  }
+  pod.sideClock -= dt;
 }
 
 /** Slot of a dolphin around the yacht for the pod's current mode. */
+const POD_MIN_WATER = 5;
+const centreScratch = { x: 0, z: 0 };
+
 function slotFor(
   agent: DolphinAgent,
   pod: DolphinPod,
@@ -448,8 +483,17 @@ function stepDolphin(
     stepSwimming(agent, pod, world, vessel, obstacles, dt, random);
   }
   keepClearOfHull(agent, vessel, dt);
-  const floor = -(world.seabedDepth(motion.x, motion.z) - 0.6);
-  if (motion.y < floor) {
+  // Land and the shelf are out of reach: a body pushed into the shallows is
+  // eased back out at swimming speed.
+  if (agent.phase !== "leap" && agent.phase !== "airborne") {
+    confineToDeepWater(world, motion, DOLPHIN_SHORE.minDepth * 0.8, HULL_ESCAPE_SPEED, dt);
+  }
+  // Keep off the sand, but never by lifting the body out of the sea.
+  const floor = Math.min(
+    -(world.seabedDepth(motion.x, motion.z) - 0.6),
+    world.surfaceHeight(motion.x, motion.z) - 0.35,
+  );
+  if (motion.y < floor && agent.phase !== "leap" && agent.phase !== "airborne") {
     motion.y = floor;
     motion.pitch = Math.max(motion.pitch, 0);
   }
@@ -500,6 +544,8 @@ function stepSwimming(
       wantX += steer.x;
       wantZ += steer.z;
       desiredHeading = Math.atan2(wantX, wantZ);
+      steerClearOfShallows(world, motion.x, motion.z, motion.heading, desiredHeading, motion.speed, DOLPHIN_SHORE, shallows);
+      desiredHeading = shallows.heading;
       const playful = isPlayful(vessel.speed) && pod.mode !== "roam";
       // Playful dolphins surge ahead and drop back; calm ones simply keep station.
       agent.surgeClock -= dt;
@@ -518,6 +564,8 @@ function stepSwimming(
         pod.mode === "roam" ? 1.6 : 2,
         pod.mode === "roam" ? 3.4 : playful ? 7.2 : calmCeiling,
       );
+      // Shoal water ahead: ease off and turn, the way an animal checks itself.
+      desiredSpeed = Math.max(2, desiredSpeed * (1 - shallows.urgency * 0.45));
       // After a leap the dolphin is still fast and steep: let the water slow
       // and level it at the normal rates instead of clamping.
       const steep = Math.abs(motion.pitch) > DOLPHIN_LIMITS.maxPitch - 0.02;
@@ -551,7 +599,13 @@ function stepSwimming(
             beginAccelerate(agent, agent.joinPlan);
             agent.joinPlan = null;
           }
-        } else if (canCommitToLeap(agent, vessel.speed, waterDepth) && clearOfHullForLeap(agent, vessel)) {
+        } else if (
+          canCommitToLeap(agent, vessel.speed, waterDepth) &&
+          clearOfHullForLeap(agent, vessel) &&
+          shallows.urgency === 0 &&
+          // The whole run-up, flight and dive stay over deep water.
+          freeRun(world, motion.x, motion.z, motion.heading, LEAP_CLEAR_RUN, DOLPHIN_LEAP_MIN_WATER) >= LEAP_CLEAR_RUN
+        ) {
           const rate = (0.035 + 0.05 * smoothstep(DOLPHIN_PLAY_VESSEL_SPEED, 4.5, vessel.speed)) * agent.playfulness;
           if (random() < rate * dt) {
             const plan = chooseLeapPlan(random, motion.speed);
@@ -577,6 +631,12 @@ function stepSwimming(
       limits = DOLPHIN_BURST_LIMITS;
       desiredSpeed = plan.speed;
       desiredHeading = motion.heading + avoidanceTurn(agent, obstacles, vessel);
+      steerClearOfShallows(world, motion.x, motion.z, motion.heading, desiredHeading, motion.speed, DOLPHIN_SHORE, shallows);
+      desiredHeading = shallows.heading;
+      if (shallows.urgency > 0.25) {
+        abortLeap(agent, random);
+        break;
+      }
       const runY = surface - plan.runDepth;
       desiredPitch = pitchTowardDepth(motion.y, runY, motion.speed, 1.5, 2.2, 0.5);
       const ready = motion.speed >= plan.speed * 0.96 && motion.y < surface - plan.runDepth * 0.85;
@@ -607,6 +667,8 @@ function stepSwimming(
       // the water slows it from leaping speed to cruising speed.
       limits = DIVE_LIMITS;
       desiredSpeed = Math.max(4, vessel.speed + 1);
+      steerClearOfShallows(world, motion.x, motion.z, motion.heading, motion.heading, motion.speed, DOLPHIN_SHORE, shallows);
+      desiredHeading = shallows.heading;
       const levelY = surface - 1.6;
       desiredPitch = agent.elapsed < 0.25 ? motion.pitch : pitchTowardDepth(motion.y, levelY, motion.speed, 1.1, 3, 0.7);
       if (agent.elapsed > 0.8 && Math.abs(motion.pitch) < 0.12) enter(agent, "recover");

@@ -18,6 +18,8 @@ export type MarineWorld = {
   orbitalHeight(x: number, z: number, depth: number): number;
   /** Metres of water over the seabed at (x, z). */
   seabedDepth(x: number, z: number): number;
+  /** Metres from the rendered waterline of the nearest island; negative on land. */
+  shoreDistance(x: number, z: number): number;
 };
 
 /** The yacht, as far as wildlife is concerned. */
@@ -27,33 +29,6 @@ export type VesselState = {
   heading: number;
   speed: number;
 };
-
-/**
- * Heading toward water at least `minDepth` deep along the next `lookAhead`
- * metres, closest to the current heading; null when the way ahead is fine.
- * Large animals use it to stay off reef shelves and beaches.
- */
-export function headingTowardDeepWater(
-  world: MarineWorld,
-  x: number,
-  z: number,
-  heading: number,
-  lookAhead: number,
-  minDepth: number,
-): number | null {
-  const clear = (angle: number): boolean => {
-    for (const fraction of [0.35, 0.7, 1]) {
-      const distance = lookAhead * fraction;
-      if (world.seabedDepth(x + Math.sin(angle) * distance, z + Math.cos(angle) * distance) < minDepth) return false;
-    }
-    return true;
-  };
-  if (clear(heading)) return null;
-  for (const offset of [0.45, -0.45, 0.9, -0.9, 1.4, -1.4, 2, -2, 2.6, -2.6]) {
-    if (clear(heading + offset)) return heading + offset;
-  }
-  return heading + Math.PI;
-}
 
 /** Effects a contact with the surface can produce. */
 export type WaterEffects = {

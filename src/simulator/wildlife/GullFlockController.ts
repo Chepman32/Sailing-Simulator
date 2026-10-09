@@ -132,6 +132,16 @@ function measureBeatCycle(
 
 export class GullFlockController {
   private readonly gulls: Gull[] = [];
+  private readonly positionList: THREE.Vector3[] = [];
+
+  /** Positions of the birds (live references to their roots). */
+  get positions(): readonly THREE.Vector3[] {
+    if (this.positionList.length !== this.gulls.length) {
+      this.positionList.length = 0;
+      this.gulls.forEach((gull) => this.positionList.push(gull.root.position));
+    }
+    return this.positionList;
+  }
   /** Merged bird meshes created here (see `mergeSkinnedParts`). */
   private readonly owned: { geometry: THREE.BufferGeometry; material: THREE.Material }[] = [];
 

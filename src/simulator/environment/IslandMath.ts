@@ -45,13 +45,15 @@ export function distanceFromBeach(island: IslandDefinition, x: number, z: number
   return Math.hypot(dx, dz) - island.beachRadius;
 }
 
-/** Water depth in metres used by physics, the depth sounder and grounding. */
+/**
+ * Water depth in metres used by physics, the depth sounder, wildlife and the
+ * ocean shader's colour. The shelf slopes down from the rendered, irregular
+ * waterline, so the shallows the animals avoid are the shallows on screen.
+ */
 export function waterDepthAt(x: number, z: number): number {
-  let depth = OPEN_WATER_DEPTH + Math.sin(x * 0.006) * 1.7 + Math.cos(z * 0.005) * 1.2;
-  for (const island of ISLAND_DEFINITIONS) {
-    const distance = distanceFromBeach(island, x, z);
-    if (distance < SHELF_WIDTH) depth = Math.min(depth, SHORE_DEPTH + Math.max(0, distance) * SHELF_SLOPE);
-  }
+  const open = OPEN_WATER_DEPTH + Math.sin(x * 0.006) * 1.7 + Math.cos(z * 0.005) * 1.2;
+  const shore = distanceFromWaterline(x, z);
+  const depth = shore < SHELF_WIDTH ? Math.min(open, SHORE_DEPTH + Math.max(0, shore) * SHELF_SLOPE) : open;
   return clamp(depth, 0.35, 24);
 }
 

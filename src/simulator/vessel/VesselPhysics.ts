@@ -5,6 +5,7 @@ import { sampleWind, type WindSample } from "../environment/WindMath";
 import type { SimulatorControls } from "../types";
 import { AIR_DENSITY, createSailState, solveSail, type SailState } from "./SailAerodynamics";
 import { resolveShoreContact } from "./ShoreContact";
+import { createShoreGuard, updateShoreGuard, type ShoreGuardState } from "./ShoreGuard";
 
 export type OceanSampler = {
   sample: (x: number, z: number) => OceanSample;
@@ -176,6 +177,8 @@ export class VesselPhysics {
   heaveVelocity = 0;
   /** Signed propeller shaft speed as a fraction of maximum. */
   engineShaft = 0;
+  /** Collision avoidance near islands; `guard.output` is what the helm actually does. */
+  readonly guard: ShoreGuardState = createShoreGuard();
   telemetry: VesselTelemetry = {
     forwardSpeed: 0,
     speedKnots: 0,
@@ -208,10 +211,15 @@ export class VesselPhysics {
     private readonly islands: IslandPhysics,
   ) {}
 
-  fixedUpdate(delta: number, controls: SimulatorControls): void {
+  /**
+   * One fixed step. `controls` are the helmsman's; near an island the shore
+   * guard may override them for a while (see `ShoreGuard`).
+   */
+  fixedUpdate(delta: number, helm: SimulatorControls, engineRunning = true): void {
     this.time += delta;
     this.forward.set(Math.sin(this.heading), 0, Math.cos(this.heading));
     this.right.set(Math.cos(this.heading), 0, -Math.sin(this.heading));
+    const controls = updateShoreGuard(this.guard, this, helm, engineRunning, this.islands.shoreClearance, delta);
 
     const forwardSpeed = this.velocity.dot(this.forward);
     const lateralSpeed = this.velocity.dot(this.right);
@@ -347,6 +355,8 @@ export class VesselPhysics {
     this.rollRate = 0;
     this.heaveVelocity = 0;
     this.engineShaft = 0;
+    this.guard.active = false;
+    this.guard.urgency = 0;
     this.waveRollTarget = 0;
     this.wavePitchTarget = 0;
     this.waveSlopeForward = 0;

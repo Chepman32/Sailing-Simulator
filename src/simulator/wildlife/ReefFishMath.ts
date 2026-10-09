@@ -304,8 +304,15 @@ export function stepSchool(
     fish.bank = clamp(-fish.yawRate * fish.speed * 0.35, -0.5, 0.5);
 
     const horizontalSpeed = Math.cos(fish.pitch) * fish.speed;
-    fish.x += Math.sin(fish.heading) * horizontalSpeed * dt;
-    fish.z += Math.cos(fish.heading) * horizontalSpeed * dt;
+    const nextX = fish.x + Math.sin(fish.heading) * horizontalSpeed * dt;
+    const nextZ = fish.z + Math.cos(fish.heading) * horizontalSpeed * dt;
+    // Hard limit: a fish never swims up onto the beach. A step into water too
+    // shallow for it is not taken; the steering above is already turning it.
+    const nextWater = world.surfaceAt(nextX, nextZ) - world.bottomAt(nextX, nextZ);
+    if (nextWater >= FISH_MIN_WATER_DEPTH * 0.7 || nextWater >= surface - bottom) {
+      fish.x = nextX;
+      fish.z = nextZ;
+    }
     fish.y = clamp(fish.y + Math.sin(fish.pitch) * fish.speed * dt, bottom + 0.05, surface - 0.2);
     fish.tailPhase += tailBeatFrequency(fish.speed, species.length) * Math.PI * 2 * dt;
     if (fish.tailPhase > 1000) fish.tailPhase -= Math.PI * 2 * 150;

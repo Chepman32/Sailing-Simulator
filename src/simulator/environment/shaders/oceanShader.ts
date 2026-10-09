@@ -1,12 +1,7 @@
-import {
-  ISLAND_DEFINITIONS,
-  OPEN_WATER_DEPTH,
-  SHELF_SLOPE,
-  SHORE_DEPTH,
-  WATERLINE_RADIAL,
-} from "../IslandMath";
+import { OPEN_WATER_DEPTH, SHELF_SLOPE, SHORE_DEPTH } from "../IslandMath";
 import { OCEAN_DETAIL_WAVES, OCEAN_WAVES, SURFACE_INVERSION_ITERATIONS } from "../OceanMath";
 import { SURFACE_IMPACT_GLSL } from "../SurfaceImpacts";
+import { BREAK_START, SURF_GLSL } from "../SurfMath";
 import { SKY_FUNCTIONS, SKY_UNIFORM_DECLARATIONS } from "./skyShader";
 
 /**
@@ -74,13 +69,6 @@ const detailCalls = OCEAN_DETAIL_WAVES.map((wave, index) => {
     wave.speed,
   )}, ${glsl(index * 1.7)}, base, footprint, gust, warp, slope, lostVariance);`;
 }).join("\n");
-
-const islandDistanceCalls = ISLAND_DEFINITIONS.map(
-  (island, index) =>
-    `    nearest = min(nearest, islandDistance(position, vec2(${glsl(island.centerX)}, ${glsl(
-      island.centerZ,
-    )}), ${glsl(island.beachRadius)}, ${glsl(island.scaleZ)}, ${glsl(index)}));`,
-).join("\n");
 
 const heightTerms = OCEAN_WAVES.map((wave) => {
   const [dx, dz] = unit(wave.directionX, wave.directionZ);
@@ -196,6 +184,10 @@ export const oceanFragmentShader = /* glsl */ `
   uniform float uVesselSpeed;
   uniform sampler2D uReflectionMap;
   uniform float uReflectionStrength;
+  // Wake field (see WakeField): R foam, G aerated slick, B − A height in metres.
+  uniform sampler2D uWakeMap;
+  uniform vec3 uWakeArea;
+  uniform float uWakeTexel;
   varying vec3 vWorldPosition;
   varying vec2 vBase;
   varying vec4 vReflectionCoord;
@@ -209,6 +201,7 @@ export const oceanFragmentShader = /* glsl */ `
 
   ${SKY_FUNCTIONS}
   ${SURFACE_IMPACT_GLSL}
+  ${SURF_GLSL}
 
   // Shared displacement spectrum, evaluated per pixel for a crisp normal.
   void swellWave(
@@ -270,23 +263,6 @@ export const oceanFragmentShader = /* glsl */ `
     return max(abs(local.x) - halfWidth, abs(local.y) - HULL_HALF_LENGTH);
   }
 
-  float islandDistance(vec2 position, vec2 center, float beachRadius, float scaleZ, float index) {
-    vec2 local = vec2(position.x - center.x, (position.y - center.y) / scaleZ);
-    float angle = atan(local.y, local.x);
-    float edge = 1.0
-      + sin(angle * 3.0 + index * 1.7) * 0.038
-      + sin(angle * 7.0 - index * 0.9) * 0.023
-      + cos(angle * 11.0 + index * 0.6) * 0.012;
-    return length(local) - beachRadius * edge * ${glsl(WATERLINE_RADIAL)};
-  }
-
-  // Metres from the rendered waterline of the nearest island.
-  float shoreDistance(vec2 position) {
-    float nearest = 1.0e5;
-${islandDistanceCalls}
-    return nearest;
-  }
-
   void main() {
     vec2 base = vBase;
     vec3 toCamera = cameraPosition - vWorldPosition;
@@ -318,8 +294,47 @@ ${detailCalls}
     vec2 rippleSlope = slope - swellSlope;
     float rippleVariance = lostVariance - swellVariance;
     float calm = surfaceImpacts(vWorldPosition.xz, footprint, swellSlope);
-    slope = swellSlope + rippleSlope * (1.0 - calm * 0.82);
-    lostVariance = swellVariance + rippleVariance * (1.0 - calm * 0.82);
+
+    // --- Wake -------------------------------------------------------------
+    // The yacht's wake is part of this surface: its waves bend the normal and
+    // are lit like the swell, its aerated band damps the ripples, and its foam
+    // is broken into lace below. Sampled unconditionally (no derivatives in
+    // branches); outside the field everything fades to zero.
+    vec2 wakeUv = (vWorldPosition.xz - uWakeArea.xy) / max(uWakeArea.z, 1.0) + 0.5;
+    vec2 wakeEdge = smoothstep(vec2(0.0), vec2(0.06), wakeUv) * (1.0 - smoothstep(vec2(0.94), vec2(1.0), wakeUv));
+    float wakeFade = uWakeTexel > 0.0 ? wakeEdge.x * wakeEdge.y : 0.0;
+    // Differences over two texels: a one-texel difference of a bilinear field
+    // has visible facets in a mirror-like reflection.
+    float wakeStep = 2.0 * uWakeTexel / max(uWakeArea.z, 1.0);
+    vec4 wake = texture2D(uWakeMap, wakeUv);
+    vec4 wakeX0 = texture2D(uWakeMap, wakeUv - vec2(wakeStep, 0.0));
+    vec4 wakeX1 = texture2D(uWakeMap, wakeUv + vec2(wakeStep, 0.0));
+    vec4 wakeZ0 = texture2D(uWakeMap, wakeUv - vec2(0.0, wakeStep));
+    vec4 wakeZ1 = texture2D(uWakeMap, wakeUv + vec2(0.0, wakeStep));
+    vec2 wakeSlope = vec2(
+      (wakeX1.b - wakeX1.a) - (wakeX0.b - wakeX0.a),
+      (wakeZ1.b - wakeZ1.a) - (wakeZ0.b - wakeZ0.a)
+    ) / max(4.0 * uWakeTexel, 1.0e-3);
+    wakeSlope = clamp(wakeSlope * 1.6, vec2(-0.45), vec2(0.45)) * wakeFade;
+    float wakeFoam = max(wake.r, 0.0) * wakeFade;
+    float wakeSlick = clamp(wake.g, 0.0, 1.0) * wakeFade;
+
+    float smoothing = max(calm * 0.82, wakeSlick * 0.7);
+    slope = swellSlope + rippleSlope * (1.0 - smoothing) + wakeSlope;
+
+    // --- Surf ---------------------------------------------------------------
+    // Waves steepen and break on the shelf; the crest's face tilts the normal
+    // along the shore normal, the white water is drawn with the foam below.
+    vec3 shoreHere = shoreInfo(base);
+    float surfFoam = 0.0;
+    if (shoreHere.x < ${glsl(BREAK_START + 2)}) {
+      float surfEdgeOut;
+      vec4 surf = surfSample(shoreHere.x, shoreHere.y, shoreHere.z, uTime, surfEdgeOut);
+      vec2 shoreGradient = vec2(shoreInfo(base + vec2(0.4, 0.0)).x, shoreInfo(base + vec2(0.0, 0.4)).x) - shoreHere.x;
+      slope += shoreGradient / max(length(shoreGradient), 1.0e-4) * surf.w;
+      surfFoam = surf.x;
+    }
+    lostVariance = swellVariance + rippleVariance * (1.0 - smoothing);
 
     vec3 normal = normalize(vec3(-slope.x, 1.0, -slope.y));
     float nDotV = clamp(dot(normal, viewDirection), 0.02, 1.0);
@@ -356,7 +371,7 @@ ${detailCalls}
     }
 
     // --- Water body -------------------------------------------------------
-    float shore = shoreDistance(base);
+    float shore = shoreHere.x;
     float depth = min(${glsl(OPEN_WATER_DEPTH)}, ${glsl(SHORE_DEPTH)} + max(shore, 0.0) * ${glsl(SHELF_SLOPE)});
     float shallow = exp(-depth * 0.2);
     float bottom = exp(-depth * 0.85);
@@ -366,6 +381,9 @@ ${detailCalls}
     float lightFacing = max(dot(normal, uLightDirection), 0.0);
     vec3 irradiance = uAmbientColor + uLightColor * (0.35 + 0.65 * lightFacing) * 0.2;
     body *= irradiance;
+    // Bubbles in the wake scatter light back up: a paler, turquoise band.
+    float bubbles = wakeSlick * (0.55 + 0.45 * skyNoise(vWorldPosition.xz * 0.35 + 7.3));
+    body = mix(body, uScatterColor * irradiance * 0.3 + body * 0.75, bubbles * 0.3);
 
     // Sunlight entering the back of a crest scatters toward the viewer.
     float crest = clamp(fold / MAX_FOLD, -1.0, 1.0);
@@ -443,23 +461,40 @@ ${detailCalls}
     foam += smoothstep(0.36, 0.8, breaking) * smoothstep(0.66, 0.9, foamTexture) * 0.16;
     foam = min(foam, 0.88) * uFoamDensity * (1.0 - calm * 0.6);
 
-    // Shore wash: bands of foam running up the sand, then a wet swash line.
-    float washPhase = shore * 1.15 + uTime * 0.85 + foamMedium * 2.6;
-    float washBand = smoothstep(0.55, 0.98, sin(washPhase) * 0.5 + 0.5);
-    float surfZone = 1.0 - smoothstep(0.4, 5.5, shore);
-    float shoreFoam = washBand * surfZone * smoothstep(0.3, 0.75, foamTexture + surfZone * 0.35);
-    shoreFoam += (1.0 - smoothstep(0.0, 0.9, shore)) * smoothstep(0.25, 0.7, foamTexture) * 0.85;
-    foam = clamp(foam + shoreFoam * step(-1.5, shore), 0.0, 1.0);
 
     // Water piling against the hulls: a lapping line at rest, a bow wave and
     // a ribbon of aerated water along each side once the yacht is moving.
     float hullSpeed = smoothstep(0.4, 4.5, uVesselSpeed);
     float bowZone = smoothstep(0.3, 0.95, hullAlong);
-    float contactWidth = 0.1 + hullSpeed * (0.22 + bowZone * 0.55);
+    // The bow wave and its foam come from the wake field; this is only the
+    // thin line where water meets the hull.
+    float contactWidth = 0.08 + hullSpeed * (0.12 + bowZone * 0.18);
     float contact = (1.0 - smoothstep(0.0, contactWidth, hullGap)) * step(-0.25, hullGap);
-    float hullFoam = contact * smoothstep(0.22, 0.62, foamTexture + 0.18 + hullSpeed * 0.2)
-      * (0.3 + hullSpeed * (0.45 + bowZone * 0.4));
+    float hullFoam = contact * smoothstep(0.3, 0.7, foamTexture + 0.12 + hullSpeed * 0.15)
+      * (0.28 + hullSpeed * (0.25 + bowZone * 0.2));
     foam = max(foam, min(hullFoam, 0.92));
+
+    // Wake foam: thick foam is solid white, thin foam a lace of bubbles that
+    // opens up as it decays. The lace is world-space noise at pixel scale,
+    // far finer than the wake field itself.
+    // Rotated lattices so the value noise never lines up into squares.
+    vec2 lacePosition = mat2(0.8, 0.6, -0.6, 0.8) * vWorldPosition.xz;
+    float laceA = skyFbm3(lacePosition * 1.9 + vec2(uTime * 0.05, -uTime * 0.04));
+    float laceB = skyNoise(mat2(0.47, -0.88, 0.88, 0.47) * vWorldPosition.xz * 6.3 - vec2(uTime * 0.09, uTime * 0.06));
+    // Patches and streaks a few metres across break the foam up first, the
+    // bubble lace finer still.
+    float patches = skyNoise(vWorldPosition.xz * 0.55 + vec2(3.1, -uTime * 0.02));
+    float lace = laceA * 0.6 + laceB * 0.4;
+    float laceResolved = 1.0 - smoothstep(0.08, 0.5, footprint);
+    lace = mix(0.5, lace, laceResolved);
+    float wakeCover = smoothstep(0.22, 1.0, wakeFoam * (0.1 + lace * 1.2) * (0.4 + patches * 1.2));
+    foam = max(foam, min(wakeCover, 0.96));
+    // Breakers: a dense roller at the crest, a frayed bore behind it.
+    float surfCover = smoothstep(0.12, 0.8, surfFoam * (0.25 + lace * 1.0) * (0.55 + patches * 0.9));
+    foam = max(foam, min(surfCover, 0.97));
+    // Shallow water over sand is clearer, and churned by the surf.
+    float shallowFoam = (1.0 - smoothstep(0.0, 1.2, shore)) * smoothstep(0.45, 0.8, lace) * 0.25;
+    foam = max(foam, shallowFoam);
 
     vec3 foamColor = (uAmbientColor * 1.15 + uLightColor * (0.2 + 0.8 * nDotL) * 0.3) * vec3(0.94, 0.98, 1.0);
     color = mix(color, foamColor, foam);
@@ -469,7 +504,9 @@ ${detailCalls}
     // --- Transparency -------------------------------------------------------
     // Looking down into clear tropical water shows what swims beneath it;
     // grazing views and deep water close up.
-    float clarity = mix(0.24, 0.05, smoothstep(0.025, 0.4, fresnel));
+    // Tropical water is clear: looking down, most of what is seen is what
+    // lies beneath (already veiled by the water in its own material).
+    float clarity = mix(0.58, 0.06, smoothstep(0.02, 0.36, fresnel));
     clarity = mix(clarity, 0.6, bottom * (1.0 - smoothstep(0.02, 0.3, fresnel)));
     float alpha = clamp(1.0 - clarity + foam * 0.5 + hullShadow * 0.12, 0.3, 1.0);
 

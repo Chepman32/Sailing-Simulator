@@ -45,6 +45,9 @@ export class OceanSystem {
       uReflectionMap: { value: null },
       uReflectionMatrix: { value: new THREE.Matrix4() },
       uReflectionStrength: { value: 0 },
+      uWakeMap: { value: null },
+      uWakeArea: { value: new THREE.Vector3(0, 0, 1) },
+      uWakeTexel: { value: 0 },
     };
     const material = new THREE.ShaderMaterial({
       name: "OceanSurface",
@@ -74,6 +77,16 @@ export class OceanSystem {
     this.uniforms.uReflectionMap.value = texture;
     (this.uniforms.uReflectionMatrix.value as THREE.Matrix4).copy(matrix);
     this.uniforms.uReflectionStrength.value = texture ? strength : 0;
+  }
+
+  /**
+   * The wake field (see `WakeField`). `area` is shared by reference, so the
+   * field's re-centring reaches the shader without another call.
+   */
+  setWakeField(texture: THREE.Texture | null, area: THREE.Vector3, texel: number): void {
+    this.uniforms.uWakeMap.value = texture;
+    this.uniforms.uWakeArea.value = area;
+    this.uniforms.uWakeTexel.value = texture ? texel : 0;
   }
 
   /** Simulation time the surface is currently drawn at. */

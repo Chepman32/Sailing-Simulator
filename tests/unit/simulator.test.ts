@@ -10,7 +10,8 @@ import {
   shoreClearance,
   waterDepthAt,
 } from "../../src/simulator/environment/IslandMath";
-import { HULL_OUTLINE, SHORE_CUSHION } from "../../src/simulator/vessel/ShoreContact";
+import { HULL_OUTLINE, SHORE_CONTACT_CLEARANCE } from "../../src/simulator/vessel/ShoreContact";
+import { hullFreeRun } from "../../src/simulator/vessel/ShoreGuard";
 import { createOceanGrid } from "../../src/simulator/environment/OceanGrid";
 import {
   OCEAN_DETAIL_WAVES,
@@ -468,49 +469,128 @@ test("shoal water adds drag without stopping the yacht", () => {
   assert.ok(shallow.telemetry.speedKnots > deep.telemetry.speedKnots * 0.4, "but never pin her in place");
 });
 
-test("driven onto a beach the yacht rebounds and turns away instead of sticking", () => {
-  const coast: IslandPhysics = {
-    depthAt: waterDepthAt,
-    avoidanceForce: (_position, _velocity, target) => target.set(0, 0, 0),
-    constrainToWater: () => false,
-    nearestShoreDirection: (_position, target) => target.set(0, 0, 1),
-    shoreClearance,
-  };
+const COAST: IslandPhysics = {
+  depthAt: waterDepthAt,
+  avoidanceForce: (_position, _velocity, target) => target.set(0, 0, 0),
+  constrainToWater: () => false,
+  nearestShoreDirection: (_position, target) => target.set(0, 0, 1),
+  shoreClearance,
+};
+
+/** A yacht 30 m off island 0 on `bearing`, aimed `approach` degrees off its centre. */
+function offTheBeach(bearing: number, approach: number, distance = 30): VesselPhysics {
   const island = ISLAND_DEFINITIONS[0];
   const normal = { x: 0, z: 1 };
-  for (const approach of [0, 25, 55]) {
+  const physics = new VesselPhysics(CALM, COAST);
+  let radius = island.beachRadius * 1.6;
+  const x = (r: number) => island.centerX + Math.cos(bearing) * r;
+  const z = (r: number) => island.centerZ + Math.sin(bearing) * r * island.scaleZ;
+  while (shoreClearance(x(radius), z(radius), normal) > distance) radius -= 0.5;
+  physics.position.set(x(radius), physics.position.y, z(radius));
+  physics.heading = Math.atan2(island.centerX - x(radius), island.centerZ - z(radius)) + THREE.MathUtils.degToRad(approach);
+  return physics;
+}
+
+function hullClearance(physics: VesselPhysics): number {
+  const normal = { x: 0, z: 1 };
+  let worst = Infinity;
+  for (const [side, ahead] of HULL_OUTLINE) {
+    const px = physics.position.x + physics.right.x * side + physics.forward.x * ahead;
+    const pz = physics.position.z + physics.right.z * side + physics.forward.z * ahead;
+    worst = Math.min(worst, shoreClearance(px, pz, normal));
+  }
+  return worst;
+}
+
+test("under power, the shore guard turns the yacht away before she touches and hands the helm back", () => {
+  for (const approach of [0, 25, 55, -40]) {
     for (const bearing of [0, 1.3, 2.6, 4.2]) {
-      const physics = new VesselPhysics(CALM, coast);
-      // Start 30 m off the coast on this bearing, aimed at the island centre.
-      let radius = island.beachRadius * 1.3;
-      const x = (r: number) => island.centerX + Math.cos(bearing) * r;
-      const z = (r: number) => island.centerZ + Math.sin(bearing) * r * island.scaleZ;
-      while (shoreClearance(x(radius), z(radius), normal) > 30) radius -= 0.5;
-      physics.position.set(x(radius), physics.position.y, z(radius));
-      physics.heading = Math.atan2(island.centerX - x(radius), island.centerZ - z(radius)) + THREE.MathUtils.degToRad(approach);
+      const physics = offTheBeach(bearing, approach);
       const controls = { throttle: 1, rudder: 0, sailTrim: 0.2 };
+      const wouldHit = hullFreeRun(shoreClearance, physics.position.x, physics.position.z, physics.heading, 300) < 300;
       let worst = Infinity;
       let impacts = 0;
-      for (let step = 0; step < 40 * 60; step += 1) {
-        physics.fixedUpdate(1 / 60, controls);
+      let engaged = 0;
+      const normal = { x: 0, z: 1 };
+      // Handed back, out in open water, and up to speed again on the player's throttle.
+      let recovered = false;
+      for (let step = 0; step < 50 * 60; step += 1) {
+        physics.fixedUpdate(1 / 60, controls, true);
         if (physics.telemetry.shoreImpact > 0) impacts += 1;
-        for (const [side, ahead] of HULL_OUTLINE) {
-          const px = physics.position.x + physics.right.x * side + physics.forward.x * ahead;
-          const pz = physics.position.z + physics.right.z * side + physics.forward.z * ahead;
-          worst = Math.min(worst, shoreClearance(px, pz, normal));
+        if (physics.guard.active) engaged += 1;
+        worst = Math.min(worst, hullClearance(physics));
+        if (
+          !physics.guard.active &&
+          shoreClearance(physics.position.x, physics.position.z, normal) > 25 &&
+          physics.telemetry.speedKnots > 7
+        ) {
+          recovered = true;
         }
       }
       const label = `bearing ${bearing}, approach ${approach} deg`;
-      assert.ok(impacts > 0 || worst < SHORE_CUSHION, `${label}: the yacht should reach the beach`);
-      assert.ok(worst > 0.3, `${label}: a hull ran ${(-worst).toFixed(2)} m up the sand`);
-      // Afterwards she sails clear: off the beach and not driving back into it.
-      const clearance = shoreClearance(physics.position.x, physics.position.z, normal);
-      const intoShore = -(physics.velocity.x * normal.x + physics.velocity.z * normal.z);
-      assert.ok(clearance > 5, `${label}: still on the beach (${clearance.toFixed(1)} m)`);
-      assert.ok(clearance > 25 || intoShore < 0.5, `${label}: still driving into the beach`);
-      assert.ok(physics.telemetry.speedKnots > 1.5, `${label}: she must keep sailing, not sit on the beach (${physics.telemetry.speedKnots.toFixed(2)} kn)`);
-      assert.ok(Number.isFinite(physics.position.length() + physics.heading));
+      if (wouldHit) assert.ok(engaged > 0, `${label}: the guard should have taken the helm`);
+      assert.equal(impacts, 0, `${label}: the hulls struck the shore`);
+      assert.ok(worst > SHORE_CONTACT_CLEARANCE, `${label}: a hull came within ${worst.toFixed(2)} m of the sand`);
+      assert.ok(recovered, `${label}: never back in open water at speed with the helm handed back`);
     }
+  }
+});
+
+test("a helmsman who keeps steering into an island cannot strand the yacht", () => {
+  const island = ISLAND_DEFINITIONS[0];
+  for (const [bearing, mode] of [
+    [0.4, "pursuit"],
+    [2.2, "pursuit"],
+    [3.6, "circle"],
+    [5.1, "circle"],
+  ] as const) {
+    const physics = offTheBeach(bearing, 0, 40);
+    const controls = { throttle: 0.85, rudder: 0, sailTrim: 0.6 };
+    let impacts = 0;
+    let worst = Infinity;
+    const track: THREE.Vector3[] = [];
+    for (let step = 0; step < 180 * 60; step += 1) {
+      if (mode === "pursuit") {
+        // Always aims straight back at the island centre.
+        const wanted = Math.atan2(island.centerX - physics.position.x, island.centerZ - physics.position.z);
+        const error = Math.atan2(Math.sin(wanted - physics.heading), Math.cos(wanted - physics.heading));
+        controls.rudder = THREE.MathUtils.clamp(error * 2, -1, 1);
+      } else {
+        // Hard over the whole time, on a circle that crosses the beach.
+        controls.rudder = 0.8;
+      }
+      physics.fixedUpdate(1 / 60, controls, true);
+      if (physics.telemetry.shoreImpact > 0) impacts += 1;
+      worst = Math.min(worst, hullClearance(physics));
+      if (step % (20 * 60) === 0) track.push(physics.position.clone());
+      assert.ok(Number.isFinite(physics.position.x + physics.position.z + physics.heading));
+    }
+    const label = `${mode} from bearing ${bearing}`;
+    assert.equal(impacts, 0, `${label}: struck the shore`);
+    assert.ok(worst > 0.8, `${label}: a hull came within ${worst.toFixed(2)} m of the sand`);
+    // Never parked: she keeps moving through every twenty-second window.
+    for (let index = 1; index < track.length; index += 1) {
+      assert.ok(track[index]!.distanceTo(track[index - 1]!) > 6, `${label}: stuck between ${index * 20 - 20} and ${index * 20} s`);
+    }
+  }
+});
+
+test("under sail with the engine off, the guard eases the sheets and the shore still never holds her", () => {
+  for (const bearing of [0, 1.3, 2.6, 4.2]) {
+    const physics = offTheBeach(bearing, 10);
+    const controls = { throttle: 0, rudder: 0, sailTrim: 1 };
+    let worst = Infinity;
+    let eased = false;
+    for (let step = 0; step < 60 * 60; step += 1) {
+      physics.fixedUpdate(1 / 60, controls, false);
+      worst = Math.min(worst, hullClearance(physics));
+      if (physics.guard.active && physics.guard.output.sailTrim < 1) eased = true;
+    }
+    const label = `bearing ${bearing}`;
+    const normal = { x: 0, z: 1 };
+    assert.ok(worst > 0.3, `${label}: a hull ran ${(-worst).toFixed(2)} m up the sand`);
+    assert.ok(shoreClearance(physics.position.x, physics.position.z, normal) > 5, `${label}: still on the beach`);
+    if (worst < 6) assert.ok(eased, `${label}: the sheets should have been eased near the beach`);
   }
 });
 
@@ -543,7 +623,12 @@ test("island bathymetry shoals toward a coast the ocean shader can follow", () =
   for (const island of ISLAND_DEFINITIONS) {
     const beachX = island.centerX + island.beachRadius;
     assert.ok(Math.abs(distanceFromBeach(island, beachX, island.centerZ)) < 1e-9);
-    const atBeach = waterDepthAt(beachX, island.centerZ);
+    // Depth is measured from the rendered waterline, which the noise moves a
+    // little off the nominal ellipse.
+    let waterlineX = beachX;
+    while (distanceFromWaterline(waterlineX, island.centerZ) > 0) waterlineX -= 0.05;
+    while (distanceFromWaterline(waterlineX, island.centerZ) < 0) waterlineX += 0.05;
+    const atBeach = waterDepthAt(waterlineX, island.centerZ);
     const offshore = waterDepthAt(beachX + 12, island.centerZ);
     const openWater = waterDepthAt(beachX + 60, island.centerZ);
     assert.ok(atBeach < 0.5);
@@ -612,4 +697,77 @@ test("bow spray starts at a realistic cruising speed and grows with speed and he
   assert.ok(bowSprayRate(5, 0) > cruising);
   assert.ok(bowSprayRate(4, 1) > cruising);
   assert.equal(bowSprayRate(-4, 0), cruising);
+});
+
+// --- Weather, surf -------------------------------------------------------------
+
+test("the weather is mostly fair, opens clear, and clouds over only in occasional spells", async () => {
+  const { sampleWeather, FIRST_SPELL } = await import("../../src/simulator/environment/WeatherMath");
+  let overcastTime = 0;
+  let spells = 0;
+  let wasOvercast = false;
+  const samples = 4 * 3600;
+  for (let second = 0; second < samples; second += 1) {
+    const weather = sampleWeather(second);
+    assert.ok(weather.cloudCover >= 0.12 && weather.cloudCover <= 0.8);
+    assert.ok(weather.overcast >= 0 && weather.overcast <= 1);
+    if (second < FIRST_SPELL) assert.equal(weather.overcast, 0, "every session opens under a clear sky");
+    const overcast = weather.overcast > 0.5;
+    if (overcast) overcastTime += 1;
+    if (overcast && !wasOvercast) spells += 1;
+    wasOvercast = overcast;
+  }
+  assert.ok(overcastTime / samples < 0.15, `overcast ${((overcastTime / samples) * 100).toFixed(1)}% of the time`);
+  assert.ok(spells >= 3, "cloudy spells do happen");
+  assert.ok(sampleWeather(100).cloudCover < 0.35, "fair weather leaves most of the sky clear");
+});
+
+test("surf: waves break, run up the beach by different amounts, and leave sand that dries", async () => {
+  const { sampleSurf, SURF_PERIOD, waveRunup } = await import("../../src/simulator/environment/SurfMath");
+  const runups = new Set<number>();
+  for (let n = 0; n < 24; n += 1) runups.add(Math.round(waveRunup(n, 0).runup * 10));
+  assert.ok(runups.size > 6, "every wave runs up differently");
+  for (let n = 0; n < 60; n += 1) {
+    const { runup } = waveRunup(n, 1);
+    assert.ok(runup > 1 && runup < 6.5);
+  }
+  let foamOffshore = 0;
+  let sheetSeen = 0;
+  let maxWet = 0;
+  for (let step = 0; step < SURF_PERIOD * 30; step += 1) {
+    const time = step / 30;
+    const breaker = sampleSurf(3, 0.4, 0, time);
+    const beach = sampleSurf(-1.2, 0.4, 0, time);
+    const dry = sampleSurf(-9, 0.4, 0, time);
+    const open = sampleSurf(30, 0.4, 0, time);
+    for (const sample of [breaker, beach, dry, open]) {
+      assert.ok(sample.foam >= 0 && sample.foam <= 1 && sample.wetness >= 0 && sample.wetness <= 1);
+      assert.ok(Number.isFinite(sample.slope) && Math.abs(sample.slope) < 0.5);
+    }
+    foamOffshore = Math.max(foamOffshore, breaker.foam);
+    if (beach.sheet > 0) sheetSeen += 1;
+    maxWet = Math.max(maxWet, beach.wetness);
+    assert.equal(dry.wetness, 0, "nine metres up the beach the sand stays dry");
+    assert.equal(open.foam, 0, "no surf in open water");
+  }
+  assert.ok(foamOffshore > 0.5, "waves break into white water on the shelf");
+  assert.ok(sheetSeen > 0, "the swash runs up the beach");
+  assert.ok(sheetSeen < SURF_PERIOD * 30, "and drains away again");
+  assert.ok(maxWet > 0.9);
+  // Waves arrive at different times along the coast, not as parallel stripes.
+  const a = sampleSurf(-1, 0, 0, 3).edge;
+  const b = sampleSurf(-1, 1.2, 0, 3).edge;
+  const c = sampleSurf(-1, 2.4, 0, 3).edge;
+  assert.ok(new Set([a.toFixed(2), b.toFixed(2), c.toFixed(2)]).size > 1);
+});
+
+test("wake samples spread with speed so the bounded pool holds the whole wake", async () => {
+  const { wakeSampleSpacing, HULL_TRACK_LIFE, KELVIN_TANGENT } = await import("../../src/simulator/vessel/WakeSystem");
+  assert.ok(Math.abs(Math.atan(KELVIN_TANGENT) - (19.47 * Math.PI) / 180) < 1e-9);
+  for (const speed of [0.5, 2, 4.5, 6]) {
+    const samples = (speed * HULL_TRACK_LIFE) / wakeSampleSpacing(speed);
+    // Two stern tracks and two bow waves per sample, within the high preset's pool.
+    assert.ok(samples * 4 <= 145 * 0.9 * 4 + 1e-9 || speed < 2, `${speed} m/s needs ${samples * 4} stamps`);
+  }
+  assert.equal(wakeSampleSpacing(0), 0.28);
 });

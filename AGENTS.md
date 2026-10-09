@@ -16,7 +16,7 @@ The experience should communicate the following at a glance:
 - day and night are coherent environment states rather than unrelated color filters;
 - islands are tropical land masses with shallow water and collision boundaries, not circular platforms;
 - wildlife uses authored, licensed, rigged 3D models and moves forward with inertia;
-- whales stay hidden at depth most of the time; a surfacing is a rare event in which only the back, the blowhole and, when lobtailing, the peduncle and flukes clear the water;
+- whales stay hidden at depth most of the time; a surfacing is a rare event in which only the back, the blowhole and, when lobtailing, the peduncle and flukes clear the water; a full breach happens only far from the yacht, rarely, by a separate distant whale;
 - dolphins leap only at real speed, in one continuous ballistic arc; sharks are mostly a dark shape below the surface;
 - mobile controls remain readable, reachable, and independent from camera gestures;
 - sound is a layered simulation channel that unlocks from a trusted browser gesture.
@@ -98,6 +98,9 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/EnvironmentSystem.ts` | Sky dome, image-based lighting capture, fog, exposure, sun, moon, stars, directional light |
 | `src/simulator/environment/IslandMath.ts` | Pure island definitions, bathymetry, coastline noise, terrain noise |
 | `src/simulator/environment/IslandSystem.ts` | Terrain, palms, seabed, collision, shore direction |
+| `src/simulator/environment/IslandSurface.ts` | Sand shading (grain, ripples, wet sand), swash on the beach, palm shadow map and trunk contact shading |
+| `src/simulator/environment/SurfMath.ts` | Pure surf model (breaking crest, bore, swash, drying sand) and its GLSL twin, shared by ocean and sand |
+| `src/simulator/environment/WeatherMath.ts` | Pure, deterministic fair-weather cloud cover with occasional cloudy spells |
 | `src/simulator/environment/OceanReflection.ts` | Planar mirror of the world above the sea (oblique near plane), sampled by the ocean shader |
 | `src/simulator/environment/UnderwaterLight.ts` | Beer–Lambert absorption for everything below the surface |
 
@@ -109,10 +112,12 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/vessel/BoomDynamics.ts` | Pure boom swing on its sheet, gybe slam, mirrored pivot pose |
 | `src/simulator/vessel/Appendages.ts` | Procedural saildrive legs, three-bladed propellers and spade rudders |
 | `src/simulator/vessel/YachtShading.ts` | Antifouling, boot stripe, wet band, non-skid deck, sail seams and translucency |
-| `src/simulator/vessel/ShoreContact.ts` | Pure hull-outline shore cushion, impulse rebound and turn-away |
+| `src/simulator/vessel/ShoreGuard.ts` | Pure collision avoidance near islands: look-ahead sweep of the hull, temporary helm override, hand-back |
+| `src/simulator/vessel/ShoreContact.ts` | Pure hull-outline shore cushion and impulse contact (physical backstop behind the guard) |
 | `src/simulator/vessel/VesselPhysics.ts` | Engines, sails, windage, hull and keel hydrodynamics, rudders, seakeeping, grounding |
 | `src/simulator/vessel/SailAerodynamics.ts` | Pure sail lift/drag polar and automatic sheeting |
 | `src/simulator/vessel/SailSystem.ts` | Sail material and wind/trim deformation |
+| `src/simulator/vessel/WakeField.ts` | Top-down wake texture (foam, aerated slick, wave height) the ocean shader samples |
 | `src/simulator/vessel/WakeSystem.ts` | Twin hull tracks, prop wash, bow droplets; wildlife splashes by contact kind: droplets, mist, crown sheets, rings, foam fields, fin trails, whale blows |
 
 ### Wildlife
@@ -121,7 +126,10 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | --- | --- |
 | `src/simulator/wildlife/WildlifeSystem.ts` | Owns every animal and the shared `MarineWorld` (rendered surface, bathymetry, yacht, each other) |
 | `WhaleBehavior.ts` | Pure whale state machine, depth keeping, tail-chain springs, lobtail planning, tail forward kinematics |
-| `WhaleController.ts` | Whale rig: procedural tail bends, flipper clip, tracked blowhole/back/fluke contact points |
+| `WhaleController.ts` | Whale rig (`createWhaleRig`): procedural fluke strokes and turn bends, flipper clip, tracked blowhole/back/fluke contact points |
+| `WhaleBreach.ts` | Pure distant breach: rare scheduling, run-up from depth, ballistic flight with roll, splash, dive |
+| `WhaleBreachController.ts` | Second whale rig for breaches, body contact points, splash and spray |
+| `ShoreAvoidance.ts` | Shared look-ahead steering around shallows and the hard deep-water confinement for every swimmer |
 | `DolphinBehavior.ts` | Pure pod modes, per-dolphin leap state machine, speed gates, ballistics, hull clearance |
 | `DolphinController.ts` | Dolphin rig: procedural dorsoventral body wave, path-following arc, contact points |
 | `SharkBehavior.ts` | Pure shark state machine: patrol, investigate, close pass, burst, retreat, deep swim, fin show |
@@ -224,10 +232,10 @@ The loop clamps a long frame to 50 ms, caps the accumulator at five fixed steps,
 2. animate palms;
 3. interpolate yacht and sails, and swing the boom; a gybe slam is passed to audio;
 4. update wildlife movement and animation mixers, and the reef-fish schools (which flee the hulls, dolphins and shark);
-5. rebuild visible wake instances at a throttled rate;
+5. redraw the wake field at a throttled rate (about 30 Hz);
 6. update camera spring and FOV;
 7. derive and apply environment state, and refresh the lighting capture when the time of day has moved;
-8. light the wake foam from the same palette;
+8. light the spray from the same palette and redraw the palm shadow map if the light has moved;
 9. automate audio parameters;
 10. publish HUD state on its own cadence;
 11. render once through `PostProcessing`.
@@ -284,8 +292,11 @@ The GPU moves each vertex sideways as well as up, so `sampleOcean` first inverts
 - draws the sun and moon glitter path with a GGX lobe whose width follows the unresolved wave energy, a broad sheen around it, and HDR sparkles from individual facets that bloom;
 - colours the water body from the island bathymetry: deep blue offshore, turquoise over the shelf, sand showing through at the beach;
 - scatters sunlight forward through wave crests;
-- breaks whitecaps on the steepest crests inside gusts, and runs shore wash up each beach along the rendered, irregular waterline;
+- breaks whitecaps on the steepest crests inside gusts;
+- draws the surf from `SurfMath`: each wave steepens on the shelf (its face tilts the normal along the shore normal), breaks into a bore of white water and runs in; every wave has its own strength and run-up, and the timing drifts along the coast;
+- samples the wake field (`WakeField`): its wave height bends the normal, its aerated band pales the water and damps the ripples, and its foam is broken into lace at pixel scale;
 - keeps a local contact shadow under both hulls;
+- is clear looking down (about 58 % see-through at the nadir, closing toward grazing angles), so what swims below shows its own colour, already veiled by `UnderwaterLight`;
 - fades into the sky's own horizon colour so sea and sky meet without a seam.
 
 All colours are scene-linear and the shader ends with the renderer's tone-mapping and colour-space chunks, so it renders identically with and without the HDR pipeline.
@@ -309,6 +320,7 @@ Forces and moments, in the order they are computed each fixed step:
 - **Rudders** with authority from water flow, including the propeller race, so a burst of throttle turns a nearly stopped yacht. They also act as fixed fins that damp yaw.
 - **Seaway**: the slope of the water plane under the hulls surges and sways the yacht, so she slows climbing a wave and accelerates down its face.
 - **Shoal water** adds drag through the keels but never pins the yacht.
+- **Shore guard** (`ShoreGuard.updateShoreGuard`, before any force): the leading edge of the hulls is swept along the course, and along where the present swing takes the bow, over a look-ahead that grows with speed. If it meets water within `GUARD_MARGIN` of the coast, the guard takes the helm: it picks an escape heading to the side that clears soonest and keeps that side for the whole manoeuvre, steers for it with the real rudders and a propeller kick, sets a speed for the room left (backing off first when the bow is already at the beach), and eases the sheets under sail. It hands the helm back only when the course is clear, the yacht is heading out to sea and is far enough off; a helmsman who turns straight back is taken further out each time. `guard.output` is what the physics, wake and visuals use; the player's own controls are never changed, and the HUD shows a notice while the guard holds the helm.
 - **Shore contact** (`ShoreContact.resolveShoreContact`): ten points around the twin-hull outline are tested against the signed distance to the rendered waterline (`IslandMath.shoreClearance`). Within `SHORE_CUSHION` a soft push and torque start turning the bow away; on contact the deepest point takes a rigid-body impulse with restitution `SHORE_RESTITUTION`, a little friction and a turn kick toward the open tangent, so the yacht rebounds and changes course at once instead of sticking in the sand. A hard contact throws a slap splash at the bow. `IslandSystem.constrainToWater` keeps the hull centre at least 2.2 m off the coast as the final guard.
 
 Sign conventions: positive pitch lowers the bow; positive roll lowers the starboard hull; `telemetry.apparentWindAngle` is the signed angle the wind comes *from* (0 = head to wind, positive = over the starboard side); `telemetry.leewardSide` is the side the sails fill toward. The yacht heels to leeward.
@@ -355,19 +367,20 @@ The current wake contract is:
 - above about `1.1 m/s` each bow also sheds a diverging wave that drifts outward and slows, drawing the V of a displacement hull;
 - bow spray begins near `2.1 m/s` (`bowSprayRate`);
 - prop wash begins when absolute throttle is above `0.04`, even before the hull has accelerated;
-- track history samples after approximately `0.28 m` of movement;
+- track history samples after `wakeSampleSpacing(speed)` of movement: `0.28 m` at low speed, growing to `1 m` at speed so the bounded pool holds the whole twelve seconds;
 - a maximum time interval supplements distance sampling so stationary prop wash and very slow motion remain visible;
 - slow or stationary maximum interval is `0.55 s`; moving interval is `0.22 s`;
-- wake decals follow the current sampled ocean height plus a small surface offset;
-- wake and splash decals are composited over the ocean with normal blending; each decal's fade is carried in its instance colour and moved into alpha by `useInstanceFadeAsAlpha`, so overlapping decals cannot blow out;
-- each decal gets its own turn, size, and weight, fresh foam collapses quickly and a faint slick lingers;
-- foam and spray are lit from the environment palette, so they dim at dusk and take on moonlight;
+- the wake is not a set of decals on the water: every sample is drawn as a soft stamp into the wake field (`WakeField`, a texture of about 150 m following the yacht), and the ocean shader turns that into water: foam, aerated slick and a height field whose slope it shades like the swell;
+- stern-track stamps carry the transverse waves: their phase is the distance behind the stern times `g / v²`, so the crests follow the yacht at her own speed and spread to the Kelvin wedge;
+- bow stamps are single crests that move out sideways at `v · tan 19.47°` (`KELVIN_TANGENT`), so the diverging arms always lie on the Kelvin angle;
+- overlapping stamps are weighted by the track length each stands for, so density does not depend on sampling; fresh foam collapses within seconds and a faint aerated band lingers;
+- foam is lit by the ocean shader with the rest of the surface; spray is lit from the environment palette;
 - hull tracks live about 12 seconds; prop tracks about 8 seconds;
 - the ocean shader itself draws the water piling against each hull's waterplane: a lapping line at rest, a bow wave and a ribbon of aerated water along the sides that grow with speed.
 
 Distance remains the primary spacing rule. The time fallback exists only to make active prop wash and slow-ahead foam visible; do not replace the distance rule with frame-dependent spawning.
 
-Wake visuals use bounded `InstancedMesh` capacity derived from quality at construction time. Splash droplets use a bounded `Points` pool. New effects must reuse these pools or introduce another bounded pool rather than allocating a mesh per frame.
+Wake samples and the field's stamp capacity are bounded and derived from quality at construction time (field resolution 512, 384 or 256 texels); the field is redrawn from scratch each time, so it holds no history. Splash droplets use a bounded `Points` pool. New effects must reuse these pools or introduce another bounded pool rather than allocating a mesh per frame.
 
 A wildlife splash position must be an actual world-space water-contact position, not a hard-coded distance from the animal root.
 
@@ -379,7 +392,11 @@ Three island definitions provide center, beach radius, and elliptical Z scale. `
 
 Island definitions, bathymetry, coastline noise, and terrain noise live in the pure module `IslandMath.ts`. The ocean shader compiles the same definitions, so shore wash and shallow-water colour follow the rendered coast.
 
-The rendered island uses irregular radial geometry and a short submerged apron. Terrain triangles are wound counter-clockwise seen from above so the top face is the lit front face. Vegetation, dry grass, dunes, and wet sand come from low-frequency terrain noise.
+The rendered island uses irregular radial geometry (rings crowd toward the beach) and a short submerged apron. Terrain triangles are wound counter-clockwise seen from above so the top face is the lit front face. Vegetation, dry grass and dunes come from low-frequency terrain noise; a `sandMask` attribute marks the sand.
+
+`IslandSurface` decorates the terrain material: sand grain, rare shell fragments and broad colour patches that fade to their average before they can shimmer; wind ripples and micro-relief in the normal, faded by the pixel footprint; wet sand (darker, glossy) near the waterline and wherever the swash has just been; the swash sheet itself with its foam lace (`SurfMath`, the same waves the ocean draws). Palm shadows come from `PalmShadowMap`: the groves (on `PALM_SHADOW_LAYER`) are drawn from the dominant light into a depth map, only when the light moves, and sampled with a rotated Poisson disc for soft edges; each trunk also darkens the sand around its foot.
+
+Water depth (`waterDepthAt`) slopes down from the rendered, irregular waterline, so physics, wildlife and the ocean colour agree on where the shallows are.
 
 The palm asset is a row of five tree variants. `plantPalms` lifts each tree out of that row and plants it individually inside the vegetated zone; never place the whole asset group as one object, or the trees trail out to sea. All palms share one material per source material and one wind uniform, and sway in world space; because the wind needs nothing per tree, each island's grove is then merged into one mesh per material (two or three draw calls per island instead of one per trunk and crown). The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
 
@@ -406,11 +423,15 @@ One analytic sky function (`shaders/skyShader.ts`) is evaluated by three consume
 
 The capture is refreshed only when the night factor has moved, at most a few times per second during a day/night transition, and the previous target is disposed.
 
+The sun, moon and stars are drawn by the sky shader itself (`skyCelestial`), under the clouds: clouds drift across them, and every piece of geometry hides them by being drawn later. The solar disc is HDR (it blooms), with limb darkening, and dims near the horizon so it stays red-orange; the moon has maria and a soft limb; stars twinkle on a stereographic grid, sized to a pixel. The lighting capture leaves them out (`uCelestial` 0): the directional light already carries the sun and the moon.
+
+Weather comes from `WeatherMath.sampleWeather(time)`: a fair-weather cumulus field over about a quarter of the sky, and now and then (never in the first eight minutes) a cloudy spell that builds over half a minute, lasts a minute or two, greys the sky and dims the sun, then clears. A day/night change takes `TRANSITION_SECONDS` (11 s) and passes through a full sunset or sunrise.
+
 Lighting: one directional light carries the palette's dominant light and casts a tight shadow frustum (about ±17 m) that follows the yacht for crisp self-shadowing; a weak hemisphere light lifts shadowed faces. There is no separate ambient light; ambient comes from the capture.
 
 ### Under the surface
 
-`UnderwaterLight` applies the same Beer–Lambert transmittance to every material below the local wave surface (evaluated per vertex from the shared spectrum): wildlife, the reef fish, the hulls' underwater parts, the appendages, the island aprons and the seabed. Red is absorbed within a few metres, blue last, and the water's own colour is scattered back in, so submerged things read as in the water rather than behind glass. The in-scattered colour follows the palette.
+`UnderwaterLight` applies the same Beer–Lambert transmittance to every material below the local wave surface (evaluated per vertex from the shared spectrum): wildlife, the reef fish, the hulls' underwater parts, the appendages, the island aprons and the seabed. Red is absorbed within a few metres, blue last, and the water's own colour is scattered back in, so submerged things read as in the water rather than behind glass. The in-scattered colour follows the palette. Near the surface, moving sunlight caustics (fading with depth, off at night) play over every submerged material.
 
 Navigation lights stay in the scene at zero intensity by day. Toggling their visibility would change the scene's light count and recompile every lit shader at dusk.
 
@@ -418,7 +439,7 @@ Night requirements:
 
 - the scene remains readable rather than nearly black;
 - moon elevation is 30 degrees (`π/6`) above the horizon;
-- moon core is depth-tested;
+- the moon is part of the sky, so geometry and clouds pass in front of it;
 - moon halo is soft and controlled;
 - small stars use varied low intensity and glow, not large flat dots;
 - moonlight creates a broken elongated glitter path on the water;
@@ -427,7 +448,7 @@ Night requirements:
 
 Sun requirements:
 
-- the solar core passes the depth test;
+- the solar disc is part of the sky, behind all geometry and the clouds;
 - a sail or mast can occlude it;
 - the wide solar glow is part of the sky itself, so it is naturally behind all geometry;
 - avoid excessive sail transparency or emissive brightness that makes the sun appear through canvas.
@@ -455,7 +476,8 @@ General motion rules:
 - behaviour is pure (`*Behavior.ts`: state machine, steering, kinematics, pose parameters) and unit-tested against the real sea and bathymetry; controllers only map it onto the rig and the effects;
 - tails and spines are bent procedurally through the real joints with `ProceduralBone`, in the animal's own frame, on top of whatever the mixer last wrote; authored clips are filtered (`filterClip`) to the secondary motion they do well;
 - surface contact is tracked at named body points (`BodyPoint` + `SurfacePoint` with hysteresis), never at the model centre; splash energy comes from mass and speed through the surface;
-- animals keep off islands with `headingTowardDeepWater`, keep each other at a distance, and never occupy the yacht's hull and keel box;
+- animals keep off islands with `ShoreAvoidance`: `steerClearOfShallows` looks ahead along a fan of headings, as far as the animal needs to turn at its speed and radius, picks the clear heading closest to its wish and reports an urgency used to ease off; `confineToDeepWater` is the hard limit that eases a body back to deep water at swimming speed, so land is unreachable; leaps need a clear deep run ahead; reef fish never take a step onto the beach;
+- animals keep each other at a distance and never occupy the yacht's hull and keel box;
 - an animal left far behind a moving yacht is moved ahead of her only while it is deep and out of sight;
 - skeletal sampling slows with camera distance (`animationInterval`) and animals hidden by depth or distance are not drawn.
 
@@ -467,7 +489,7 @@ Each dolphin runs:
 
 `cruise → accelerate → approach_surface → leap → airborne → reentry → dive → recover → cruise`
 
-Leaps are speed gated twice. A dolphin only commits to one (`canCommitToLeap`) in a playful pod (yacht at least `DOLPHIN_PLAY_VESSEL_SPEED`, about 4.7 kn), after its cooldown, already swimming at `DOLPHIN_LEAP_ENTRY_SPEED` or more, over deep water and clear of the hulls. It then accelerates at depth and only leaves the water if it has actually reached `DOLPHIN_LEAP_MIN_SPEED`; otherwise it levels off. A calm pod never leaps. The run-up depth (`leapRunDepth`) is what lets the body rotate to its exit angle before the rostrum breaks the surface. From that moment the motion is ballistic, the body axis lies along the velocity and arches with the path's curvature, the strokes stop, and the dolphin re-enters head first carrying its momentum into a dive that the water slows. Variants: low porpoising arcs, high arcs, paired leaps started a fraction of a second apart, and rare spinner leaps that complete one or two rolls before re-entry.
+Leaps are speed gated twice. A dolphin only commits to one (`canCommitToLeap`) in a playful pod (yacht at least `DOLPHIN_PLAY_VESSEL_SPEED`, about 3.5 kn), after its cooldown, already swimming at `DOLPHIN_LEAP_ENTRY_SPEED` or more, over deep water and clear of the hulls. It then accelerates at depth and only leaves the water if it has actually reached `DOLPHIN_LEAP_MIN_SPEED`; otherwise it levels off. A calm pod never leaps. The run-up depth (`leapRunDepth`) is what lets the body rotate to its exit angle before the rostrum breaks the surface. From that moment the motion is ballistic, the body axis lies along the velocity and arches with the path's curvature, the strokes stop, and the dolphin re-enters head first carrying its momentum into a dive that the water slows. Variants: low porpoising arcs, high arcs, paired leaps started a fraction of a second apart, and rare spinner leaps that complete one or two rolls before re-entry.
 
 The rig is rooted at the tail and its authored clip only flaps the pectoral fins, so the dorsoventral body wave is procedural (frequency from speed, larger toward the flukes) and the model is shifted to keep the mid-body on the path. The model is scaled by its length to a 2.7 m bottlenose.
 
@@ -495,7 +517,11 @@ The whale spends most of its time deep (about ten metres), where the water hides
 
 After surfacing it may lobtail (almost always the first time, then more likely the longer it has gone without; never within `WHALE_SLAP_COOLDOWN`): it slows, tips its head down, and its peduncle lifts the flukes two to four metres clear while the torso stays under; water pours off them. It holds, then strikes one to three times with varying force, height and body angle. The tail is a chain of three real joints (`locator4`, `locator5`, `locator6`) whose bends follow damped springs, stiff at the root and laggier toward the flukes, so every stroke starts in the body and whips through to the tip; a strike is about twice as powerful as a lift. Otherwise it sounds, sometimes lifting its flukes as it goes down. A sounding whale leaves a glassy footprint.
 
-The slap fires once per downstroke when a tracked fluke point crosses down through the rendered surface fast enough, at that point, with energy from the fluke's mass and speed. `WHALE_SHALLOWEST_DEPTH` is a hard limit on the body centre; the seabed may squeeze the whale up but never out of the sea, and it steers for water at least 13.5 m deep. The authored swim clip beats the flukes through seven metres, so only its flipper and eye tracks are played.
+The slap fires once per downstroke when a tracked fluke point crosses down through the rendered surface fast enough, at that point, with energy from the fluke's mass and speed. `WHALE_SHALLOWEST_DEPTH` is a hard limit on the body centre; the seabed may squeeze the whale up but never out of the sea, and it steers for water at least 13.5 m deep. The authored swim clip beats the flukes through seven metres, so only its flipper and eye tracks are played. Swimming, the flukes beat every four to eight seconds through the three tail joints (stronger when speeding up or climbing), the head dips slightly against each stroke, the tail bends toward the inside of a turn, and the flipper clip works harder when turning.
+
+### Distant breaches
+
+`WhaleBreach` runs a second, separate whale that is only ever seen breaching: rarely (`BREACH_MIN_INTERVAL`–`BREACH_MAX_INTERVAL`, the first a few minutes in), `BREACH_MIN_DISTANCE`–`BREACH_MAX_DISTANCE` from the yacht, ahead or off her bow, over deep water, running across the line of sight. It accelerates up from twelve metres, leaves the water on the arc its plan needs (full breach onto its back, flank breach, or chin breach), flies ballistically while its body lags the path and rolls, and crashes down; the water stops it within a body length and it dives out of sight. `WhaleBreachController` draws it with its own rig and throws spray where body points actually cross the surface: a sheet of water on the way out, the largest splash, mist and ring waves on the way down, and churned water afterwards. The whale near the yacht still never lifts its body out.
 
 ## 16. Audio system
 
@@ -503,9 +529,9 @@ The current audio implementation is procedural Web Audio. There are no runtime a
 
 ```text
 Master → DynamicsCompressor → destination
-  EngineBus → low/high engine oscillators + start cue
-  EnvironmentBus → wave noise + wind noise + hull-water noise
-  WildlifeBus → one-shot splash noise
+  EngineBus → diesel firing pulses + half-speed crank + combustion knock + wet-exhaust burble → opening low-pass; starter cue
+  EnvironmentBus → wave noise + soft low wind (weather-driven) + rigging whistle in strong wind + hull-water noise
+  WildlifeBus → one-shot splashes (panned to where they happened, darker with distance) + positional gull calls
 ```
 
 The master sound setting and audio readiness are different states:
@@ -530,6 +556,8 @@ Do not display “sound on” as if it proves playback. Use `audioReady` for the
 Engine mute controls only `EngineBus`. Master sound controls the master gain. Waves and wind must continue when the engine bus is muted.
 
 While an audible engine is running, the engine bus is boosted and the environment bus is gently ducked. The engine combines two RPM-controlled oscillators, a band-limited mechanical-noise layer, and a one-shot start cue so it remains distinguishable on phone speakers.
+
+The engine is a small four-cylinder diesel: firing frequency 26 Hz at idle to 86 Hz flat out, a harmonic spectrum with its energy between 150 Hz and 1.5 kHz, and a low-pass that opens with revs and load, so it is calm and muffled at idle and fuller (never shrill) under power. Wind is pink noise in a low band that the breeze and the weather move slowly. Gulls call at irregular intervals from where they fly (long call, kee-ow, alarm keks, soft mew; pitch and timing vary every call). No licensed recordings could be fetched in this environment; everything is synthesised.
 
 When tuning audio, test on small phone speakers. Important engine fundamentals and environmental energy must not exist only below approximately 100 Hz. Keep total gain bounded through the compressor and avoid clipping.
 
@@ -589,7 +617,7 @@ Layout is driven by tokens on `.simulator-shell` (`--gap`, `--top-bar`, `--edge-
 - phone landscape and short windows (up to 560 px tall): rudder bottom left, throttle bottom right, the middle left to the yacht; settings open as a side sheet; below 350 px tall the collapsed settings button steps left of the throttle column;
 - transient prompts (sound unlock, engine notice, first-run hint) share one centred column, so they never collide with each other or the controls; the hint hides on short phones and when the settings are opened;
 - layout containers that only position their children (`.primary-controls`, `.scene-actions`, `.notice-stack`) set `pointer-events: none`, so their empty areas belong to the camera; every control inside sets it back;
-- photo mode shows how to leave it for three seconds, since the rest of the interface is hidden.
+- photo mode fades the interface out (inert while hidden); one tap or click on the scene (a short press that barely moved, so drags still frame the shot), `Escape` or `Tab` fades it back in; the hint says so for three seconds.
 
 Verify layout changes at least at 320×568, 375×667, 390×844, 360×740, 568×320, 667×375, 844×390, 932×430, 768×1024, 1024×768, 1280×720, 1366×768 and 1920×1080, with the panel open and closed, in a long language (German or Russian), an RTL language and a non-Latin script (Tamil).
 
@@ -631,6 +659,7 @@ Important implementation caveats:
 - shadows can change with quality;
 - a preset change resizes the HDR targets and their sample count;
 - wake pool and wildlife counts are currently sized at construction and do not rebuild after a preset change;
+- the palm shadow map is at least 1024² (2048² on high) and redrawn only when the light moves; the wake field is 512², 384² or 256²;
 - `reflectionScale` sizes the planar mirror (`OceanReflection`, off on low, 0.35 on medium, 0.5 on high); it re-renders the scene without the ocean, wake, underwater group and sky, with no shadow pass;
 - animation mixers are advanced at approximately 30 Hz while movement remains per-frame;
 - all shader programs are compiled during loading against the render target the scene actually uses; nothing should compile during play (check `renderer.info.programs` before and after a day/night cycle);
@@ -699,8 +728,11 @@ The Sites checkpoint performs its own production build and rendered smoke verifi
 - Quality: presets that scale cost monotonically, with no post-processing on low.
 - Engine: start from neutral selects slow ahead, active throttle is preserved, stop returns neutral.
 - Physics: engine produces forward motion with believable inertia, no NaN, comparable outcomes at 60/120 Hz, buoyancy follows sloped samples, a correct sailing polar (no-go zone, fastest on a reach, heel to leeward, bounded leeway), realistic top speed, prop-wash steerage, correct helm sense, shaft spool-down, shoal drag without sticking, a beached yacht that rebounds and turns away, and a long seaway passage that stays finite and on the rendered surface.
-- Wake: low-speed hull wake, stationary prop wash, monotonic strength, reverse symmetry; splash kinds scaled by contact energy, a slap far larger and longer-lived than a dolphin entry.
+- Wake: low-speed hull wake, stationary prop wash, monotonic strength, reverse symmetry, sample spacing that keeps the whole wake in the pool, the Kelvin angle; splash kinds scaled by contact energy, a slap far larger and longer-lived than a dolphin entry.
+- Weather and surf: fair most of the time, clear at the start, occasional spells; waves that differ, break, run up and drain, sand that dries.
+- Shore guard: under power the yacht turns away before touching and the helm is handed back with speed restored; a helmsman steering into an island never strands her; under sail the sheets are eased.
 - Water contact: the sampler returns the displaced surface, motion fades with depth, ring waves spread and stay gentle, crossings have hysteresis.
+- Islands and animals: dolphins around a coast never cross the beach or enter very shallow water; sharks and whales keep to deep water; a distant breach is rare, far, continuous and varied.
 - Wildlife: forward-only swimmers with a real turning radius and overshoot-free depth holding; whales complete surfacing and lobtail, stay hidden most of the time, never raise the torso, never repeat displays back to back; dolphins never leap when calm or slow, leap only at speed in a continuous arc with the body along the path and re-enter head first, never enter the hull box; sharks stay mostly deep, show the fin rarely, never leave the water, never graze the keels, and beat their tails harder when accelerating; reef fish that swim forward with bounded turns, stay between reef and surface, keep off the beach, flee together and calm down.
 - Rig: boom settles at the sheeting angle on the correct side, gybes slam and tacks do not, mirrored pivot pose is exact.
 - Underwater light: red absorbed first, nothing above the surface, path bounded by view distance.
@@ -910,10 +942,12 @@ Do not commit every exploratory change. The standing project preference is to pu
 
 The following are known constraints, not invitations to bypass the architecture:
 
-- audio is synthesized rather than based on recorded engine/wave stems;
+- audio is synthesized rather than based on recorded engine/wave/gull stems (no licensed recordings were reachable from the build environment);
 - the yacht force model is intentionally lightweight and not a full six-degree-of-freedom naval solver: sails are sheeted automatically, the two engines are not independently controllable, and heave, pitch, and roll are oscillators driven by the water plane rather than integrated hull pressures;
 - ocean reflections combine the analytic sky with a planar mirror of everything above the sea at mean sea level (bent by the ripples, not by the swell's real geometry); there is no refraction or depth-based absorption because the scene depth is not sampled;
 - whitecaps are a function of the instantaneous wave field and leave no persistent foam history;
+- the wake and the surf only shade the water (normal, foam, colour); like the detail spectrum they do not move the yacht or the camera floor;
+- palm shadows ignore the fronds' wind sway (the shadow map is drawn from the rest pose);
 - the ocean's own transparency is a blend rather than a refraction, and underwater absorption uses the uninverted wave height per vertex (a few centimetres of error);
 - the yacht's three cabin meshes overlap substantially (about 140k triangles together, only one of them casting shadows); removing two of them changes the cabin's detail, so it needs an asset rework;
 - reef fish are lifted from one rigged asset and animated procedurally; they do not use the asset's authored clip;
@@ -944,7 +978,9 @@ Never knowingly ship any of these regressions:
 - part of the sky stays dark after returning to day;
 - night is unreadably black or moon is missing from the 30-degree elevation;
 - dolphins or sharks translate backward, flip upside down, pivot instantly, or freeze in place;
-- a whale fully breaches, shows its torso, repeats a display back to back, or splashes without its fluke contacting water;
+- the whale near the yacht shows its torso, repeats a display back to back, or splashes without its fluke contacting water; a breach happens close to the yacht or often;
+- the shore guard holds the helm without the course being blocked, or circles in front of a beach;
+- the sun or moon is drawn in front of clouds, or clouds cover the sky most of the time;
 - a dolphin leaps at low speed, leaves the water outside a leap, or passes through a hull;
 - an animal is hidden or revealed by a material trick instead of the water;
 - procedural primitive animals replace failed GLBs;

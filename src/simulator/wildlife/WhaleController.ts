@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { AssetManager } from "../core/AssetManager";
+import type { AnimatedAssetInstance, AssetManager } from "../core/AssetManager";
 import type { OceanSystem } from "../environment/OceanSystem";
 import { animationInterval, BodyPoint, filterClip, findBone, ProceduralBone } from "./BodyRig";
 import {
@@ -56,6 +56,71 @@ type Whale = {
   materials: THREE.Material[];
 };
 
+
+export type WhaleRig = {
+  root: THREE.Group;
+  visual: AnimatedVisual;
+  secondary?: THREE.AnimationAction;
+  tail: ProceduralBone[];
+  materials: THREE.Material[];
+};
+
+/**
+ * Builds one whale from the rigged asset: normalised model, own materials,
+ * the flipper clip as secondary motion, and the procedural tail joints. Used
+ * for the whale that surfaces near the yacht and for the distant breacher.
+ */
+export function createWhaleRig(group: THREE.Group, asset: AnimatedAssetInstance): WhaleRig {
+  const visual = createAnimatedVisual(asset, { targetSize: 18, measureAxis: "z", castShadow: false }, []);
+  visual.model.name = "Rigged_PBR_Blue_Whale";
+  // The authored swim clip beats the flukes through seven metres; only its
+  // flipper and eye motion is kept, the body and tail are procedural.
+  visual.actions.forEach((action) => action.stop());
+  visual.mixer?.stopAllAction();
+  const swim = visual.clips.find((clip) => /swim/iu.test(clip.name)) ?? visual.clips[0];
+  const secondary = swim && visual.mixer ? visual.mixer.clipAction(filterClip(swim, PROCEDURAL_TRACKS)) : undefined;
+  secondary?.setLoop(THREE.LoopRepeat, Number.POSITIVE_INFINITY);
+  secondary?.play();
+  if (secondary) secondary.time = Math.random() * secondary.getClip().duration;
+
+  const materials: THREE.Material[] = [];
+  visual.model.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const sources = Array.isArray(object.material) ? object.material : [object.material];
+    const cloned = sources.map((source) => {
+      const material = source.clone();
+      material.side = THREE.FrontSide;
+      if (material instanceof THREE.MeshStandardMaterial) {
+        material.metalness = 0;
+        material.roughness = Math.max(0.62, material.roughness);
+      }
+      materials.push(material);
+      return material;
+    });
+    object.material = Array.isArray(object.material) ? cloned : cloned[0]!;
+    if (object instanceof THREE.SkinnedMesh) {
+      // A raised tail reaches beyond the rest-pose bounds.
+      object.computeBoundingSphere();
+      if (object.boundingSphere) object.boundingSphere.radius *= 1.4;
+    }
+  });
+
+  const root = new THREE.Group();
+  root.name = "Whale_Behaviour_Root";
+  root.rotation.order = "YXZ";
+  root.add(visual.model);
+  group.add(root);
+  root.updateMatrixWorld(true);
+
+  const tail = TAIL_BONES.flatMap((name) => {
+    const bone = findBone(visual.model, name);
+    return bone ? [new ProceduralBone(bone, root)] : [];
+  });
+  if (tail.length !== TAIL_BONES.length) console.warn("Whale tail rig is incomplete; the tail cannot lift.");
+
+  return { root, visual, secondary, tail, materials };
+}
+
 export class WhaleController {
   private readonly whale?: Whale;
   private readonly scratch = new THREE.Vector3();
@@ -75,52 +140,8 @@ export class WhaleController {
       console.warn("Whale asset failed geometry, rig, or animation validation and was omitted.");
       return;
     }
-    const visual = createAnimatedVisual(asset, { targetSize: 18, measureAxis: "z", castShadow: false }, []);
-    visual.model.name = "Rigged_PBR_Blue_Whale";
-    // The authored swim clip beats the flukes through seven metres; only its
-    // flipper and eye motion is kept, the body and tail are procedural.
-    visual.actions.forEach((action) => action.stop());
-    visual.mixer?.stopAllAction();
-    const swim = visual.clips.find((clip) => /swim/iu.test(clip.name)) ?? visual.clips[0];
-    const secondary = swim && visual.mixer ? visual.mixer.clipAction(filterClip(swim, PROCEDURAL_TRACKS)) : undefined;
-    secondary?.setLoop(THREE.LoopRepeat, Number.POSITIVE_INFINITY);
-    secondary?.play();
-    if (secondary) secondary.time = Math.random() * secondary.getClip().duration;
-
-    const materials: THREE.Material[] = [];
-    visual.model.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) return;
-      const sources = Array.isArray(object.material) ? object.material : [object.material];
-      const cloned = sources.map((source) => {
-        const material = source.clone();
-        material.side = THREE.FrontSide;
-        if (material instanceof THREE.MeshStandardMaterial) {
-          material.metalness = 0;
-          material.roughness = Math.max(0.62, material.roughness);
-        }
-        materials.push(material);
-        return material;
-      });
-      object.material = Array.isArray(object.material) ? cloned : cloned[0]!;
-      if (object instanceof THREE.SkinnedMesh) {
-        // A raised tail reaches beyond the rest-pose bounds.
-        object.computeBoundingSphere();
-        if (object.boundingSphere) object.boundingSphere.radius *= 1.4;
-      }
-    });
-
-    const root = new THREE.Group();
-    root.name = "Whale_Behaviour_Root";
-    root.rotation.order = "YXZ";
-    root.add(visual.model);
-    group.add(root);
-    root.updateMatrixWorld(true);
-
-    const tail = TAIL_BONES.flatMap((name) => {
-      const bone = findBone(visual.model, name);
-      return bone ? [new ProceduralBone(bone, root)] : [];
-    });
-    if (tail.length !== TAIL_BONES.length) console.warn("Whale tail rig is incomplete; the tail cannot lift.");
+    const rig = createWhaleRig(group, asset);
+    const { root, visual, secondary, tail, materials } = rig;
 
     const track = (boneName: string, x: number, y: number, z: number): TrackedPoint | undefined => {
       const bone = findBone(visual.model, boneName);
@@ -212,13 +233,18 @@ export class WhaleController {
     whale.tail.forEach((bone) => bone.restore());
     whale.animationClock += delta;
     if (whale.secondary && whale.animationClock >= animationInterval(cameraDistance)) {
-      whale.secondary.setEffectiveWeight(pose.secondaryWeight);
-      whale.secondary.timeScale = 0.45 + motion.speed * 0.22;
+      // Flippers: steering strokes, livelier when turning or slowing.
+      whale.secondary.setEffectiveWeight(Math.min(0.9, pose.secondaryWeight + 0.25 + Math.abs(motion.yawRate) * 4));
+      whale.secondary.timeScale = 0.5 + motion.speed * 0.25;
       whale.visual.mixer?.update(whale.animationClock);
       whale.animationClock = 0;
       whale.tail.forEach((bone) => bone.capture());
     }
     whale.tail.forEach((bone, index) => bone.rotate("pitch", pose.bends[index] ?? 0));
+    // In a turn the body follows the curve of its path: the tail trails
+    // toward the inside, more toward the flukes.
+    const curvature = THREE.MathUtils.clamp(motion.yawRate / Math.max(0.6, motion.speed), -0.05, 0.05);
+    whale.tail.forEach((bone, index) => bone.rotate("yaw", -curvature * (2.2 + index * 1.4)));
     whale.root.updateMatrixWorld(true);
 
     this.updateContacts(whale, delta, depth);

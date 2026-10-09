@@ -55,6 +55,8 @@ export class Simulator {
   private reflection?: OceanReflection;
   private mirrorHidden: THREE.Object3D[] = [];
   private audio!: AudioSystem;
+  private readonly listenerForward = new THREE.Vector3();
+  private readonly listenerUp = new THREE.Vector3();
   private readonly underwater = new UnderwaterLight();
   private loop!: RenderLoop;
   private readonly shoreSplash = new THREE.Vector3();
@@ -126,10 +128,16 @@ export class Simulator {
       this.environment.setMode(this.state.lightingMode);
       this.environment.setShadowMapSize(this.quality.settings.shadowMapSize);
       this.environment.setSkyDetail(this.quality.settings.skyDetail);
-      this.islands = new IslandSystem(this.scene, this.assets, this.underwater);
+      this.islands = new IslandSystem(
+        this.scene,
+        this.assets,
+        this.underwater,
+        this.ocean.skyUniforms as unknown as Record<string, THREE.IUniform>,
+        Math.max(1024, this.quality.settings.shadowMapSize),
+      );
       this.physics = new VesselPhysics(this.ocean, this.islands);
       this.vessel = new Vessel(this.scene, this.assets, this.underwater);
-      this.wake = new WakeSystem(this.scene, this.ocean, this.quality.settings);
+      this.wake = new WakeSystem(this.scene, this.ocean, this.quality.settings, this.renderer);
       this.wildlife = new WildlifeSystem(
         this.scene,
         this.ocean,
@@ -144,7 +152,7 @@ export class Simulator {
           splash: (position, intensity, kind, velocity) => {
             this.wake.splash(position, intensity, kind, velocity);
             const distance = this.camera ? this.camera.camera.position.distanceTo(position) : 0;
-            this.audio?.splash(intensity, kind, distance);
+            this.audio?.splash(intensity, kind, distance, position);
           },
           trail: (position, heading, strength, width) => this.wake.trail(position, heading, strength, width),
           shed: (position, velocity, count, size) => this.wake.shed(position, velocity, count, size),
@@ -290,8 +298,9 @@ export class Simulator {
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.input.update(fixedDelta);
     if (!this.state.engineRunning) this.state.controls.throttle = 0;
-    this.physics.fixedUpdate(fixedDelta, this.state.controls);
-    this.wake.fixedUpdate(fixedDelta, this.physics, this.state.controls, this.elapsed);
+    this.physics.fixedUpdate(fixedDelta, this.state.controls, this.state.engineRunning);
+    // Wake and visuals follow what the helm actually does, guard included.
+    this.wake.fixedUpdate(fixedDelta, this.physics, this.physics.guard.output, this.elapsed);
     const impact = this.physics.telemetry.shoreImpact;
     if (impact > 0.25) {
       // The bows strike the shelf: spray off the bow and a dull thump.
@@ -307,7 +316,7 @@ export class Simulator {
     this.frameDelta = delta;
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.islands.update(this.elapsed);
-    this.vessel.update(this.physics, this.state.controls, this.elapsed, delta, this.environmentState.nightFactor, {
+    this.vessel.update(this.physics, this.physics.guard.output, this.elapsed, delta, this.environmentState.nightFactor, {
       camera: this.camera.camera,
       lightDirection: this.environment.lightDirection,
       palette: this.environment.current.palette,
@@ -324,6 +333,8 @@ export class Simulator {
       this.elapsed,
     );
     this.wake.setEnvironment(this.environment.current.palette);
+    // Palm shadows on the sand follow the sun, softer under the moon.
+    this.islands.updateShadows(this.renderer, this.environment.lightDirection, 0.82 * (1 - this.environmentState.nightFactor * 0.45));
     this.underwater.setPalette(this.environment.current.palette);
     this.underwater.setTime(this.elapsed);
     this.audio.update(
@@ -331,7 +342,14 @@ export class Simulator {
       Math.abs(this.physics.telemetry.forwardSpeed),
       this.physics.telemetry.engineShaft,
       this.physics.telemetry.apparentWindSpeed,
+      this.environment.currentWeather.overcast,
     );
+    // Positional sound: the camera is the listener; the gulls call from where they fly.
+    const camera = this.camera.camera;
+    camera.getWorldDirection(this.listenerForward);
+    this.listenerUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+    this.audio.setListener({ position: camera.position, forward: this.listenerForward, up: this.listenerUp });
+    this.audio.updateGulls(delta, this.wildlife.gullPositions);
     this.hud.update(delta, () => this.snapshot());
   };
 
@@ -409,6 +427,7 @@ export class Simulator {
       soundEnabled: this.state.soundEnabled,
       audioReady: this.audio?.isReady() ?? false,
       engineRunning: this.state.engineRunning,
+      shoreGuardActive: this.physics?.guard.active ?? false,
       engineMuted: this.state.engineMuted,
       fps: this.fps,
       status: this.status,

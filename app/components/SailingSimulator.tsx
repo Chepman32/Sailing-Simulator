@@ -170,10 +170,47 @@ export function SailingSimulator() {
       }
     };
     window.addEventListener("keydown", onKeyDown);
+    // One tap or click on the picture ends photo mode. A drag still frames
+    // the shot (the camera gestures keep working), so only a short press that
+    // barely moved counts as a tap.
+    const canvas = canvasRef.current;
+    let pressX = 0;
+    let pressY = 0;
+    let pressTime = 0;
+    let pressId = -1;
+    let pointers = 0;
+    const onPointerDown = (event: PointerEvent) => {
+      pointers += 1;
+      if (pointers > 1) {
+        pressId = -1;
+        return;
+      }
+      pressId = event.pointerId;
+      pressX = event.clientX;
+      pressY = event.clientY;
+      pressTime = event.timeStamp;
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      pointers = Math.max(0, pointers - 1);
+      if (event.pointerId !== pressId) return;
+      pressId = -1;
+      const moved = Math.hypot(event.clientX - pressX, event.clientY - pressY);
+      if (moved < 10 && event.timeStamp - pressTime < 450) exitPhotoMode();
+    };
+    const onPointerCancel = () => {
+      pointers = Math.max(0, pointers - 1);
+      pressId = -1;
+    };
+    canvas?.addEventListener("pointerdown", onPointerDown);
+    canvas?.addEventListener("pointerup", onPointerUp);
+    canvas?.addEventListener("pointercancel", onPointerCancel);
     return () => {
       window.clearTimeout(hintTimer);
       setPhotoHint(false);
       window.removeEventListener("keydown", onKeyDown);
+      canvas?.removeEventListener("pointerdown", onPointerDown);
+      canvas?.removeEventListener("pointerup", onPointerUp);
+      canvas?.removeEventListener("pointercancel", onPointerCancel);
       photoButton?.focus({ preventScroll: true });
     };
   }, [photoMode, exitPhotoMode]);
@@ -352,7 +389,9 @@ export function SailingSimulator() {
 
       {photoMode && photoHint && <p className="photo-toast" aria-hidden="true">{messages.photoModeHint}</p>}
 
-      <div className="simulator-interface" hidden={photoMode}>
+      {/* Faded rather than removed, so leaving photo mode is a smooth return;
+          inert keeps the hidden controls out of reach meanwhile. */}
+      <div className={`simulator-interface ${photoMode ? "photo-hidden" : ""}`} inert={photoMode} aria-hidden={photoMode}>
 
         {!loading.ready && !error && (
           <section className="loading-screen" aria-live="polite">
@@ -391,6 +430,9 @@ export function SailingSimulator() {
             </button>
           )}
           {engineNotice && <div className="engine-notice" role="status">{engineNotice}</div>}
+          {snapshot.shoreGuardActive && loading.ready && !error && (
+            <div className="engine-notice shore-guard-notice" role="status">{messages.shoreGuard}</div>
+          )}
           {showHelp && loading.ready && !error && (
             <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
               {messages.help}

@@ -81,7 +81,18 @@ input:focus-visible {
   height: 100%;
 }
 
-.simulator-interface[hidden] { display: none; }
+/* Photo mode fades the interface out and back in; inert (set in the
+   component) keeps the faded controls out of reach and out of the
+   accessibility tree meanwhile. */
+.simulator-interface {
+  transition: opacity 260ms ease;
+}
+
+.simulator-interface.photo-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transition-duration: 200ms;
+}
 .simulator-canvas:focus { outline: none; }
 
 .photo-mode-hint {
@@ -409,6 +420,12 @@ input:focus-visible {
   font-weight: 750;
   letter-spacing: 0.02em;
   animation: notice-in 180ms ease-out;
+}
+
+/* The helm is briefly in the guard's hands: warm, so it reads as a warning. */
+.shore-guard-notice {
+  border-color: rgba(255, 196, 102, 0.5);
+  color: #ffe2b0;
 }
 
 @keyframes notice-in {

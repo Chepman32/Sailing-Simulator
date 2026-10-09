@@ -51,6 +51,8 @@ export class UnderwaterLight {
   readonly uniforms = {
     uUnderwaterColor: { value: new THREE.Color(0.01, 0.06, 0.12) },
     uUnderwaterTime: { value: 0 },
+    /** Strength of the sun's caustics: full by day, none at night. */
+    uUnderwaterCaustics: { value: 1 },
   };
 
   /** Keeps the waterline in step with the ocean. */
@@ -64,14 +66,16 @@ export class UnderwaterLight {
     color.r = palette.deepWater[0] * (palette.ambientColor[0] + 0.25 * palette.lightColor[0]) * 1.4;
     color.g = palette.deepWater[1] * (palette.ambientColor[1] + 0.25 * palette.lightColor[1]) * 1.4;
     color.b = palette.deepWater[2] * (palette.ambientColor[2] + 0.25 * palette.lightColor[2]) * 1.4;
+    this.uniforms.uUnderwaterCaustics.value = palette.daylight;
   }
 
   /** Decorates a lit or unlit built-in material; works with skinning and instancing. */
   apply(material: THREE.Material): void {
     const uniforms = this.uniforms;
-    patchMaterialShader(material, "underwater-v2", (shader) => {
+    patchMaterialShader(material, "underwater-v3", (shader) => {
       shader.uniforms.uUnderwaterColor = uniforms.uUnderwaterColor;
       shader.uniforms.uUnderwaterTime = uniforms.uUnderwaterTime;
+      shader.uniforms.uUnderwaterCaustics = uniforms.uUnderwaterCaustics;
       shader.vertexShader = injectAfter(
         shader.vertexShader,
         "common",
@@ -94,8 +98,20 @@ export class UnderwaterLight {
         shader.fragmentShader,
         "common",
         `uniform vec3 uUnderwaterColor;
+        uniform float uUnderwaterCaustics;
+        uniform float uUnderwaterTime;
         varying vec3 vUnderwaterWorld;
-        varying float vUnderwaterSurface;`,
+        varying float vUnderwaterSurface;
+        float underwaterNoise(vec2 p) {
+          vec2 cell = floor(p);
+          vec2 local = fract(p);
+          local = local * local * (3.0 - 2.0 * local);
+          float a = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+          float b = fract(sin(dot(cell + vec2(1.0, 0.0), vec2(127.1, 311.7))) * 43758.5453);
+          float c = fract(sin(dot(cell + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+          float d = fract(sin(dot(cell + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+          return mix(mix(a, b, local.x), mix(c, d, local.x), local.y);
+        }`,
       );
       shader.fragmentShader = injectBefore(
         shader.fragmentShader,
@@ -109,6 +125,14 @@ export class UnderwaterLight {
             float fade = smoothstep(0.0, ${UNDERWATER_FADE_DEPTH.toFixed(2)}, underwaterDepth);
             float path = (min(underwaterDepth / slant, viewDistance) + underwaterDepth * 0.6) * fade;
             vec3 transmittance = exp(-${glslVector(UNDERWATER_ABSORPTION)} * path);
+            // Sunlight focused by the waves plays over anything near the
+            // surface: caustics fade with depth as the light spreads out.
+            vec2 causticPosition = vUnderwaterWorld.xz * 0.55 + vec2(uUnderwaterTime * 0.21, -uUnderwaterTime * 0.17);
+            float causticA = underwaterNoise(causticPosition);
+            float causticB = underwaterNoise(causticPosition * 1.37 - vec2(uUnderwaterTime * 0.3, uUnderwaterTime * 0.11) + 5.3);
+            float caustic = pow(1.0 - abs(causticA - causticB), 6.0);
+            float sunlit = exp(-underwaterDepth * 0.28) * uUnderwaterCaustics;
+            gl_FragColor.rgb *= 1.0 + caustic * 0.9 * sunlit;
             gl_FragColor.rgb = gl_FragColor.rgb * transmittance + uUnderwaterColor * (1.0 - transmittance);
           }
         }`,

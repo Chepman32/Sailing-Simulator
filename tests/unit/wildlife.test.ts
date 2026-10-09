@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { waterDepthAt } from "../../src/simulator/environment/IslandMath";
+import { distanceFromWaterline, ISLAND_DEFINITIONS, waterDepthAt } from "../../src/simulator/environment/IslandMath";
 import { OCEAN_WAVES, sampleOcean, surfaceBasePoint } from "../../src/simulator/environment/OceanMath";
 import { surfaceImpactLife, surfaceImpactShape } from "../../src/simulator/environment/SurfaceImpacts";
 import { calculateSplashProfile } from "../../src/simulator/vessel/WakeSystem";
@@ -70,6 +70,7 @@ function liveWorld(): { world: MarineWorld; clock: { time: number } } {
       surfaceHeight: (x, z) => sampleOcean(x, z, clock.time).height,
       orbitalHeight: (x, z, depth) => sampleOcean(x, z, clock.time, depth).height,
       seabedDepth: waterDepthAt,
+      shoreDistance: distanceFromWaterline,
     },
   };
 }
@@ -217,7 +218,8 @@ function runWhale(seed: number, vesselSpeed: number, minutes: number, delta = 1 
   const random = seeded(seed);
   const { world, clock } = liveWorld();
   const vessel: VesselState = { x: 0, z: 0, heading: 0.4, speed: vesselSpeed };
-  const agent = createWhaleAgent(30, 140, 2.6, random);
+  // Open water, clear of the reefs: the island tests cover the shelf.
+  const agent = createWhaleAgent(30, 60, 2.6, random);
   const phases: WhalePhase[] = [agent.phase];
   const slapStarts: number[] = [];
   const strikeSpeeds: number[] = [];
@@ -570,4 +572,141 @@ test("behaviour holds from 20 to 120 frames per second", () => {
     assert.ok(whale.highestBody < 1 && whale.shallowest >= WHALE_SHALLOWEST_DEPTH - 1e-6);
     assert.ok(whale.phases.includes("surface"), `no surfacing at ${Math.round(1 / delta)} fps`);
   }
+});
+
+// --- Islands -------------------------------------------------------------------
+
+/** A yacht skirting island 0 close inshore, so escort slots fall on the reef. */
+function skirtIsland(vessel: VesselState, time: number, offshore: number, speed: number): void {
+  const island = ISLAND_DEFINITIONS[0];
+  const radiusX = island.beachRadius + offshore;
+  const radiusZ = island.beachRadius * island.scaleZ + offshore;
+  const perimeter = Math.PI * (radiusX + radiusZ);
+  const angle = (time * speed * Math.PI * 2) / perimeter;
+  vessel.x = island.centerX + Math.cos(angle) * radiusX;
+  vessel.z = island.centerZ + Math.sin(angle) * radiusZ;
+  vessel.heading = Math.atan2(-Math.sin(angle) * radiusX, Math.cos(angle) * radiusZ);
+  vessel.speed = speed;
+}
+
+test("dolphins swim around islands and their reefs, never over the beach", () => {
+  for (const [seed, speed, offshore] of [
+    [3, 4.5, 11],
+    [8, 2.4, 9],
+    [13, 0, 10],
+  ] as const) {
+    const random = seeded(seed);
+    const { world, clock } = liveWorld();
+    const vessel: VesselState = { x: 0, z: 0, heading: 0, speed };
+    skirtIsland(vessel, 0, offshore, speed);
+    const pod = createDolphinPod(4, vessel, world, random);
+    // Start the pod in open water on the seaward side.
+    pod.agents.forEach((agent) => {
+      const island = ISLAND_DEFINITIONS[0];
+      const dx = agent.motion.x - island.centerX;
+      const dz = agent.motion.z - island.centerZ;
+      const length = Math.hypot(dx, dz);
+      agent.motion.x = island.centerX + (dx / length) * (island.beachRadius + 30);
+      agent.motion.z = island.centerZ + (dz / length) * (island.beachRadius * island.scaleZ + 30);
+    });
+    const delta = 1 / 30;
+    let shallowest = Infinity;
+    let onLand = 0;
+    let fastestStep = 0;
+    const last = new Map<number, [number, number]>();
+    for (let step = 0; step < 30 * 60 * 4; step += 1) {
+      clock.time += delta;
+      skirtIsland(vessel, clock.time, offshore, speed);
+      stepDolphinPod(pod, world, vessel, [], delta, random);
+      for (const agent of pod.agents) {
+        const { x, z } = agent.motion;
+        if (distanceFromWaterline(x, z) < 0) onLand += 1;
+        const leaping = agent.phase === "leap" || agent.phase === "airborne" || agent.phase === "reentry";
+        if (!leaping) shallowest = Math.min(shallowest, waterDepthAt(x, z));
+        const before = last.get(agent.id);
+        if (before) fastestStep = Math.max(fastestStep, Math.hypot(x - before[0], z - before[1]) / delta);
+        last.set(agent.id, [x, z]);
+      }
+    }
+    assert.equal(onLand, 0, `seed ${seed}: a dolphin crossed the beach`);
+    assert.ok(shallowest > 1.4, `seed ${seed}: a dolphin swam into ${shallowest.toFixed(2)} m of water`);
+    assert.ok(fastestStep < 12, `seed ${seed}: a dolphin jumped ${fastestStep.toFixed(1)} m/s`);
+  }
+});
+
+test("sharks and whales keep to deep water off the islands", () => {
+  const island = ISLAND_DEFINITIONS[1];
+  for (const seed of [4, 21]) {
+    const random = seeded(seed);
+    const { world, clock } = liveWorld();
+    // A stopped yacht close off the beach draws both animals inshore.
+    const vessel: VesselState = {
+      x: island.centerX - island.beachRadius - 9,
+      z: island.centerZ,
+      heading: Math.PI / 2,
+      speed: 0,
+    };
+    const shark = createSharkAgent(vessel, random);
+    const whale = createWhaleAgent(vessel.x - 80, vessel.z + 40, 2.6, random);
+    const delta = 1 / 30;
+    let sharkShallowest = Infinity;
+    let whaleShallowest = Infinity;
+    for (let step = 0; step < 30 * 60 * 8; step += 1) {
+      clock.time += delta;
+      stepShark(shark, world, vessel, [], delta, random);
+      stepWhale(whale, world, vessel, delta, random);
+      sharkShallowest = Math.min(sharkShallowest, waterDepthAt(shark.motion.x, shark.motion.z));
+      whaleShallowest = Math.min(whaleShallowest, waterDepthAt(whale.motion.x, whale.motion.z));
+    }
+    assert.ok(sharkShallowest > 3.4, `seed ${seed}: the shark reached ${sharkShallowest.toFixed(1)} m of water`);
+    assert.ok(whaleShallowest > 9, `seed ${seed}: the whale reached ${whaleShallowest.toFixed(1)} m of water`);
+  }
+});
+
+// --- Distant breaches ----------------------------------------------------------
+
+test("a distant whale breaches rarely, far from the yacht, on a ballistic arc", async () => {
+  const breach = await import("../../src/simulator/wildlife/WhaleBreach");
+  const random = seeded(77);
+  const { world, clock } = liveWorld();
+  const vessel: VesselState = { x: 0, z: 0, heading: 0.6, speed: 2 };
+  const state = breach.createBreachState(random);
+  const delta = 1 / 30;
+  const apexes: number[] = [];
+  const variants = new Set<string>();
+  let apex = -Infinity;
+  let previous: [number, number, number] | null = null;
+  let fastest = 0;
+  let starts = 0;
+  for (let step = 0; step < 30 * 60 * 40; step += 1) {
+    clock.time += delta;
+    advanceVessel(vessel, delta);
+    const entered = breach.stepBreach(state, world, vessel, delta, random);
+    if (entered === "run") {
+      starts += 1;
+      previous = null;
+      variants.add(state.plan.variant);
+    }
+    if (entered === "air") {
+      const distance = Math.hypot(state.x - vessel.x, state.z - vessel.z);
+      assert.ok(distance > breach.BREACH_MIN_DISTANCE * 0.7, `breached ${distance.toFixed(0)} m from the yacht`);
+      assert.ok(world.seabedDepth(state.x, state.z) >= breach.BREACH_MIN_WATER - 1);
+      apex = -Infinity;
+    }
+    if (state.phase === "air") apex = Math.max(apex, state.y - world.surfaceHeight(state.x, state.z));
+    if (entered === "splash") apexes.push(apex);
+    if (state.phase !== "waiting") {
+      if (previous) {
+        fastest = Math.max(fastest, Math.hypot(state.x - previous[0], state.y - previous[1], state.z - previous[2]) / delta);
+      }
+      previous = [state.x, state.y, state.z];
+      assert.ok(Number.isFinite(state.x + state.y + state.z + state.pitch + state.roll));
+    }
+  }
+  // Forty minutes: a handful of breaches, never a constant show.
+  assert.ok(starts >= 4 && starts <= 16, `${starts} breaches in forty minutes`);
+  assert.ok(fastest < 16, `the body moved ${fastest.toFixed(1)} m/s: no jumps`);
+  assert.ok(apexes.length >= 4);
+  assert.ok(Math.max(...apexes) - Math.min(...apexes) > 1, "breaches differ in height");
+  assert.ok(variants.size >= 2, "more than one kind of breach");
 });

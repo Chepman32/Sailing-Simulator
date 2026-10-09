@@ -3,6 +3,14 @@ import type { AssetManager } from "../core/AssetManager";
 import { batchStaticMeshes } from "../core/StaticBatching";
 import { smoothstep } from "../math";
 import type { UnderwaterLight } from "./UnderwaterLight";
+import {
+  applyIslandSurface,
+  createIslandSurfaceUniforms,
+  MAX_PALM_TRUNKS,
+  PALM_SHADOW_LAYER,
+  PalmShadowMap,
+  type IslandSurfaceUniforms,
+} from "./IslandSurface";
 import { ISLAND_DEFINITIONS, islandEdgeNoise, shoreClearance, terrainNoise, waterDepthAt } from "./IslandMath";
 
 type IslandObstacle = {
@@ -32,20 +40,35 @@ export class IslandSystem {
   private readonly group = new THREE.Group();
   private readonly palmWind: PalmWindUniform = { value: 0 };
   private readonly palmMaterials = new Map<THREE.Material, THREE.Material>();
+  private readonly surface: IslandSurfaceUniforms = createIslandSurfaceUniforms();
+  private readonly palmShadows: PalmShadowMap;
+  private trunkCount = 0;
 
   constructor(
     private readonly scene: THREE.Scene,
     assets: AssetManager,
     private readonly underwater: UnderwaterLight,
+    private readonly sky: Record<string, THREE.IUniform>,
+    shadowMapSize: number,
   ) {
     this.group.name = "TropicalIslandSystem";
     scene.add(this.group);
     this.createSeabed();
     ISLANDS.forEach((island, index) => this.createIsland(island, index, assets));
+    this.palmShadows = new PalmShadowMap(scene, this.surface, shadowMapSize);
   }
 
   update(time: number): void {
     this.palmWind.value = time;
+    this.surface.uSurfTime.value = time;
+  }
+
+  /**
+   * Palm shadows follow the dominant light; `strength` fades them for a weak
+   * or very low light. The map is only redrawn when the light has moved.
+   */
+  updateShadows(renderer: THREE.WebGLRenderer, lightDirection: THREE.Vector3, strength: number): void {
+    this.palmShadows.update(renderer, lightDirection, strength);
   }
 
   depthAt(x: number, z: number): number {
@@ -109,6 +132,7 @@ export class IslandSystem {
   }
 
   dispose(): void {
+    this.palmShadows.dispose();
     this.scene.remove(this.group);
     this.group.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
@@ -155,6 +179,8 @@ export class IslandSystem {
     terrain.name = "IrregularIslandTerrain";
     // The submerged apron fades into the water like any other seabed.
     this.underwater.apply(terrain.material);
+    // Sand grain, wet sand, the swash and the palms' shadows.
+    applyIslandSurface(terrain.material, this.surface, this.sky);
     // The ocean is rendered immediately after this mesh. Vertex alpha tapers
     // the submerged apron into the seabed so its final radial edge cannot read
     // as a large ring (or as a dark, flat animal) through clear tropical water.
@@ -203,6 +229,16 @@ export class IslandSystem {
         this.islandTerrainHeight(radial, angle, index) - 0.35,
         Math.sin(angle) * radius * island.scaleZ,
       );
+      // Each trunk darkens the sand around its foot (contact shading).
+      if (this.trunkCount < MAX_PALM_TRUNKS) {
+        this.surface.uPalmTrunks.value[this.trunkCount].set(
+          island.center.x + palm.position.x,
+          palm.position.y,
+          island.center.y + palm.position.z,
+          1.1 * size,
+        );
+        this.trunkCount += 1;
+      }
       tree.traverse((object) => {
         if (!(object instanceof THREE.Mesh)) return;
         object.castShadow = false;
@@ -223,12 +259,15 @@ export class IslandSystem {
         parts.push(object);
       }
     });
-    batchStaticMeshes(
+    const groves = batchStaticMeshes(
       islandGroup,
       parts,
       (mesh) => `${(mesh.material as THREE.Material).uuid}|${mesh.castShadow}|${mesh.receiveShadow}`,
       `PalmGrove_${index + 1}`,
     );
+    // The groves are what the palm shadow map draws.
+    groves.batches.forEach((batch) => batch.layers.enable(PALM_SHADOW_LAYER));
+    parts.filter((part) => part.parent).forEach((part) => part.layers.enable(PALM_SHADOW_LAYER));
     // Drop the now-empty tree nodes so they are not traversed every frame.
     [...islandGroup.children].forEach((child) => {
       let hasMesh = false;
@@ -283,11 +322,13 @@ export class IslandSystem {
   }
 
   private createIslandTerrain(island: IslandObstacle, index: number): THREE.BufferGeometry {
-    const segments = 96;
-    const rings = 22;
+    const segments = 160;
+    const rings = 40;
     const outerRadius = MAX_VISIBLE_TERRAIN_RADIUS_SCALE;
     const positions: number[] = [0, 1.78 + index * 0.18, 0];
     const colors: number[] = [];
+    // 1 on sand, 0 under vegetation: the sand shading applies only where it is sand.
+    const sandMask: number[] = [0];
     const indices: number[] = [];
     const green = new THREE.Color(index === 1 ? 0x3d8448 : 0x3a8a4c);
     const dryGrass = new THREE.Color(0x7d9a4e);
@@ -298,7 +339,8 @@ export class IslandSystem {
     colors.push(green.r, green.g, green.b, 1);
 
     for (let ring = 1; ring <= rings; ring += 1) {
-      const radial = outerRadius * ring / rings;
+      // Rings crowd toward the beach, where the surf and the waterline need detail.
+      const radial = outerRadius * Math.pow(ring / rings, 0.72);
       for (let segment = 0; segment < segments; segment += 1) {
         const angle = segment / segments * Math.PI * 2;
         const edgeNoise = islandEdgeNoise(angle, index);
@@ -313,6 +355,7 @@ export class IslandSystem {
 
         const color = new THREE.Color();
         const vegetationEdge = 0.7 + (patch - 0.5) * 0.16;
+        sandMask.push(smoothstep(vegetationEdge - 0.04, vegetationEdge + 0.12, radial));
         if (radial < vegetationEdge - 0.08) {
           color.copy(green).lerp(shade, smoothstep(0.35, 0.8, fine)).lerp(dryGrass, smoothstep(0.55, 0.9, patch) * 0.6);
         } else if (radial < vegetationEdge + 0.12) {
@@ -354,6 +397,7 @@ export class IslandSystem {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 4));
+    geometry.setAttribute("sandMask", new THREE.Float32BufferAttribute(sandMask, 1));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
     geometry.computeBoundingSphere();
