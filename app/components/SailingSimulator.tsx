@@ -128,6 +128,7 @@ export function SailingSimulator() {
   const photoButtonRef = useRef<HTMLButtonElement>(null);
   const photoModeRef = useRef(false);
   const [photoMode, setPhotoMode] = useState(false);
+  const [photoHint, setPhotoHint] = useState(false);
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT);
   const [loading, setLoading] = useState<LoadingState>({
     loaded: 0,
@@ -157,6 +158,9 @@ export function SailingSimulator() {
     if (!photoMode) return;
     const photoButton = photoButtonRef.current;
     canvasRef.current?.focus({ preventScroll: true });
+    // The interface is hidden in photo mode, so say once how to get it back.
+    setPhotoHint(true);
+    const hintTimer = window.setTimeout(() => setPhotoHint(false), 3200);
     const onKeyDown = (event: KeyboardEvent) => {
       // Tab restores the interface as well, so keyboard users cannot end up
       // navigating invisible controls or trapped on the canvas.
@@ -167,6 +171,8 @@ export function SailingSimulator() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
+      window.clearTimeout(hintTimer);
+      setPhotoHint(false);
       window.removeEventListener("keydown", onKeyDown);
       photoButton?.focus({ preventScroll: true });
     };
@@ -344,6 +350,8 @@ export function SailingSimulator() {
         aria-label={photoMode ? `${messages.photoMode}. ${messages.photoModeHint}` : messages.sailingControls}
       />
 
+      {photoMode && photoHint && <p className="photo-toast" aria-hidden="true">{messages.photoModeHint}</p>}
+
       <div className="simulator-interface" hidden={photoMode}>
 
         {!loading.ready && !error && (
@@ -365,25 +373,41 @@ export function SailingSimulator() {
           </section>
         )}
 
-        {loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error && (
-          <button
-            type="button"
-            className="audio-unlock"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              unlockSound();
-            }}
-            onClick={unlockSound}
-          >
-            <span aria-hidden="true">♪</span>
-            <strong>{messages.tapSound}</strong>
-          </button>
-        )}
+        {/* Transient prompts share one centred column, so they never collide
+            with each other or with the controls at any screen size. */}
+        <div className="notice-stack">
+          {loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error && (
+            <button
+              type="button"
+              className="audio-unlock"
+              onPointerDown={(event) => {
+                event.preventDefault();
+                unlockSound();
+              }}
+              onClick={unlockSound}
+            >
+              <span aria-hidden="true">♪</span>
+              <strong>{messages.tapSound}</strong>
+            </button>
+          )}
+          {engineNotice && <div className="engine-notice" role="status">{engineNotice}</div>}
+          {showHelp && loading.ready && !error && (
+            <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
+              {messages.help}
+            </button>
+          )}
+        </div>
 
         <div className="scene-actions">
-          <button type="button" className="scene-action" disabled={!loading.ready || Boolean(error)} onClick={resetScene}>
+          <button
+            type="button"
+            className="scene-action"
+            disabled={!loading.ready || Boolean(error)}
+            title={messages.reset}
+            onClick={resetScene}
+          >
             <ControlIcon name="reset" />
-            <span>{messages.reset}</span>
+            <span className="scene-action-label">{messages.reset}</span>
           </button>
           <button
             ref={photoButtonRef}
@@ -398,7 +422,7 @@ export function SailingSimulator() {
             }}
           >
             <ControlIcon name="photo" />
-            <span>{messages.photoMode}</span>
+            <span className="scene-action-label">{messages.photoMode}</span>
           </button>
           <p id="photo-mode-hint" className="photo-mode-hint">{messages.photoModeHint}</p>
         </div>
@@ -437,9 +461,12 @@ export function SailingSimulator() {
                 <span className="full-control-title">{messages.sailingControls}</span>
                 <span className="mobile-control-title">{messages.controls}</span>
               </p>
+              {/* On phones the heading card is hidden and this line carries the
+                  heading. The sound prompt has its own button, and a live
+                  region here would announce every degree of a turn. */}
               {panelMinimized && (
-                <span className="panel-mini-status" aria-live="polite">
-                  {snapshot.soundEnabled && !snapshot.audioReady ? messages.tapSound : `${compass} ${messages.heading}`}
+                <span className="panel-mini-status">
+                  {compass}<span className="mini-status-word"> {messages.heading}</span>
                 </span>
               )}
               {!panelMinimized && (
@@ -455,7 +482,12 @@ export function SailingSimulator() {
               aria-controls="simulator-settings"
               aria-expanded={!panelMinimized}
               aria-label={panelMinimized ? messages.expand : messages.minimize}
-              onClick={() => setPanelMinimized((value) => !value)}
+              onClick={() => {
+                // Opening the settings is an interaction of its own; the
+                // first-run hint has done its job and would sit under the panel.
+                setShowHelp(false);
+                setPanelMinimized((value) => !value);
+              }}
             >{panelMinimized ? "≡" : "×"}</button>
           </header>
 
@@ -669,13 +701,6 @@ export function SailingSimulator() {
           </section>
         </div>
 
-        {engineNotice && <div className="engine-notice" role="status">{engineNotice}</div>}
-
-        {showHelp && loading.ready && !error && (
-          <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
-            {messages.help}
-          </button>
-        )}
       </div>
     </main>
   );

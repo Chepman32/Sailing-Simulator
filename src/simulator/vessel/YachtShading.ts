@@ -48,7 +48,9 @@ export class YachtShading {
   /** @param sheerHeight Top of the hull topsides in vessel space. */
   applyHull(material: THREE.MeshStandardMaterial, sheerHeight: number): void {
     const uniforms = this.uniforms;
-    patchMaterialShader(material, "yacht-hull-v1", (shader) => {
+    // The cove line height is compiled into the shader, so it is part of the
+    // program key: hulls of different heights must not share a program.
+    patchMaterialShader(material, `yacht-hull-v1@${sheerHeight.toFixed(3)}`, (shader) => {
       this.declare(shader);
       shader.uniforms.uOceanTime = uniforms.uOceanTime;
       shader.fragmentShader = injectAfter(

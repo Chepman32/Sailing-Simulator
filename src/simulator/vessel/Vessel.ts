@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
+import { batchStaticMeshes, coincidentShells } from "../core/StaticBatching";
 import type { EnvironmentPalette } from "../environment/EnvironmentPalette";
 import type { UnderwaterLight } from "../environment/UnderwaterLight";
 import type { SimulatorControls } from "../types";
@@ -43,6 +44,8 @@ type HullProfile = {
 };
 
 const STATION = 0.1;
+/** Meshes whose bounds agree this closely are copies of one shell. */
+const SHELL_TOLERANCE = 0.06;
 
 export class Vessel {
   readonly root = new THREE.Group();
@@ -141,6 +144,7 @@ export class Vessel {
     this.root.updateMatrixWorld(true);
     this.sailSystem = new SailSystem(this.model);
     this.classifyParts();
+    this.batchStaticParts();
     this.createAppendages();
     this.createNavigationLights();
   }
@@ -301,6 +305,45 @@ export class Vessel {
     this.hasRig = true;
   }
 
+  /**
+   * Merges the model's fixed parts by material (see `StaticBatching`): about
+   * forty meshes become nine, in the colour pass and in the shadow pass. The
+   * boom and sail were moved onto the boom pivot by `classifyParts` and stay
+   * separate. Stacked copies of one shell keep drawing, since they differ in
+   * detail, but only the first casts a shadow.
+   */
+  private batchStaticParts(): void {
+    const meshes: THREE.Mesh[] = [];
+    this.model.traverse((object) => {
+      if (object instanceof THREE.Mesh && !Array.isArray(object.material)) meshes.push(object);
+    });
+    const keyOf = (mesh: THREE.Mesh): string => {
+      const material = mesh.material as THREE.Material;
+      return `${material.name}|${material.type}|${material.customProgramCacheKey()}|${material.transparent}|${material.side}`;
+    };
+    this.model.updateMatrixWorld(true);
+    const inverseRoot = this.root.matrixWorld.clone().invert();
+    const box = new THREE.Box3();
+    const bounds = meshes.map((mesh) => {
+      mesh.geometry.computeBoundingBox();
+      box.copy(mesh.geometry.boundingBox ?? box.makeEmpty()).applyMatrix4(mesh.matrixWorld).applyMatrix4(inverseRoot);
+      return {
+        min: [box.min.x, box.min.y, box.min.z] as const,
+        max: [box.max.x, box.max.y, box.max.z] as const,
+      };
+    });
+    coincidentShells(bounds, meshes.map(keyOf), SHELL_TOLERANCE).forEach((index) => {
+      meshes[index].castShadow = false;
+    });
+    const result = batchStaticMeshes(
+      this.root,
+      meshes,
+      (mesh) => `${keyOf(mesh)}|${mesh.castShadow}|${mesh.receiveShadow}`,
+      "YachtBatch",
+    );
+    this.generatedGeometries.push(...result.geometries);
+  }
+
   private measureHull(mesh: THREE.Mesh, inverseRoot: THREE.Matrix4, bounds: THREE.Box3): HullProfile {
     const position = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
     const toRoot = new THREE.Matrix4().multiplyMatrices(inverseRoot, mesh.matrixWorld);
@@ -356,14 +399,16 @@ export class Vessel {
       this.generatedGeometries.push(legGeometry);
       const leg = new THREE.Mesh(legGeometry, saildriveLeg);
       leg.position.set(hull.centerX, podY, driveZ);
-      leg.castShadow = true;
+      // Underwater gear: its shadow could only fall on hull bottoms under the
+      // sea, where nothing shows it, so it stays out of the shadow pass.
+      leg.castShadow = false;
       leg.name = "SaildriveLeg";
       this.root.add(leg);
       this.generatedMeshes.push(leg);
 
       const propeller = new THREE.Mesh(propellerGeometry, bronze);
       propeller.position.set(hull.centerX, podY, driveZ - 0.06);
-      propeller.castShadow = true;
+      propeller.castShadow = false;
       propeller.name = "Propeller";
       this.root.add(propeller);
       this.propellers.push(propeller);
@@ -375,7 +420,7 @@ export class Vessel {
       const stockTop = bottomAt(rudderZ) + 0.12;
       rudder.position.set(hull.centerX, stockTop, rudderZ);
       rudder.scale.y = Math.max(0.6, (stockTop - (bottomAt(rudderZ) - 0.5)) / RUDDER_SPAN);
-      rudder.castShadow = true;
+      rudder.castShadow = false;
       rudder.name = "SpadeRudder";
       this.root.add(rudder);
       this.rudders.push(rudder);

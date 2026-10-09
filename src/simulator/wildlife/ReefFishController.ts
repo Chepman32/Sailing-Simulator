@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { SimplifyModifier } from "three/addons/modifiers/SimplifyModifier.js";
+import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import type { AssetManager } from "../core/AssetManager";
 import { injectAfter, patchMaterialShader } from "../core/ShaderPatch";
 import { ISLAND_DEFINITIONS, islandEdgeNoise, waterDepthAt, WATERLINE_RADIAL } from "../environment/IslandMath";
@@ -32,6 +34,14 @@ import {
 
 /** Schools beyond this distance from the camera are neither simulated nor drawn. */
 export const FISH_ACTIVE_DISTANCE = 170;
+/**
+ * Beyond this distance a fish is drawn from a simplified mesh: a 25 cm fish
+ * is under ten pixels long there, and its thousand source triangles would
+ * cost as much as the whole ocean surface for a school of a hundred.
+ */
+export const FISH_DETAIL_DISTANCE = 24;
+/** Share of the source vertices the distant mesh gives up. */
+const FISH_DISTANT_REDUCTION = 0.72;
 /** A school further than this from its new reef moves there out of sight. */
 const RELOCATE_DISTANCE = 70;
 
@@ -44,6 +54,10 @@ type School = {
   species: FishSpecies;
   agents: FishAgent[];
   mesh: THREE.InstancedMesh;
+  detail: THREE.BufferGeometry;
+  /** Simplified mesh for distant schools; null if simplification failed. */
+  distant: THREE.BufferGeometry | null;
+  bounds: THREE.Sphere;
   swim: THREE.InstancedBufferAttribute;
   home: THREE.Vector3;
   island: number;
@@ -94,21 +108,27 @@ export class ReefFishController {
       if (!source) return;
       const count = Math.max(4, Math.round(species.count * THREE.MathUtils.clamp(countScale, 0.2, 1)));
       const material = source.material;
+      const distant = simplifiedFish(source.geometry);
       const swim = new THREE.InstancedBufferAttribute(new Float32Array(count * 2), 2);
       swim.setUsage(THREE.DynamicDrawUsage);
       source.geometry.setAttribute("fishSwim", swim);
+      distant?.setAttribute("fishSwim", swim);
       applySwimShader(material);
       underwater.apply(material);
       const mesh = new THREE.InstancedMesh(source.geometry, material, count);
       mesh.name = `Reef_Fish_${species.key}`;
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      // Instances roam far from the mesh origin; bounds would go stale.
-      mesh.frustumCulled = false;
+      // The school's bounds are rebuilt from its fish every frame (see
+      // writeInstances), so a school behind the camera costs nothing.
+      const bounds = new THREE.Sphere();
+      mesh.boundingSphere = bounds;
+      mesh.frustumCulled = true;
       mesh.castShadow = false;
       mesh.receiveShadow = false;
       mesh.visible = false;
       group.add(mesh);
       this.ownedGeometries.push(source.geometry);
+      if (distant) this.ownedGeometries.push(distant);
       this.ownedMaterials.push(material);
       const agents: FishAgent[] = [];
       for (let index = 0; index < count; index += 1) {
@@ -118,6 +138,9 @@ export class ReefFishController {
         species,
         agents,
         mesh,
+        detail: source.geometry,
+        distant,
+        bounds,
         swim,
         home: new THREE.Vector3(),
         island: -1,
@@ -157,6 +180,9 @@ export class ReefFishController {
         remaining -= step;
       }
       this.writeInstances(school);
+      const viewDistance = Math.max(0, camera.position.distanceTo(school.bounds.center) - school.bounds.radius);
+      const geometry = school.distant && viewDistance > FISH_DETAIL_DISTANCE ? school.distant : school.detail;
+      if (school.mesh.geometry !== geometry) school.mesh.geometry = geometry;
     });
   }
 
@@ -243,9 +269,14 @@ export class ReefFishController {
   }
 
   private writeInstances(school: School): void {
-    const { species, agents, mesh, swim } = school;
+    const { species, agents, mesh, swim, bounds } = school;
     const swimArray = swim.array as Float32Array;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     agents.forEach((fish, index) => {
+      minX = Math.min(minX, fish.x); maxX = Math.max(maxX, fish.x);
+      minY = Math.min(minY, fish.y); maxY = Math.max(maxY, fish.y);
+      minZ = Math.min(minZ, fish.z); maxZ = Math.max(maxZ, fish.z);
       this.position.set(fish.x, fish.y, fish.z);
       this.euler.set(-fish.pitch, fish.heading, fish.bank, "YXZ");
       this.quaternion.setFromEuler(this.euler);
@@ -256,8 +287,34 @@ export class ReefFishController {
       swimArray[index * 2] = fish.tailPhase;
       swimArray[index * 2 + 1] = tailAmplitude(fish.speed, species.length, fish.panic);
     });
+    // Half the box diagonal, plus a whole fish for its body and tail swing.
+    bounds.center.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+    bounds.radius = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2 + species.length * 1.2;
     mesh.instanceMatrix.needsUpdate = true;
     swim.needsUpdate = true;
+  }
+}
+
+/**
+ * A distant-view copy of a fish mesh with about a quarter of its triangles.
+ * Simplification collapses edges by curvature, so the silhouette and the tail
+ * fork survive while the flat flanks lose their detail.
+ */
+export function simplifiedFish(detail: THREE.BufferGeometry): THREE.BufferGeometry | null {
+  try {
+    const welded = mergeVertices(detail.clone());
+    const remove = Math.floor(welded.getAttribute("position").count * FISH_DISTANT_REDUCTION);
+    const simplified = new SimplifyModifier().modify(welded, remove);
+    welded.dispose();
+    if (simplified.getAttribute("position").count < 120) {
+      simplified.dispose();
+      return null;
+    }
+    simplified.computeBoundingSphere();
+    return simplified;
+  } catch (error) {
+    console.warn("A reef fish could not be simplified; it keeps its full mesh at every distance.", error);
+    return null;
   }
 }
 

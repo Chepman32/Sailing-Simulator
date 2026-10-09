@@ -78,6 +78,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/core/QualityManager.ts` | Low/medium/high settings, DPR, shadows, ocean tessellation and shader detail, post-processing switches, adaptive quality |
 | `src/simulator/core/PostProcessing.ts` | HDR scene target, bloom, lens finish, tone mapping; bypassed on the low preset |
 | `src/simulator/core/ShaderPatch.ts` | Composable `onBeforeCompile` patches for built-in materials |
+| `src/simulator/core/StaticBatching.ts` | Merges fixed parts that share a material into one mesh each; finds stacked copies of one shell |
+| `src/simulator/core/SkinnedMerge.ts` | Merges the flat-coloured skinned parts of one rig into a single skinned mesh with vertex colours |
 
 ### Environment
 
@@ -126,7 +128,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `BodyRig.ts` | Procedural bones in the animal frame, body points, clip filtering, animation LOD intervals |
 | `ReefFishController.ts` | Instanced reef fish extracted from the school asset, vertex-shader swimming |
 | `ReefFishMath.ts` | Pure boids schooling, depth band, flight from threats, tail-beat rules |
-| `GullFlockController.ts` | Animated aerial flock behavior |
+| `GullFlockController.ts` | Animated aerial flock behavior; each bird drawn as one merged skinned mesh |
 | `SwimmerDynamics.ts` | Shared forward-only swimmer: turn radius, bounded rates, pitch steering and overshoot-free depth holding |
 | `WildlifeModel.ts` | GLB normalization, animation selection, asset validation, heading helpers |
 
@@ -154,6 +156,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `tests/unit/wildlife.test.ts` | Shared surface, impacts, contact, whale/dolphin/shark behaviour runs against the real sea |
 | `tests/unit/assets.test.ts` | GLB quality/rig/animation/weight constraints and island geometry constraint |
 | `tests/unit/i18n.test.ts` | Language coverage, aliases, fallback, and preference semantics |
+| `tests/unit/rendering.test.ts` | Static batching, shell detection, shared skeletons, exact skinned merging, distant fish meshes |
 | `tests/rendered-html.test.mjs` | Built-route smoke test |
 
 Generated folders such as `dist`, `.next`, `.sites-runtime`, and `node_modules` are not source. Never hand-edit or commit their generated contents unless the hosting tool explicitly owns a required metadata change.
@@ -317,6 +320,8 @@ The primary yacht is `public/models/yacht-sailboat-pbr.glb`. It is a detailed op
 
 The source file's node names are generic, so `Vessel.classifyParts` finds the hulls, deck, mast, boom and sail by their shape and material. The boom and sail are re-parented to a pivot on the mast axis; `BoomDynamics` swings them to the angle the physics' sheeting chooses, on the side the sail fills from. On the other tack the pivot mirrors the rig across the centreline so the cloth's camber always faces leeward. A gybe slams the boom across and the audio system plays the thud.
 
+The source file splits the yacht into more than forty meshes. After `classifyParts` has measured them, `batchStaticParts` merges the fixed ones by material into nine (`StaticBatching`), which cuts the yacht from about fifty draw calls per pass to under twenty. The coachroof exists three times, a few centimetres apart; the copies stay visible (they differ in detail and resolve each other's z-fighting) but only one casts a shadow. Anything that has to move on its own (boom, sail, propellers, rudders) stays a separate mesh.
+
 The model ships without underwater appendages or textures. `Appendages` builds a saildrive leg with a three-bladed bronze propeller and a balanced NACA-section spade rudder for each hull, placed from the measured hull bottom. `YachtShading` paints antifouling, a boot stripe, a cove line, a wet band that follows the real wave surface, a non-skid deck and sail seams in vessel space; sailcloth passes a little diffuse light when the sun is behind it.
 
 Rules for yacht work:
@@ -328,7 +333,9 @@ Rules for yacht work:
 - deform sails smoothly from wind and trim; do not simply snap a flat triangle between sides;
 - use the physics root for position, heading, pitch, and roll, with visual-only damping inside `Vessel`;
 - keep propellers/rudders tied to engine/rudder state if the asset exposes suitable nodes;
-- validate close camera framing after any scale, pivot, or bounding-box change.
+- validate close camera framing after any scale, pivot, or bounding-box change;
+- keep new fixed parts batchable (one material, no per-part animation); a part that must move on its own needs its own mesh outside the batches;
+- underwater parts do not cast shadows: nothing could show them.
 
 ## 12. Wake, footprint, foam, and splash
 
@@ -371,7 +378,7 @@ Island definitions, bathymetry, coastline noise, and terrain noise live in the p
 
 The rendered island uses irregular radial geometry and a short submerged apron. Terrain triangles are wound counter-clockwise seen from above so the top face is the lit front face. Vegetation, dry grass, dunes, and wet sand come from low-frequency terrain noise.
 
-The palm asset is a row of five tree variants. `plantPalms` lifts each tree out of that row and plants it individually inside the vegetated zone; never place the whole asset group as one object, or the trees trail out to sea. All palms share one material per source material and one wind uniform, and sway in world space. The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
+The palm asset is a row of five tree variants. `plantPalms` lifts each tree out of that row and plants it individually inside the vegetated zone; never place the whole asset group as one object, or the trees trail out to sea. All palms share one material per source material and one wind uniform, and sway in world space; because the wind needs nothing per tree, each island's grove is then merged into one mesh per material (two or three draw calls per island instead of one per trunk and crown). The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
 
 Island constraints:
 
@@ -473,7 +480,7 @@ The shark patrols wide circles, cruises with slow changes of course, spirals in 
 
 The licensed school asset holds nine rigged fish of four species in one choreographed loop. `ReefFishController` lifts one fish of each species out of it at load time (grouping vertices by the bone that weighs on them most, and using that fish's head and tail bones for its axis) and draws every fish as an instance of that geometry. The swimming body wave and its effect on normals are computed in the vertex shader from a per-instance phase and amplitude.
 
-`ReefFishMath` gives each species its own schooling (separation, alignment, cohesion), a patch of reef on the shelf of the island nearest the yacht, a depth band between the reef and the surface, and flight from the hulls, dolphins and shark; the alarm passes through the school. Fish obey the same rules as larger animals: positive speed, bounded turn rate and pitch, no instantaneous reversal. Schools far from the camera are neither simulated nor drawn.
+`ReefFishMath` gives each species its own schooling (separation, alignment, cohesion), a patch of reef on the shelf of the island nearest the yacht, a depth band between the reef and the surface, and flight from the hulls, dolphins and shark; the alarm passes through the school. Fish obey the same rules as larger animals: positive speed, bounded turn rate and pitch, no instantaneous reversal. Schools far from the camera are neither simulated nor drawn. Each school's bounding sphere is rebuilt from its fish every frame, so a school outside the view is frustum-culled, and beyond `FISH_DETAIL_DISTANCE` (24 m, where a fish is under ten pixels long) it is drawn from a simplified mesh with about a sixth of the triangles.
 
 ### Whales
 
@@ -568,7 +575,20 @@ UI requirements:
 - prevent the settings drawer from permanently covering the yacht;
 - preserve localized labels even when strings are longer than English;
 - use compact line icons for dense settings buttons while preserving localized `aria-label` and `title` text, active-state contrast, keyboard focus, and 44 px touch targets;
-- use `aria-pressed`, `aria-expanded`, `aria-controls`, and live regions where they communicate state.
+- use `aria-pressed`, `aria-expanded`, `aria-controls`, and live regions where they communicate state;
+- never put a live region on a value that changes every frame (the heading in the collapsed panel is plain text).
+
+Layout is driven by tokens on `.simulator-shell` (`--gap`, `--top-bar`, `--edge-*` with safe areas, `--throttle-width`, `--throttle-length`); breakpoints change the tokens and the arrangement, not scattered offsets:
+
+- desktop and large tablets: instruments, reset/photo and the notice column on the left and centre top, settings top right, rudder bottom left, throttle bottom right; from 1280 px wide the open settings use two short columns so they clear the throttle on a 720 px tall laptop, and the throttle shortens on short windows;
+- up to 900 px wide or 560 px tall: reset and photo mode become 44 px icon buttons (names kept for assistive technology and as tooltips);
+- phone portrait (up to 680 px): a bottom dock; the rudder spans the width and the narrow throttle stands above its right end, beside the yacht rather than over it; settings open as a bottom sheet over a scrim;
+- phone landscape and short windows (up to 560 px tall): rudder bottom left, throttle bottom right, the middle left to the yacht; settings open as a side sheet; below 350 px tall the collapsed settings button steps left of the throttle column;
+- transient prompts (sound unlock, engine notice, first-run hint) share one centred column, so they never collide with each other or the controls; the hint hides on short phones and when the settings are opened;
+- layout containers that only position their children (`.primary-controls`, `.scene-actions`, `.notice-stack`) set `pointer-events: none`, so their empty areas belong to the camera; every control inside sets it back;
+- photo mode shows how to leave it for three seconds, since the rest of the interface is hidden.
+
+Verify layout changes at least at 320×568, 375×667, 390×844, 360×740, 568×320, 667×375, 844×390, 932×430, 768×1024, 1024×768, 1280×720, 1366×768 and 1920×1080, with the panel open and closed, in a long language (German or Russian), an RTL language and a non-Latin script (Tamil).
 
 The compact help prompt may disappear after successful interaction, but critical state such as engine running, throttle, speed, and rudder angle must remain observable.
 
@@ -612,9 +632,10 @@ Important implementation caveats:
 - animation mixers are advanced at approximately 30 Hz while movement remains per-frame;
 - all shader programs are compiled during loading against the render target the scene actually uses; nothing should compile during play (check `renderer.info.programs` before and after a day/night cycle);
 - wake instance transforms are refreshed at approximately 30 Hz;
+- on phones the per-draw-call CPU work of three.js, not the triangle count, is usually what limits the frame rate: the high preset draws about 80 calls and the low preset about 40 (from about 190 and 110 before batching); keep it there by batching fixed parts by material (`StaticBatching`), merging the parts of one rig (`SkinnedMerge`), letting meshes of one animal share their skeleton (`shareSkeletons`, so its bones upload once per frame), and culling instanced groups with a real bounding sphere;
 - the render loop and Web Audio suspend when the document is hidden.
 
-Before increasing visual cost, measure the current bottleneck. Favor shader detail, instancing, LOD, texture compression, smaller shadow casters, and bounded effects over more individual objects.
+Before increasing visual cost, measure the current bottleneck (`renderer.info.render.calls` and `.triangles` with `info.autoReset` off across the post-processing passes, texture uploads per frame, and a CPU profile of `render`). Favor shader detail, instancing, LOD, texture compression, smaller shadow casters, and bounded effects over more individual objects.
 
 ## 21. Local 3D asset manifest
 
@@ -682,6 +703,7 @@ The Sites checkpoint performs its own production build and rendered smoke verifi
 - Underwater light: red absorbed first, nothing above the surface, path bounded by view distance.
 - Assets: detailed whale rig/clip/PBR/triangle/byte limits, visible island radius constraint, future model budgets.
 - Localization: exactly thirty language entries, complete message keys, locale aliases, manual preference precedence, RTL set.
+- Rendering: batching keeps world placement and outward-facing triangles (also for mirrored parts), finds stacked shells only within the tolerance, shares skeletons only for identical bindings, a merged skinned rig deforms exactly as its parts did and refuses textured or inconsistent rigs, distant fish keep their shape with far fewer triangles.
 
 Add a pure helper and a unit test when introducing a new numerical rule. Three.js scene integration can remain in a controller, but thresholds, state transitions, and bounded dynamics should be testable without WebGL.
 
@@ -845,6 +867,7 @@ Do not commit every exploratory change. The standing project preference is to pu
 - keep state transitions finite;
 - derive splash from tracked body points crossing the rendered surface;
 - let the water hide what is submerged; never mask a body with a clipping plane or alpha cut;
+- count the new animal's draw calls and bone uploads per frame; merge or share what the source file split;
 - test the relevant pure helpers and asset constraints.
 
 ### Changing audio
@@ -865,7 +888,8 @@ Do not commit every exploratory change. The standing project preference is to pu
 - keep touch targets large;
 - add message keys to all thirty languages;
 - test locale aliases and RTL;
-- ensure canvas camera gestures do not receive control-panel drags;
+- ensure canvas camera gestures do not receive control-panel drags, and that empty parts of layout containers do not swallow them;
+- check the layout matrix in §18 with the panel open and closed;
 - preserve semantic states and keyboard accessibility.
 
 ### Replacing a model
@@ -888,10 +912,11 @@ The following are known constraints, not invitations to bypass the architecture:
 - ocean reflections are analytic sky only: the yacht, islands, and wildlife are not mirrored in the water, and there is no refraction or depth-based absorption because the scene depth is not sampled;
 - whitecaps are a function of the instantaneous wave field and leave no persistent foam history;
 - the ocean's own transparency is a blend rather than a refraction, and underwater absorption uses the uninverted wave height per vertex (a few centimetres of error);
-- the yacht's three cabin meshes overlap substantially (about 140k triangles together); merging them needs an asset rework;
+- the yacht's three cabin meshes overlap substantially (about 140k triangles together, only one of them casting shadows); removing two of them changes the cabin's detail, so it needs an asset rework;
 - reef fish are lifted from one rigged asset and animated procedurally; they do not use the asset's authored clip;
 - wake and wildlife capacities do not rebuild when changing quality after initialization;
-- palms are individually planted GLB trees with runtime vertex wind rather than full LOD/impostor vegetation;
+- palms are individually planted GLB trees, merged per island, with runtime vertex wind rather than LOD/impostor vegetation;
+- the dolphins (three skinned parts plus two eyes, textured) and the shark and whale are still drawn as their source meshes; the shark alone is 51k triangles when it is near enough to be drawn;
 - yacht sail deformation is simplified compared with cloth simulation;
 - camera collision guards water but does not perform general mesh collision with mast/islands;
 - asset loading is parallel but does not yet use Draco, Meshopt, or KTX2 decoders;

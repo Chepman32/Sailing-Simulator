@@ -47,7 +47,21 @@ input:focus-visible {
   outline-offset: 2px;
 }
 
+/*
+ * Layout tokens. Every overlay is placed from the same screen edges (gap plus
+ * the device's safe area), so the breakpoints below only change the tokens and
+ * the arrangement, never a scatter of magic offsets.
+ */
 .simulator-shell {
+  --gap: 18px;
+  --top-bar: 70px;
+  --notice-side: 290px;
+  --throttle-width: 146px;
+  --throttle-length: 228px;
+  --edge-top: calc(env(safe-area-inset-top, 0px) + var(--gap));
+  --edge-right: calc(env(safe-area-inset-right, 0px) + var(--gap));
+  --edge-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--gap));
+  --edge-left: calc(env(safe-area-inset-left, 0px) + var(--gap));
   position: relative;
   width: 100%;
   height: 100dvh;
@@ -70,50 +84,17 @@ input:focus-visible {
 .simulator-interface[hidden] { display: none; }
 .simulator-canvas:focus { outline: none; }
 
-.scene-actions {
-  position: absolute;
-  z-index: 20;
-  top: max(136px, calc(env(safe-area-inset-top) + 118px));
-  left: max(18px, env(safe-area-inset-left));
-  width: 212px;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 15px;
-  background: var(--glass);
-}
-
-.scene-action {
-  display: grid;
-  justify-items: center;
-  align-content: center;
-  gap: 5px;
-  min-width: 0;
-  min-height: 64px;
-  padding: 7px 4px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  color: var(--text);
-  background: rgba(101, 226, 214, 0.08);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-  cursor: pointer;
-}
-
-.scene-action:disabled { opacity: 0.45; cursor: default; }
-.scene-action:not(:disabled):hover { background: rgba(101, 226, 214, 0.2); }
 .photo-mode-hint {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
-  text-align: center;
-  overflow-wrap: anywhere;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 .eyebrow {
@@ -194,15 +175,9 @@ input:focus-visible {
   font-weight: 800;
 }
 
-.instrument-cluster {
-  position: absolute;
-  z-index: 10;
-  top: max(18px, env(safe-area-inset-top));
-  left: max(18px, env(safe-area-inset-left));
-  display: flex;
-  gap: 8px;
-  pointer-events: none;
-}
+/* ------------------------------------------------------------------------ */
+/* Desktop and large tablet layout                                           */
+/* ------------------------------------------------------------------------ */
 
 .instrument,
 .heading-card,
@@ -215,11 +190,27 @@ input:focus-visible {
   backdrop-filter: blur(15px) saturate(1.15);
 }
 
+.instrument-cluster {
+  position: absolute;
+  z-index: 10;
+  top: var(--edge-top);
+  left: var(--edge-left);
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+
 .instrument {
-  position: relative;
   display: grid;
-  min-width: 88px;
-  min-height: 70px;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    "label label"
+    "value unit";
+  justify-content: start;
+  align-content: space-between;
+  gap: 6px 4px;
+  min-width: 92px;
+  min-height: var(--top-bar);
   padding: 10px 12px;
   border-radius: 14px;
 }
@@ -227,31 +218,35 @@ input:focus-visible {
 .instrument span,
 .instrument small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.12em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
+.instrument span { grid-area: label; letter-spacing: 0.12em; }
+
 .instrument strong {
-  align-self: end;
+  grid-area: value;
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 24px;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
+/* The unit sits on the value's baseline instead of floating over it, so a
+   wider reading (125.0 m) can never run into it. */
 .instrument small {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
+  grid-area: unit;
+  align-self: end;
+  padding-bottom: 1px;
+  letter-spacing: 0.06em;
 }
-
-.wind-instrument { min-width: 126px; }
 
 .heading-card {
   position: absolute;
   z-index: 10;
-  top: max(18px, env(safe-area-inset-top));
+  top: var(--edge-top);
   left: 50%;
   display: flex;
   align-items: center;
@@ -266,57 +261,15 @@ input:focus-visible {
 .heading-card strong {
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 20px;
+  font-variant-numeric: tabular-nums;
 }
-
-.audio-unlock {
-  position: absolute;
-  z-index: 24;
-  top: max(78px, calc(env(safe-area-inset-top) + 68px));
-  left: 50%;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-height: 46px;
-  padding: 0 17px;
-  border: 1px solid rgba(130, 255, 240, 0.52);
-  border-radius: 999px;
-  color: #052d31;
-  background: linear-gradient(135deg, #82fff0, #57d7d0);
-  box-shadow: 0 12px 36px rgba(0, 21, 29, 0.28), 0 0 28px rgba(101, 226, 214, 0.18);
-  font-size: 12px;
-  font-weight: 850;
-  letter-spacing: 0.03em;
-  transform: translateX(-50%);
-  cursor: pointer;
-  pointer-events: auto;
-  touch-action: manipulation;
-}
-
-.audio-unlock span {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  color: var(--accent-strong);
-  background: rgba(4, 37, 43, 0.9);
-  font-size: 16px;
-}
-
-.audio-unlock > * { pointer-events: none; }
-
-.audio-unlock strong {
-  font: inherit;
-  white-space: nowrap;
-}
-
-.audio-unlock:active { transform: translateX(-50%) scale(0.975); }
 
 .heading-card > span:last-child {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .status-dot {
@@ -330,37 +283,217 @@ input:focus-visible {
 .status-dot.paused { background: var(--warning); box-shadow: 0 0 12px var(--warning); }
 .status-dot.error { background: #ff7b70; box-shadow: 0 0 12px #ff7b70; }
 
+/* Reset and photo mode: always one tap away, never a large card. */
+.scene-actions {
+  position: absolute;
+  z-index: 20;
+  top: calc(var(--edge-top) + var(--top-bar) + 10px);
+  left: var(--edge-left);
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.scene-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 14px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  color: var(--text);
+  background: var(--glass);
+  box-shadow: 0 10px 28px rgba(0, 12, 18, 0.22);
+  backdrop-filter: blur(15px) saturate(1.15);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.scene-action .control-icon { flex: none; width: 20px; height: 20px; }
+.scene-action:disabled { opacity: 0.45; cursor: default; }
+.scene-action:not(:disabled):hover { background: rgba(14, 64, 78, 0.88); }
+
+/* Transient prompts: one centred column below the heading, level with the
+   scene actions and clear of the instruments on either side. */
+.notice-stack {
+  position: absolute;
+  z-index: 24;
+  top: calc(var(--edge-top) + var(--top-bar) + 10px);
+  right: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: min(520px, calc(100vw - 2 * var(--notice-side)));
+  margin: 0 auto;
+  pointer-events: none;
+}
+
+.notice-stack > * {
+  max-width: 100%;
+  pointer-events: auto;
+}
+
+.audio-unlock {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 46px;
+  padding: 0 17px;
+  border: 1px solid rgba(130, 255, 240, 0.52);
+  border-radius: 999px;
+  color: #052d31;
+  background: linear-gradient(135deg, #82fff0, #57d7d0);
+  box-shadow: 0 12px 36px rgba(0, 21, 29, 0.28), 0 0 28px rgba(101, 226, 214, 0.18);
+  font-size: 13px;
+  font-weight: 850;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.audio-unlock span {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: var(--accent-strong);
+  background: rgba(4, 37, 43, 0.9);
+  font-size: 16px;
+}
+
+.audio-unlock > * { pointer-events: none; }
+
+/* A long translation wraps inside the pill rather than being cut off. */
+.audio-unlock strong {
+  font: inherit;
+  line-height: 1.2;
+  text-align: start;
+}
+
+.help-toast,
+.engine-notice {
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: rgba(5, 31, 43, 0.84);
+  box-shadow: 0 10px 28px rgba(0, 12, 18, 0.24);
+  backdrop-filter: blur(12px);
+  line-height: 1.35;
+  text-align: center;
+}
+
+.help-toast {
+  min-height: 44px;
+  padding: 9px 18px;
+  border-radius: 18px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.engine-notice {
+  padding: 9px 14px;
+  border-color: rgba(101, 226, 214, 0.32);
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  animation: notice-in 180ms ease-out;
+}
+
+@keyframes notice-in {
+  from { opacity: 0; transform: translateY(-5px); }
+}
+
+/* Shown for a moment after entering photo mode; the rest of the interface is
+   hidden, so this is the only way to learn how to bring it back. */
+.photo-toast {
+  position: absolute;
+  z-index: 24;
+  right: 0;
+  bottom: calc(var(--edge-bottom) + 6px);
+  left: 0;
+  width: fit-content;
+  max-width: calc(100vw - 32px);
+  margin: 0 auto;
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--text);
+  background: rgba(4, 27, 38, 0.82);
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+  animation: notice-in 220ms ease-out;
+}
+
+/* Settings panel */
 .control-panel {
   position: absolute;
   z-index: 20;
-  top: max(18px, env(safe-area-inset-top));
-  right: max(18px, env(safe-area-inset-right));
-  width: min(356px, calc(100vw - 36px));
-  overflow: hidden;
+  top: var(--edge-top);
+  right: var(--edge-right);
+  /* Never wider than the space right of the centred heading card. */
+  width: min(356px, calc(100vw - 2 * var(--gap)), max(280px, calc(50vw - 100px)));
+  max-height: calc(100dvh - var(--edge-top) - var(--edge-bottom));
+  overflow: hidden auto;
+  overscroll-behavior: contain;
   border-radius: 18px;
-  transition: width 180ms ease;
 }
 
-.control-panel.is-minimized { width: 188px; }
+.control-panel:not(.is-minimized) {
+  z-index: 30;
+  background: rgba(4, 25, 35, 0.97);
+}
+
+.control-panel.is-minimized {
+  width: auto;
+  max-width: calc(100vw - 2 * var(--gap));
+  overflow: hidden;
+}
 
 .control-panel header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   min-height: 52px;
-  padding: 9px 10px 9px 15px;
+  padding: 8px;
+  padding-inline-start: 15px;
+}
+
+.control-panel:not(.is-minimized) header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  background: rgba(4, 25, 35, 0.96);
 }
 
 .control-panel header > div {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 2px 12px;
+  min-width: 0;
 }
 
-.control-panel header span {
+.control-panel header .eyebrow { white-space: nowrap; }
+
+.control-panel header > div > span {
   color: var(--muted);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .mobile-control-title,
@@ -368,11 +501,14 @@ input:focus-visible {
 .mobile-center-label { display: none; }
 
 .model-credits {
+  display: inline-block;
+  padding: 4px 0;
   color: var(--accent);
   text-underline-offset: 2px;
 }
 
 .icon-button {
+  flex: none;
   width: 44px;
   height: 44px;
   border: 1px solid var(--border);
@@ -380,6 +516,7 @@ input:focus-visible {
   color: var(--text);
   background: rgba(134, 234, 230, 0.06);
   font-size: 22px;
+  cursor: pointer;
 }
 
 .panel-body {
@@ -399,6 +536,7 @@ input:focus-visible {
 .compact-row {
   display: grid;
   grid-template-columns: minmax(92px, 1.35fr) repeat(3, minmax(44px, 1fr));
+  align-content: center;
   gap: 5px;
   padding: 5px;
 }
@@ -421,6 +559,7 @@ input:focus-visible {
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.04em;
+  cursor: pointer;
 }
 
 .icon-control {
@@ -457,10 +596,11 @@ button[aria-pressed="true"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.13em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
@@ -482,6 +622,7 @@ button[aria-pressed="true"] {
 
 .trim-row {
   display: grid;
+  align-content: center;
   gap: 8px;
 }
 
@@ -494,8 +635,47 @@ input[type="range"] {
   touch-action: none;
 }
 
+.trim-row input[type="range"] { height: 36px; }
+
+.panel-footer {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  align-content: center;
+  gap: 8px;
+  padding: 7px;
+}
+
+.panel-footer label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.panel-footer label > span { padding-inline-start: 2px; }
+
+.panel-footer select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text);
+  background: #092c3b;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .panel-scrim { display: none; }
 
+/* Primary controls */
 .primary-controls { display: contents; }
 
 .primary-controls,
@@ -504,59 +684,34 @@ input[type="range"] {
   direction: ltr;
 }
 
-.panel-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 7px;
-}
-
-.panel-footer label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.panel-footer select {
-  min-height: 40px;
-  max-width: 148px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  color: var(--text);
-  background: #092c3b;
-}
-
 .rudder-control {
   position: absolute;
   z-index: 20;
-  bottom: max(18px, env(safe-area-inset-bottom));
-  left: max(18px, env(safe-area-inset-left));
+  bottom: var(--edge-bottom);
+  left: var(--edge-left);
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) 104px;
+  grid-template-columns: 76px minmax(0, 1fr) auto;
   grid-template-areas:
     "wheel heading center"
     "track track track";
   align-items: center;
-  gap: 7px 10px;
-  width: min(680px, calc(100vw - 184px));
-  padding: 11px;
+  gap: 6px 12px;
+  width: min(560px, calc(100vw - 3 * var(--gap) - var(--throttle-width) - 24px));
+  padding: 11px 12px;
   border-radius: 18px;
 }
 
-.rudder-control > .control-heading { grid-area: heading; }
+.rudder-control > .control-heading {
+  grid-area: heading;
+  flex-wrap: wrap;
+}
 
 .helm-wheel {
   grid-area: wheel;
   display: grid;
   place-items: center;
-  width: 86px;
-  height: 86px;
+  width: 72px;
+  height: 72px;
   border: 1px solid rgba(151, 231, 238, 0.18);
   border-radius: 50%;
   background: radial-gradient(circle, rgba(101, 226, 214, 0.12), rgba(2, 20, 29, 0.35) 68%);
@@ -564,14 +719,12 @@ input[type="range"] {
 }
 
 .helm-wheel svg {
-  width: 80px;
-  height: 80px;
+  width: 66px;
+  height: 66px;
   overflow: visible;
 }
 
-.helm-wheel g {
-  transition: transform 90ms linear;
-}
+.helm-wheel g { transition: transform 90ms linear; }
 
 .helm-wheel-rim,
 .helm-wheel line {
@@ -594,7 +747,7 @@ input[type="range"] {
   grid-area: track;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: 18px 60px;
+  grid-template-rows: 16px 56px;
   gap: 0;
   margin: 0;
 }
@@ -602,9 +755,9 @@ input[type="range"] {
 .rudder-track-wrap span,
 .throttle-layout span {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
 }
 
 .rudder-track-wrap span {
@@ -628,13 +781,12 @@ input[type="range"] {
 .rudder-track-wrap input {
   grid-row: 2;
   grid-column: 1 / -1;
-  height: 60px;
 }
 
 .rudder-slider {
   width: 100%;
   min-width: 0;
-  height: 60px !important;
+  height: 56px !important;
   -webkit-appearance: none;
   appearance: none;
   border-radius: 999px;
@@ -691,23 +843,27 @@ input[type="range"] {
 .center-button {
   grid-area: center;
   align-self: stretch;
-  width: auto;
-  min-height: 76px;
+  min-width: 104px;
+  min-height: 52px;
   margin: 0;
+  padding: 0 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   color: var(--text);
   background: rgba(101, 226, 214, 0.08);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
+  cursor: pointer;
 }
+
+.center-button:hover { background: rgba(101, 226, 214, 0.18); }
 
 .throttle-control {
   position: absolute;
   z-index: 20;
-  right: max(18px, env(safe-area-inset-right));
-  bottom: max(18px, env(safe-area-inset-bottom));
-  width: 146px;
+  right: var(--edge-right);
+  bottom: var(--edge-bottom);
+  width: var(--throttle-width);
   padding: 10px;
   border-radius: 18px;
 }
@@ -726,6 +882,7 @@ input[type="range"] {
   border-radius: 12px;
   color: var(--text);
   background: rgba(101, 226, 214, 0.12);
+  cursor: pointer;
 }
 
 .engine-toggle[aria-checked="false"] {
@@ -743,14 +900,14 @@ input[type="range"] {
 
 .engine-toggle-copy small {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.12em;
 }
 
 .engine-toggle-copy strong {
   color: var(--accent-strong);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 900;
   letter-spacing: 0.08em;
 }
@@ -806,11 +963,20 @@ input[type="range"]:disabled {
 
 .vertical-heading {
   display: grid;
+  justify-content: stretch;
   gap: 3px;
   text-align: center;
 }
 
-.vertical-heading strong { min-height: 22px; font-size: 9px; }
+/* Two lines are reserved for the order ("Half astern", "Полный вперёд") so
+   the slider below never jumps when the label wraps. */
+.vertical-heading strong {
+  display: grid;
+  place-items: center;
+  min-height: 2.3em;
+  font-size: 10px;
+  line-height: 1.15;
+}
 
 .throttle-layout {
   display: grid;
@@ -818,10 +984,11 @@ input[type="range"]:disabled {
   gap: 2px;
 }
 
+/* The slider is rotated inside a fixed slot; its length follows the slot. */
 .throttle-slider-slot {
   position: relative;
   width: 64px;
-  height: 228px;
+  height: var(--throttle-length);
 }
 
 .throttle-slider {
@@ -829,7 +996,7 @@ input[type="range"]:disabled {
   top: 50%;
   left: 50%;
   display: block;
-  width: 212px !important;
+  width: calc(var(--throttle-length) - 12px) !important;
   height: 64px !important;
   -webkit-appearance: none;
   appearance: none;
@@ -886,112 +1053,92 @@ input[type="range"]:disabled {
   box-shadow: 0 3px 10px rgba(0, 12, 18, 0.48), 0 0 0 5px rgba(101, 226, 214, 0.16);
 }
 
-.help-toast {
-  position: absolute;
-  z-index: 15;
-  bottom: max(22px, env(safe-area-inset-bottom));
-  left: 50%;
-  min-height: 44px;
-  max-width: min(520px, calc(100vw - 560px));
-  padding: 8px 18px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--text);
-  background: rgba(5, 31, 43, 0.76);
-  font-size: 12px;
-  transform: translateX(-50%);
-  backdrop-filter: blur(12px);
+/* Wide screens: the open settings fit in two short columns, so the panel stays
+   clear of the throttle below it even on a 720 px tall laptop. */
+@media (min-width: 1280px) and (min-height: 561px) {
+  .control-panel:not(.is-minimized) { width: min(548px, calc(50vw - 104px)); }
+
+  .panel-body {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+  }
 }
 
-.engine-notice {
-  position: absolute;
-  z-index: 24;
-  bottom: max(82px, calc(env(safe-area-inset-bottom) + 72px));
-  left: 50%;
-  max-width: min(360px, calc(100vw - 48px));
-  padding: 9px 14px;
-  border: 1px solid rgba(101, 226, 214, 0.32);
-  border-radius: 999px;
-  color: var(--text);
-  background: rgba(4, 27, 38, 0.88);
-  box-shadow: 0 10px 28px rgba(0, 12, 18, 0.24);
-  font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 0.02em;
-  text-align: center;
-  transform: translateX(-50%);
-  animation: engine-notice-in 180ms ease-out;
-  backdrop-filter: blur(10px);
+/* Short desktop windows with the one-column panel: shorten the throttle so the
+   open panel and the engine switch do not overlap. */
+@media (min-width: 901px) and (max-width: 1279px) and (min-height: 561px) and (max-height: 900px) {
+  .simulator-shell { --throttle-length: clamp(116px, calc(100dvh - 652px), 228px); }
 }
 
-@keyframes engine-notice-in {
-  from { opacity: 0; transform: translate(-50%, 5px); }
+@media (min-width: 1280px) and (min-height: 561px) and (max-height: 820px) {
+  .simulator-shell { --throttle-length: clamp(150px, calc(100dvh - 520px), 228px); }
 }
+
+/* ------------------------------------------------------------------------ */
+/* Tablets and narrow windows                                                */
+/* ------------------------------------------------------------------------ */
 
 @media (max-width: 900px) {
-  .instrument-cluster { top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); }
-  .instrument { min-width: 72px; min-height: 58px; padding: 8px; }
-  .instrument strong { font-size: 19px; }
-  .instrument small { right: 7px; bottom: 7px; font-size: 8px; }
+  .simulator-shell {
+    --gap: 10px;
+    --top-bar: 60px;
+    --notice-side: 212px;
+  }
+
   .wind-instrument { display: none; }
-  .heading-card { top: max(10px, env(safe-area-inset-top)); min-height: 44px; }
-  .control-panel { top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); width: min(332px, calc(100vw - 20px)); }
-  .control-panel.is-minimized { width: 174px; }
-  .compact-row { grid-template-columns: minmax(92px, 1.35fr) repeat(3, minmax(44px, 1fr)); }
-  .rudder-control { bottom: max(10px, env(safe-area-inset-bottom)); left: max(10px, env(safe-area-inset-left)); width: min(440px, calc(100vw - 176px)); }
-  .throttle-control { right: max(10px, env(safe-area-inset-right)); bottom: max(10px, env(safe-area-inset-bottom)); }
-  .help-toast { display: none; }
+  .instrument { min-width: 78px; padding: 8px 10px; gap: 4px 3px; }
+  .instrument strong { font-size: 20px; }
+  .heading-card { min-height: 44px; }
+  .notice-stack { top: calc(var(--edge-top) + 54px); }
+
+  .rudder-control { width: min(440px, calc(100vw - 3 * var(--gap) - var(--throttle-width) - 16px)); }
 }
 
-@media (max-width: 680px), (max-height: 560px) and (max-width: 960px) {
-  .simulator-shell { min-height: 0; }
+/* Narrow or short screens: reset and photo mode become icon buttons; their
+   names stay available to assistive technology and as tooltips. */
+@media (max-width: 900px), (max-height: 560px) {
+  .scene-action { width: 44px; padding: 0; }
 
-  .scene-actions {
-    top: calc(env(safe-area-inset-top) + 132px);
-    left: calc(env(safe-area-inset-left) + 8px);
-    width: 142px;
-    grid-template-columns: minmax(0, 1fr);
-    padding: 7px;
-    background: rgba(4, 29, 40, 0.9);
+  .scene-action-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
+}
 
-  .scene-action {
-    grid-template-columns: 23px minmax(0, 1fr);
-    align-items: center;
-    min-height: 44px;
-    text-align: start;
+/* ------------------------------------------------------------------------ */
+/* Phones (portrait and landscape) and short windows                        */
+/* ------------------------------------------------------------------------ */
+
+@media (max-width: 680px), (max-height: 560px) {
+  .simulator-shell {
+    --gap: 8px;
+    --top-bar: 52px;
+    --throttle-width: 92px;
+    min-height: 0;
   }
-
-  .scene-action span { justify-self: start; }
 
   .heading-card { display: none; }
 
-  .audio-unlock {
-    top: calc(env(safe-area-inset-top) + 76px);
-    min-height: 44px;
-    max-width: calc(100vw - 32px);
-    padding: 0 14px;
-    white-space: nowrap;
-  }
-
   .instrument-cluster {
-    top: calc(env(safe-area-inset-top) + 8px);
-    left: calc(env(safe-area-inset-left) + 8px);
     gap: 0;
     padding: 4px;
     overflow: hidden;
     border: 1px solid var(--border);
     border-radius: 17px;
-    background: rgba(4, 27, 38, 0.78);
+    background: rgba(4, 27, 38, 0.8);
     box-shadow: 0 12px 32px rgba(0, 12, 18, 0.22);
     -webkit-backdrop-filter: blur(8px) saturate(1.12);
     backdrop-filter: blur(8px) saturate(1.12);
   }
 
   .instrument {
-    min-width: 68px;
-    min-height: 50px;
-    padding: 7px 8px;
+    min-width: 70px;
+    padding: 7px 9px;
     border: 0;
     border-radius: 12px;
     background: transparent;
@@ -999,51 +1146,45 @@ input[type="range"]:disabled {
     backdrop-filter: none;
   }
 
-  .instrument + .instrument { border-left: 1px solid rgba(151, 231, 238, 0.14); }
-  .instrument span { font-size: 9px; letter-spacing: 0.13em; }
-  .instrument strong { font-size: 20px; }
-  .instrument small { right: 7px; bottom: 7px; font-size: 8px; }
+  .instrument + .instrument { border-inline-start: 1px solid rgba(151, 231, 238, 0.14); }
 
-  .control-panel {
-    top: calc(env(safe-area-inset-top) + 8px);
-    right: calc(env(safe-area-inset-right) + 8px);
-    border-radius: 17px;
-    -webkit-backdrop-filter: blur(8px) saturate(1.12);
-    backdrop-filter: blur(8px) saturate(1.12);
+  /* Below the 62 px top bar (52 px instruments + padding and border). */
+  .scene-actions,
+  .notice-stack { top: calc(var(--edge-top) + var(--top-bar) + 18px); }
+
+  .scene-action {
+    border-radius: 14px;
+    background: rgba(4, 29, 40, 0.88);
   }
 
-  .control-panel.is-minimized { width: 142px; }
+  .control-panel { border-radius: 17px; }
 
   .control-panel.is-minimized header {
-    min-height: 58px;
+    min-height: 60px;
     padding: 7px;
+    padding-inline-start: 12px;
   }
 
   .control-panel.is-minimized header > div {
     display: grid;
     gap: 3px;
-    padding-left: 5px;
   }
 
   .full-control-title { display: none; }
   .mobile-control-title { display: inline; }
-  .panel-mini-status {
+
+  .control-panel header > div > .panel-mini-status {
     display: inline;
-    color: rgba(220, 249, 251, 0.72) !important;
-    font-size: 8px !important;
+    color: rgba(220, 249, 251, 0.78);
+    font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
   }
 
   .icon-button {
-    flex: 0 0 44px;
     border-radius: 13px;
     background: linear-gradient(145deg, rgba(101, 226, 214, 0.14), rgba(101, 226, 214, 0.035));
   }
-
-  .camera-grid { grid-template-columns: repeat(4, 1fr); }
-  .compact-row { grid-template-columns: minmax(92px, 1.35fr) repeat(3, minmax(44px, 1fr)); }
-  .segmented { grid-column: auto; }
 
   .panel-scrim {
     position: absolute;
@@ -1060,211 +1201,182 @@ input[type="range"]:disabled {
     backdrop-filter: blur(2px);
   }
 
+  .rudder-control,
+  .throttle-control {
+    border-radius: 19px;
+    background: linear-gradient(155deg, rgba(8, 40, 53, 0.92), rgba(3, 26, 36, 0.86));
+    box-shadow: 0 14px 36px rgba(0, 12, 18, 0.27);
+    -webkit-backdrop-filter: blur(8px) saturate(1.08);
+    backdrop-filter: blur(8px) saturate(1.08);
+    transition: opacity 160ms ease;
+  }
+
+  .settings-open .rudder-control,
+  .settings-open .throttle-control {
+    opacity: 0.16;
+    pointer-events: none;
+  }
+
+  .rudder-control {
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    gap: 6px 10px;
+    padding: 8px 10px 6px;
+  }
+
+  .helm-wheel { width: 48px; height: 48px; }
+  .helm-wheel svg { width: 44px; height: 44px; }
+
+  .rudder-track-wrap { grid-template-rows: 16px 52px; }
+  .rudder-slider { height: 52px !important; }
+
+  .center-button {
+    align-self: center;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 16px;
+    border-radius: 12px;
+  }
+
+  .full-center-label { display: none; }
+  .mobile-center-label { display: inline; }
+
+  .throttle-control { padding: 7px; }
+
+  .engine-toggle {
+    gap: 5px;
+    min-height: 0;
+    margin-bottom: 5px;
+    padding: 7px 4px 8px;
+  }
+
+  .engine-toggle-copy { gap: 1px; max-width: 100%; }
+
+  .engine-toggle-copy small,
+  .engine-toggle-copy strong {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .engine-toggle-copy small { letter-spacing: 0.03em; }
+  .engine-toggle-copy strong { font-size: 14px; letter-spacing: 0.04em; }
+
+  .engine-switch-track { width: 52px; height: 30px; }
+  .engine-switch-track span { top: 2px; left: 24px; width: 24px; height: 24px; }
+  .engine-toggle[aria-checked="false"] .engine-switch-track span { left: 2px; }
+
+  .vertical-heading { gap: 1px; }
+  .control-heading { font-size: 10px; letter-spacing: 0.1em; }
+  .throttle-layout { gap: 0; }
+}
+
+/* Phone portrait: a bottom dock. The rudder spans the full width; the throttle
+   stands above its right end, beside the yacht rather than over it. */
+@media (max-width: 680px) and (orientation: portrait) {
+  .simulator-shell {
+    --notice-side: 60px;
+    --throttle-length: clamp(112px, calc(100dvh - 540px), 170px);
+  }
+
+  .scene-actions { flex-direction: column; }
+
   .primary-controls {
     position: absolute;
     z-index: 20;
-    right: calc(env(safe-area-inset-right) + 8px);
-    bottom: calc(env(safe-area-inset-bottom) + 8px);
-    left: calc(env(safe-area-inset-left) + 8px);
+    right: var(--edge-right);
+    bottom: var(--edge-bottom);
+    left: var(--edge-left);
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 146px;
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
-    transition: opacity 160ms ease, transform 160ms ease;
-  }
-
-  .settings-open .primary-controls {
-    opacity: 0.16;
-    transform: translateY(6px);
+    /* The empty part of the dock beside the throttle belongs to the camera. */
     pointer-events: none;
   }
 
   .rudder-control,
   .throttle-control {
     position: static;
-    width: auto;
-    border-radius: 19px;
-    background: linear-gradient(155deg, rgba(8, 40, 53, 0.91), rgba(3, 26, 36, 0.82));
-    box-shadow: 0 14px 36px rgba(0, 12, 18, 0.27);
-    -webkit-backdrop-filter: blur(8px) saturate(1.08);
-    backdrop-filter: blur(8px) saturate(1.08);
+    pointer-events: auto;
   }
 
-  .rudder-control {
-    display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
-    grid-template-areas:
-      "wheel heading"
-      "track track"
-      "center center";
-    gap: 6px 8px;
-    align-content: center;
-    min-height: 204px;
-    padding: 10px;
-  }
-
-  .rudder-control > .control-heading { grid-area: heading; }
-
-  .helm-wheel {
-    width: 68px;
-    height: 68px;
-  }
-
-  .helm-wheel svg {
-    width: 64px;
-    height: 64px;
-  }
-
-  .rudder-track-wrap {
-    grid-area: track;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-rows: 18px 64px;
-    gap: 0;
-    margin: 0;
-  }
-
-  .rudder-track-wrap span,
-  .throttle-layout span {
-    font-size: 10px;
-    letter-spacing: 0.1em;
-  }
-
-  .rudder-track-wrap input {
-    grid-row: 2;
-    grid-column: 1 / -1;
-    height: 64px;
-  }
-
-  .center-button {
-    grid-area: center;
-    width: 100%;
-    min-height: 44px;
-    margin: 0;
-    padding: 0 10px;
-    border-radius: 12px;
-    font-size: 11px;
-  }
-
-  .full-center-label { display: none; }
-  .mobile-center-label { display: inline; }
-
-  .throttle-control {
-    display: grid;
-    align-content: center;
-    min-height: 318px;
-    padding: 8px;
-  }
-
-  .engine-toggle {
-    display: grid;
-    grid-template-columns: 1fr;
-    justify-items: center;
-    gap: 7px;
-    min-height: 90px;
-    margin-bottom: 7px;
-    padding: 8px 4px;
-  }
-
-  .engine-toggle-copy { justify-items: center; text-align: center; }
-  .engine-toggle-copy small { font-size: 9px; }
-  .engine-toggle-copy strong { font-size: 15px; }
-
-  .engine-notice {
-    bottom: calc(env(safe-area-inset-bottom) + 298px);
-    max-width: calc(100vw - 28px);
-    font-size: 10px;
-  }
-
-  .vertical-heading { gap: 1px; }
-  .vertical-heading strong {
-    min-height: 16px;
-    font-size: 9px;
-    line-height: 1.05;
-  }
-
-  .throttle-layout { gap: 0; }
-  .throttle-slider {
-    width: 156px !important;
-    height: 64px !important;
-  }
-
-  .throttle-slider-slot { width: 64px; height: 164px; }
-
-  .control-heading { font-size: 10px; letter-spacing: 0.1em; }
-}
-
-@media (max-width: 680px) and (orientation: portrait) {
-  .primary-controls {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .rudder-control {
-    order: 2;
-    width: 100%;
-  }
-
-  .throttle-control {
-    order: 1;
-    width: 146px;
-    justify-self: end;
-  }
+  .rudder-control { order: 2; width: auto; }
+  .throttle-control { order: 1; justify-self: end; }
 
   .control-panel:not(.is-minimized) {
-    z-index: 30;
     top: auto;
-    right: calc(env(safe-area-inset-right) + 8px);
-    bottom: calc(env(safe-area-inset-bottom) + 8px);
-    left: calc(env(safe-area-inset-left) + 8px);
+    right: var(--edge-right);
+    bottom: var(--edge-bottom);
+    left: var(--edge-left);
     width: auto;
-    max-height: min(72dvh, 560px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    background: var(--glass-strong);
+    max-height: min(78dvh, 620px);
   }
 
-  .control-panel:not(.is-minimized) header { position: sticky; top: 0; z-index: 2; background: rgba(4, 25, 35, 0.94); }
   .panel-body { gap: 8px; }
 }
 
+/* Phone landscape and short windows: rudder bottom-left, throttle bottom-right,
+   the middle of the screen left to the yacht. */
 @media (max-height: 560px) and (orientation: landscape) {
-  .scene-actions {
-    top: calc(env(safe-area-inset-top) + 78px);
-    left: auto;
-    right: calc(env(safe-area-inset-right) + 8px);
-    width: 142px;
+  .simulator-shell {
+    --notice-side: 116px;
+    --throttle-length: clamp(88px, calc(100dvh - 276px), 150px);
   }
+
+  .wind-instrument { display: grid; min-width: 0; }
+
+  .rudder-control { width: clamp(250px, 42vw, 380px); }
+
   .control-panel:not(.is-minimized) {
-    z-index: 30;
-    top: calc(env(safe-area-inset-top) + 8px);
-    right: calc(env(safe-area-inset-right) + 8px);
-    width: 316px;
-    max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    background: var(--glass-strong);
+    top: var(--edge-top);
+    bottom: var(--edge-bottom);
+    width: min(420px, calc(100vw - 2 * var(--gap)));
+    max-height: none;
   }
-  .panel-body { gap: 5px; }
-  .panel-section { padding: 5px; }
-  .section-label { display: none; }
-  .trim-row { display: none; }
-  .camera-grid button,
-  .segmented button,
-  .quiet-button { min-height: 44px; }
-  .primary-controls {
-    right: auto;
-    width: min(500px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 172px));
+
+  .panel-body { gap: 6px; }
+  .panel-section { padding: 6px; }
+}
+
+/* Touch devices: no backdrop blur (a full-screen blur per panel is expensive on
+   mobile GPUs); near-opaque glass keeps the text readable instead. */
+/* 320–359 px phones: a tighter top bar so the instruments and the settings
+   button share one row. */
+@media (max-width: 359px) {
+  .instrument { min-width: 60px; padding: 7px 7px; }
+  .instrument span { letter-spacing: 0.06em; }
+  .instrument strong { font-size: 18px; }
+  .audio-unlock { padding: 6px 14px; font-size: 12px; }
+
+  /* The settings button keeps its 44 px target; a long title gives way. */
+  .control-panel.is-minimized { max-width: calc(100vw - 2 * var(--gap) - 168px); }
+  .control-panel.is-minimized header { gap: 8px; }
+  .control-panel.is-minimized header > div { overflow: hidden; }
+
+  .control-panel.is-minimized .eyebrow {
+    overflow: hidden;
+    letter-spacing: 0.06em;
+    text-overflow: ellipsis;
   }
-  .rudder-control {
-    width: auto;
-    min-height: 162px;
-    padding: 8px;
-  }
-  .rudder-track-wrap { grid-template-rows: 16px 54px; }
-  .rudder-track-wrap input { height: 54px; }
-  .rudder-slider { height: 54px !important; }
-  .center-button { min-height: 44px; }
-  .throttle-control { min-height: 228px; }
-  .throttle-slider { width: 112px !important; height: 60px !important; }
-  .throttle-slider-slot { width: 60px !important; height: 120px !important; }
+
+  .mini-status-word { display: none; }
+}
+
+/* Short phones: the first-run hint would land on the throttle or rudder, and
+   the gestures it describes are discoverable anyway. */
+@media (max-width: 680px) and (orientation: portrait) and (max-height: 640px),
+  (max-height: 340px) {
+  .help-toast { display: none; }
+}
+
+/* Very short landscape screens (568 x 320): the throttle needs the full
+   height, so the collapsed settings button steps left of it. */
+@media (max-height: 349px) and (orientation: landscape) {
+  .control-panel.is-minimized { right: calc(var(--edge-right) + var(--throttle-width) + 8px); }
+}
+
+@media (max-height: 349px) and (max-width: 639px) and (orientation: landscape) {
+  .wind-instrument { display: none !important; }
 }
 
 @media (pointer: coarse) {
@@ -1274,6 +1386,7 @@ input[type="range"]:disabled {
   .control-panel,
   .rudder-control,
   .throttle-control,
+  .scene-action,
   .panel-scrim,
   .help-toast,
   .engine-notice {
@@ -1281,9 +1394,17 @@ input[type="range"]:disabled {
     backdrop-filter: none;
   }
 
-  .instrument,
   .heading-card,
-  .control-panel,
+  .control-panel.is-minimized,
+  .scene-action {
+    background: rgba(4, 29, 40, 0.9);
+  }
+}
+
+/* Separate instrument cards only exist outside the phone layout, where the
+   cluster is one card with transparent cells. */
+@media (pointer: coarse) and (min-width: 681px) and (min-height: 561px) {
+  .instrument,
   .rudder-control,
   .throttle-control {
     background: rgba(4, 29, 40, 0.9);

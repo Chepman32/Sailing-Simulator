@@ -21,8 +21,10 @@ An interactive React and Three.js tropical sailing simulator built for desktop a
 - Unified day/night lighting with depth-correct sun and moon, stars, navigation lights with glowing lenses, and a moonlit glitter path on the water
 - Layered Web Audio for engine, waves, wind, hull water, and splashes
 - Chase, helm, orbit, and drone cameras with swipe, pinch, wheel, and double-tap gestures
-- Responsive semantic controls and automatic system-language selection across 30 languages
+- Semantic, keyboard-accessible controls and automatic system-language selection across 30 languages
 - Adaptive Low/Medium/High quality presets for mobile and desktop hardware, with every shader compiled during loading so play never hitches
+- Lean frames for phones: fixed parts are merged by material, multi-part animals are drawn as one mesh with one skeleton, reef-fish schools are culled and simplified with distance — about 80 draw calls on High and 40 on Low
+- Responsive layout from a 320 px phone to a 4K desktop: a bottom dock in portrait, corner controls in landscape, settings as a sheet on phones and two columns on wide screens, safe-area aware, and never over the yacht
 
 ## Run locally
 
@@ -43,7 +45,7 @@ The simulator is implemented as TypeScript modules under `src/simulator`. The Re
 - Keyboard: `W`/`S` throttle, `A`/`D` rudder, `Space` center rudder, `R` reset.
 - Camera: swipe or drag to look, pinch or wheel to zoom, double-tap to recenter.
 - Reset scene: visible beside Photo mode without opening Settings, and enabled once the scene is ready. Returns the yacht to its starting position, clears its motion and wake, neutralizes rudder/throttle, and recenters the camera. Lighting, sound, quality, and engine state remain as selected.
-- Photo mode: hides every interface overlay while the simulation and camera gestures continue. Press `Escape` or double-click/double-tap the scene to restore the interface without recentering the shot. `Tab` also restores the controls for keyboard navigation. Renderer errors automatically leave photo mode so recovery remains accessible.
+- Photo mode: hides every interface overlay while the simulation and camera gestures continue; a short hint says how to leave it. Press `Escape` or double-click/double-tap the scene to restore the interface without recentering the shot. `Tab` also restores the controls for keyboard navigation. Renderer errors automatically leave photo mode so recovery remains accessible.
 - Settings: day/night, camera mode, sail trim, quality, sound, engine mute, and language.
 
 Browsers require a trusted user gesture before Web Audio can play. If sound is enabled but the audio context is locked, use the visible **Tap for sound** button.

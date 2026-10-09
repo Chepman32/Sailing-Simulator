@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
+import { mergeSkinnedParts } from "../core/SkinnedMerge";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
 import { createAnimatedVisual, dampAngle, type AnimatedVisual } from "./WildlifeModel";
 
@@ -21,6 +22,8 @@ type Gull = {
 
 export class GullFlockController {
   private readonly gulls: Gull[] = [];
+  /** Merged bird meshes created here (see `mergeSkinnedParts`). */
+  private readonly owned: { geometry: THREE.BufferGeometry; material: THREE.Material }[] = [];
 
   constructor(
     private readonly group: THREE.Group,
@@ -36,6 +39,10 @@ export class GullFlockController {
         { targetSize: 1.4, measureAxis: "x", pitch: -Math.PI / 2, castShadow: false },
       );
       visual.model.name = `Rigged_Seagull_${index + 1}`;
+      // Fourteen flat-coloured parts become one mesh: one draw call and one
+      // bone upload per bird instead of fourteen.
+      const merged = mergeSkinnedParts(visual.model);
+      if (merged) this.owned.push({ geometry: merged.geometry, material: merged.material as THREE.Material });
       const flapClip = visual.clips.find((clip) => /^flap$/i.test(clip.name));
       const glideClip = visual.clips.find((clip) => /planer|glide/i.test(clip.name));
       let flap: THREE.AnimationAction | undefined;
@@ -112,6 +119,11 @@ export class GullFlockController {
       this.group.remove(gull.root);
     });
     this.gulls.length = 0;
+    this.owned.forEach(({ geometry, material }) => {
+      geometry.dispose();
+      material.dispose();
+    });
+    this.owned.length = 0;
   }
 
   private initialize(gull: Gull, physics: VesselPhysics, index: number): void {

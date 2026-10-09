@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
+import { batchStaticMeshes } from "../core/StaticBatching";
 import { smoothstep } from "../math";
 import type { UnderwaterLight } from "./UnderwaterLight";
 import { ISLAND_DEFINITIONS, islandEdgeNoise, terrainNoise, waterDepthAt } from "./IslandMath";
@@ -216,6 +217,30 @@ export class IslandSystem {
       });
       islandGroup.add(palm);
     }
+    // The grove never moves and its wind is computed in world space, so each
+    // island's trees merge into one mesh per material: a handful of draw
+    // calls instead of one per trunk and per crown.
+    islandGroup.updateMatrixWorld(true);
+    const parts: THREE.Mesh[] = [];
+    islandGroup.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.name !== "IrregularIslandTerrain" && object.parent !== islandGroup) {
+        parts.push(object);
+      }
+    });
+    batchStaticMeshes(
+      islandGroup,
+      parts,
+      (mesh) => `${(mesh.material as THREE.Material).uuid}|${mesh.castShadow}|${mesh.receiveShadow}`,
+      `PalmGrove_${index + 1}`,
+    );
+    // Drop the now-empty tree nodes so they are not traversed every frame.
+    [...islandGroup.children].forEach((child) => {
+      let hasMesh = false;
+      child.traverse((object) => {
+        hasMesh ||= object instanceof THREE.Mesh;
+      });
+      if (!hasMesh) child.removeFromParent();
+    });
   }
 
   /** One wind-animated material per source material, shared by every palm. */
