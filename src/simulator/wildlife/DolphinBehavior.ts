@@ -54,9 +54,9 @@ export const DOLPHIN_DORSAL_TIP = { y: 0.55, z: 0.2 } as const;
 export const DOLPHIN_FLUKE = { y: -0.12, z: -1.25 } as const;
 
 /** The yacht must be making this much way for the pod to become playful. */
-export const DOLPHIN_PLAY_VESSEL_SPEED = 2.4;
+export const DOLPHIN_PLAY_VESSEL_SPEED = 1.8;
 /** A dolphin only commits to a leap while already swimming at least this fast. */
-export const DOLPHIN_LEAP_ENTRY_SPEED = 4.2;
+export const DOLPHIN_LEAP_ENTRY_SPEED = 2.4;
 /** And only leaves the water at this speed or more. */
 export const DOLPHIN_LEAP_MIN_SPEED = 6;
 export const DOLPHIN_MAX_SPEED = 10.5;
@@ -395,19 +395,19 @@ function slotFor(
       // In the pressure wave just ahead of each bow, never under the hulls.
       along = 5.7 + (rank % 2) * 1.1 + Math.floor(rank / 2) * 1.6;
       lateral = agent.slotLateral * (0.7 + (rank % 3) * 0.55);
-      depth = 0.8 + rank * 0.12;
+      depth = 0.65 + rank * 0.08;
       speed = vessel.speed;
       break;
     case "escort":
       along = 3 - rank * 2.6 + Math.sin(agent.wander * 0.21) * 2;
       lateral = pod.side * (6.5 + rank * 1.8 + Math.sin(agent.wander * 0.13) * 1.2);
-      depth = 1.2 + agent.depthBias;
+      depth = 0.7 + agent.depthBias * 0.5;
       speed = vessel.speed;
       break;
     case "cross":
       along = 20 + rank * 2.2;
       lateral = pod.side * (16 + rank * 2);
-      depth = 1.3 + agent.depthBias;
+      depth = 0.8 + agent.depthBias * 0.5;
       speed = Math.max(vessel.speed + 1.6, 3.5);
       break;
     case "roam": {
@@ -415,7 +415,7 @@ function slotFor(
       return {
         x: pod.centreX + Math.cos(angle) * (3 + rank * 1.4),
         z: pod.centreZ + Math.sin(angle) * (3 + rank * 1.4),
-        depth: 1.4 + agent.depthBias,
+        depth: 0.85 + agent.depthBias * 0.5,
         speed: 2.2 + agent.speedBias,
       };
     }
@@ -530,18 +530,19 @@ function stepSwimming(
       // Breathing: every so often the dolphin rises until its blowhole clears.
       agent.breathClock -= dt;
       if (agent.breathClock <= 0 && agent.breathing <= 0) {
-        agent.breathing = 1.1;
-        agent.breathClock = pod.mode === "roam" ? between(random, 9, 18) : between(random, 6, 12);
+        agent.breathing = 1.6;
+        agent.breathClock = pod.mode === "roam" ? between(random, 5, 10) : between(random, 3.5, 7);
       }
       agent.breathing = Math.max(0, agent.breathing - dt);
-      let breathDepth = agent.breathing > 0 ? 0.28 : slot.depth;
+      // Breathing, the back and dorsal fin roll clear of the water.
+      let breathDepth = agent.breathing > 0 ? 0.26 : slot.depth;
       // Crossing the yacht's track, a dolphin goes under the hulls, not through them.
       if (headingForHull(agent, vessel)) breathDepth = Math.max(breathDepth, DOLPHIN_HULL_ZONE.draft + 0.6);
       depthTarget = surface - Math.min(breathDepth, Math.max(0.3, waterDepth - 0.8));
 
       if (agent.phase === "recover" && agent.elapsed > 2.2) {
         enter(agent, "cruise");
-        agent.cooldown = between(random, 10, 22) / agent.playfulness;
+        agent.cooldown = between(random, 5, 12) / agent.playfulness;
       }
       if (agent.phase === "cruise") {
         if (agent.joinIn >= 0) {
@@ -551,7 +552,7 @@ function stepSwimming(
             agent.joinPlan = null;
           }
         } else if (canCommitToLeap(agent, vessel.speed, waterDepth) && clearOfHullForLeap(agent, vessel)) {
-          const rate = (0.014 + 0.022 * smoothstep(DOLPHIN_PLAY_VESSEL_SPEED, 4.5, vessel.speed)) * agent.playfulness;
+          const rate = (0.035 + 0.05 * smoothstep(DOLPHIN_PLAY_VESSEL_SPEED, 4.5, vessel.speed)) * agent.playfulness;
           if (random() < rate * dt) {
             const plan = chooseLeapPlan(random, motion.speed);
             const partner = plan.variant !== "acrobatic" && random() < 0.45 ? nearestCruisingPartner(agent, pod) : undefined;
@@ -589,7 +590,11 @@ function stepSwimming(
       desiredSpeed = plan.speed;
       desiredPitch = plan.exitAngle;
       const rostrum = clearance(agent, DOLPHIN_ROSTRUM, world);
-      if (rostrum >= 0) {
+      // Too slow with the surface half a metre off: give up while there is
+      // still water to level off in, rather than coasting out of the sea.
+      if (rostrum >= -0.6 && motion.speed < DOLPHIN_LEAP_MIN_SPEED) {
+        abortLeap(agent, random);
+      } else if (rostrum >= 0) {
         if (motion.speed >= DOLPHIN_LEAP_MIN_SPEED && motion.pitch > 0.2) launch(agent);
         else abortLeap(agent, random);
       } else if (agent.elapsed > 2.6) {
@@ -617,6 +622,18 @@ function stepSwimming(
     stepSwimmerAtDepth(motion, desiredHeading, depthTarget, desiredSpeed, dt, limits, cruiseDepth, clamp(surfaceRate, -1.5, 1.5));
   } else {
     stepSwimmer3D(motion, desiredHeading, desiredPitch, desiredSpeed, dt, limits);
+  }
+
+  // Outside a leap the body cannot coast out of the sea: a swimmer rising
+  // faster than it planned meets the surface and slides along under it.
+  const leaping = agent.phase === "leap" || agent.phase === "airborne" || agent.phase === "reentry";
+  if (!leaping) {
+    const ceiling = world.surfaceHeight(motion.x, motion.z) - 0.04;
+    if (motion.y > ceiling) {
+      motion.y = ceiling;
+      if (motion.verticalSpeed > 0) motion.verticalSpeed = 0;
+      if (motion.pitch > 0) motion.pitch *= 0.5;
+    }
   }
 }
 

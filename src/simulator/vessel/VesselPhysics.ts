@@ -4,6 +4,7 @@ import type { OceanSample } from "../environment/OceanMath";
 import { sampleWind, type WindSample } from "../environment/WindMath";
 import type { SimulatorControls } from "../types";
 import { AIR_DENSITY, createSailState, solveSail, type SailState } from "./SailAerodynamics";
+import { resolveShoreContact } from "./ShoreContact";
 
 export type OceanSampler = {
   sample: (x: number, z: number) => OceanSample;
@@ -14,6 +15,8 @@ export type IslandPhysics = {
   avoidanceForce: (position: THREE.Vector3, velocity: THREE.Vector3, target: THREE.Vector3) => THREE.Vector3;
   constrainToWater: (position: THREE.Vector3, velocity: THREE.Vector3) => boolean;
   nearestShoreDirection: (position: THREE.Vector3, target: THREE.Vector3) => THREE.Vector3;
+  /** Metres from the rendered waterline (negative on land), outward normal in `normal`. */
+  shoreClearance: (x: number, z: number, normal: { x: number; z: number }) => number;
 };
 
 export type VesselTelemetry = {
@@ -38,8 +41,10 @@ export type VesselTelemetry = {
   sheetAngle: number;
   /** Signed propeller shaft speed as a fraction of maximum. */
   engineShaft: number;
-  /** 0 afloat … 1 keels resting on the sand. */
+  /** 0 deep water … 1 the keels nearly touching the sand (extra drag only). */
   grounding: number;
+  /** Impact speed in m/s of a hull striking the shore this step, else 0. */
+  shoreImpact: number;
 };
 
 /** Twin-hull buoyancy samples: [starboard offset, forward offset] in metres. */
@@ -185,11 +190,11 @@ export class VesselPhysics {
     sheetAngle: 0.6,
     engineShaft: 0,
     grounding: 0,
+    shoreImpact: 0,
   };
 
   private readonly windSample: WindSample = { x: 6.8, z: 4.2, speed: 8, gust: 1 };
   private readonly sail: SailState = createSailState();
-  private readonly shoreDirection = new THREE.Vector3();
   private time = 0;
   private waveRollTarget = 0;
   private wavePitchTarget = 0;
@@ -272,21 +277,12 @@ export class VesselPhysics {
     // --- Seaway and seabed ---------------------------------------------------
     const waveForward = -MASS * GRAVITY * this.waveSlopeForward * WAVE_SURGE_COUPLING;
     const waveRight = -MASS * GRAVITY * this.waveSlopeRight * WAVE_SWAY_COUPLING;
-    const groundDrag = MASS * 3.2 * grounding;
-
     const forceForward =
-      thrust + sailDrive + windageForward + hullDrag + inducedDrag + rudderDrag + waveForward -
-      groundDrag * forwardSpeed;
-    const forceRight =
-      sailSide + windageRight + keelLift + crossflow + rudderSide + waveRight - groundDrag * lateralSpeed;
+      thrust + sailDrive + windageForward + hullDrag + inducedDrag + rudderDrag + waveForward;
+    const forceRight = sailSide + windageRight + keelLift + crossflow + rudderSide + waveRight;
 
     this.velocity.addScaledVector(this.forward, (forceForward / SURGE_MASS) * delta);
     this.velocity.addScaledVector(this.right, (forceRight / SWAY_MASS) * delta);
-    if (grounding > 0) {
-      // A sloping sand bottom eases the keels back toward deeper water.
-      this.islands.nearestShoreDirection(this.position, this.shoreDirection);
-      this.velocity.addScaledVector(this.shoreDirection, 0.45 * grounding * delta);
-    }
     this.velocity.y = 0;
 
     const yawMoment =
@@ -294,14 +290,17 @@ export class VesselPhysics {
       sailSide * SAIL_CENTRE_LEAD +
       windageRight * WINDAGE_CENTRE_LEAD -
       YAW_DAMPING_QUADRATIC * this.yawRate * Math.abs(this.yawRate) -
-      YAW_DAMPING_LINEAR * (1 + Math.abs(forwardSpeed) + grounding * 12) * this.yawRate;
+      YAW_DAMPING_LINEAR * (1 + Math.abs(forwardSpeed) + grounding * 3) * this.yawRate;
     this.yawRate = clamp(this.yawRate + (yawMoment / YAW_INERTIA) * delta, -1.2, 1.2);
     this.heading += this.yawRate * delta;
     this.position.addScaledVector(this.velocity, delta);
 
+    // The hull outline meets the rendered shore: cushion, rebound and a swing
+    // of the bow away from the beach. The centre guard below is a last resort.
+    this.telemetry.shoreImpact = resolveShoreContact(this, this.islands.shoreClearance, SWAY_MASS, YAW_INERTIA, delta);
+    this.yawRate = clamp(this.yawRate, -1.2, 1.2);
     if (this.islands.constrainToWater(this.position, this.velocity)) {
       this.velocity.y = 0;
-      this.yawRate *= 0.6;
     }
 
     this.updateSeakeeping(

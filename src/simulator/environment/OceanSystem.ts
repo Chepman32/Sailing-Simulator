@@ -42,6 +42,9 @@ export class OceanSystem {
       uVesselForward: { value: new THREE.Vector2(0, 1) },
       uVesselSpeed: { value: 0 },
       uImpacts: { value: Array.from({ length: MAX_SURFACE_IMPACTS }, () => new THREE.Vector4(0, 0, 0, 0)) },
+      uReflectionMap: { value: null },
+      uReflectionMatrix: { value: new THREE.Matrix4() },
+      uReflectionStrength: { value: 0 },
     };
     const material = new THREE.ShaderMaterial({
       name: "OceanSurface",
@@ -61,6 +64,16 @@ export class OceanSystem {
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 2;
     scene.add(this.mesh);
+  }
+
+  /**
+   * Mirror image of the world above the sea (see `OceanReflection`), or null
+   * to reflect the sky alone.
+   */
+  setReflection(texture: THREE.Texture | null, matrix: THREE.Matrix4, strength: number): void {
+    this.uniforms.uReflectionMap.value = texture;
+    (this.uniforms.uReflectionMatrix.value as THREE.Matrix4).copy(matrix);
+    this.uniforms.uReflectionStrength.value = texture ? strength : 0;
   }
 
   /** Simulation time the surface is currently drawn at. */

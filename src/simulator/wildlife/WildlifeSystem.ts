@@ -74,6 +74,11 @@ export class WildlifeSystem {
     this.gulls = new GullFlockController(this.group, assets, counts.gulls);
   }
 
+  /** Everything that lives under the surface (left out of the water's mirror). */
+  get underwater(): THREE.Object3D {
+    return this.marineGroup;
+  }
+
   update(delta: number, physics: VesselPhysics, camera: THREE.Camera): void {
     const vessel = this.vessel;
     vessel.x = physics.position.x;

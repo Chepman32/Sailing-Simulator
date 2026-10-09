@@ -3,7 +3,7 @@ import type { AssetManager } from "../core/AssetManager";
 import { batchStaticMeshes } from "../core/StaticBatching";
 import { smoothstep } from "../math";
 import type { UnderwaterLight } from "./UnderwaterLight";
-import { ISLAND_DEFINITIONS, islandEdgeNoise, terrainNoise, waterDepthAt } from "./IslandMath";
+import { ISLAND_DEFINITIONS, islandEdgeNoise, shoreClearance, terrainNoise, waterDepthAt } from "./IslandMath";
 
 type IslandObstacle = {
   center: THREE.Vector2;
@@ -28,6 +28,7 @@ const PALM_MAX_RADIAL = 0.66;
 const GOLDEN_ANGLE = 2.399963229728653;
 
 export class IslandSystem {
+  private readonly shoreNormal = { x: 0, z: 1 };
   private readonly group = new THREE.Group();
   private readonly palmWind: PalmWindUniform = { value: 0 };
   private readonly palmMaterials = new Map<THREE.Material, THREE.Material>();
@@ -68,32 +69,27 @@ export class IslandSystem {
     return target;
   }
 
+  /** Metres from the rendered waterline and the outward normal (see `shoreClearance`). */
+  readonly shoreClearance = (x: number, z: number, normal: { x: number; z: number }): number =>
+    shoreClearance(x, z, normal);
+
+  /**
+   * Last-resort guard on the yacht's centre against the rendered coast; the
+   * hull outline normally rebounds well before this (see `ShoreContact`).
+   * Returns true if the centre had to be moved.
+   */
   constrainToWater(position: THREE.Vector3, velocity: THREE.Vector3): boolean {
-    let collided = false;
-    for (const island of ISLANDS) {
-      const dx = position.x - island.center.x;
-      const scaledZ = (position.z - island.center.y) / island.scaleZ;
-      const distance = Math.hypot(dx, scaledZ) || 0.001;
-      const safeRadius = island.beachRadius + 2.25;
-      if (distance >= safeRadius) continue;
-      collided = true;
-      const nx = dx / distance;
-      const nz = scaledZ / distance;
-      position.x = island.center.x + nx * safeRadius;
-      position.z = island.center.y + nz * safeRadius * island.scaleZ;
-      // A keel running onto sand stops; it does not bounce. Remove the
-      // shoreward velocity and let friction bleed off the rest.
-      const normalLength = Math.hypot(nx, nz / island.scaleZ) || 1;
-      const normalX = nx / normalLength;
-      const normalZ = nz / island.scaleZ / normalLength;
-      const inwardVelocity = velocity.x * normalX + velocity.z * normalZ;
-      if (inwardVelocity < 0) {
-        velocity.x -= normalX * inwardVelocity;
-        velocity.z -= normalZ * inwardVelocity;
-      }
-      velocity.multiplyScalar(0.94);
+    const clearance = shoreClearance(position.x, position.z, this.shoreNormal);
+    const minimum = 2.2;
+    if (clearance >= minimum) return false;
+    position.x += this.shoreNormal.x * (minimum - clearance);
+    position.z += this.shoreNormal.z * (minimum - clearance);
+    const inward = velocity.x * this.shoreNormal.x + velocity.z * this.shoreNormal.z;
+    if (inward < 0) {
+      velocity.x -= this.shoreNormal.x * inward * 1.5;
+      velocity.z -= this.shoreNormal.z * inward * 1.5;
     }
-    return collided;
+    return true;
   }
 
   nearestShoreDirection(position: THREE.Vector3, target: THREE.Vector3): THREE.Vector3 {

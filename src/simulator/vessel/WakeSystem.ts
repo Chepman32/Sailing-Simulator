@@ -767,6 +767,11 @@ export class WakeSystem {
    * @param kind how the body met the surface
    * @param velocity the body's velocity at contact; spray follows it
    */
+  /** Root of every wake and splash visual (left out of the water's mirror). */
+  get object(): THREE.Object3D {
+    return this.group;
+  }
+
   splash(position: THREE.Vector3, intensity = 1, kind: SplashKind = "entry", velocity?: THREE.Vector3): void {
     const profile = calculateSplashProfile(intensity, kind);
     const surface = this.ocean.sample(position.x, position.z).height;

@@ -91,3 +91,25 @@ export function terrainNoise(x: number, z: number): number {
   const d = latticeHash(cellX + 1, cellZ + 1);
   return a + (b - a) * smoothX + (c - a) * smoothZ + (a - b - c + d) * smoothX * smoothZ;
 }
+
+/**
+ * Metric distance from the rendered waterline (negative on the beach) and the
+ * outward shore normal in `normal`. The raw waterline function is measured in
+ * the island's stretched frame, so it is divided by its gradient length to
+ * give metres in every direction.
+ */
+export function shoreClearance(x: number, z: number, normal: { x: number; z: number }): number {
+  const step = 0.5;
+  const value = distanceFromWaterline(x, z);
+  const gx = (distanceFromWaterline(x + step, z) - distanceFromWaterline(x - step, z)) / (2 * step);
+  const gz = (distanceFromWaterline(x, z + step) - distanceFromWaterline(x, z - step)) / (2 * step);
+  const length = Math.hypot(gx, gz);
+  if (!(length > 1e-6)) {
+    normal.x = 0;
+    normal.z = 1;
+    return value;
+  }
+  normal.x = gx / length;
+  normal.z = gz / length;
+  return value / length;
+}

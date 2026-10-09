@@ -86,8 +86,8 @@ export const WHALE_LOBTAIL_DEPTH = 3.35;
 export const WHALE_SHALLOWEST_DEPTH = 1.6;
 
 /** No whale event happens closer than this to the yacht, or farther. */
-export const WHALE_EVENT_MIN_DISTANCE = 32;
-export const WHALE_EVENT_MAX_DISTANCE = 115;
+export const WHALE_EVENT_MIN_DISTANCE = 26;
+export const WHALE_EVENT_MAX_DISTANCE = 80;
 /** A whale this far from the yacht while hidden at depth is moved ahead of it. */
 export const WHALE_RELOCATE_DISTANCE = 280;
 export const WHALE_HIDDEN_DEPTH = 7.5;
@@ -108,7 +108,7 @@ export const WHALE_LIMITS: Swimmer3DLimits = {
 };
 
 /** Minimum time between two lobtailing displays, seconds. */
-export const WHALE_SLAP_COOLDOWN = 95;
+export const WHALE_SLAP_COOLDOWN = 50;
 
 type TailJoint = { angle: number; rate: number };
 
@@ -191,7 +191,7 @@ export function createWhaleAgent(x: number, z: number, heading: number, random: 
     phase: "deep_swim",
     elapsed: 0,
     // The first encounter comes soon after the scene opens.
-    duration: between(random, 14, 26),
+    duration: between(random, 6, 10),
     sinceSlap: Number.POSITIVE_INFINITY,
     encounters: 0,
     surfacingsWithoutSlap: 0,
@@ -260,12 +260,12 @@ export function stepWhale(
       // left well astern, hidden at depth, it is moved ahead to meet her.
       const astern =
         (motion.x - vessel.x) * Math.sin(vessel.heading) + (motion.z - vessel.z) * Math.cos(vessel.heading) < -60;
-      const leftBehind = vessel.speed > 2 && astern && vesselDistance > 110;
+      const leftBehind = vessel.speed > 2 && astern && vesselDistance > 70;
       if ((vesselDistance > WHALE_RELOCATE_DISTANCE || leftBehind) && depth > WHALE_HIDDEN_DEPTH) {
         relocateAhead(agent, vessel, world, random);
       }
       if (agent.phase === "cooldown" && agent.elapsed >= agent.duration) {
-        enter(agent, "deep_swim", between(random, 15, 35));
+        enter(agent, "deep_swim", between(random, 8, 16));
       } else if (
         agent.phase === "deep_swim" &&
         agent.elapsed >= agent.duration &&
@@ -298,7 +298,7 @@ export function stepWhale(
           agent.breathClock = between(random, 4.5, 7);
         }
       }
-      const tooClose = vesselDistance < WHALE_EVENT_MIN_DISTANCE - 6;
+      const tooClose = vesselDistance < WHALE_EVENT_MIN_DISTANCE - 10;
       const done = agent.breaths >= agent.plannedBreaths && agent.surfaceDepth > WHALE_SURFACE_BREATH_DEPTH + 0.1;
       if (tooClose || (done && agent.breathClock < 2)) {
         // The first encounter almost always shows the display; later ones
@@ -307,7 +307,7 @@ export function stepWhale(
         const slapAllowed =
           !tooClose &&
           agent.sinceSlap >= WHALE_SLAP_COOLDOWN &&
-          vesselDistance <= WHALE_EVENT_MAX_DISTANCE &&
+          vesselDistance <= WHALE_EVENT_MAX_DISTANCE + 50 &&
           world.seabedDepth(motion.x, motion.z) > 10;
         if (slapAllowed && random() < slapChance) {
           beginLobtail(agent, random);
@@ -325,7 +325,7 @@ export function stepWhale(
       if (agent.elapsed >= agent.duration) {
         agent.encounters += 1;
         agent.surfacingsWithoutSlap = agent.sinceSlap < agent.elapsed + 30 ? 0 : agent.surfacingsWithoutSlap + 1;
-        enter(agent, "cooldown", between(random, 40, 70));
+        enter(agent, "cooldown", between(random, 18, 30));
       }
       break;
   }
@@ -342,7 +342,7 @@ export function stepWhale(
     // Ahead by about the time an ascent and a breath take, so a moving
     // yacht arrives abeam as the whale comes up.
     const lead = clamp(vessel.speed * 26, 0, 140);
-    const offset = agent.phase === "cooldown" ? 95 : 62;
+    const offset = agent.phase === "cooldown" ? 70 : 42;
     agent.rendezvousX = vessel.x + forwardX * lead + forwardZ * agent.side * offset;
     agent.rendezvousZ = vessel.z + forwardZ * lead - forwardX * agent.side * offset;
     const toRendezvous = Math.atan2(agent.rendezvousX - motion.x, agent.rendezvousZ - motion.z);
@@ -459,7 +459,7 @@ function goodMomentToSurface(agent: WhaleAgent, vessel: VesselState): boolean {
     );
   }
   const closest = Math.hypot(relativeX + velocityX * timeToClosest, relativeZ + velocityZ * timeToClosest);
-  return timeToClosest > 12 && timeToClosest < 40 && closest >= WHALE_EVENT_MIN_DISTANCE + 6 && closest <= 95;
+  return timeToClosest > 8 && timeToClosest < 45 && closest >= WHALE_EVENT_MIN_DISTANCE && closest <= 100;
 }
 
 function blendHeading(from: number, to: number, weight: number): number {
@@ -667,8 +667,8 @@ function relocateAhead(agent: WhaleAgent, vessel: VesselState, world: MarineWorl
   const forwardZ = Math.cos(vessel.heading);
   const side = random() < 0.5 ? -1 : 1;
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    const ahead = between(random, 150, 200);
-    const lateral = side * between(random, 40, 90);
+    const ahead = between(random, 90, 130);
+    const lateral = side * between(random, 30, 60);
     const x = vessel.x + forwardX * ahead + forwardZ * lateral;
     const z = vessel.z + forwardZ * ahead - forwardX * lateral;
     if (world.seabedDepth(x, z) < 15) continue;

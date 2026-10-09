@@ -139,9 +139,11 @@ ${heightTerms}
 
 export const oceanVertexShader = /* glsl */ `
   uniform float uTime;
+  uniform mat4 uReflectionMatrix;
   attribute float cellSpacing;
   varying vec3 vWorldPosition;
   varying vec2 vBase;
+  varying vec4 vReflectionCoord;
 
   const float OCEAN_PI = 3.141592653589793;
 
@@ -172,6 +174,8 @@ ${displacementCalls}
     vec3 world = worldBase + offset;
     vWorldPosition = world;
     vBase = worldBase.xz;
+    // Sampled at the mean surface, so the swell does not slide the mirror image.
+    vReflectionCoord = uReflectionMatrix * vec4(world.x, 0.0, world.z, 1.0);
     gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
   }
 `;
@@ -190,8 +194,11 @@ export const oceanFragmentShader = /* glsl */ `
   uniform vec3 uVesselPosition;
   uniform vec2 uVesselForward;
   uniform float uVesselSpeed;
+  uniform sampler2D uReflectionMap;
+  uniform float uReflectionStrength;
   varying vec3 vWorldPosition;
   varying vec2 vBase;
+  varying vec4 vReflectionCoord;
 
   const float OCEAN_PI = 3.141592653589793;
   const float MAX_FOLD = ${glsl(maximumFold)};
@@ -336,6 +343,17 @@ ${detailCalls}
       vec4 clouds = skyClouds(normalize(calmReflected), 0.0);
       reflection = mix(reflection, clouds.rgb, clouds.a * 0.85);
     }
+    // The yacht, the islands and the birds, mirrored and bent by the waves:
+    // swell sways the image, ripples break its edges into streaks.
+    if (uReflectionStrength > 0.0) {
+      vec2 mirrorUv = vReflectionCoord.xy / max(vReflectionCoord.w, 1.0e-4);
+      float sway = 1.0 / (1.0 + viewDistance * 0.03);
+      mirrorUv += vec2(swellSlope.x, swellSlope.y) * 0.05 * sway + vec2(slope.x - swellSlope.x, slope.y - swellSlope.y) * 0.11 * sway;
+      vec4 mirrored = texture2D(uReflectionMap, clamp(mirrorUv, vec2(0.001), vec2(0.999)));
+      // Rough, distant water scatters the image into a soft smudge.
+      float mirrorWeight = mirrored.a * uReflectionStrength * (1.0 - smoothstep(0.18, 0.42, roughness) * 0.6);
+      reflection = mix(reflection, mirrored.rgb, clamp(mirrorWeight, 0.0, 1.0));
+    }
 
     // --- Water body -------------------------------------------------------
     float shore = shoreDistance(base);
@@ -376,7 +394,25 @@ ${detailCalls}
     float specularFresnel = 0.02 + 0.98 * pow(1.0 - max(dot(viewDirection, halfVector), 0.0), 5.0);
     float visibility = 0.25 / max(mix(nDotL * nDotV, 1.0, 0.25), 0.05);
     float specular = min(distribution * specularFresnel * visibility * nDotL, 48.0);
-    color += uLightColor * specular;
+    // A broader sheen lobe stretches the glitter path toward the viewer.
+    float sheenAlpha2 = pow(max(roughness * 2.4, 0.16), 4.0);
+    float sheenDenominator = nDotH * nDotH * (sheenAlpha2 - 1.0) + 1.0;
+    float sheen = sheenAlpha2 / (OCEAN_PI * sheenDenominator * sheenDenominator) * specularFresnel * visibility * nDotL;
+    color += uLightColor * (specular + min(sheen, 6.0) * 0.18);
+
+    // Sparkles: single capillary facets tilted just right flash brighter
+    // than white, so bloom turns them into points of light.
+    if (uDetail > 0.2) {
+      vec2 sparkleCell = base * 3.1 + vec2(uTime * 0.47, -uTime * 0.31);
+      float sparkleA = skyNoise(sparkleCell);
+      float sparkleB = skyNoise(sparkleCell * 2.3 + vec2(-uTime * 0.83, uTime * 0.59) + 17.0);
+      vec3 facet = normalize(normal + vec3(sparkleA - 0.5, 0.0, sparkleB - 0.5) * 0.36);
+      float facetAlign = max(dot(reflect(-viewDirection, facet), uLightDirection), 0.0);
+      float glint = smoothstep(0.9965, 0.9993, facetAlign) * smoothstep(0.52, 0.72, sparkleA * sparkleB * 1.9);
+      // Below a pixel the flashes would only shimmer; let the GGX lobe carry them.
+      glint *= (1.0 - smoothstep(0.12, 0.45, footprint)) * smoothstep(0.0, 0.08, nDotL);
+      color += uLightColor * glint * 9.0;
+    }
 
     // --- Hulls -------------------------------------------------------------
     vec2 vesselForward = normalize(uVesselForward);

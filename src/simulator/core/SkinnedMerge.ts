@@ -169,3 +169,51 @@ function flipWinding(indices: Uint32Array): void {
     indices[triangle + 2] = second;
   }
 }
+
+/**
+ * Smooths faceted shading: vertices that share a position average their
+ * normals with every neighbour within `creaseAngle`, so a low-poly body reads
+ * as rounded while sharp edges (a beak, a wing tip) stay crisp. Colour seams
+ * keep their split vertices; only the normals change.
+ */
+export function smoothNormalsByPosition(geometry: THREE.BufferGeometry, creaseAngle = Math.PI / 3): void {
+  const position = geometry.getAttribute("position");
+  const normal = geometry.getAttribute("normal");
+  if (!position || !normal) return;
+  const groups = new Map<string, number[]>();
+  const precision = 1e4;
+  for (let index = 0; index < position.count; index += 1) {
+    const key = `${Math.round(position.getX(index) * precision)},${Math.round(position.getY(index) * precision)},${Math.round(position.getZ(index) * precision)}`;
+    const group = groups.get(key);
+    if (group) group.push(index);
+    else groups.set(key, [index]);
+  }
+  const limit = Math.cos(creaseAngle);
+  const source = new Float32Array(normal.count * 3);
+  for (let index = 0; index < normal.count; index += 1) {
+    source[index * 3] = normal.getX(index);
+    source[index * 3 + 1] = normal.getY(index);
+    source[index * 3 + 2] = normal.getZ(index);
+  }
+  groups.forEach((members) => {
+    if (members.length < 2) return;
+    for (const index of members) {
+      let x = 0;
+      let y = 0;
+      let z = 0;
+      for (const other of members) {
+        const dot =
+          source[index * 3] * source[other * 3] +
+          source[index * 3 + 1] * source[other * 3 + 1] +
+          source[index * 3 + 2] * source[other * 3 + 2];
+        if (dot < limit) continue;
+        x += source[other * 3];
+        y += source[other * 3 + 1];
+        z += source[other * 3 + 2];
+      }
+      const length = Math.hypot(x, y, z) || 1;
+      normal.setXYZ(index, x / length, y / length, z / length);
+    }
+  });
+  normal.needsUpdate = true;
+}

@@ -8,6 +8,7 @@ import { RenderLoop } from "./core/RenderLoop";
 import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
+import { OceanReflection } from "./environment/OceanReflection";
 import { OceanSystem } from "./environment/OceanSystem";
 import { UnderwaterLight } from "./environment/UnderwaterLight";
 import { InputController } from "./input/InputController";
@@ -51,9 +52,12 @@ export class Simulator {
   private input!: InputController;
   private touch!: TouchControls;
   private post!: PostProcessing;
+  private reflection?: OceanReflection;
+  private mirrorHidden: THREE.Object3D[] = [];
   private audio!: AudioSystem;
   private readonly underwater = new UnderwaterLight();
   private loop!: RenderLoop;
+  private readonly shoreSplash = new THREE.Vector3();
   private resizeObserver?: ResizeObserver;
   private elapsed = 0;
   private frameDelta = 1 / 60;
@@ -112,6 +116,7 @@ export class Simulator {
         this.environment?.setSkyDetail(this.quality.settings.skyDetail);
         this.ocean?.setQuality(this.quality.settings);
         this.post?.setQuality(this.quality.settings);
+        this.reflection?.setScale(this.quality.settings.reflectionScale, this.renderer.domElement.width, this.renderer.domElement.height);
         this.persistState();
       });
       this.state.quality = this.quality.current;
@@ -149,6 +154,8 @@ export class Simulator {
       this.camera = new CameraController(this.canvas.clientWidth / Math.max(1, this.canvas.clientHeight), this.ocean);
       this.camera.setMode(this.state.cameraMode);
       this.post = new PostProcessing(this.renderer, this.scene, this.camera.camera, this.quality.settings);
+      this.reflection = new OceanReflection(this.quality.settings.reflectionScale);
+      this.mirrorHidden = [this.ocean.mesh, this.wake.object, this.wildlife.underwater, ...this.environment.celestial];
       this.input = new InputController(this.state.controls, () => this.reset());
       this.touch = new TouchControls(this.canvas, {
         orbit: (x, y) => this.camera.orbit(x, y),
@@ -265,6 +272,7 @@ export class Simulator {
     this.audio?.dispose();
     this.wildlife?.dispose();
     this.post?.dispose();
+    this.reflection?.dispose();
     this.wake?.dispose();
     this.vessel?.dispose();
     this.islands?.dispose();
@@ -284,6 +292,15 @@ export class Simulator {
     if (!this.state.engineRunning) this.state.controls.throttle = 0;
     this.physics.fixedUpdate(fixedDelta, this.state.controls);
     this.wake.fixedUpdate(fixedDelta, this.physics, this.state.controls, this.elapsed);
+    const impact = this.physics.telemetry.shoreImpact;
+    if (impact > 0.25) {
+      // The bows strike the shelf: spray off the bow and a dull thump.
+      this.shoreSplash.copy(this.physics.position).addScaledVector(this.physics.forward, 4.4);
+      this.shoreSplash.y = this.ocean.sample(this.shoreSplash.x, this.shoreSplash.z).height;
+      const intensity = Math.min(3, 0.6 + impact * 0.7);
+      this.wake.splash(this.shoreSplash, intensity, "slap");
+      this.audio.splash(intensity, "slap", this.camera.camera.position.distanceTo(this.shoreSplash));
+    }
   };
 
   private readonly update = (delta: number): void => {
@@ -332,15 +349,32 @@ export class Simulator {
       this.renderer.setRenderTarget(this.post.sceneTarget);
       await this.renderer.compileAsync(this.scene, this.camera.camera);
       this.renderer.setRenderTarget(previousTarget);
-      this.post.render(0, 0);
+      this.render();
     } catch (error) {
       console.warn("Shader prewarm skipped; programs will compile on first use.", error);
     }
   }
 
   private readonly render = (): void => {
+    this.renderReflection();
     this.post.render(this.frameDelta, this.elapsed);
   };
+
+  /**
+   * The mirror image needs the HDR pipeline's linear render target format;
+   * without it (low preset, or no half-float targets) the sea reflects the
+   * sky alone.
+   */
+  private renderReflection(): void {
+    const reflection = this.reflection;
+    if (!reflection) return;
+    if (this.post.enabled && this.quality.settings.reflectionScale > 0) {
+      reflection.render(this.renderer, this.scene, this.camera.camera, this.mirrorHidden);
+      this.ocean.setReflection(reflection.active ? reflection.target.texture : null, reflection.textureMatrix, 0.92);
+    } else {
+      this.ocean.setReflection(null, reflection.textureMatrix, 0);
+    }
+  }
 
   private readonly onFps = (fps: number): void => {
     this.fps = fps;
@@ -354,6 +388,7 @@ export class Simulator {
     this.renderer.setSize(width, height, false);
     this.camera?.resize(width, height);
     this.post?.setSize(width, height);
+    this.reflection?.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
   };
 
   private snapshot(): SimulationSnapshot {

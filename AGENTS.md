@@ -98,6 +98,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/EnvironmentSystem.ts` | Sky dome, image-based lighting capture, fog, exposure, sun, moon, stars, directional light |
 | `src/simulator/environment/IslandMath.ts` | Pure island definitions, bathymetry, coastline noise, terrain noise |
 | `src/simulator/environment/IslandSystem.ts` | Terrain, palms, seabed, collision, shore direction |
+| `src/simulator/environment/OceanReflection.ts` | Planar mirror of the world above the sea (oblique near plane), sampled by the ocean shader |
 | `src/simulator/environment/UnderwaterLight.ts` | Beer–Lambert absorption for everything below the surface |
 
 ### Vessel
@@ -108,6 +109,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/vessel/BoomDynamics.ts` | Pure boom swing on its sheet, gybe slam, mirrored pivot pose |
 | `src/simulator/vessel/Appendages.ts` | Procedural saildrive legs, three-bladed propellers and spade rudders |
 | `src/simulator/vessel/YachtShading.ts` | Antifouling, boot stripe, wet band, non-skid deck, sail seams and translucency |
+| `src/simulator/vessel/ShoreContact.ts` | Pure hull-outline shore cushion, impulse rebound and turn-away |
 | `src/simulator/vessel/VesselPhysics.ts` | Engines, sails, windage, hull and keel hydrodynamics, rudders, seakeeping, grounding |
 | `src/simulator/vessel/SailAerodynamics.ts` | Pure sail lift/drag polar and automatic sheeting |
 | `src/simulator/vessel/SailSystem.ts` | Sail material and wind/trim deformation |
@@ -128,7 +130,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `BodyRig.ts` | Procedural bones in the animal frame, body points, clip filtering, animation LOD intervals |
 | `ReefFishController.ts` | Instanced reef fish extracted from the school asset, vertex-shader swimming |
 | `ReefFishMath.ts` | Pure boids schooling, depth band, flight from threats, tail-beat rules |
-| `GullFlockController.ts` | Animated aerial flock behavior; each bird drawn as one merged skinned mesh |
+| `GullFlockController.ts` | Animated aerial flock; each bird one merged skinned mesh with smoothed normals; the flap clip is driven by a measured loop window and phase, with procedural shoulder/hand roll and glides |
 | `SwimmerDynamics.ts` | Shared forward-only swimmer: turn radius, bounded rates, pitch steering and overshoot-free depth holding |
 | `WildlifeModel.ts` | GLB normalization, animation selection, asset validation, heading helpers |
 
@@ -278,8 +280,8 @@ The GPU moves each vertex sideways as well as up, so `sampleOcean` first inverts
 
 - rebuilds the slope of all shared waves analytically per pixel, so normals are crisp regardless of tessellation;
 - adds the detail spectrum and two drifting capillary ripple layers, each faded against the pixel footprint, with the faded energy converted into specular roughness instead of being dropped;
-- reflects the shared analytic sky (and, on high, its clouds) with Schlick Fresnel;
-- draws the sun and moon glitter path with a GGX lobe whose width follows the unresolved wave energy;
+- reflects the shared analytic sky (and, on high, its clouds) with Schlick Fresnel, and on medium/high a planar mirror of the yacht, islands and birds (`OceanReflection`) distorted by the swell and ripples;
+- draws the sun and moon glitter path with a GGX lobe whose width follows the unresolved wave energy, a broad sheen around it, and HDR sparkles from individual facets that bloom;
 - colours the water body from the island bathymetry: deep blue offshore, turquoise over the shelf, sand showing through at the beach;
 - scatters sunlight forward through wave crests;
 - breaks whitecaps on the steepest crests inside gusts, and runs shore wash up each beach along the rendered, irregular waterline;
@@ -306,7 +308,8 @@ Forces and moments, in the order they are computed each fixed step:
 - **Keels** as lifting foils: they resist leeway in proportion to boat speed, stall if overloaded, and cost induced drag. A slow yacht therefore slides sideways more than a fast one.
 - **Rudders** with authority from water flow, including the propeller race, so a burst of throttle turns a nearly stopped yacht. They also act as fixed fins that damp yaw.
 - **Seaway**: the slope of the water plane under the hulls surges and sways the yacht, so she slows climbing a wave and accelerates down its face.
-- **Grounding**: in very shallow water the keels drag through sand, the yacht stops without bouncing, and the sloping bottom eases her back toward deep water. `IslandSystem.constrainToWater` remains the final inelastic boundary.
+- **Shoal water** adds drag through the keels but never pins the yacht.
+- **Shore contact** (`ShoreContact.resolveShoreContact`): ten points around the twin-hull outline are tested against the signed distance to the rendered waterline (`IslandMath.shoreClearance`). Within `SHORE_CUSHION` a soft push and torque start turning the bow away; on contact the deepest point takes a rigid-body impulse with restitution `SHORE_RESTITUTION`, a little friction and a turn kick toward the open tangent, so the yacht rebounds and changes course at once instead of sticking in the sand. A hard contact throws a slap splash at the bow. `IslandSystem.constrainToWater` keeps the hull centre at least 2.2 m off the coast as the final guard.
 
 Sign conventions: positive pitch lowers the bow; positive roll lowers the starboard hull; `telemetry.apparentWindAngle` is the signed angle the wind comes *from* (0 = head to wind, positive = over the starboard side); `telemetry.leewardSide` is the side the sails fill toward. The yacht heels to leeward.
 
@@ -628,7 +631,7 @@ Important implementation caveats:
 - shadows can change with quality;
 - a preset change resizes the HDR targets and their sample count;
 - wake pool and wildlife counts are currently sized at construction and do not rebuild after a preset change;
-- `reflectionSize` is reserved in settings; reflections are analytic and need no render target;
+- `reflectionScale` sizes the planar mirror (`OceanReflection`, off on low, 0.35 on medium, 0.5 on high); it re-renders the scene without the ocean, wake, underwater group and sky, with no shadow pass;
 - animation mixers are advanced at approximately 30 Hz while movement remains per-frame;
 - all shader programs are compiled during loading against the render target the scene actually uses; nothing should compile during play (check `renderer.info.programs` before and after a day/night cycle);
 - wake instance transforms are refreshed at approximately 30 Hz;
@@ -695,7 +698,7 @@ The Sites checkpoint performs its own production build and rendered smoke verifi
 - Islands: bathymetry that shoals toward a coast matching the rendered waterline.
 - Quality: presets that scale cost monotonically, with no post-processing on low.
 - Engine: start from neutral selects slow ahead, active throttle is preserved, stop returns neutral.
-- Physics: engine produces forward motion with believable inertia, no NaN, comparable outcomes at 60/120 Hz, buoyancy follows sloped samples, a correct sailing polar (no-go zone, fastest on a reach, heel to leeward, bounded leeway), realistic top speed, prop-wash steerage, correct helm sense, shaft spool-down, grounding without a bounce, and a long seaway passage that stays finite and on the rendered surface.
+- Physics: engine produces forward motion with believable inertia, no NaN, comparable outcomes at 60/120 Hz, buoyancy follows sloped samples, a correct sailing polar (no-go zone, fastest on a reach, heel to leeward, bounded leeway), realistic top speed, prop-wash steerage, correct helm sense, shaft spool-down, shoal drag without sticking, a beached yacht that rebounds and turns away, and a long seaway passage that stays finite and on the rendered surface.
 - Wake: low-speed hull wake, stationary prop wash, monotonic strength, reverse symmetry; splash kinds scaled by contact energy, a slap far larger and longer-lived than a dolphin entry.
 - Water contact: the sampler returns the displaced surface, motion fades with depth, ring waves spread and stay gentle, crossings have hysteresis.
 - Wildlife: forward-only swimmers with a real turning radius and overshoot-free depth holding; whales complete surfacing and lobtail, stay hidden most of the time, never raise the torso, never repeat displays back to back; dolphins never leap when calm or slow, leap only at speed in a continuous arc with the body along the path and re-enter head first, never enter the hull box; sharks stay mostly deep, show the fin rarely, never leave the water, never graze the keels, and beat their tails harder when accelerating; reef fish that swim forward with bounded turns, stay between reef and surface, keep off the beach, flee together and calm down.
@@ -909,7 +912,7 @@ The following are known constraints, not invitations to bypass the architecture:
 
 - audio is synthesized rather than based on recorded engine/wave stems;
 - the yacht force model is intentionally lightweight and not a full six-degree-of-freedom naval solver: sails are sheeted automatically, the two engines are not independently controllable, and heave, pitch, and roll are oscillators driven by the water plane rather than integrated hull pressures;
-- ocean reflections are analytic sky only: the yacht, islands, and wildlife are not mirrored in the water, and there is no refraction or depth-based absorption because the scene depth is not sampled;
+- ocean reflections combine the analytic sky with a planar mirror of everything above the sea at mean sea level (bent by the ripples, not by the swell's real geometry); there is no refraction or depth-based absorption because the scene depth is not sampled;
 - whitecaps are a function of the instantaneous wave field and leave no persistent foam history;
 - the ocean's own transparency is a blend rather than a refraction, and underwater absorption uses the uninverted wave height per vertex (a few centimetres of error);
 - the yacht's three cabin meshes overlap substantially (about 140k triangles together, only one of them casting shadows); removing two of them changes the cabin's detail, so it needs an asset rework;
@@ -933,6 +936,7 @@ Never knowingly ship any of these regressions:
 - wake is absent at slow ahead or prop wash is absent immediately after throttle engagement;
 - wake becomes one giant painted ribbon or a frame-rate-dependent trail;
 - yacht heave uses a different surface than the rendered ocean;
+- the yacht sticks in the sand or stops dead against a beach instead of rebounding;
 - island geometry exposes a large circular underwater edge;
 - island terrain is back-face culled from above, or palms stand in the sea;
 - a custom shader skips the tone-mapping and colour-space chunks and so differs between the HDR and direct paths;

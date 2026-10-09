@@ -45,9 +45,9 @@ export const SHARK_FIN_SHOW_DEPTH = 0.62;
 export const SHARK_UNDER_KEEL_DEPTH = 3.8;
 export const SHARK_DEEP_DEPTH = { min: 7.5, max: 10 } as const;
 /** Minimum seconds between two close passes and two fin displays. */
-export const SHARK_CLOSE_PASS_COOLDOWN = 150;
-export const SHARK_FIN_SHOW_COOLDOWN = 75;
-export const SHARK_HIDE_DISTANCE = 170;
+export const SHARK_CLOSE_PASS_COOLDOWN = 80;
+export const SHARK_FIN_SHOW_COOLDOWN = 30;
+export const SHARK_HIDE_DISTANCE = 110;
 
 export const SHARK_LIMITS: Swimmer3DLimits = {
   minSpeed: 0.9,
@@ -117,7 +117,7 @@ export function createSharkAgent(
   random: RandomSource,
 ): SharkAgent {
   const angle = random() * Math.PI * 2;
-  const radius = between(random, 45, 60);
+  const radius = between(random, 26, 38);
   const x = vessel.x + Math.sin(angle) * radius;
   const z = vessel.z + Math.cos(angle) * radius;
   return {
@@ -158,11 +158,11 @@ function enter(agent: SharkAgent, phase: SharkPhase, duration: number): void {
 function nextCalmPhase(agent: SharkAgent, vessel: VesselState, random: RandomSource, distance: number): void {
   const canPass = agent.sinceClosePass > SHARK_CLOSE_PASS_COOLDOWN && distance < 70;
   const canShowFin =
-    agent.sinceFinShow > SHARK_FIN_SHOW_COOLDOWN && distance > 18 && distance < 70 && -agent.motion.y < 6;
+    agent.sinceFinShow > SHARK_FIN_SHOW_COOLDOWN && distance > 18 && distance < 110 && -agent.motion.y < 6;
   const roll = random();
-  if (canShowFin && roll < 0.24) {
+  if (canShowFin && roll < 0.4) {
     beginFinShow(agent, vessel, random);
-  } else if (canPass && roll < 0.24 + 0.12 * agent.boldness) {
+  } else if (canPass && roll < 0.4 + 0.12 * agent.boldness) {
     beginInvestigate(agent, random);
   } else if (roll < 0.42) {
     beginPatrol(agent, vessel, random);
@@ -170,11 +170,11 @@ function nextCalmPhase(agent: SharkAgent, vessel: VesselState, random: RandomSou
     beginInvestigate(agent, random);
   } else if (roll < 0.8) {
     enter(agent, "cruise", between(random, 14, 26));
-    agent.depth = between(random, 2.6, 5.5);
+    agent.depth = between(random, 1.7, 2.8);
   } else if (roll < 0.86 && distance < 60) {
     enter(agent, "accelerate", between(random, 1.8, 2.8));
   } else {
-    enter(agent, "deep_swim", between(random, 18, 32));
+    enter(agent, "deep_swim", between(random, 8, 14));
     agent.depth = between(random, SHARK_DEEP_DEPTH.min, SHARK_DEEP_DEPTH.max);
   }
 }
@@ -186,13 +186,13 @@ function beginPatrol(agent: SharkAgent, vessel: VesselState, random: RandomSourc
   agent.centreZ = vessel.z + Math.cos(angle) * offset;
   agent.radius = between(random, 18, 32);
   agent.direction = random() < 0.5 ? -1 : 1;
-  agent.depth = between(random, 3, 5.5);
+  agent.depth = between(random, 1.8, 2.9);
   enter(agent, "patrol", between(random, 22, 40));
 }
 
 function beginInvestigate(agent: SharkAgent, random: RandomSource): void {
   agent.direction = random() < 0.5 ? -1 : 1;
-  agent.depth = between(random, 2.4, 3.4);
+  agent.depth = between(random, 1.5, 2.2);
   enter(agent, "investigate", between(random, 12, 20));
 }
 
@@ -250,8 +250,9 @@ export function stepShark(
   const distance = Math.hypot(toVesselX, toVesselZ);
   const depthNow = -motion.y;
 
-  // A shark left far behind is quietly moved ahead while out of sight in the deep.
-  if (distance > SHARK_HIDE_DISTANCE && depthNow > 6.5) {
+  // A shark that has wandered off is quietly brought back while out of sight:
+  // past this distance a body more than a metre down cannot be seen.
+  if (distance > SHARK_HIDE_DISTANCE && depthNow > 1 && agent.phase !== "fin_show") {
     relocate(agent, vessel, world, random);
   }
 
@@ -286,18 +287,18 @@ export function stepShark(
     case "retreat":
       if (agent.elapsed >= agent.duration) {
         if (random() < 0.6) {
-          enter(agent, "deep_swim", between(random, 18, 32));
+          enter(agent, "deep_swim", between(random, 8, 14));
           agent.depth = between(random, SHARK_DEEP_DEPTH.min, SHARK_DEEP_DEPTH.max);
         } else {
           enter(agent, "cruise", between(random, 14, 24));
-          agent.depth = between(random, 3, 5.5);
+          agent.depth = between(random, 1.7, 2.8);
         }
       }
       break;
     case "fin_show":
       if (agent.elapsed >= agent.duration) {
         enter(agent, "cruise", between(random, 12, 22));
-        agent.depth = between(random, 3.5, 6);
+        agent.depth = between(random, 2, 3.2);
       }
       break;
   }
@@ -311,7 +312,7 @@ export function stepShark(
       const meander = Math.sin(agent.wander * 0.07) * 0.5 + Math.sin(agent.wander * 0.031 + 2) * 0.4;
       desiredHeading = motion.heading + meander * 0.25;
       // Stay in the yacht's general area without following her.
-      if (distance > 85) desiredHeading = blend(desiredHeading, Math.atan2(toVesselX, toVesselZ), smoothstep(85, 130, distance));
+      if (distance > 55) desiredHeading = blend(desiredHeading, Math.atan2(toVesselX, toVesselZ), smoothstep(55, 95, distance));
       desiredSpeed = 1.45;
       break;
     }
@@ -428,21 +429,21 @@ function relocate(agent: SharkAgent, vessel: VesselState, world: MarineWorld, ra
   const forwardX = Math.sin(vessel.heading);
   const forwardZ = Math.cos(vessel.heading);
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    const ahead = between(random, 70, 110);
-    const lateral = between(random, -50, 50);
+    const ahead = between(random, 40, 65);
+    const lateral = between(random, -45, 45);
     const x = vessel.x + forwardX * ahead + forwardZ * lateral;
     const z = vessel.z + forwardZ * ahead - forwardX * lateral;
     if (world.seabedDepth(x, z) < 12) continue;
     agent.motion.x = x;
     agent.motion.z = z;
-    agent.motion.y = -between(random, SHARK_DEEP_DEPTH.min, SHARK_DEEP_DEPTH.max);
-    agent.motion.heading = vessel.heading + Math.PI + between(random, -0.8, 0.8);
+    agent.motion.y = -between(random, 6, 7.5);
+    // Coming back up toward the yacht from the deep, out of sight.
+    agent.motion.heading = Math.atan2(vessel.x - x, vessel.z - z) + between(random, -0.6, 0.6);
     agent.motion.yawRate = 0;
     agent.motion.pitch = 0;
     agent.motion.pitchRate = 0;
     agent.hiddenMoves += 1;
-    enter(agent, "deep_swim", between(random, 12, 22));
-    agent.depth = -agent.motion.y;
+    beginPatrol(agent, vessel, random);
     return;
   }
 }

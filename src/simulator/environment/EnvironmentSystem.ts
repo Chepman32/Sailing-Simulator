@@ -268,6 +268,11 @@ export class EnvironmentSystem {
   }
 
   /** Direction toward the dominant light (sun by day, moon by night). */
+  /** Sky dome and celestial bodies; the ocean reflects these analytically. */
+  get celestial(): THREE.Object3D[] {
+    return [this.sky, this.stars, this.sunCore, this.sunHalo, this.moon, this.moonHalo];
+  }
+
   get lightDirection(): THREE.Vector3 {
     return this.celestialLightDirection;
   }
@@ -291,7 +296,10 @@ export class EnvironmentSystem {
     const night = this.state.nightFactor;
     const palette = this.palette;
 
-    this.sunDirection.set(0.64, Math.sin(this.state.sunElevation), -0.58).normalize();
+    // The sun stands ahead of the opening view and down the wind, so the
+    // glitter path lies in front of a yacht reaching or running.
+    const sunHorizontal = Math.cos(this.state.sunElevation);
+    this.sunDirection.set(0.62 * sunHorizontal, Math.sin(this.state.sunElevation), 0.785 * sunHorizontal).normalize();
     const moonHorizontal = Math.cos(this.state.moonElevation);
     const moonAzimuth = THREE.MathUtils.degToRad(12);
     this.moonDirection

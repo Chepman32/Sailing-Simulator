@@ -5,7 +5,8 @@ export type QualitySettings = {
   maxDpr: number;
   oceanSegments: number;
   shadowMapSize: number;
-  reflectionSize: number;
+  /** Resolution of the planar water reflection relative to the screen; 0 = sky only. */
+  reflectionScale: number;
   foamDensity: number;
   wildlifeCount: number;
   /** Dolphins in the pod; pairs can leap together from two upward. */
@@ -28,7 +29,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     maxDpr: 1,
     oceanSegments: 96,
     shadowMapSize: 512,
-    reflectionSize: 256,
+    reflectionScale: 0,
     foamDensity: 0.45,
     wildlifeCount: 1,
     dolphinCount: 2,
@@ -43,7 +44,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     maxDpr: 1.25,
     oceanSegments: 144,
     shadowMapSize: 1024,
-    reflectionSize: 384,
+    reflectionScale: 0.35,
     foamDensity: 0.7,
     wildlifeCount: 2,
     dolphinCount: 3,
@@ -58,7 +59,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     maxDpr: 1.75,
     oceanSegments: 224,
     shadowMapSize: 2048,
-    reflectionSize: 512,
+    reflectionScale: 0.5,
     foamDensity: 0.9,
     wildlifeCount: 2,
     dolphinCount: 4,
