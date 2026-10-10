@@ -1,205 +1,274 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
+import { injectAfter, patchMaterialShader } from "../core/ShaderPatch";
 import type { OceanSystem } from "../environment/OceanSystem";
-import { damp } from "../math";
-import type { VesselPhysics } from "../vessel/VesselPhysics";
+import { animationInterval, BodyPoint, findBone, ProceduralBone } from "./BodyRig";
 import {
-  forwardBiasedHeading,
-  stepSwimmerKinematics,
-  stepVerticalMotion,
-  swimmerBank,
-  swimmerPitch,
-  type SwimmerKinematics,
-  type SwimmerLimits,
-} from "./SwimmerDynamics";
-import {
-  createAnimatedVisual,
-  headingTo,
-  setRandomAnimationTime,
-  type AnimatedVisual,
-} from "./WildlifeModel";
+  createSharkAgent,
+  SHARK_CAUDAL_TIP,
+  SHARK_DORSAL_TIP,
+  stepShark,
+  type SharkAgent,
+} from "./SharkBehavior";
+import { SurfacePoint, type MarineWorld, type VesselState, type WaterEffects } from "./WaterContact";
+import { createAnimatedVisual, type AnimatedVisual } from "./WildlifeModel";
 
-const SHARK_LIMITS: SwimmerLimits = {
-  minSpeed: 1.8,
-  maxSpeed: 3.65,
-  acceleration: 0.42,
-  deceleration: 0.58,
-  maxTurnRate: 0.24,
-  maxYawAcceleration: 0.16,
-  turnResponse: 0.62,
+/**
+ * Renders the shark described by {@link SharkBehavior}.
+ *
+ * The authored swim clip already beats the tail from side to side with the
+ * body following, so it is kept, but driven by the behaviour: its phase is
+ * the shark's own tail-beat phase (faster with speed and effort) and its
+ * weight is how hard the shark is working, so a gliding shark barely moves
+ * its tail and a bursting one thrashes. On top, the spine curves into turns
+ * and the head leads them.
+ */
+
+/** Spine from the head back, with each segment's centre along the body (m). */
+const SPINE = [
+  { name: "Spine1.13", centre: 1.03 },
+  { name: "Spine2.14", centre: 0.25 },
+  { name: "Spine3.15", centre: -0.44 },
+  { name: "Spine4.16", centre: -1 },
+  { name: "Spine5.17", centre: -1.56 },
+  { name: "Spine6.18", centre: -2 },
+] as const;
+const HEAD = { name: "Head.5", centre: 2.1 } as const;
+
+/** Scene-linear albedo of a grey reef shark's back and belly. */
+const SHARK_BACK = new THREE.Color().setRGB(0.085, 0.1, 0.11, THREE.LinearSRGBColorSpace);
+const SHARK_BELLY_COLOUR = new THREE.Color().setRGB(0.6, 0.62, 0.62, THREE.LinearSRGBColorSpace);
+
+/**
+ * Dark above, pale below, with a soft line along the flank, from the
+ * rest-pose normal so the boundary stays on the body as it bends.
+ */
+function applyCountershading(material: THREE.MeshStandardMaterial, back: THREE.Color, belly: THREE.Color): void {
+  patchMaterialShader(material, "countershading-v1", (shader) => {
+    shader.uniforms.uBackColour = { value: back };
+    shader.uniforms.uBellyColour = { value: belly };
+    shader.vertexShader = injectAfter(shader.vertexShader, "common", "varying float vCountershade;");
+    shader.vertexShader = injectAfter(shader.vertexShader, "beginnormal_vertex", "vCountershade = normalize(objectNormal).y;");
+    shader.fragmentShader = injectAfter(
+      shader.fragmentShader,
+      "common",
+      `uniform vec3 uBackColour;
+      uniform vec3 uBellyColour;
+      varying float vCountershade;`,
+    );
+    shader.fragmentShader = injectAfter(
+      shader.fragmentShader,
+      "color_fragment",
+      "diffuseColor.rgb *= mix(uBellyColour, uBackColour, smoothstep(-0.35, 0.25, vCountershade));",
+    );
+  });
+}
+
+type TrackedPoint = {
+  point: BodyPoint;
+  tracker: SurfacePoint;
+  position: THREE.Vector3;
+  trailDistance: number;
 };
 
 type Shark = {
+  agent?: SharkAgent;
   root: THREE.Group;
   visual: AnimatedVisual;
-  position: THREE.Vector3;
-  target: THREE.Vector3;
-  motion: SwimmerKinematics;
-  age: number;
-  waypointAge: number;
-  waypointDuration: number;
-  initialized: boolean;
-  depthPhase: number;
+  swim?: THREE.AnimationAction;
+  spine: ProceduralBone[];
+  head?: ProceduralBone;
+  dorsal?: TrackedPoint;
+  caudal?: TrackedPoint;
+  animationClock: number;
 };
 
 export class SharkController {
   private readonly shark?: Shark;
-  private readonly steering = new THREE.Vector3();
-  private readonly avoidance = new THREE.Vector3();
-  private readonly holdingPoint = new THREE.Vector3();
+  private readonly cameraPosition = new THREE.Vector3();
+  private readonly surfacePoint = new THREE.Vector3();
+  private readonly materials: THREE.Material[] = [];
 
   constructor(
     private readonly group: THREE.Group,
     private readonly ocean: OceanSystem,
+    private readonly world: MarineWorld,
     assets: AssetManager,
+    private readonly effects: WaterEffects,
   ) {
     const asset = assets.animated("shark");
     if (!asset) return;
-    const visual = createAnimatedVisual(
-      asset,
-      { targetSize: 5.6, measureAxis: "z", castShadow: false },
-      [/^swimming$/i, /swim/i],
-    );
-    setRandomAnimationTime(visual, 0.95);
+    const visual = createAnimatedVisual(asset, { targetSize: 5.6, measureAxis: "z", castShadow: false }, [
+      /^swimming$/iu,
+      /swim/iu,
+    ]);
     visual.model.name = "Rigged_Shark";
+    // The source ships without a base colour, which renders white and turns
+    // into a pale ghost under water. Sharks are countershaded: a dark back
+    // that makes them a shadow from above, a pale belly from below.
+    visual.model.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const sources = Array.isArray(object.material) ? object.material : [object.material];
+      const shaded = sources.map((source) => {
+        const material = source.clone();
+        if (material instanceof THREE.MeshStandardMaterial) {
+          material.color.setRGB(1, 1, 1);
+          material.roughness = 0.52;
+          material.metalness = 0;
+          applyCountershading(material, SHARK_BACK, SHARK_BELLY_COLOUR);
+        }
+        this.materials.push(material);
+        return material;
+      });
+      object.material = Array.isArray(object.material) ? shaded : shaded[0]!;
+    });
+    const swim = visual.actions[0];
+    if (swim) {
+      // The behaviour sets the clip's phase directly every update.
+      swim.timeScale = 0;
+      swim.time = 0;
+    }
     const root = new THREE.Group();
-    root.name = "Inertial_Shark_Cruise_Root";
+    root.name = "Shark_Behaviour_Root";
     root.rotation.order = "YXZ";
     root.add(visual.model);
     group.add(root);
+    visual.mixer?.update(0);
+    root.updateMatrixWorld(true);
+
+    const spine = SPINE.flatMap(({ name }) => {
+      const bone = findBone(visual.model, name);
+      return bone ? [new ProceduralBone(bone, root)] : [];
+    });
+    const headBone = findBone(visual.model, HEAD.name);
+    const track = (boneName: string, y: number, z: number): TrackedPoint | undefined => {
+      const bone = findBone(visual.model, boneName);
+      return bone
+        ? {
+            point: new BodyPoint(bone, root, new THREE.Vector3(0, y, z)),
+            tracker: new SurfacePoint(),
+            position: new THREE.Vector3(),
+            trailDistance: 0,
+          }
+        : undefined;
+    };
     this.shark = {
       root,
       visual,
-      position: root.position,
-      target: new THREE.Vector3(),
-      motion: {
-        heading: 0,
-        yawRate: 0,
-        speed: 2.45,
-        velocityX: 0,
-        velocityZ: 2.45,
-        verticalSpeed: 0,
-      },
-      age: 0,
-      waypointAge: 0,
-      waypointDuration: 15,
-      initialized: false,
-      depthPhase: Math.random() * Math.PI * 2,
+      swim,
+      spine: spine.length === SPINE.length ? spine : [],
+      head: headBone ? new ProceduralBone(headBone, root) : undefined,
+      dorsal: track("DorsalFin3.28", SHARK_DORSAL_TIP.y, SHARK_DORSAL_TIP.z),
+      caudal: track("BackFinT3.22", SHARK_CAUDAL_TIP.y, SHARK_CAUDAL_TIP.z),
+      animationClock: 0,
     };
   }
 
-  update(delta: number, physics: VesselPhysics, animationDelta = delta): void {
+  /** World position of the shark, for prey that must avoid it. */
+  collectPositions(target: THREE.Vector3[]): void {
+    if (this.shark) target.push(this.shark.root.position);
+  }
+
+  obstacle(): { position: THREE.Vector3; radius: number } | undefined {
+    return this.shark ? { position: this.shark.root.position, radius: 3.5 } : undefined;
+  }
+
+  get state(): SharkAgent | undefined {
+    return this.shark?.agent;
+  }
+
+  update(
+    delta: number,
+    vessel: VesselState,
+    avoid: readonly { x: number; z: number; radius: number }[],
+    camera: THREE.Camera,
+  ): void {
     const shark = this.shark;
-    if (!shark) return;
-    shark.age += delta;
-    shark.waypointAge += delta;
-    if (animationDelta > 0) shark.visual.mixer?.update(animationDelta * (0.76 + shark.motion.speed * 0.12));
+    if (!shark || delta <= 0) return;
+    shark.agent ??= createSharkAgent(vessel, Math.random);
+    const agent = shark.agent;
+    stepShark(agent, this.world, vessel, avoid, delta, Math.random);
+    const motion = agent.motion;
+    const root = shark.root;
+    root.position.set(motion.x, motion.y + agent.heave, motion.z);
+    const bank = THREE.MathUtils.clamp(-motion.yawRate * motion.speed * 0.35, -0.16, 0.16);
+    root.rotation.set(-motion.pitch, motion.heading, bank, "YXZ");
 
-    if (!shark.initialized) this.initialize(shark, physics);
-    if (shark.position.distanceToSquared(physics.position) > 160 * 160) {
-      shark.initialized = false;
-      this.initialize(shark, physics);
+    camera.getWorldPosition(this.cameraPosition);
+    const cameraDistance = this.cameraPosition.distanceTo(root.position);
+    const depth = this.ocean.sample(motion.x, motion.z).height - root.position.y;
+    // Deep or far, the water has swallowed it completely.
+    const visible = cameraDistance < 300 && !(depth > 11 && cameraDistance > 40);
+    shark.visual.model.visible = visible;
+    if (!visible) {
+      root.updateMatrixWorld(true);
+      return;
     }
-    if (shark.position.distanceToSquared(shark.target) < 7 * 7 || shark.waypointAge >= shark.waypointDuration) {
-      this.chooseWaypoint(shark, physics);
+
+    shark.spine.forEach((bone) => bone.restore());
+    shark.head?.restore();
+    shark.animationClock += delta;
+    if (shark.swim && shark.animationClock >= animationInterval(cameraDistance)) {
+      const clip = shark.swim.getClip();
+      const cycle = agent.strokePhase / (Math.PI * 2);
+      shark.swim.time = (cycle - Math.floor(cycle)) * clip.duration;
+      shark.swim.setEffectiveWeight(agent.strokeEffort);
+      shark.visual.mixer?.update(0);
+      shark.animationClock = 0;
+      shark.spine.forEach((bone) => bone.capture());
+      shark.head?.capture();
     }
+    // The body curves into a turn and the head leads it.
+    let previous = 0;
+    shark.spine.forEach((bone, index) => {
+      const angle = agent.lateralCurvature * (SPINE[index]?.centre ?? 0);
+      bone.rotate("yaw", angle - previous);
+      previous = angle;
+    });
+    shark.head?.rotate("yaw", agent.lateralCurvature * HEAD.centre);
+    root.updateMatrixWorld(true);
 
-    const distanceToVessel = shark.position.distanceTo(physics.position);
-    const desiredHeading = this.steeredHeading(shark, headingTo(shark.position, shark.target), physics);
-    const targetSpeed = distanceToVessel < 12 ? 3.15 : 2.45;
-    stepSwimmerKinematics(shark.motion, desiredHeading, targetSpeed, delta, SHARK_LIMITS);
-    shark.position.x += shark.motion.velocityX * delta;
-    shark.position.z += shark.motion.velocityZ * delta;
-
-    const surface = this.ocean.sample(shark.position.x, shark.position.z).height;
-    const targetDepth = surface - 1.58 + Math.sin(shark.age * 0.32 + shark.depthPhase) * 0.16;
-    shark.position.y = stepVerticalMotion(
-      shark.position.y,
-      shark.motion,
-      targetDepth,
-      delta,
-      4.1,
-      4.3,
-      2.4,
-    );
-
-    shark.root.rotation.y = shark.motion.heading;
-    shark.root.rotation.x = damp(
-      shark.root.rotation.x,
-      swimmerPitch(shark.motion.verticalSpeed, shark.motion.speed, 0.11),
-      2.8,
-      delta,
-    );
-    shark.root.rotation.z = damp(
-      shark.root.rotation.z,
-      swimmerBank(shark.motion.yawRate, shark.motion.speed, 0.14),
-      2.7,
-      delta,
-    );
+    this.updateContacts(shark, agent, delta);
   }
 
   dispose(): void {
     if (!this.shark) return;
     this.shark.visual.mixer?.stopAllAction();
+    this.materials.forEach((material) => material.dispose());
     this.group.remove(this.shark.root);
   }
 
-  private initialize(shark: Shark, physics: VesselPhysics): void {
-    const angle = 0.35 + Math.random() * Math.PI * 2;
-    const radius = 36 + Math.random() * 12;
-    shark.position
-      .copy(physics.position)
-      .add(this.avoidance.set(Math.sin(angle) * radius, -1.55, Math.cos(angle) * radius));
-    shark.motion.heading = angle + Math.PI + (Math.random() - 0.5) * 0.24;
-    shark.motion.yawRate = 0;
-    shark.motion.verticalSpeed = 0;
-    shark.motion.velocityX = Math.sin(shark.motion.heading) * shark.motion.speed;
-    shark.motion.velocityZ = Math.cos(shark.motion.heading) * shark.motion.speed;
-    shark.root.rotation.set(0, shark.motion.heading, 0, "YXZ");
-    shark.initialized = true;
-    this.chooseWaypoint(shark, physics);
-  }
-
-  private chooseWaypoint(shark: Shark, physics: VesselPhysics): void {
-    const distanceToVessel = shark.position.distanceTo(physics.position);
-    const holdingRadius = 32;
-    const radialHeading = Math.atan2(
-      shark.position.x - physics.position.x,
-      shark.position.z - physics.position.z,
-    );
-    const desiredRadius = distanceToVessel < 20 ? holdingRadius + 12 : holdingRadius;
-    this.holdingPoint.set(
-      physics.position.x + Math.sin(radialHeading + 0.58) * desiredRadius,
-      0,
-      physics.position.z + Math.cos(radialHeading + 0.58) * desiredRadius,
-    );
-    const requested = headingTo(shark.position, this.holdingPoint);
-    const correctionLimit = distanceToVessel > 82 || distanceToVessel < 18 ? 0.42 : 0.28;
-    const baseCourse = forwardBiasedHeading(shark.motion.heading, requested, correctionLimit);
-    const course = baseCourse + (Math.random() - 0.5) * 0.12;
-    const travel = 34 + Math.random() * 22;
-    shark.target.set(
-      shark.position.x + Math.sin(course) * travel,
-      -1.55,
-      shark.position.z + Math.cos(course) * travel,
-    );
-    shark.waypointAge = 0;
-    shark.waypointDuration = 13 + Math.random() * 7;
-  }
-
-  private steeredHeading(shark: Shark, requestedHeading: number, physics: VesselPhysics): number {
-    this.steering.set(Math.sin(requestedHeading), 0, Math.cos(requestedHeading));
-    const distanceToVessel = shark.position.distanceTo(physics.position);
-    if (distanceToVessel < 14) {
-      this.avoidance.copy(shark.position).sub(physics.position).setY(0);
-      const length = this.avoidance.length();
-      if (length > 0.001) {
-        const weight = ((14 - distanceToVessel) / 14) * 1.65;
-        this.steering.addScaledVector(this.avoidance.multiplyScalar(1 / length), weight);
+  private updateContacts(shark: Shark, agent: SharkAgent, delta: number): void {
+    const speed = agent.motion.speed;
+    // The fin cutting the surface: a thin bow ripple and a foam line behind it.
+    if (shark.dorsal) {
+      const dorsal = shark.dorsal;
+      dorsal.point.world(dorsal.position);
+      const surface = this.ocean.sample(dorsal.position.x, dorsal.position.z).height;
+      const crossing = dorsal.tracker.update(dorsal.position.y, surface, delta);
+      this.surfacePoint.set(dorsal.position.x, surface, dorsal.position.z);
+      if (crossing) this.effects.splash(this.surfacePoint, 0.18 + speed * 0.04, "breath");
+      if (dorsal.tracker.clearance > -0.05) {
+        dorsal.trailDistance += speed * delta;
+        if (dorsal.trailDistance > 0.55) {
+          dorsal.trailDistance = 0;
+          this.effects.trail(this.surfacePoint, agent.motion.heading, 0.42 + speed * 0.08, 0.32);
+        }
       }
     }
-    if (this.steering.lengthSq() < 0.0001) return shark.motion.heading;
-    this.steering.normalize();
-    return Math.atan2(this.steering.x, this.steering.z);
+    if (shark.caudal) {
+      const caudal = shark.caudal;
+      caudal.point.world(caudal.position);
+      const surface = this.ocean.sample(caudal.position.x, caudal.position.z).height;
+      caudal.tracker.update(caudal.position.y, surface, delta);
+      if (caudal.tracker.clearance > -0.05) {
+        caudal.trailDistance += speed * delta;
+        if (caudal.trailDistance > 0.9) {
+          caudal.trailDistance = 0;
+          this.surfacePoint.set(caudal.position.x, surface, caudal.position.z);
+          this.effects.trail(this.surfacePoint, agent.motion.heading, 0.3, 0.38);
+        }
+      }
+    }
   }
 }

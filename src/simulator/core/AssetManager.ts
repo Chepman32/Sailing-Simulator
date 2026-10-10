@@ -100,10 +100,9 @@ export class AssetManager {
       }
       return undefined;
     }
-    return {
-      scene: cloneSkinned(asset.scene) as THREE.Group,
-      animations: asset.animations,
-    };
+    const scene = cloneSkinned(asset.scene) as THREE.Group;
+    shareSkeletons(scene);
+    return { scene, animations: asset.animations };
   }
 
   has(key: AssetKey): boolean {
@@ -146,4 +145,39 @@ export class AssetManager {
       ready,
     });
   }
+}
+
+/**
+ * GLTFLoader and SkeletonUtils.clone give every skinned mesh its own Skeleton,
+ * even when the meshes of one animal are bound to the very same bones. Each
+ * skeleton recomputes its bone matrices and re-uploads its bone texture every
+ * frame, so a gull modelled as fourteen meshes cost fourteen uploads. Meshes
+ * bound to the same bones with the same inverse bind matrices share one
+ * skeleton instead. Returns the number of skeletons made redundant.
+ */
+export function shareSkeletons(root: THREE.Object3D): number {
+  const kept: THREE.Skeleton[] = [];
+  let replaced = 0;
+  root.traverse((object) => {
+    if (!(object instanceof THREE.SkinnedMesh)) return;
+    const own = object.skeleton;
+    const match = kept.find((candidate) => sameBinding(candidate, own));
+    if (!match) {
+      kept.push(own);
+    } else if (match !== own) {
+      object.skeleton = match;
+      own.dispose();
+      replaced += 1;
+    }
+  });
+  return replaced;
+}
+
+function sameBinding(a: THREE.Skeleton, b: THREE.Skeleton): boolean {
+  if (a === b) return true;
+  if (a.bones.length !== b.bones.length) return false;
+  for (let index = 0; index < a.bones.length; index += 1) {
+    if (a.bones[index] !== b.bones[index] || !a.boneInverses[index].equals(b.boneInverses[index])) return false;
+  }
+  return true;
 }

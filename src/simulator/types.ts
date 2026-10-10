@@ -25,6 +25,8 @@ export type SimulationSnapshot = {
   soundEnabled: boolean;
   audioReady: boolean;
   engineRunning: boolean;
+  /** The helm is temporarily steering clear of an island. */
+  shoreGuardActive: boolean;
   engineMuted: boolean;
   fps: number;
   status: "loading" | "running" | "paused" | "error";

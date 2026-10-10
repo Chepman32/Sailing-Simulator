@@ -2,12 +2,15 @@ import * as THREE from "three";
 import { AudioSystem } from "./audio/AudioSystem";
 import { CameraController } from "./camera/CameraController";
 import { AssetManager } from "./core/AssetManager";
+import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
 import { RenderLoop } from "./core/RenderLoop";
 import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
+import { OceanReflection } from "./environment/OceanReflection";
 import { OceanSystem } from "./environment/OceanSystem";
+import { UnderwaterLight } from "./environment/UnderwaterLight";
 import { InputController } from "./input/InputController";
 import { TouchControls } from "./input/TouchControls";
 import { wrapDegrees } from "./math";
@@ -48,10 +51,18 @@ export class Simulator {
   private camera!: CameraController;
   private input!: InputController;
   private touch!: TouchControls;
+  private post!: PostProcessing;
+  private reflection?: OceanReflection;
+  private mirrorHidden: THREE.Object3D[] = [];
   private audio!: AudioSystem;
+  private readonly listenerForward = new THREE.Vector3();
+  private readonly listenerUp = new THREE.Vector3();
+  private readonly underwater = new UnderwaterLight();
   private loop!: RenderLoop;
+  private readonly shoreSplash = new THREE.Vector3();
   private resizeObserver?: ResizeObserver;
   private elapsed = 0;
+  private frameDelta = 1 / 60;
   private fps = 60;
   private status: SimulationSnapshot["status"] = "loading";
   private initialized = false;
@@ -104,7 +115,10 @@ export class Simulator {
       this.quality = new QualityManager(this.renderer, this.state.quality, (preset) => {
         this.state.quality = preset;
         this.environment?.setShadowMapSize(this.quality.settings.shadowMapSize);
+        this.environment?.setSkyDetail(this.quality.settings.skyDetail);
         this.ocean?.setQuality(this.quality.settings);
+        this.post?.setQuality(this.quality.settings);
+        this.reflection?.setScale(this.quality.settings.reflectionScale, this.renderer.domElement.width, this.renderer.domElement.height);
         this.persistState();
       });
       this.state.quality = this.quality.current;
@@ -113,22 +127,43 @@ export class Simulator {
       this.environment = new EnvironmentSystem(this.scene, this.renderer, this.ocean);
       this.environment.setMode(this.state.lightingMode);
       this.environment.setShadowMapSize(this.quality.settings.shadowMapSize);
-      this.islands = new IslandSystem(this.scene, this.assets);
+      this.environment.setSkyDetail(this.quality.settings.skyDetail);
+      this.islands = new IslandSystem(
+        this.scene,
+        this.assets,
+        this.underwater,
+        this.ocean.skyUniforms as unknown as Record<string, THREE.IUniform>,
+        Math.max(1024, this.quality.settings.shadowMapSize),
+      );
       this.physics = new VesselPhysics(this.ocean, this.islands);
-      this.vessel = new Vessel(this.scene, this.assets);
-      this.wake = new WakeSystem(this.scene, this.ocean, this.quality.settings);
+      this.vessel = new Vessel(this.scene, this.assets, this.underwater);
+      this.wake = new WakeSystem(this.scene, this.ocean, this.quality.settings, this.renderer);
       this.wildlife = new WildlifeSystem(
         this.scene,
         this.ocean,
         this.assets,
-        this.quality.settings.wildlifeCount,
-        (position, intensity) => {
-          this.wake.splash(position, intensity);
-          this.audio?.splash(intensity);
+        {
+          dolphins: this.quality.settings.dolphinCount,
+          gulls: this.quality.settings.wildlifeCount,
+          fishDensity: this.quality.settings.fishDensity,
+        },
+        this.underwater,
+        {
+          splash: (position, intensity, kind, velocity) => {
+            this.wake.splash(position, intensity, kind, velocity);
+            const distance = this.camera ? this.camera.camera.position.distanceTo(position) : 0;
+            this.audio?.splash(intensity, kind, distance, position);
+          },
+          trail: (position, heading, strength, width) => this.wake.trail(position, heading, strength, width),
+          shed: (position, velocity, count, size) => this.wake.shed(position, velocity, count, size),
+          ripple: (position, strength) => this.wake.ripple(position, strength),
         },
       );
       this.camera = new CameraController(this.canvas.clientWidth / Math.max(1, this.canvas.clientHeight), this.ocean);
       this.camera.setMode(this.state.cameraMode);
+      this.post = new PostProcessing(this.renderer, this.scene, this.camera.camera, this.quality.settings);
+      this.reflection = new OceanReflection(this.quality.settings.reflectionScale);
+      this.mirrorHidden = [this.ocean.mesh, this.wake.object, this.wildlife.underwater, ...this.environment.celestial];
       this.input = new InputController(this.state.controls, () => this.reset());
       this.touch = new TouchControls(this.canvas, {
         orbit: (x, y) => this.camera.orbit(x, y),
@@ -140,6 +175,7 @@ export class Simulator {
       this.resizeObserver = new ResizeObserver(this.resize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
       this.resize();
+      await this.prewarmShaders();
       this.loop = new RenderLoop({
         fixedUpdate: this.fixedUpdate,
         update: this.update,
@@ -243,6 +279,8 @@ export class Simulator {
     this.input?.dispose();
     this.audio?.dispose();
     this.wildlife?.dispose();
+    this.post?.dispose();
+    this.reflection?.dispose();
     this.wake?.dispose();
     this.vessel?.dispose();
     this.islands?.dispose();
@@ -257,33 +295,104 @@ export class Simulator {
 
   private readonly fixedUpdate = (fixedDelta: number): void => {
     this.elapsed += fixedDelta;
-    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading);
+    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.input.update(fixedDelta);
     if (!this.state.engineRunning) this.state.controls.throttle = 0;
-    this.physics.fixedUpdate(fixedDelta, this.state.controls);
-    this.wake.fixedUpdate(fixedDelta, this.physics, this.state.controls, this.elapsed);
+    this.physics.fixedUpdate(fixedDelta, this.state.controls, this.state.engineRunning);
+    // Wake and visuals follow what the helm actually does, guard included.
+    this.wake.fixedUpdate(fixedDelta, this.physics, this.physics.guard.output, this.elapsed);
+    const impact = this.physics.telemetry.shoreImpact;
+    if (impact > 0.25) {
+      // The bows strike the shelf: spray off the bow and a dull thump.
+      this.shoreSplash.copy(this.physics.position).addScaledVector(this.physics.forward, 4.4);
+      this.shoreSplash.y = this.ocean.sample(this.shoreSplash.x, this.shoreSplash.z).height;
+      const intensity = Math.min(3, 0.6 + impact * 0.7);
+      this.wake.splash(this.shoreSplash, intensity, "slap");
+      this.audio.splash(intensity, "slap", this.camera.camera.position.distanceTo(this.shoreSplash));
+    }
   };
 
   private readonly update = (delta: number): void => {
-    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading);
+    this.frameDelta = delta;
+    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.islands.update(this.elapsed);
-    this.vessel.update(this.physics, this.state.controls, this.elapsed, delta, this.environmentState.nightFactor);
-    this.wildlife.update(delta, this.physics);
+    this.vessel.update(this.physics, this.physics.guard.output, this.elapsed, delta, this.environmentState.nightFactor, {
+      camera: this.camera.camera,
+      lightDirection: this.environment.lightDirection,
+      palette: this.environment.current.palette,
+    });
+    const slam = this.vessel.consumeBoomSlam();
+    if (slam > 0) this.audio.boomSlam(slam);
+    this.wildlife.update(delta, this.physics, this.camera.camera);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics);
-    this.environmentState = this.environment.update(delta, this.camera.camera, this.physics.position);
+    this.environmentState = this.environment.update(
+      delta,
+      this.camera.camera,
+      this.physics.position,
+      this.elapsed,
+    );
+    this.wake.setEnvironment(this.environment.current.palette);
+    // Palm shadows on the sand follow the sun, softer under the moon.
+    this.islands.updateShadows(this.renderer, this.environment.lightDirection, 0.82 * (1 - this.environmentState.nightFactor * 0.45));
+    this.underwater.setPalette(this.environment.current.palette);
+    this.underwater.setTime(this.elapsed);
     this.audio.update(
       delta,
       Math.abs(this.physics.telemetry.forwardSpeed),
-      this.state.controls.throttle,
+      this.physics.telemetry.engineShaft,
       this.physics.telemetry.apparentWindSpeed,
+      this.environment.currentWeather.overcast,
     );
+    // Positional sound: the camera is the listener; the gulls call from where they fly.
+    const camera = this.camera.camera;
+    camera.getWorldDirection(this.listenerForward);
+    this.listenerUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+    this.audio.setListener({ position: camera.position, forward: this.listenerForward, up: this.listenerUp });
+    this.audio.updateGulls(delta, this.wildlife.gullPositions);
     this.hud.update(delta, () => this.snapshot());
   };
 
+  /**
+   * Compiles every shader program before the first visible frame, so nothing
+   * hitches the first time a lamp, a splash, the moon or a fish appears.
+   * `compileAsync` visits every material whether or not its object is
+   * currently visible; one render through the active pipeline then builds
+   * the shadow-depth and post-processing programs.
+   */
+  private async prewarmShaders(): Promise<void> {
+    try {
+      this.update(1 / 60);
+      const previousTarget = this.renderer.getRenderTarget();
+      this.renderer.setRenderTarget(this.post.sceneTarget);
+      await this.renderer.compileAsync(this.scene, this.camera.camera);
+      this.renderer.setRenderTarget(previousTarget);
+      this.render();
+    } catch (error) {
+      console.warn("Shader prewarm skipped; programs will compile on first use.", error);
+    }
+  }
+
   private readonly render = (): void => {
-    this.renderer.render(this.scene, this.camera.camera);
+    this.renderReflection();
+    this.post.render(this.frameDelta, this.elapsed);
   };
+
+  /**
+   * The mirror image needs the HDR pipeline's linear render target format;
+   * without it (low preset, or no half-float targets) the sea reflects the
+   * sky alone.
+   */
+  private renderReflection(): void {
+    const reflection = this.reflection;
+    if (!reflection) return;
+    if (this.post.enabled && this.quality.settings.reflectionScale > 0) {
+      reflection.render(this.renderer, this.scene, this.camera.camera, this.mirrorHidden);
+      this.ocean.setReflection(reflection.active ? reflection.target.texture : null, reflection.textureMatrix, 0.92);
+    } else {
+      this.ocean.setReflection(null, reflection.textureMatrix, 0);
+    }
+  }
 
   private readonly onFps = (fps: number): void => {
     this.fps = fps;
@@ -296,6 +405,8 @@ export class Simulator {
     const height = Math.max(1, parent?.clientHeight ?? window.innerHeight);
     this.renderer.setSize(width, height, false);
     this.camera?.resize(width, height);
+    this.post?.setSize(width, height);
+    this.reflection?.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
   };
 
   private snapshot(): SimulationSnapshot {
@@ -305,8 +416,8 @@ export class Simulator {
       depthMeters: telemetry?.depth ?? 18,
       headingDegrees: wrapDegrees(THREE.MathUtils.radToDeg(this.physics?.heading ?? 0)),
       heelDegrees: THREE.MathUtils.radToDeg(telemetry?.heel ?? 0),
-      apparentWindKnots: (telemetry?.apparentWindSpeed ?? 7.2) * 1.943844,
-      apparentWindAngle: THREE.MathUtils.radToDeg(telemetry?.apparentWindAngle ?? 0.6),
+      apparentWindKnots: (telemetry?.apparentWindSpeed ?? 8) * 1.943844,
+      apparentWindAngle: THREE.MathUtils.radToDeg(telemetry?.apparentWindAngle ?? 1),
       rudderDegrees: this.state.controls.rudder * 35,
       throttle: this.state.controls.throttle,
       sailTrim: this.state.controls.sailTrim,
@@ -316,6 +427,7 @@ export class Simulator {
       soundEnabled: this.state.soundEnabled,
       audioReady: this.audio?.isReady() ?? false,
       engineRunning: this.state.engineRunning,
+      shoreGuardActive: this.physics?.guard.active ?? false,
       engineMuted: this.state.engineMuted,
       fps: this.fps,
       status: this.status,

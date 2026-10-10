@@ -5,9 +5,23 @@ export type QualitySettings = {
   maxDpr: number;
   oceanSegments: number;
   shadowMapSize: number;
-  reflectionSize: number;
+  /** Resolution of the planar water reflection relative to the screen; 0 = sky only. */
+  reflectionScale: number;
   foamDensity: number;
   wildlifeCount: number;
+  /** Dolphins in the pod; pairs can leap together from two upward. */
+  dolphinCount: number;
+  /** 0–1: enables per-pixel wave detail, capillary ripples and cloud reflections. */
+  oceanDetail: number;
+  /** 0 = three-octave clouds, 1 = five-octave clouds. */
+  skyDetail: number;
+  /** Fraction of the full reef-fish school sizes. */
+  fishDensity: number;
+  /** HDR pipeline with bloom, grading and vignette. */
+  postProcessing: boolean;
+  bloomStrength: number;
+  /** Multisample count of the HDR scene target. */
+  msaaSamples: number;
 };
 
 export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
@@ -15,25 +29,46 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     maxDpr: 1,
     oceanSegments: 96,
     shadowMapSize: 512,
-    reflectionSize: 256,
+    reflectionScale: 0,
     foamDensity: 0.45,
     wildlifeCount: 1,
+    dolphinCount: 2,
+    oceanDetail: 0.3,
+    fishDensity: 0.35,
+    skyDetail: 0,
+    postProcessing: false,
+    bloomStrength: 0,
+    msaaSamples: 0,
   },
   medium: {
     maxDpr: 1.25,
     oceanSegments: 144,
     shadowMapSize: 1024,
-    reflectionSize: 384,
+    reflectionScale: 0.35,
     foamDensity: 0.7,
     wildlifeCount: 2,
+    dolphinCount: 3,
+    oceanDetail: 0.55,
+    fishDensity: 0.6,
+    skyDetail: 1,
+    postProcessing: true,
+    bloomStrength: 0.2,
+    msaaSamples: 2,
   },
   high: {
     maxDpr: 1.75,
     oceanSegments: 224,
     shadowMapSize: 2048,
-    reflectionSize: 512,
+    reflectionScale: 0.5,
     foamDensity: 0.9,
     wildlifeCount: 2,
+    dolphinCount: 4,
+    oceanDetail: 1,
+    fishDensity: 1,
+    skyDetail: 1,
+    postProcessing: true,
+    bloomStrength: 0.26,
+    msaaSamples: 4,
   },
 };
 

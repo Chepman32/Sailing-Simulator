@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
 import type { CameraMode, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
+import { SoundPrompt } from "./SoundPrompt";
 import {
   getMessages,
   isLanguageCode,
@@ -128,6 +129,7 @@ export function SailingSimulator() {
   const photoButtonRef = useRef<HTMLButtonElement>(null);
   const photoModeRef = useRef(false);
   const [photoMode, setPhotoMode] = useState(false);
+  const [photoHint, setPhotoHint] = useState(false);
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT);
   const [loading, setLoading] = useState<LoadingState>({
     loaded: 0,
@@ -146,6 +148,17 @@ export function SailingSimulator() {
   const rudderDragging = useRef(false);
   const throttleDragging = useRef(false);
   const soundReadyAtPress = useRef(false);
+  const soundDockRef = useRef<HTMLButtonElement>(null);
+  const soundDockUnlocked = useRef(false);
+  const [soundArrived, setSoundArrived] = useState(false);
+  const soundArrivedTimer = useRef<number | undefined>(undefined);
+  const onSoundPromptArrived = useCallback(() => {
+    // The dust has settled into the corner button: let it glow for a moment.
+    setSoundArrived(true);
+    if (soundArrivedTimer.current !== undefined) window.clearTimeout(soundArrivedTimer.current);
+    soundArrivedTimer.current = window.setTimeout(() => setSoundArrived(false), 900);
+  }, []);
+  useEffect(() => () => window.clearTimeout(soundArrivedTimer.current), []);
   const engineNoticeTimer = useRef<number | undefined>(undefined);
 
   const exitPhotoMode = useCallback(() => {
@@ -157,6 +170,9 @@ export function SailingSimulator() {
     if (!photoMode) return;
     const photoButton = photoButtonRef.current;
     canvasRef.current?.focus({ preventScroll: true });
+    // The interface is hidden in photo mode, so say once how to get it back.
+    setPhotoHint(true);
+    const hintTimer = window.setTimeout(() => setPhotoHint(false), 3200);
     const onKeyDown = (event: KeyboardEvent) => {
       // Tab restores the interface as well, so keyboard users cannot end up
       // navigating invisible controls or trapped on the canvas.
@@ -166,8 +182,47 @@ export function SailingSimulator() {
       }
     };
     window.addEventListener("keydown", onKeyDown);
+    // One tap or click on the picture ends photo mode. A drag still frames
+    // the shot (the camera gestures keep working), so only a short press that
+    // barely moved counts as a tap.
+    const canvas = canvasRef.current;
+    let pressX = 0;
+    let pressY = 0;
+    let pressTime = 0;
+    let pressId = -1;
+    let pointers = 0;
+    const onPointerDown = (event: PointerEvent) => {
+      pointers += 1;
+      if (pointers > 1) {
+        pressId = -1;
+        return;
+      }
+      pressId = event.pointerId;
+      pressX = event.clientX;
+      pressY = event.clientY;
+      pressTime = event.timeStamp;
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      pointers = Math.max(0, pointers - 1);
+      if (event.pointerId !== pressId) return;
+      pressId = -1;
+      const moved = Math.hypot(event.clientX - pressX, event.clientY - pressY);
+      if (moved < 10 && event.timeStamp - pressTime < 450) exitPhotoMode();
+    };
+    const onPointerCancel = () => {
+      pointers = Math.max(0, pointers - 1);
+      pressId = -1;
+    };
+    canvas?.addEventListener("pointerdown", onPointerDown);
+    canvas?.addEventListener("pointerup", onPointerUp);
+    canvas?.addEventListener("pointercancel", onPointerCancel);
     return () => {
+      window.clearTimeout(hintTimer);
+      setPhotoHint(false);
       window.removeEventListener("keydown", onKeyDown);
+      canvas?.removeEventListener("pointerdown", onPointerDown);
+      canvas?.removeEventListener("pointerup", onPointerUp);
+      canvas?.removeEventListener("pointercancel", onPointerCancel);
       photoButton?.focus({ preventScroll: true });
     };
   }, [photoMode, exitPhotoMode]);
@@ -299,6 +354,13 @@ export function SailingSimulator() {
     navigator.vibrate?.(running ? 24 : 14);
   };
 
+  const soundLocked = snapshot.soundEnabled && !snapshot.audioReady;
+  const soundLabel = snapshot.soundEnabled
+    ? snapshot.audioReady
+      ? `${messages.sound}: ${messages.on}`
+      : messages.tapSound
+    : `${messages.sound}: ${messages.off}`;
+
   const toggleSound = () => {
     const simulator = simulatorRef.current;
     if (!simulator) return;
@@ -344,7 +406,11 @@ export function SailingSimulator() {
         aria-label={photoMode ? `${messages.photoMode}. ${messages.photoModeHint}` : messages.sailingControls}
       />
 
-      <div className="simulator-interface" hidden={photoMode}>
+      {photoMode && photoHint && <p className="photo-toast" aria-hidden="true">{messages.photoModeHint}</p>}
+
+      {/* Faded rather than removed, so leaving photo mode is a smooth return;
+          inert keeps the hidden controls out of reach meanwhile. */}
+      <div className={`simulator-interface ${photoMode ? "photo-hidden" : ""}`} inert={photoMode} aria-hidden={photoMode}>
 
         {!loading.ready && !error && (
           <section className="loading-screen" aria-live="polite">
@@ -365,25 +431,68 @@ export function SailingSimulator() {
           </section>
         )}
 
-        {loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error && (
-          <button
-            type="button"
-            className="audio-unlock"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              unlockSound();
-            }}
-            onClick={unlockSound}
-          >
-            <span aria-hidden="true">♪</span>
-            <strong>{messages.tapSound}</strong>
-          </button>
-        )}
+        {/* Transient prompts share one centred column, so they never collide
+            with each other or with the controls at any screen size. */}
+        <div className="notice-stack">
+          <SoundPrompt
+            active={loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error}
+            targetRef={soundDockRef}
+            label={messages.tapSound}
+            onUnlock={unlockSound}
+            onArrived={onSoundPromptArrived}
+          />
+          {engineNotice && <div className="engine-notice" role="status">{engineNotice}</div>}
+          {snapshot.shoreGuardActive && loading.ready && !error && (
+            <div className="engine-notice shore-guard-notice" role="status">{messages.shoreGuard}</div>
+          )}
+          {showHelp && loading.ready && !error && (
+            <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
+              {messages.help}
+            </button>
+          )}
+        </div>
 
         <div className="scene-actions">
-          <button type="button" className="scene-action" disabled={!loading.ready || Boolean(error)} onClick={resetScene}>
+          {/* Permanent mute/unmute. While the browser still holds sound back it
+              pulses; one press both unlocks and plays. */}
+          <button
+            ref={soundDockRef}
+            type="button"
+            className={`scene-action sound-dock${soundLocked ? " is-locked" : ""}${soundArrived ? " is-arriving" : ""}`}
+            disabled={!loading.ready || Boolean(error)}
+            aria-label={soundLabel}
+            title={soundLabel}
+            aria-pressed={snapshot.soundEnabled && snapshot.audioReady}
+            onPointerDown={() => {
+              soundDockUnlocked.current = false;
+              if (!snapshot.soundEnabled || !snapshot.audioReady) {
+                // Unlock inside the trusted pointer gesture (iOS needs it here).
+                soundDockUnlocked.current = true;
+                unlockSound();
+              }
+            }}
+            onClick={() => {
+              if (soundDockUnlocked.current) {
+                soundDockUnlocked.current = false;
+                return;
+              }
+              const simulator = simulatorRef.current;
+              if (!simulator) return;
+              if (!snapshot.soundEnabled || !snapshot.audioReady) unlockSound();
+              else simulator.setSoundEnabled(false);
+            }}
+          >
+            <ControlIcon name={snapshot.soundEnabled && snapshot.audioReady ? "sound-on" : "sound-off"} />
+          </button>
+          <button
+            type="button"
+            className="scene-action"
+            disabled={!loading.ready || Boolean(error)}
+            title={messages.reset}
+            onClick={resetScene}
+          >
             <ControlIcon name="reset" />
-            <span>{messages.reset}</span>
+            <span className="scene-action-label">{messages.reset}</span>
           </button>
           <button
             ref={photoButtonRef}
@@ -398,7 +507,7 @@ export function SailingSimulator() {
             }}
           >
             <ControlIcon name="photo" />
-            <span>{messages.photoMode}</span>
+            <span className="scene-action-label">{messages.photoMode}</span>
           </button>
           <p id="photo-mode-hint" className="photo-mode-hint">{messages.photoModeHint}</p>
         </div>
@@ -437,9 +546,12 @@ export function SailingSimulator() {
                 <span className="full-control-title">{messages.sailingControls}</span>
                 <span className="mobile-control-title">{messages.controls}</span>
               </p>
+              {/* On phones the heading card is hidden and this line carries the
+                  heading. The sound prompt has its own button, and a live
+                  region here would announce every degree of a turn. */}
               {panelMinimized && (
-                <span className="panel-mini-status" aria-live="polite">
-                  {snapshot.soundEnabled && !snapshot.audioReady ? messages.tapSound : `${compass} ${messages.heading}`}
+                <span className="panel-mini-status">
+                  {compass}<span className="mini-status-word"> {messages.heading}</span>
                 </span>
               )}
               {!panelMinimized && (
@@ -455,7 +567,12 @@ export function SailingSimulator() {
               aria-controls="simulator-settings"
               aria-expanded={!panelMinimized}
               aria-label={panelMinimized ? messages.expand : messages.minimize}
-              onClick={() => setPanelMinimized((value) => !value)}
+              onClick={() => {
+                // Opening the settings is an interaction of its own; the
+                // first-run hint has done its job and would sit under the panel.
+                setShowHelp(false);
+                setPanelMinimized((value) => !value);
+              }}
             >{panelMinimized ? "≡" : "×"}</button>
           </header>
 
@@ -669,13 +786,6 @@ export function SailingSimulator() {
           </section>
         </div>
 
-        {engineNotice && <div className="engine-notice" role="status">{engineNotice}</div>}
-
-        {showHelp && loading.ready && !error && (
-          <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
-            {messages.help}
-          </button>
-        )}
       </div>
     </main>
   );

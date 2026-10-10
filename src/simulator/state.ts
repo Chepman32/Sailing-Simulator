@@ -61,6 +61,7 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   soundEnabled: true,
   audioReady: false,
   engineRunning: false,
+  shoreGuardActive: false,
   engineMuted: false,
   fps: 60,
   status: "loading",
