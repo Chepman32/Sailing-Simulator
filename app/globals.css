@@ -22,6 +22,11 @@ body {
   min-height: 100%;
   margin: 0;
   overflow: hidden;
+  /* No pull-to-refresh, rubber-banding, long-press menus or text-size jumps in the middle of a manoeuvre. */
+  overscroll-behavior: none;
+  -webkit-touch-callout: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   background: #061923;
 }
 
@@ -236,6 +241,7 @@ input:focus-visible {
 }
 
 .instrument span { grid-area: label; letter-spacing: 0.12em; }
+.wind-label-short { display: none; }
 
 .instrument strong {
   grid-area: value;
@@ -1241,7 +1247,6 @@ input[type="range"]:disabled {
     --notice-side: 212px;
   }
 
-  .wind-instrument { display: none; }
   .instrument { min-width: 78px; padding: 8px 10px; gap: 4px 3px; }
   .instrument strong { font-size: 20px; }
   .heading-card { min-height: 44px; }
@@ -1293,8 +1298,8 @@ input[type="range"]:disabled {
   }
 
   .instrument {
-    min-width: 70px;
-    padding: 7px 9px;
+    min-width: 62px;
+    padding: 7px 8px;
     border: 0;
     border-radius: 12px;
     background: transparent;
@@ -1303,6 +1308,13 @@ input[type="range"]:disabled {
   }
 
   .instrument + .instrument { border-inline-start: 1px solid rgba(151, 231, 238, 0.14); }
+
+  /* Portrait: speed, depth and wind share one row with the controls pill, so the wind card sheds its angle
+     and tightens its caption instead of being cut off. */
+  .wind-instrument { min-width: 0; }
+  .wind-instrument .wind-angle { display: none; }
+  .wind-label-full { display: none; }
+  .wind-label-short { display: inline; }
 
   /* Below the 62 px top bar (52 px instruments + padding and border). */
   .scene-actions,
@@ -1437,6 +1449,9 @@ input[type="range"]:disabled {
 
   .scene-actions { flex-direction: column; }
 
+  /* The bearing alone is enough in the collapsed pill; the word frees room for the wind card. */
+  .panel-mini-status .mini-status-word { display: none; }
+
   .primary-controls {
     position: absolute;
     z-index: 20;
@@ -1480,6 +1495,9 @@ input[type="range"]:disabled {
   }
 
   .wind-instrument { display: grid; min-width: 0; }
+  .wind-instrument .wind-angle { display: inline; }
+  .wind-label-full { display: inline; }
+  .wind-label-short { display: none; }
 
   .rudder-control { width: clamp(250px, 42vw, 380px); }
 
@@ -1498,6 +1516,17 @@ input[type="range"]:disabled {
    mobile GPUs); near-opaque glass keeps the text readable instead. */
 /* 320–359 px phones: a tighter top bar so the instruments and the settings
    button share one row. */
+@media (max-width: 399px) and (orientation: portrait) {
+  .instrument { min-width: 0; padding: 7px 6px; }
+  .instrument strong { font-size: 19px; }
+  .instrument small { font-size: 9px; }
+}
+
+/* On the narrowest phones the wind card would push into the controls pill; the settings panel still shows it. */
+@media (max-width: 339px) and (orientation: portrait) {
+  .wind-instrument { display: none; }
+}
+
 @media (max-width: 359px) {
   .instrument { min-width: 60px; padding: 7px 7px; }
   .instrument span { letter-spacing: 0.06em; }

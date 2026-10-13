@@ -205,6 +205,42 @@ export function SailingSimulator() {
   useEffect(() => () => window.clearTimeout(soundArrivedTimer.current), []);
   const engineNoticeTimer = useRef<number | undefined>(undefined);
 
+  // Keep the phone awake while the yacht is on screen: a screen that dims in the middle of a passage is the
+  // most common complaint of a handheld sim. The lock is released by the browser whenever the page is hidden,
+  // so it is requested again each time the page becomes visible.
+  useEffect(() => {
+    type WakeLockHandle = { release: () => Promise<void> };
+    const nav = navigator as Navigator & { wakeLock?: { request: (type: "screen") => Promise<WakeLockHandle> } };
+    if (!nav.wakeLock) return;
+    let lock: WakeLockHandle | null = null;
+    let disposed = false;
+    const acquire = async () => {
+      if (disposed || document.visibilityState !== "visible" || lock) return;
+      try {
+        const handle = await nav.wakeLock!.request("screen");
+        if (disposed) {
+          void handle.release().catch(() => undefined);
+          return;
+        }
+        lock = handle;
+        (handle as unknown as EventTarget).addEventListener?.("release", () => {
+          if (lock === handle) lock = null;
+        });
+      } catch {
+        // Denied (battery saver, permissions policy): the screen simply dims as usual.
+      }
+    };
+    const onVisibility = () => void acquire();
+    document.addEventListener("visibilitychange", onVisibility);
+    void acquire();
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      void lock?.release().catch(() => undefined);
+      lock = null;
+    };
+  }, []);
+
   const exitPhotoMode = useCallback(() => {
     photoModeRef.current = false;
     setPhotoMode(false);
@@ -390,6 +426,8 @@ export function SailingSimulator() {
     const simulator = simulatorRef.current;
     if (!simulator || !loading.ready) return;
     simulator.resumeAudioFromGesture();
+    // A short tick under the thumb confirms the switch on phones without sound; ignored where unsupported.
+    try { navigator.vibrate?.(running ? 18 : 10); } catch { /* not available */ }
     setEngineInput(running);
     if (!running) {
       throttleDragging.current = false;
@@ -540,6 +578,19 @@ export function SailingSimulator() {
           <button
             type="button"
             className="scene-action"
+            aria-label={`${messages.camera}: ${cameraLabels[snapshot.cameraMode]}`}
+            title={`${messages.camera}: ${cameraLabels[snapshot.cameraMode]}`}
+            onClick={() => {
+              const modes = Object.keys(cameraLabels) as CameraMode[];
+              setCamera(modes[(modes.indexOf(snapshot.cameraMode) + 1) % modes.length]!);
+            }}
+          >
+            <ControlIcon name={snapshot.cameraMode} />
+            <span className="scene-action-label">{cameraLabels[snapshot.cameraMode]}</span>
+          </button>
+          <button
+            type="button"
+            className="scene-action"
             disabled={!loading.ready || Boolean(error)}
             title={messages.reset}
             onClick={resetScene}
@@ -569,8 +620,8 @@ export function SailingSimulator() {
           <div className="instrument"><span>{messages.speed}</span><strong>{snapshot.speedKnots.toFixed(1)}</strong><small>kn</small></div>
           <div className="instrument"><span>{messages.depth}</span><strong>{snapshot.depthMeters.toFixed(1)}</strong><small>m</small></div>
           <div className="instrument wind-instrument">
-            <span>{messages.apparentWind}</span><strong>{snapshot.apparentWindKnots.toFixed(1)}</strong>
-            <small>kn · {Math.abs(snapshot.apparentWindAngle).toFixed(0)}°</small>
+            <span><span className="wind-label-full">{messages.apparentWind}</span><span className="wind-label-short">{messages.wind}</span></span><strong>{snapshot.apparentWindKnots.toFixed(1)}</strong>
+            <small>kn<span className="wind-angle"> · {Math.abs(snapshot.apparentWindAngle).toFixed(0)}°</span></small>
           </div>
         </section>
 
