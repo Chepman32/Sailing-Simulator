@@ -75,6 +75,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/types.ts` | Public simulator, snapshot, control, camera, lighting, and quality types |
 | `src/simulator/math.ts` | Allocation-free scalar helpers |
 | `src/simulator/core/RenderLoop.ts` | Visibility-aware requestAnimationFrame loop with 60 Hz fixed-step accumulator |
+| `src/simulator/core/FramePacer.ts` | Pure frame-rate cap (60 fps, 30 fps unfocused) so 120/144 Hz displays do not double the GPU work |
 | `src/simulator/core/AssetManager.ts` | Manifest, parallel GLB loading, required/optional behavior, cloning, progress, disposal |
 | `src/simulator/core/QualityManager.ts` | Low/medium/high settings, DPR, shadows, ocean tessellation and shader detail, post-processing switches, adaptive quality |
 | `src/simulator/core/PostProcessing.ts` | HDR scene target, bloom, lens finish, tone mapping; bypassed on the low preset |
@@ -316,7 +317,7 @@ Forces and moments, in the order they are computed each fixed step:
 - **True wind** from `WindMath.sampleWind`: about 8 m/s toward `(6.8, 0, 4.2)`, with deterministic gusts, lulls, and slow shifts. It is a closed-form function of simulation time, so integration stays reproducible at any step size.
 - **Sails** from `SailAerodynamics.solveSail`: the crew sheets the sail to the angle of attack the trim control asks for, limited by the tightest sheeting angle and by the shrouds. Lift and drag follow a real polar, so the yacht cannot sail closer than roughly 35° to the true wind, is fastest on a reach, and runs downwind as a drag device. "Sail trim" keeps its meaning: more trim, more power.
 - **Windage** on hulls and rig, which makes a stopped yacht drift and lets the bow fall off the wind.
-- **Engines**: the helm sets a shaft-speed target; the shafts spool up and down at finite rates. Thrust follows shaft speed squared and fades as the hull catches up with the propeller race. Bollard thrust is 6.8 kN ahead and 4.2 kN astern, for a top speed near 8–9 kn under power.
+- **Engines**: the helm sets a shaft-speed target; the shafts spool up and down at finite rates. Thrust follows shaft speed squared and fades as the hull catches up with the propeller race. Bollard thrust is 15.6 kN ahead and 9.7 kN astern, for a top speed near 13 kn under power.
 - **Hull resistance**, quadratic plus a small linear term, rising in shoal water.
 - **Keels** as lifting foils: they resist leeway in proportion to boat speed, stall if overloaded, and cost induced drag. A slow yacht therefore slides sideways more than a fast one.
 - **Rudders** with authority from water flow, including the propeller race, so a burst of throttle turns a nearly stopped yacht. They also act as fixed fins that damp yaw.
@@ -350,6 +351,7 @@ Rules for yacht work:
 - deform sails smoothly from wind and trim; do not simply snap a flat triangle between sides;
 - use the physics root for position, heading, pitch, and roll, with visual-only damping inside `Vessel`;
 - keep propellers/rudders tied to engine/rudder state if the asset exposes suitable nodes;
+- the helm wheel and pedestal are procedural (`createHelmWheel`, on the coachroof) because the asset has none: the wheel turns with the rudder, and the helm camera sits behind it;
 - validate close camera framing after any scale, pivot, or bounding-box change;
 - keep new fixed parts batchable (one material, no per-part animation); a part that must move on its own needs its own mesh outside the batches;
 - underwater parts do not cast shadows: nothing could show them.
@@ -427,7 +429,7 @@ The capture is refreshed only when the night factor has moved, at most a few tim
 
 The sun, moon and stars are drawn by the sky shader itself (`skyCelestial`), under the clouds: clouds drift across them, and every piece of geometry hides them by being drawn later. The solar disc is HDR (it blooms), with limb darkening, and dims near the horizon so it stays red-orange; the moon has maria and a soft limb; stars twinkle on a stereographic grid, sized to a pixel. The lighting capture leaves them out (`uCelestial` 0): the directional light already carries the sun and the moon.
 
-Weather comes from `WeatherMath.sampleWeather(time)`: a fair-weather cumulus field over about a quarter of the sky, and now and then (never in the first eight minutes) a cloudy spell that builds over half a minute, lasts a minute or two, greys the sky and dims the sun, then clears. A day/night change takes `TRANSITION_SECONDS` (11 s) and passes through a full sunset or sunrise.
+Weather comes from `WeatherMath` (see “Weather, sea state and the day cycle” below): fair-weather cumulus over about a quarter of the sky when clear, thicker and darker as the weather worsens. A day/night change takes `TRANSITION_SECONDS` (11 s) and passes through a full sunset or sunrise.
 
 Lighting: one directional light carries the palette's dominant light and casts a tight shadow frustum (about ±17 m) that follows the yacht for crisp self-shadowing; a weak hemisphere light lifts shadowed faces. There is no separate ambient light; ambient comes from the capture.
 
@@ -663,7 +665,7 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
 | Low | 1.0 | 96 | 512 | 0.45 | 2 / 2 | 35% | 0.30 | 0 | off | – | – |
 | Medium | 1.25 | 144 | 1024 | 0.70 | 4 / 3 | 60% | 0.55 | 1 | on | 0.20 | 2× |
-| High | 1.75 | 224 | 2048 | 0.90 | 4 / 4 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
+| High | 1.5 | 224 | 2048 | 0.90 | 4 / 4 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
 
 Ocean detail gates fragment work: above 0.2 the detail spectrum and one ripple layer are shaded; above 0.6 the second ripple layer and cloud reflections are added. Sky detail selects three- or five-octave clouds.
 
@@ -681,7 +683,7 @@ Important implementation caveats:
 - all shader programs are compiled during loading against the render target the scene actually uses; nothing should compile during play (check `renderer.info.programs` before and after a day/night cycle);
 - wake instance transforms are refreshed at approximately 30 Hz;
 - on phones the per-draw-call CPU work of three.js, not the triangle count, is usually what limits the frame rate: the high preset draws about 80 calls and the low preset about 40 (from about 190 and 110 before batching); keep it there by batching fixed parts by material (`StaticBatching`), merging the parts of one rig (`SkinnedMerge`), letting meshes of one animal share their skeleton (`shareSkeletons`, so its bones upload once per frame), and culling instanced groups with a real bounding sphere;
-- the render loop and Web Audio suspend when the document is hidden.
+- the render loop and Web Audio suspend when the document is hidden, and `FramePacer` caps rendering at 60 fps (30 fps while the page is visible but unfocused), so a 120 Hz ProMotion display does not render twice as much; the mirror pass skips pixels with nothing mirrored nearby (one coarse tap).
 
 Before increasing visual cost, measure the current bottleneck (`renderer.info.render.calls` and `.triangles` with `info.autoReset` off across the post-processing passes, texture uploads per frame, and a CPU profile of `render`). Favor shader detail, instancing, LOD, texture compression, smaller shadow casters, and bounded effects over more individual objects.
 

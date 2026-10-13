@@ -339,7 +339,11 @@ export const oceanFragmentShader = /* glsl */ `
     shift = clamp(shift, vec2(-0.045, -0.085), vec2(0.045, 0.085));
     uv += shift;
 
+    // Most of the sea has nothing mirrored anywhere near it: one tap of a very
+    // coarse mip says so, and the rest of this function is skipped.
     height = 0.5;
+    if (mirrorFetch(uv, 5.0).a < 0.002) return vec4(0.0);
+
     if (uDetail > 0.6) {
       float travelled = 0.0;
       float alive = 1.0;

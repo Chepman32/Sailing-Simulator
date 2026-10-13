@@ -225,6 +225,9 @@ export class Simulator {
   }
 
   setLightingMode(mode: LightingMode): void {
+    // Choosing day or night by hand takes the time of day off automatic.
+    this.state.autoTime = false;
+    this.environment?.setAutoCycle(false);
     this.state.lightingMode = mode;
     this.environment?.setMode(mode);
     this.persistState();

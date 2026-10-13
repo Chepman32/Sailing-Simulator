@@ -25,8 +25,8 @@ export type BreachVariant = "full" | "side" | "partial";
 
 export const BREACH_GRAVITY = 9.81;
 /** Minimum and maximum seconds between two breaches. */
-export const BREACH_MIN_INTERVAL = 150;
-export const BREACH_MAX_INTERVAL = 360;
+export const BREACH_MIN_INTERVAL = 95;
+export const BREACH_MAX_INTERVAL = 230;
 /** The breach happens this far from the yacht, metres. */
 export const BREACH_MIN_DISTANCE = 75;
 export const BREACH_MAX_DISTANCE = 150;
@@ -84,7 +84,7 @@ export function createBreachState(random: RandomSource): BreachState {
     phase: "waiting",
     elapsed: 0,
     // The first breach comes a few minutes into the session.
-    countdown: between(random, 120, 240),
+    countdown: between(random, 70, 150),
     plan: { variant: "full", apex: 5, exitAngle: 1.15, roll: 2.4 },
     x: 0,
     y: -40,

@@ -60,7 +60,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     msaaSamples: 2,
   },
   high: {
-    maxDpr: 1.75,
+    maxDpr: 1.5,
     oceanSegments: 224,
     shadowMapSize: 2048,
     reflectionScale: 0.5,

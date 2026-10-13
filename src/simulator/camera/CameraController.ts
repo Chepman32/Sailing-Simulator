@@ -54,7 +54,7 @@ export class CameraController {
     const horizontalDirectionZ = Math.cos(heading);
 
     if (this.mode === "helm") {
-      this.desiredPosition.copy(focus).addScaledVector(physics.forward, -2.55).setY(focus.y + 1.92);
+      this.desiredPosition.copy(focus).addScaledVector(physics.forward, -3.1).setY(focus.y + 2.85);
       this.viewDirection.set(horizontalDirectionX, Math.sin(-this.pitch), horizontalDirectionZ).normalize();
       this.lookTarget.copy(this.desiredPosition).addScaledVector(this.viewDirection, 18);
       this.camera.position.lerp(this.desiredPosition, 1 - Math.exp(-12 * delta));

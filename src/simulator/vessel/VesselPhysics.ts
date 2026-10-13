@@ -74,12 +74,12 @@ const SWAY_MASS = MASS * 1.75;
 const YAW_INERTIA = 78000;
 
 // --- Propulsion ------------------------------------------------------------
-const AHEAD_BOLLARD_THRUST = 6800;
-const ASTERN_BOLLARD_THRUST = 4200;
+const AHEAD_BOLLARD_THRUST = 15600;
+const ASTERN_BOLLARD_THRUST = 9700;
 const IDLE_SHAFT_FRACTION = 0.3;
 const SHAFT_SPOOL_UP = 1.5;
 const SHAFT_SPOOL_DOWN = 2.3;
-const THRUST_FADE_SPEED = 9.5;
+const THRUST_FADE_SPEED = 15;
 const PROPELLER_DISC_AREA = 0.32;
 
 // --- Hull hydrodynamics ----------------------------------------------------

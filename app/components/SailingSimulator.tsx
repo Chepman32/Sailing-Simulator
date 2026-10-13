@@ -633,7 +633,7 @@ export function SailingSimulator() {
           {!panelMinimized && (
             <div className="panel-body">
               <div className="compact-row">
-                <div className="segmented" aria-label={`${messages.day} / ${messages.night}`}>
+                <div className="segmented time-group" role="group" aria-label={`${messages.day} / ${messages.night}`}>
                   {(["day", "night"] as LightingMode[]).map((mode) => (
                     <button
                       type="button"
@@ -647,15 +647,15 @@ export function SailingSimulator() {
                       <ControlIcon name={mode === "day" ? "sun" : "moon"} />
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    className="icon-control"
+                    aria-label={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
+                    title={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
+                    aria-pressed={snapshot.autoTime}
+                    onClick={() => simulatorRef.current?.setAutoTime(!snapshot.autoTime)}
+                  ><ControlIcon name="auto-time" /></button>
                 </div>
-                <button
-                  type="button"
-                  className="quiet-button icon-control"
-                  aria-label={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
-                  title={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
-                  aria-pressed={snapshot.autoTime}
-                  onClick={() => simulatorRef.current?.setAutoTime(!snapshot.autoTime)}
-                ><ControlIcon name="auto-time" /></button>
                 <button
                   type="button"
                   className="quiet-button icon-control"
@@ -688,7 +688,7 @@ export function SailingSimulator() {
                 ><ControlIcon name={snapshot.engineMuted ? "engine-muted" : "engine-sound"} /></button>
               </div>
 
-              <div className="panel-section">
+              <div className="panel-section panel-camera">
                 <div className="section-label"><span>{messages.camera}</span><strong>{cameraLabels[snapshot.cameraMode]}</strong></div>
                 <div className="camera-grid">
                   {(Object.keys(cameraLabels) as CameraMode[]).map((mode) => (
@@ -707,7 +707,7 @@ export function SailingSimulator() {
                 </div>
               </div>
 
-              <div className="panel-section">
+              <div className="panel-section panel-weather">
                 <div className="section-label">
                   <span>{messages.weather}</span>
                   <strong>{weatherLabels[snapshot.weatherNow]}</strong>
