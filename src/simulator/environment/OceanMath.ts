@@ -38,6 +38,74 @@ export const OCEAN_WAVES: readonly OceanWave[] = [
   { directionX: 0.3, directionZ: 0.95, amplitude: 0.04, wavelength: 5.1, speed: 1.07, steepness: 0.16 },
 ] as const;
 
+/**
+ * Sea state: how high the sea runs. Weather sets one number, the wave scale,
+ * and every consumer (the vertex stage, the fragment stage, the height
+ * sampler for the yacht, wake and wildlife) reads the same per-component
+ * amplitude factors derived from it, so the water that is drawn is always the
+ * water that is sampled.
+ *
+ * Wind builds the long components first and the short chop least, as a real
+ * sea does: a gale piles up swell several metres high, while ripples stay
+ * ripples. The factors therefore grow with wavelength, which also keeps the
+ * summed slope in check at the top of the range.
+ *
+ * Scale 1 is the trade-wind sea described above; 0.35 is nearly glassy, 4.5 a
+ * hurricane sea with crest-to-trough heights around eight metres.
+ */
+export const SEA_SCALE_MIN = 0.35;
+export const SEA_SCALE_MAX = 4.5;
+/** Share of the growth above scale 1 that each component takes, longest first. */
+const SEA_GROWTH: readonly number[] = [1, 0.7, 0.35, 0.15, 0.05, 0];
+
+/** Amplitude factor of every component for a wave scale. */
+export function seaWaveFactors(scale: number, target: number[] = new Array<number>(OCEAN_WAVES.length)): number[] {
+  const bounded = Math.min(SEA_SCALE_MAX, Math.max(SEA_SCALE_MIN, Number.isFinite(scale) ? scale : 1));
+  for (let index = 0; index < OCEAN_WAVES.length; index += 1) {
+    target[index] = bounded >= 1 ? 1 + (bounded - 1) * (SEA_GROWTH[index] ?? 0) : bounded;
+  }
+  return target;
+}
+
+/**
+ * The factors in force right now. The array is shared by reference with the
+ * GPU (`uSeaFactors`), so one in-place update reaches every shader.
+ */
+export const seaFactors: number[] = seaWaveFactors(1);
+let currentSeaScale = 1;
+
+export function setSeaScale(scale: number): void {
+  currentSeaScale = Math.min(SEA_SCALE_MAX, Math.max(SEA_SCALE_MIN, Number.isFinite(scale) ? scale : 1));
+  seaWaveFactors(currentSeaScale, seaFactors);
+}
+
+export function getSeaScale(): number {
+  return currentSeaScale;
+}
+
+/** Largest crest fold (steepness × slope, summed) the sea state can show; the shader's crest scale. */
+export function maximumOceanFold(factors: readonly number[] = seaFactors): number {
+  let fold = 0;
+  OCEAN_WAVES.forEach((wave, index) => {
+    fold += wave.steepness * wave.amplitude * (factors[index] ?? 1) * ((Math.PI * 2) / wave.wavelength);
+  });
+  return fold;
+}
+
+/**
+ * Significant wave height (the mean of the highest third of the waves) in
+ * metres for a wave scale: four times the standard deviation of the surface.
+ */
+export function significantWaveHeight(scale: number = currentSeaScale): number {
+  const factors = seaWaveFactors(scale);
+  let variance = 0;
+  OCEAN_WAVES.forEach((wave, index) => {
+    const amplitude = wave.amplitude * (factors[index] ?? 1);
+    variance += 0.5 * amplitude * amplitude;
+  });
+  return 4 * Math.sqrt(variance);
+}
+
 export type OceanDetailWave = {
   directionX: number;
   directionZ: number;
@@ -64,9 +132,11 @@ export const OCEAN_DETAIL_WAVES: readonly OceanDetailWave[] = [
 ] as const;
 
 /** Largest slope the shared displacement spectrum can produce at any point. */
-export function maximumOceanSlope(waves: readonly OceanWave[] = OCEAN_WAVES): number {
+export function maximumOceanSlope(waves: readonly OceanWave[] = OCEAN_WAVES, factors: readonly number[] = []): number {
   let slope = 0;
-  for (const wave of waves) slope += wave.amplitude * ((Math.PI * 2) / wave.wavelength);
+  waves.forEach((wave, index) => {
+    slope += wave.amplitude * (factors[index] ?? 1) * ((Math.PI * 2) / wave.wavelength);
+  });
   return slope;
 }
 
@@ -116,11 +186,13 @@ export function surfaceBasePoint(x: number, z: number, time: number, target: { x
   for (let iteration = 0; iteration < SURFACE_INVERSION_ITERATIONS; iteration += 1) {
     let offsetX = 0;
     let offsetZ = 0;
-    for (const wave of WAVE_TERMS) {
+    for (let index = 0; index < WAVE_TERMS.length; index += 1) {
+      const wave = WAVE_TERMS[index]!;
       const phase = wave.waveNumber * (wave.directionX * baseX + wave.directionZ * baseZ) - wave.angularSpeed * time;
       const cosine = Math.cos(phase);
-      offsetX += wave.directionX * wave.excursion * cosine;
-      offsetZ += wave.directionZ * wave.excursion * cosine;
+      const excursion = wave.excursion * seaFactors[index]!;
+      offsetX += wave.directionX * excursion * cosine;
+      offsetZ += wave.directionZ * excursion * cosine;
     }
     baseX = x - offsetX;
     baseZ = z - offsetZ;
@@ -150,13 +222,15 @@ export function sampleOcean(x: number, z: number, time: number, depth = 0): Ocea
   let slopeZ = 0;
   let compression = 0;
 
-  for (const wave of WAVE_TERMS) {
+  for (let index = 0; index < WAVE_TERMS.length; index += 1) {
+    const wave = WAVE_TERMS[index]!;
     const phase = wave.waveNumber * (wave.directionX * baseX + wave.directionZ * baseZ) - wave.angularSpeed * time;
     const sine = Math.sin(phase);
     const cosine = Math.cos(phase);
     const attenuation = submerged > 0 ? Math.exp(-wave.waveNumber * submerged) : 1;
-    const peakSlope = wave.amplitude * wave.waveNumber * attenuation;
-    height += wave.amplitude * attenuation * sine;
+    const amplitude = wave.amplitude * seaFactors[index]!;
+    const peakSlope = amplitude * wave.waveNumber * attenuation;
+    height += amplitude * attenuation * sine;
     slopeX += peakSlope * wave.directionX * cosine;
     slopeZ += peakSlope * wave.directionZ * cosine;
     compression += wave.steepness * peakSlope * sine;

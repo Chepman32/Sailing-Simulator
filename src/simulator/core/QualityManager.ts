@@ -17,6 +17,8 @@ export type QualitySettings = {
   skyDetail: number;
   /** Fraction of the full reef-fish school sizes. */
   fishDensity: number;
+  /** Streaks in the rain pool; one draw call at any count. */
+  rainDrops: number;
   /** HDR pipeline with bloom, grading and vignette. */
   postProcessing: boolean;
   bloomStrength: number;
@@ -35,6 +37,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     dolphinCount: 2,
     oceanDetail: 0.3,
     fishDensity: 0.35,
+    rainDrops: 1600,
     skyDetail: 0,
     postProcessing: false,
     bloomStrength: 0,
@@ -50,6 +53,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     dolphinCount: 3,
     oceanDetail: 0.55,
     fishDensity: 0.6,
+    rainDrops: 3200,
     skyDetail: 1,
     postProcessing: true,
     bloomStrength: 0.2,
@@ -65,6 +69,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     dolphinCount: 4,
     oceanDetail: 1,
     fishDensity: 1,
+    rainDrops: 5600,
     skyDetail: 1,
     postProcessing: true,
     bloomStrength: 0.26,

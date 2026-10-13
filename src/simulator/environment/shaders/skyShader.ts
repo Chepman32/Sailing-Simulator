@@ -23,6 +23,7 @@ export const SKY_UNIFORM_DECLARATIONS = /* glsl */ `
   uniform float uNight;
   uniform float uCloudTime;
   uniform float uCloudCover;
+  uniform float uFlash;
 `;
 
 export const SKY_FUNCTIONS = /* glsl */ `
@@ -90,6 +91,8 @@ export const SKY_FUNCTIONS = /* glsl */ `
 
     float moonAmount = max(dot(direction, uMoonDirection), 0.0);
     sky += vec3(0.36, 0.5, 0.74) * (pow(moonAmount, 22.0) * 0.045 + pow(moonAmount, 300.0) * 0.2) * uNight;
+    // Lightning lights the whole murk from within, most near the horizon.
+    sky += vec3(0.5, 0.6, 0.9) * uFlash * (0.5 + 0.5 * exp(-height * 3.0));
     return sky;
   }
 
@@ -116,6 +119,8 @@ export const SKY_FUNCTIONS = /* glsl */ `
     // Thin edges glow when they sit in front of the light source.
     float forward = pow(max(dot(direction, uLightDirection), 0.0), 9.0);
     cloud += uCloudLit * forward * (1.0 - density) * 0.9;
+    // A stroke of lightning lights the cloud base from inside.
+    cloud += vec3(0.8, 0.9, 1.35) * uFlash * (0.35 + 0.65 * density);
 
     // Aerial perspective pulls distant clouds toward the horizon colour.
     float nearness = smoothstep(0.02, 0.36, direction.y);

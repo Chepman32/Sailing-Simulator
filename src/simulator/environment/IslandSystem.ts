@@ -39,6 +39,8 @@ export class IslandSystem {
   private readonly shoreNormal = { x: 0, z: 1 };
   private readonly group = new THREE.Group();
   private readonly palmWind: PalmWindUniform = { value: 0 };
+  /** Weather's wind relative to the trade wind: how far the crowns lean and how fast they flutter. */
+  private readonly palmStrength: PalmWindUniform = { value: 1 };
   private readonly palmMaterials = new Map<THREE.Material, THREE.Material>();
   private readonly surface: IslandSurfaceUniforms = createIslandSurfaceUniforms();
   private readonly palmShadows: PalmShadowMap;
@@ -58,8 +60,9 @@ export class IslandSystem {
     this.palmShadows = new PalmShadowMap(scene, this.surface, shadowMapSize);
   }
 
-  update(time: number): void {
+  update(time: number, wind = 1): void {
     this.palmWind.value = time;
+    this.palmStrength.value = Math.min(3.2, Math.max(0.4, wind));
     this.surface.uSurfTime.value = time;
   }
 
@@ -297,12 +300,14 @@ export class IslandSystem {
       }
     }
     const wind = this.palmWind;
+    const strength = this.palmStrength;
     material.onBeforeCompile = (shader: THREE.WebGLProgramParametersWithUniforms) => {
       shader.uniforms.uPalmTime = wind;
+      shader.uniforms.uPalmStrength = strength;
       // Sway in world space so every tree bends the same way in the same
       // breeze, whatever its own scale and orientation.
       shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", "#include <common>\nuniform float uPalmTime;")
+        .replace("#include <common>", "#include <common>\nuniform float uPalmTime;\nuniform float uPalmStrength;")
         .replace(
           "#include <project_vertex>",
           `#include <project_vertex>
@@ -310,13 +315,13 @@ export class IslandSystem {
            float palmSway = smoothstep(1.5, 13.0, palmWorld.y);
            palmSway *= palmSway;
            float palmPhase = uPalmTime * 1.3 + palmWorld.x * 0.23 + palmWorld.z * 0.17;
-           palmWorld.x += (sin(palmPhase) * 0.34 + 0.22) * palmSway;
-           palmWorld.z += (cos(palmPhase * 0.73) * 0.2 + 0.14) * palmSway;
+           palmWorld.x += (sin(palmPhase) * 0.34 + 0.22) * palmSway * uPalmStrength;
+           palmWorld.z += (cos(palmPhase * 0.73) * 0.2 + 0.14) * palmSway * uPalmStrength;
            mvPosition = viewMatrix * palmWorld;
            gl_Position = projectionMatrix * mvPosition;`,
         );
     };
-    material.customProgramCacheKey = () => "palm-wind-v3";
+    material.customProgramCacheKey = () => "palm-wind-v4";
     this.palmMaterials.set(source, material);
     return material;
   }

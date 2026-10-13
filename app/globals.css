@@ -602,7 +602,7 @@ input:focus-visible {
 
 .compact-row {
   display: grid;
-  grid-template-columns: minmax(92px, 1.35fr) repeat(3, minmax(44px, 1fr));
+  grid-template-columns: minmax(92px, 1.35fr) repeat(4, minmax(44px, 1fr));
   align-content: center;
   gap: 5px;
   padding: 5px;
@@ -679,6 +679,49 @@ button[aria-pressed="true"] {
   color: var(--text);
   font-family: "SFMono-Regular", Consolas, monospace;
   letter-spacing: 0.04em;
+}
+
+.weather-mode { margin-bottom: 5px; }
+.weather-mode button { font-size: 11px; }
+
+.weather-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.weather-grid button {
+  min-height: 44px;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid rgba(151, 231, 238, 0.18);
+  border-radius: 9px;
+  color: var(--muted);
+  background: rgba(120, 225, 220, 0.035);
+  cursor: pointer;
+}
+
+.weather-grid .control-icon { width: 21px; height: 21px; }
+
+/* In automatic mode the buttons only show the present weather. */
+.weather-grid button[data-auto="true"][aria-pressed="true"] {
+  color: var(--accent);
+  background: rgba(101, 226, 214, 0.14);
+}
+
+.sea-readout {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sea-readout strong {
+  color: var(--text);
+  font-family: "SFMono-Regular", Consolas, monospace;
 }
 
 .camera-grid {

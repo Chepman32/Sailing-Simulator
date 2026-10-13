@@ -384,8 +384,8 @@ test("sail polar luffs head to wind, lifts when reaching, and drags when running
 
   const eased = { ...solveSail(Math.PI / 2, 10, 0.2, sail) };
   assert.ok(eased.lift < reach.lift * 0.5, "easing the sheets must depower the sail");
-  const gust = { ...solveSail(Math.PI / 2, 20, 1, sail) };
-  assert.ok(Math.abs(gust.lift / reach.lift - 4) < 1e-9, "sail force follows wind speed squared");
+  const gust = { ...solveSail(Math.PI / 2, 15, 1, sail) };
+  assert.ok(Math.abs(gust.lift / reach.lift - 2.25) < 1e-9, "sail force follows wind speed squared below the reefing wind");
 });
 
 test("propellers spool with shaft speed squared and lose thrust as the hull catches up", () => {
@@ -701,25 +701,97 @@ test("bow spray starts at a realistic cruising speed and grows with speed and he
 
 // --- Weather, surf -------------------------------------------------------------
 
-test("the weather is mostly fair, opens clear, and clouds over only in occasional spells", async () => {
-  const { sampleWeather, FIRST_SPELL } = await import("../../src/simulator/environment/WeatherMath");
-  let overcastTime = 0;
-  let spells = 0;
-  let wasOvercast = false;
-  const samples = 4 * 3600;
-  for (let second = 0; second < samples; second += 1) {
-    const weather = sampleWeather(second);
-    assert.ok(weather.cloudCover >= 0.12 && weather.cloudCover <= 0.8);
-    assert.ok(weather.overcast >= 0 && weather.overcast <= 1);
-    if (second < FIRST_SPELL) assert.equal(weather.overcast, 0, "every session opens under a clear sky");
-    const overcast = weather.overcast > 0.5;
-    if (overcast) overcastTime += 1;
-    if (overcast && !wasOvercast) spells += 1;
-    wasOvercast = overcast;
+test("weather: presets climb the severity ladder, the sea eases toward them, auto weather opens clear and favours calm", async () => {
+  const W = await import("../../src/simulator/environment/WeatherMath");
+  const keys = ["rain", "wind", "waves", "storm", "breaking", "haze", "overcast"] as const;
+  for (const key of keys) {
+    for (let index = 1; index < W.WEATHER_KINDS.length; index += 1) {
+      const lower = W.WEATHER_PRESETS[W.WEATHER_KINDS[index - 1]!][key];
+      const higher = W.WEATHER_PRESETS[W.WEATHER_KINDS[index]!][key];
+      assert.ok(higher >= lower, `${key} never falls as the weather worsens`);
+    }
   }
-  assert.ok(overcastTime / samples < 0.15, `overcast ${((overcastTime / samples) * 100).toFixed(1)}% of the time`);
-  assert.ok(spells >= 3, "cloudy spells do happen");
-  assert.ok(sampleWeather(100).cloudCover < 0.35, "fair weather leaves most of the sky clear");
+  assert.ok(W.WEATHER_PRESETS.hurricane.waves > W.WEATHER_PRESETS.clear.waves * 3, "a hurricane sea is several times higher");
+
+  const state = W.createWeather("clear");
+  for (let second = 0; second < 90; second += 1) W.stepWeather(state, "storm", 1, second);
+  assert.ok(state.waves > 2.5 && state.rain > 0.7 && state.storm > 0.6, "weather eases toward the preset");
+  assert.ok(state.waves < W.WEATHER_PRESETS.storm.waves + 1e-6);
+
+  let calm = 0;
+  let severe = 0;
+  const total = 6 * 3600;
+  for (let second = 0; second < total; second += 5) {
+    const kind = W.autoWeatherKind(second);
+    if (second < W.AUTO_FIRST_CHANGE) assert.equal(kind, "clear", "every session opens under a clear sky");
+    if (second < W.AUTO_SEVERE_AFTER) assert.ok(W.weatherSeverity(kind) <= W.weatherSeverity("downpour"));
+    assert.equal(W.autoWeatherKind(second), kind, "the planner is deterministic");
+    if (W.weatherSeverity(kind) <= 2) calm += 1;
+    if (W.weatherSeverity(kind) >= 5) severe += 1;
+  }
+  const samples = total / 5;
+  assert.ok(calm / samples > 0.5, "calm weather (clear, cloudy, overcast) dominates");
+  assert.ok(severe > 0, "storms do come");
+  assert.ok(severe / samples < 0.25, "a storm is an event");
+});
+
+test("lightning only flashes in a real storm, and stays bounded", async () => {
+  const { lightningFlash } = await import("../../src/simulator/environment/WeatherMath");
+  let flashed = 0;
+  for (let t = 0; t < 600; t += 0.05) {
+    assert.equal(lightningFlash(t, 0.3), 0);
+    const flash = lightningFlash(t, 1);
+    assert.ok(flash >= 0 && flash <= 1);
+    if (flash > 0.3) flashed += 1;
+  }
+  assert.ok(flashed > 0, "a hurricane has lightning");
+});
+
+test("sea state: wave height grows with the scale, stays finite and keeps slopes resolvable", async () => {
+  const O = await import("../../src/simulator/environment/OceanMath");
+  const heights = [0.35, 1, 1.75, 2.4, 3.3, 4.5].map((scale) => O.significantWaveHeight(scale));
+  for (let index = 1; index < heights.length; index += 1) assert.ok(heights[index]! > heights[index - 1]!);
+  assert.ok(heights[5]! > 3 * heights[1]!);
+  try {
+    O.setSeaScale(4.5);
+    assert.equal(O.getSeaScale(), 4.5);
+    for (let n = 0; n < 400; n += 1) {
+      const x = Math.sin(n * 12.9) * 900;
+      const z = Math.cos(n * 7.3) * 900;
+      const sample = O.sampleOcean(x, z, n * 0.7);
+      assert.ok(Number.isFinite(sample.height) && Math.abs(sample.height) < 8);
+      assert.ok(sample.normalY > 0.35, "normals stay upward even in a hurricane sea");
+    }
+    assert.ok(O.maximumOceanFold() < 1, "crests do not fold over themselves");
+  } finally {
+    O.setSeaScale(1);
+  }
+});
+
+test("day cycle: runs day, dusk, night and dawn, with the sun climbing in the day", async () => {
+  const E = await import("../../src/simulator/environment/EnvironmentMath");
+  assert.equal(E.dayCycleState(0).progress, 0);
+  assert.ok(E.dayCycleState(E.DAY_HOLD_SECONDS / 2).sunArc > 0.95);
+  assert.equal(E.dayCycleState(E.CYCLE_NIGHT_START + 5).progress, 1);
+  let last = 0;
+  for (let t = E.DAY_HOLD_SECONDS; t <= E.CYCLE_NIGHT_START; t += 1) {
+    const { progress } = E.dayCycleState(t);
+    assert.ok(progress >= last - 1e-9 && progress <= 1);
+    last = progress;
+  }
+  assert.ok(Math.abs(E.dayCycleState(E.DAY_CYCLE_SECONDS).progress - E.dayCycleState(0).progress) < 1e-9, "the cycle repeats");
+});
+
+test("reefing: the crew shortens sail in a gale, so the yacht stays bounded", async () => {
+  const { reefFactor, REEF_START_SPEED } = await import("../../src/simulator/vessel/SailAerodynamics");
+  assert.equal(reefFactor(REEF_START_SPEED - 1), 1);
+  assert.ok(reefFactor(30) < 0.3);
+  assert.ok(reefFactor(20) > reefFactor(30));
+});
+
+test("rain quality scales monotonically", () => {
+  assert.ok(QUALITY_SETTINGS.low.rainDrops < QUALITY_SETTINGS.medium.rainDrops);
+  assert.ok(QUALITY_SETTINGS.medium.rainDrops < QUALITY_SETTINGS.high.rainDrops);
 });
 
 test("surf: waves break, run up the beach by different amounts, and leave sand that dries", async () => {

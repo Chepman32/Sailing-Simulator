@@ -101,7 +101,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/IslandSystem.ts` | Terrain, palms, seabed, collision, shore direction |
 | `src/simulator/environment/IslandSurface.ts` | Sand shading (grain, ripples, wet sand), swash on the beach, palm shadow map and trunk contact shading |
 | `src/simulator/environment/SurfMath.ts` | Pure surf model (breaking crest, bore, swash, drying sand) and its GLSL twin, shared by ocean and sand |
-| `src/simulator/environment/WeatherMath.ts` | Pure, deterministic fair-weather cloud cover with occasional cloudy spells |
+| `src/simulator/environment/WeatherMath.ts` | Pure weather model: seven kinds (clear … hurricane) as presets, exponential easing, deterministic auto planner, lightning |
+| `src/simulator/environment/RainSystem.ts` | One instanced draw of rain streaks in a camera-following box; intensity selects a stratified subset of the seeds |
 | `src/simulator/environment/OceanReflection.ts` | Planar mirror of the world above the sea (oblique near plane), sampled by the ocean shader |
 | `src/simulator/environment/UnderwaterLight.ts` | Beer–Lambert absorption for everything below the surface |
 
@@ -461,6 +462,19 @@ Do not independently set `scene.background`, fog, sky dome, ocean colours, light
 `PostProcessing` renders the scene into a multisampled half-float target, applies bloom only to pixels brighter than `BLOOM_THRESHOLD`, then runs one finishing pass: slight corner fringing, saturation, vignette, the renderer's ACES tone curve, the display transfer, and fine grain. On the low preset, or on a GPU that cannot render to half-float, the scene renders directly and every material tone-maps itself. Custom shaders must therefore output scene-linear colour and end with `#include <tonemapping_fragment>` and `#include <colorspace_fragment>`.
 
 Values above 1 are meaningful: the solar disc, sun glitter, and lamp lenses are deliberately brighter than white so they bloom. Do not mark such materials `toneMapped: false`.
+
+### Weather, sea state and the day cycle
+
+The player (manual) or the planner `autoWeatherKind(time)` (auto, the default; the first 480 s are always clear, storms and hurricanes wait until 900 s) picks a `WeatherKind`; `stepWeather` eases a `WeatherSample` toward its preset. The sample drives, and nothing else may define:
+
+- the sea: `OceanMath.setSeaScale(sample.waves)` sets per-wave amplitude factors `seaFactors` (GLSL `uSeaFactors`, CPU `sampleOcean`), so buoyancy, wake, wildlife and the camera floor follow the same higher sea; `significantWaveHeight` feeds the HUD; `uMaxFold` replaces the old constant fold limit;
+- the wind: `VesselPhysics.windScale` and `reefFactor` (the crew reefs above `REEF_START_SPEED`), palm lean, wind ripples, whitecaps (`uBreaking`), haze;
+- sky and light: `EnvironmentPalette` storm darkening, exposure, fog, `lightningFlash` (only above `storm` 0.5) through `uFlash`, thunder in `AudioSystem`;
+- rain: `RainSystem` (`QualityManager.rainDrops`), ocean rain rings, rain hiss and patter.
+
+`autoTime` turns on the automatic day cycle (`dayCycleState`: day, dusk, night, dawn, with the sun climbing in the day); `EnvironmentSystem` follows the goal at the usual transition speed. Persisted: `autoTime`, `weatherMode`, `weather` (the present weather itself is not persisted).
+
+The mirror target of `OceanReflection` has a mip chain; the ocean shader blurs it by roughness and contact distance (`mirroredWorld`) and lifts Fresnel where an object is really mirrored.
 
 ## 15. Wildlife assets and validation
 

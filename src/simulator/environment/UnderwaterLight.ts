@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { injectAfter, injectBefore, patchMaterialShader } from "../core/ShaderPatch";
 import type { EnvironmentPalette, Rgb } from "./EnvironmentPalette";
+import { seaFactors } from "./OceanMath";
 import { OCEAN_SURFACE_HEIGHT_FAST_GLSL } from "./shaders/oceanShader";
 
 /**
@@ -53,6 +54,8 @@ export class UnderwaterLight {
     uUnderwaterTime: { value: 0 },
     /** Strength of the sun's caustics: full by day, none at night. */
     uUnderwaterCaustics: { value: 1 },
+    /** The sea state, shared with the ocean: the waterline follows the real waves. */
+    uSeaFactors: { value: seaFactors },
   };
 
   /** Keeps the waterline in step with the ocean. */
@@ -72,10 +75,11 @@ export class UnderwaterLight {
   /** Decorates a lit or unlit built-in material; works with skinning and instancing. */
   apply(material: THREE.Material): void {
     const uniforms = this.uniforms;
-    patchMaterialShader(material, "underwater-v3", (shader) => {
+    patchMaterialShader(material, "underwater-v4", (shader) => {
       shader.uniforms.uUnderwaterColor = uniforms.uUnderwaterColor;
       shader.uniforms.uUnderwaterTime = uniforms.uUnderwaterTime;
       shader.uniforms.uUnderwaterCaustics = uniforms.uUnderwaterCaustics;
+      shader.uniforms.uSeaFactors = uniforms.uSeaFactors;
       shader.vertexShader = injectAfter(
         shader.vertexShader,
         "common",

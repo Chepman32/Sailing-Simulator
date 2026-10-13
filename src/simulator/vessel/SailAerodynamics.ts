@@ -26,6 +26,21 @@ const MIN_TRIM_ATTACK = 0.05;
 const FULL_TRIM_ATTACK = 0.28;
 const MIN_TRIM_EXPOSURE = 0.5;
 
+/**
+ * Apparent wind speed (m/s) above which the crew reefs, and the range over
+ * which the sail area they carry falls away. Without it sail force would grow
+ * with the square of the wind and a gale would be an unbounded push; reefed,
+ * the rig never pulls much harder than in a hard blow.
+ */
+export const REEF_START_SPEED = 16;
+export const REEF_RANGE = 9;
+
+/** Fraction of the sail area carried at an apparent wind speed: 1 up to a hard blow, falling after. */
+export function reefFactor(apparentWindSpeed: number): number {
+  const over = Math.max(0, apparentWindSpeed - REEF_START_SPEED) / REEF_RANGE;
+  return 1 / (1 + over * over);
+}
+
 export type SailCoefficients = {
   lift: number;
   drag: number;
@@ -86,7 +101,8 @@ export function solveSail(
   // Easing the sheets right off also twists the head of the sail open and
   // spills wind, which is the only way to depower once the sail has stalled.
   const exposure = MIN_TRIM_EXPOSURE + (1 - MIN_TRIM_EXPOSURE) * power;
-  const dynamicPressure = 0.5 * AIR_DENSITY * SAIL_AREA * exposure * apparentWindSpeed * apparentWindSpeed;
+  const dynamicPressure =
+    0.5 * AIR_DENSITY * SAIL_AREA * exposure * reefFactor(apparentWindSpeed) * apparentWindSpeed * apparentWindSpeed;
   target.sheetAngle = sheetAngle;
   target.angleOfAttack = angleOfAttack;
   target.lift = dynamicPressure * coefficients.lift * drawing;

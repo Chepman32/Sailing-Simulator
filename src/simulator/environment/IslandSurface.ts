@@ -60,6 +60,7 @@ const SAND_DECLARATIONS = /* glsl */ `
   uniform float uNight;
   uniform float uCloudTime;
   uniform float uCloudCover;
+  uniform float uFlash;
   uniform float uSurfTime;
   uniform vec2 uWindDirection;
   uniform sampler2D uPalmShadowMap;

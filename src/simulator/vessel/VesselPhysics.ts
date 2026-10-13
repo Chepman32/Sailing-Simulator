@@ -197,6 +197,8 @@ export class VesselPhysics {
   };
 
   private readonly windSample: WindSample = { x: 6.8, z: 4.2, speed: 8, gust: 1 };
+  /** Weather's multiplier on the true wind; set by the simulator each frame. */
+  windScale = 1;
   private readonly sail: SailState = createSailState();
   private time = 0;
   private waveRollTarget = 0;
@@ -227,7 +229,7 @@ export class VesselPhysics {
     const depth = this.islands.depthAt(this.position.x, this.position.z);
 
     // --- Wind --------------------------------------------------------------
-    sampleWind(this.time, this.windSample);
+    sampleWind(this.time, this.windSample, this.windScale);
     this.wind.set(this.windSample.x, 0, this.windSample.z);
     const airForward = this.wind.dot(this.forward) - forwardSpeed;
     const airRight = this.wind.dot(this.right) - lateralSpeed;

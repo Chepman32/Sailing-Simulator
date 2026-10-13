@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import type { LightingMode } from "../types";
 import { clamp } from "../math";
-import { deriveTimeOfDay, type TimeOfDayState } from "./EnvironmentMath";
+import { CYCLE_DAY_START, CYCLE_NIGHT_START, dayCycleState, deriveTimeOfDay, type TimeOfDayState } from "./EnvironmentMath";
 import { deriveEnvironmentPalette, type EnvironmentPalette } from "./EnvironmentPalette";
 import type { OceanSystem } from "./OceanSystem";
 import { applySkyPalette, setLinearColor, type SkyUniforms } from "./SkyUniforms";
 import { skyFragmentShader, skyVertexShader } from "./shaders/skyShader";
-import { sampleWeather, type WeatherSample } from "./WeatherMath";
+import { createWeather, lightningFlash, settleWeather, stepWeather, type WeatherKind, type WeatherSample } from "./WeatherMath";
 
 /** Half extent of the sun shadow frustum: just enough to hold the yacht. */
 const SHADOW_EXTENT = 17;
@@ -35,7 +35,12 @@ export class EnvironmentSystem {
   private readonly moonDirection = new THREE.Vector3();
   private readonly celestialLightDirection = new THREE.Vector3();
   private readonly fogColor = new THREE.Color();
-  private readonly weather: WeatherSample = { cloudCover: 0.25, overcast: 0 };
+  private readonly weather: WeatherSample = createWeather("clear");
+  private weatherKind: WeatherKind = "clear";
+  private settleWeatherNext = true;
+  private flash = 0;
+  private cloudClock = 0;
+  private readonly flashColor = new THREE.Color();
   // Image-based lighting: the analytic sky is captured into a prefiltered
   // cube so PBR materials reflect and are lit by the sky that is on screen.
   private readonly pmrem: THREE.PMREMGenerator;
@@ -46,7 +51,11 @@ export class EnvironmentSystem {
   private capturedNight = Number.NaN;
   private captureCooldown = 0;
   private mode: LightingMode = "day";
+  /** The automatic day cycle: time-of-day follows `cycleTime` instead of the mode. */
+  private autoCycle = false;
+  private cycleTime = CYCLE_DAY_START;
   private nightFactor = 0;
+  private goalNight = 0;
   /** Linear progress from day (0) to night (1). */
   private transition = 0;
   private state: TimeOfDayState = deriveTimeOfDay(0);
@@ -145,6 +154,32 @@ export class EnvironmentSystem {
     return this.weather;
   }
 
+  /** Lightning brightness right now, 0…1. */
+  get lightning(): number {
+    return this.flash;
+  }
+
+  /** Whether it is (or is becoming) night, for the interface while the cycle runs by itself. */
+  get isNight(): boolean {
+    return this.transition > 0.5;
+  }
+
+  /** The weather the sky is easing toward. */
+  setWeatherKind(kind: WeatherKind, immediate = false): void {
+    this.weatherKind = kind;
+    if (immediate) this.settleWeatherNext = true;
+  }
+
+  /**
+   * Turns the automatic day cycle on or off. Turning it on continues from the
+   * time of day on show, so nothing jumps.
+   */
+  setAutoCycle(enabled: boolean): void {
+    if (enabled === this.autoCycle) return;
+    this.autoCycle = enabled;
+    if (enabled) this.cycleTime = this.transition >= 0.5 ? CYCLE_NIGHT_START : CYCLE_DAY_START;
+  }
+
   /** Direction toward the dominant light (sun by day, moon by night). */
   get lightDirection(): THREE.Vector3 {
     return this.celestialLightDirection;
@@ -156,6 +191,8 @@ export class EnvironmentSystem {
 
   setMode(mode: LightingMode): void {
     this.mode = mode;
+    // Choosing day or night while the cycle runs restarts it from there.
+    if (this.autoCycle) this.cycleTime = mode === "night" ? CYCLE_NIGHT_START : CYCLE_DAY_START;
   }
 
   setSkyDetail(detail: number): void {
@@ -163,15 +200,30 @@ export class EnvironmentSystem {
   }
 
   update(delta: number, camera: THREE.Camera | null, focus: THREE.Vector3, time: number): TimeOfDayState {
-    // A steady march through dusk or dawn, eased at both ends.
-    this.transition = clamp(
-      this.transition + (this.mode === "night" ? 1 : -1) * (delta / TRANSITION_SECONDS),
-      0,
-      1,
-    );
+    // A steady march through dusk or dawn, eased at both ends. In the
+    // automatic cycle the goal moves with the clock; a manual choice (or a jump
+    // of the cycle) is caught up at the quick manual pace.
+    let goal = this.mode === "night" ? 1 : 0;
+    let sunArc = 0;
+    if (this.autoCycle) {
+      this.cycleTime += delta;
+      const cycle = dayCycleState(this.cycleTime);
+      goal = cycle.progress;
+      sunArc = cycle.sunArc;
+    }
+    const maxStep = delta / TRANSITION_SECONDS;
+    this.transition = clamp(this.transition + clamp(goal - this.transition, -maxStep, maxStep), 0, 1);
     this.nightFactor = this.transition * this.transition * (3 - 2 * this.transition);
-    this.state = deriveTimeOfDay(this.nightFactor);
-    sampleWeather(time, this.weather);
+    this.goalNight = goal * goal * (3 - 2 * goal);
+    this.state = deriveTimeOfDay(this.nightFactor, sunArc);
+    if (this.settleWeatherNext) {
+      settleWeather(this.weather, this.weatherKind, time);
+      this.settleWeatherNext = false;
+    } else {
+      stepWeather(this.weather, this.weatherKind, delta, time);
+    }
+    this.flash = lightningFlash(time, this.weather.storm);
+    this.skyUniforms.uFlash.value = this.flash;
     this.palette = deriveEnvironmentPalette(this.state, this.weather);
     const night = this.state.nightFactor;
     const palette = this.palette;
@@ -197,7 +249,9 @@ export class EnvironmentSystem {
     }
 
     applySkyPalette(this.skyUniforms, palette, night);
-    this.skyUniforms.uCloudTime.value = time;
+    // Clouds race across the sky in a gale.
+    this.cloudClock += delta * this.weather.wind;
+    this.skyUniforms.uCloudTime.value = this.cloudClock;
     this.ocean.setEnvironment(palette);
 
     if (camera) this.sky.position.copy(camera.position);
@@ -207,7 +261,7 @@ export class EnvironmentSystem {
     const sunUp = (1 - Math.pow(night, 0.65)) * (this.state.sunElevation > -0.03 ? 1 : 0);
     // Near the horizon the disc is seen through a long, hazy path: dimmer, so
     // its red-orange survives the tone curve instead of clipping to white.
-    const sunRadiance = SUN_DISC_RADIANCE * sunUp * (1 - 0.82 * palette.twilight);
+    const sunRadiance = SUN_DISC_RADIANCE * sunUp * (1 - 0.82 * palette.twilight) * (1 - 0.6 * this.weather.overcast);
     this.sunDisc.value.setRGB(
       palette.sunColor[0] * sunRadiance,
       palette.sunColor[1] * sunRadiance,
@@ -222,6 +276,11 @@ export class EnvironmentSystem {
     this.sunLight.target.position.copy(focus);
     setLinearColor(this.sunLight.color, palette.lightColor);
     this.sunLight.intensity = 1;
+    // Lightning is a short, bluish-white light from above the clouds.
+    if (this.flash > 0.01) {
+      this.flashColor.setRGB(0.55 * this.flash, 0.65 * this.flash, 0.95 * this.flash, THREE.LinearSRGBColorSpace);
+      this.sunLight.color.add(this.flashColor.multiplyScalar(2.2));
+    }
     setLinearColor(this.hemisphere.color, palette.ambientColor);
     this.hemisphere.groundColor.setRGB(
       palette.deepWater[0] * 2 + palette.ambientColor[0] * 0.12,
@@ -229,18 +288,19 @@ export class EnvironmentSystem {
       palette.deepWater[2] * 2 + palette.ambientColor[2] * 0.12,
       THREE.LinearSRGBColorSpace,
     );
-    this.hemisphere.intensity = 0.55;
-    this.renderer.toneMappingExposure = this.state.exposure;
+    this.hemisphere.intensity = 0.55 + this.flash * 1.4;
+    // Storm light is dark; a little more exposure keeps the sea readable.
+    this.renderer.toneMappingExposure = this.state.exposure * (1 + 0.16 * this.weather.storm);
 
     setLinearColor(this.fogColor, palette.horizon);
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.color.copy(this.fogColor);
-      this.scene.fog.density = 0.00105 + night * 0.0001;
+      this.scene.fog.density = (0.00105 + night * 0.0001) * (1 + this.weather.haze * 3.4);
     }
     this.scene.background = this.fogColor;
 
     this.captureCooldown -= delta;
-    const settled = Math.abs(night - (this.mode === "night" ? 1 : 0)) < 0.004;
+    const settled = Math.abs(night - this.goalNight) < 0.004;
     const drift = Math.abs(night - this.capturedNight);
     if (
       Number.isNaN(this.capturedNight) ||

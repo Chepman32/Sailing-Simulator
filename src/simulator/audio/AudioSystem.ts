@@ -16,6 +16,15 @@ const ENGINE_FULL_FIRING = 86;
 const GULL_CALL_MIN_GAP = 2.6;
 const GULL_CALL_MAX_GAP = 14;
 
+/** What the weather asks of the soundscape. */
+export type AudioWeather = {
+  overcast: number;
+  /** Rain intensity, 0…1. */
+  rain: number;
+  /** Sea state scale, 1 = the trade-wind sea. */
+  waves: number;
+};
+
 export type ListenerPose = {
   position: { x: number; y: number; z: number };
   forward: { x: number; y: number; z: number };
@@ -57,6 +66,10 @@ export class AudioSystem {
   private exhaustGain?: GainNode;
   private exhaustPulse?: OscillatorNode;
   private waveGain?: GainNode;
+  private waveFilter?: BiquadFilterNode;
+  private rainHissGain?: GainNode;
+  private rainPatterGain?: GainNode;
+  private thunderBuffer?: AudioBuffer;
   private windGain?: GainNode;
   private windFilter?: BiquadFilterNode;
   private rigGain?: GainNode;
@@ -153,7 +166,13 @@ export class AudioSystem {
    * @param shaft Signed propeller shaft speed as a fraction of maximum.
    * @param apparentWind Apparent wind speed in m/s.
    */
-  update(delta: number, speed: number, shaft: number, apparentWind: number, overcast = 0): void {
+  update(
+    delta: number,
+    speed: number,
+    shaft: number,
+    apparentWind: number,
+    weather: AudioWeather = { overcast: 0, rain: 0, waves: 1 },
+  ): void {
     if (!this.context || this.context.state !== "running") return;
     this.updateElapsed += delta;
     if (this.updateElapsed < 0.05) return;
@@ -181,14 +200,61 @@ export class AudioSystem {
     this.exhaustGain?.gain.setTargetAtTime(0.05 + revs * 0.05, now, 0.4);
 
     // --- Water and wind --------------------------------------------------------
-    this.waveGain?.gain.setTargetAtTime(0.24 + clamp(speed / 7, 0, 1) * 0.18, now, 0.5);
+    // A high sea roars: more water, and more of its low end.
+    const heavySea = clamp((weather.waves - 1) / 3.5, 0, 1);
+    this.waveGain?.gain.setTargetAtTime(0.24 + clamp(speed / 7, 0, 1) * 0.18 + heavySea * 0.34, now, 0.5);
+    this.waveFilter?.frequency.setTargetAtTime(1100 + heavySea * 900, now, 0.8);
     // A soft, low rush that swells slowly with the breeze and the weather;
-    // the rigging only sings when it really blows.
+    // the rigging only sings when it really blows, and howls in a gale.
+    const overcast = weather.overcast;
     const breeze = clamp((apparentWind - 2) / 14, 0, 1);
-    this.windGain?.gain.setTargetAtTime(0.018 + breeze * 0.045 + overcast * 0.02, now, 1.4);
-    this.windFilter?.frequency.setTargetAtTime(380 + breeze * 420 + overcast * 120, now, 1.6);
-    this.rigGain?.gain.setTargetAtTime(Math.max(0, breeze - 0.7) * 0.012, now, 2);
+    const gale = clamp((apparentWind - 16) / 14, 0, 1);
+    this.windGain?.gain.setTargetAtTime(0.018 + breeze * 0.045 + overcast * 0.02 + gale * 0.1, now, 1.4);
+    this.windFilter?.frequency.setTargetAtTime(380 + breeze * 420 + overcast * 120 + gale * 520, now, 1.6);
+    this.rigGain?.gain.setTargetAtTime(Math.max(0, breeze - 0.7) * 0.012 + gale * 0.03, now, 2);
+    // Rain: a hiss on the sea and a patter on the deck.
+    const rain = clamp(weather.rain, 0, 1);
+    this.rainHissGain?.gain.setTargetAtTime(Math.pow(rain, 1.2) * 0.1, now, 0.9);
+    this.rainPatterGain?.gain.setTargetAtTime(Math.pow(rain, 1.1) * 0.12, now, 0.9);
     this.hullGain?.gain.setTargetAtTime(clamp(speed / 6, 0, 1) * 0.16, now, 0.25);
+  }
+
+  /**
+   * A clap of thunder: a crack, then rolling rumble that deepens and dies away.
+   * @param distance 0 overhead … 1 far off: quieter, duller, longer.
+   * @param delay Seconds after now it arrives (sound lags the lightning).
+   */
+  thunder(distance: number, delay = 0): void {
+    const context = this.context;
+    if (!context || context.state !== "running" || !this.environmentBus) return;
+    const far = clamp(distance, 0, 1);
+    const start = context.currentTime + Math.max(0, delay);
+    this.thunderBuffer ??= this.createNoiseBuffer(6.5, "brown");
+    const source = context.createBufferSource();
+    source.buffer = this.thunderBuffer;
+    source.playbackRate.value = 0.8 + Math.random() * 0.3;
+    const filter = context.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.Q.value = 0.8;
+    filter.frequency.setValueAtTime(1500 * (1 - far * 0.55), start);
+    filter.frequency.exponentialRampToValueAtTime(110, start + 3.4 + far * 1.5);
+    const gain = context.createGain();
+    const peak = 0.85 * (1 - far * 0.55);
+    const length = 4.2 + far * 2;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(peak, start + 0.03 + far * 0.2);
+    // The roll: the sound swells again as each branch of the flash arrives.
+    let time = 0.5;
+    for (let roll = 0; roll < 4; roll += 1) {
+      time += 0.35 + Math.random() * 0.7;
+      const level = peak * (0.7 - roll * 0.12) * (0.6 + Math.random() * 0.4);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, level * 0.45), start + time);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, level), start + time + 0.2);
+    }
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + length);
+    source.connect(filter).connect(gain).connect(this.environmentBus);
+    source.start(start, Math.random() * 0.4);
+    source.stop(start + length + 0.1);
   }
 
   /** Where the listener (the camera) is, for positional sounds. */
@@ -441,14 +507,40 @@ export class AudioSystem {
     const waves = this.context.createBufferSource();
     waves.buffer = waveNoise;
     waves.loop = true;
-    const waveFilter = this.context.createBiquadFilter();
-    waveFilter.type = "lowpass";
-    waveFilter.frequency.value = 1100;
-    waveFilter.Q.value = 0.45;
+    this.waveFilter = this.context.createBiquadFilter();
+    this.waveFilter.type = "lowpass";
+    this.waveFilter.frequency.value = 1100;
+    this.waveFilter.Q.value = 0.45;
     this.waveGain = this.context.createGain();
     this.waveGain.gain.value = 0.24;
-    waves.connect(waveFilter).connect(this.waveGain).connect(this.environmentBus);
+    waves.connect(this.waveFilter).connect(this.waveGain).connect(this.environmentBus);
     waves.start();
+
+    // Rain: broadband hiss of drops on the sea, and a lower patter on the deck
+    // and the sails. Silent until it rains.
+    const rainHiss = this.context.createBufferSource();
+    rainHiss.buffer = this.createNoiseBuffer(4.1, "white");
+    rainHiss.loop = true;
+    const rainHissFilter = this.context.createBiquadFilter();
+    rainHissFilter.type = "bandpass";
+    rainHissFilter.frequency.value = 4800;
+    rainHissFilter.Q.value = 0.35;
+    this.rainHissGain = this.context.createGain();
+    this.rainHissGain.gain.value = 0;
+    rainHiss.connect(rainHissFilter).connect(this.rainHissGain).connect(this.environmentBus);
+    rainHiss.start(0, 0.7);
+    const rainPatter = this.context.createBufferSource();
+    rainPatter.buffer = this.createNoiseBuffer(3.3, "pink");
+    rainPatter.loop = true;
+    rainPatter.playbackRate.value = 1.6;
+    const rainPatterFilter = this.context.createBiquadFilter();
+    rainPatterFilter.type = "bandpass";
+    rainPatterFilter.frequency.value = 1500;
+    rainPatterFilter.Q.value = 0.6;
+    this.rainPatterGain = this.context.createGain();
+    this.rainPatterGain.gain.value = 0;
+    rainPatter.connect(rainPatterFilter).connect(this.rainPatterGain).connect(this.environmentBus);
+    rainPatter.start(0, 1.3);
 
     // Wind: pink noise through a low band whose centre the breeze moves;
     // nothing hissy above a couple of kilohertz.

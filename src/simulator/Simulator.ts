@@ -10,6 +10,9 @@ import type { TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
 import { OceanReflection } from "./environment/OceanReflection";
 import { OceanSystem } from "./environment/OceanSystem";
+import { significantWaveHeight } from "./environment/OceanMath";
+import { RainSystem } from "./environment/RainSystem";
+import { autoWeatherKind, isWeatherKind, type WeatherKind, type WeatherMode } from "./environment/WeatherMath";
 import { UnderwaterLight } from "./environment/UnderwaterLight";
 import { InputController } from "./input/InputController";
 import { TouchControls } from "./input/TouchControls";
@@ -53,6 +56,8 @@ export class Simulator {
   private touch!: TouchControls;
   private post!: PostProcessing;
   private reflection?: OceanReflection;
+  private rain!: RainSystem;
+  private lightningWas = 0;
   private mirrorHidden: THREE.Object3D[] = [];
   private audio!: AudioSystem;
   private readonly listenerForward = new THREE.Vector3();
@@ -117,6 +122,7 @@ export class Simulator {
         this.environment?.setShadowMapSize(this.quality.settings.shadowMapSize);
         this.environment?.setSkyDetail(this.quality.settings.skyDetail);
         this.ocean?.setQuality(this.quality.settings);
+        this.rain?.setDrops(this.quality.settings.rainDrops);
         this.post?.setQuality(this.quality.settings);
         this.reflection?.setScale(this.quality.settings.reflectionScale, this.renderer.domElement.width, this.renderer.domElement.height);
         this.persistState();
@@ -126,6 +132,8 @@ export class Simulator {
       this.ocean = new OceanSystem(this.scene, this.quality.settings);
       this.environment = new EnvironmentSystem(this.scene, this.renderer, this.ocean);
       this.environment.setMode(this.state.lightingMode);
+      this.environment.setAutoCycle(this.state.autoTime);
+      this.environment.setWeatherKind(this.currentWeatherKind(), true);
       this.environment.setShadowMapSize(this.quality.settings.shadowMapSize);
       this.environment.setSkyDetail(this.quality.settings.skyDetail);
       this.islands = new IslandSystem(
@@ -163,7 +171,8 @@ export class Simulator {
       this.camera.setMode(this.state.cameraMode);
       this.post = new PostProcessing(this.renderer, this.scene, this.camera.camera, this.quality.settings);
       this.reflection = new OceanReflection(this.quality.settings.reflectionScale);
-      this.mirrorHidden = [this.ocean.mesh, this.wake.object, this.wildlife.underwater, ...this.environment.celestial];
+      this.rain = new RainSystem(this.scene, this.quality.settings.rainDrops);
+      this.mirrorHidden = [this.ocean.mesh, this.wake.object, this.wildlife.underwater, this.rain.object, ...this.environment.celestial];
       this.input = new InputController(this.state.controls, () => this.reset());
       this.touch = new TouchControls(this.canvas, {
         orbit: (x, y) => this.camera.orbit(x, y),
@@ -218,6 +227,29 @@ export class Simulator {
   setLightingMode(mode: LightingMode): void {
     this.state.lightingMode = mode;
     this.environment?.setMode(mode);
+    this.persistState();
+    this.hud.emit(this.snapshot());
+  }
+
+  /** Lets the time of day run through day, dusk, night and dawn by itself. */
+  setAutoTime(enabled: boolean): void {
+    this.state.autoTime = enabled;
+    this.environment?.setAutoCycle(enabled);
+    this.persistState();
+    this.hud.emit(this.snapshot());
+  }
+
+  /** Automatic weather follows the planner; manual keeps the weather the player chose. */
+  setWeatherMode(mode: WeatherMode): void {
+    this.state.weatherMode = mode;
+    this.persistState();
+    this.hud.emit(this.snapshot());
+  }
+
+  /** Chooses the weather. Picking one by hand switches to manual mode. */
+  setWeather(kind: WeatherKind): void {
+    this.state.weather = kind;
+    this.state.weatherMode = "manual";
     this.persistState();
     this.hud.emit(this.snapshot());
   }
@@ -281,6 +313,7 @@ export class Simulator {
     this.wildlife?.dispose();
     this.post?.dispose();
     this.reflection?.dispose();
+    this.rain?.dispose(this.scene);
     this.wake?.dispose();
     this.vessel?.dispose();
     this.islands?.dispose();
@@ -315,7 +348,7 @@ export class Simulator {
   private readonly update = (delta: number): void => {
     this.frameDelta = delta;
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
-    this.islands.update(this.elapsed);
+    this.islands.update(this.elapsed, this.environment.currentWeather.wind);
     this.vessel.update(this.physics, this.physics.guard.output, this.elapsed, delta, this.environmentState.nightFactor, {
       camera: this.camera.camera,
       lightDirection: this.environment.lightDirection,
@@ -326,12 +359,14 @@ export class Simulator {
     this.wildlife.update(delta, this.physics, this.camera.camera);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics);
+    this.environment.setWeatherKind(this.currentWeatherKind());
     this.environmentState = this.environment.update(
       delta,
       this.camera.camera,
       this.physics.position,
       this.elapsed,
     );
+    this.applyWeather();
     this.wake.setEnvironment(this.environment.current.palette);
     // Palm shadows on the sand follow the sun, softer under the moon.
     this.islands.updateShadows(this.renderer, this.environment.lightDirection, 0.82 * (1 - this.environmentState.nightFactor * 0.45));
@@ -342,7 +377,7 @@ export class Simulator {
       Math.abs(this.physics.telemetry.forwardSpeed),
       this.physics.telemetry.engineShaft,
       this.physics.telemetry.apparentWindSpeed,
-      this.environment.currentWeather.overcast,
+      this.environment.currentWeather,
     );
     // Positional sound: the camera is the listener; the gulls call from where they fly.
     const camera = this.camera.camera;
@@ -388,7 +423,13 @@ export class Simulator {
     if (!reflection) return;
     if (this.post.enabled && this.quality.settings.reflectionScale > 0) {
       reflection.render(this.renderer, this.scene, this.camera.camera, this.mirrorHidden);
-      this.ocean.setReflection(reflection.active ? reflection.target.texture : null, reflection.textureMatrix, 0.92);
+      this.ocean.setReflection(
+        reflection.active ? reflection.target.texture : null,
+        reflection.textureMatrix,
+        0.92,
+        reflection.target.width,
+        reflection.target.height,
+      );
     } else {
       this.ocean.setReflection(null, reflection.textureMatrix, 0);
     }
@@ -409,6 +450,36 @@ export class Simulator {
     this.reflection?.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
   };
 
+  /** The weather the sky should be heading for: the player's choice, or the planner's. */
+  private currentWeatherKind(): WeatherKind {
+    return this.state.weatherMode === "manual" ? this.state.weather : autoWeatherKind(this.elapsed);
+  }
+
+  /**
+   * Hands the present weather to everything it touches: the sea's height and
+   * roughness, the wind on the yacht and the palms, the rain, the thunder.
+   */
+  private applyWeather(): void {
+    const weather = this.environment.currentWeather;
+    this.ocean.setWeather(weather);
+    this.physics.windScale = weather.wind;
+    this.rain.update(
+      this.elapsed,
+      this.camera.camera,
+      weather.rain,
+      this.physics.wind,
+      this.environment.current.palette.rainLight,
+    );
+    // Thunder follows the flash by the time sound takes to arrive: a close
+    // stroke cracks almost at once, a far one rumbles seconds later.
+    const flash = this.environment.lightning;
+    if (flash > 0.6 && this.lightningWas <= 0.6) {
+      const distance = Math.random();
+      this.audio.thunder(distance, 0.2 + distance * 3.2);
+    }
+    this.lightningWas = flash;
+  }
+
   private snapshot(): SimulationSnapshot {
     const telemetry = this.physics?.telemetry;
     return {
@@ -422,7 +493,13 @@ export class Simulator {
       throttle: this.state.controls.throttle,
       sailTrim: this.state.controls.sailTrim,
       cameraMode: this.state.cameraMode,
-      lightingMode: this.state.lightingMode,
+      lightingMode: this.state.autoTime && this.environment ? (this.environment.isNight ? "night" : "day") : this.state.lightingMode,
+      autoTime: this.state.autoTime,
+      weatherMode: this.state.weatherMode,
+      weather: this.state.weather,
+      weatherNow: this.environment ? this.currentWeatherKind() : this.state.weather,
+      waveHeight: significantWaveHeight(),
+      trueWindKnots: (telemetry?.trueWindSpeed ?? 8) * 1.943844,
       quality: this.state.quality,
       soundEnabled: this.state.soundEnabled,
       audioReady: this.audio?.isReady() ?? false,
@@ -442,6 +519,9 @@ export class Simulator {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<SimulatorState>;
       if (["day", "night"].includes(saved.lightingMode ?? "")) base.lightingMode = saved.lightingMode!;
       if (["chase", "helm", "orbit", "drone"].includes(saved.cameraMode ?? "")) base.cameraMode = saved.cameraMode!;
+      if (typeof saved.autoTime === "boolean") base.autoTime = saved.autoTime;
+      if (["auto", "manual"].includes(saved.weatherMode ?? "")) base.weatherMode = saved.weatherMode!;
+      if (isWeatherKind(saved.weather)) base.weather = saved.weather;
       if (!this.coarseDevice && ["low", "medium", "high"].includes(saved.quality ?? "")) {
         base.quality = saved.quality!;
       }
@@ -458,6 +538,9 @@ export class Simulator {
       STORAGE_KEY,
       JSON.stringify({
         lightingMode: this.state.lightingMode,
+        autoTime: this.state.autoTime,
+        weatherMode: this.state.weatherMode,
+        weather: this.state.weather,
         cameraMode: this.state.cameraMode,
         quality: this.state.quality,
         soundEnabled: this.state.soundEnabled,

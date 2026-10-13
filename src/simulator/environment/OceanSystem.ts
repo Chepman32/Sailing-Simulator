@@ -2,10 +2,11 @@ import * as THREE from "three";
 import type { QualitySettings } from "../core/QualityManager";
 import type { EnvironmentPalette } from "./EnvironmentPalette";
 import { createOceanGrid } from "./OceanGrid";
-import { OCEAN_WAVES, sampleOcean, type OceanSample } from "./OceanMath";
+import { maximumOceanFold, OCEAN_WAVES, sampleOcean, seaFactors, setSeaScale, type OceanSample } from "./OceanMath";
 import { createSkyUniforms, setLinearColor, type SkyUniforms } from "./SkyUniforms";
 import { MAX_IMPACT_STRENGTH, MAX_SURFACE_IMPACTS, surfaceImpactLife } from "./SurfaceImpacts";
 import { oceanFragmentShader, oceanVertexShader } from "./shaders/oceanShader";
+import type { WeatherSample } from "./WeatherMath";
 
 function createFocusedOceanGeometry(segments: number): { geometry: THREE.BufferGeometry; cellSize: number } {
   const grid = createOceanGrid(segments);
@@ -45,6 +46,13 @@ export class OceanSystem {
       uReflectionMap: { value: null },
       uReflectionMatrix: { value: new THREE.Matrix4() },
       uReflectionStrength: { value: 0 },
+      uReflectionTexel: { value: new THREE.Vector2(1 / 512, 1 / 512) },
+      uSeaFactors: { value: seaFactors },
+      uMaxFold: { value: maximumOceanFold() },
+      uRain: { value: 0 },
+      uBreaking: { value: 0 },
+      uWindRipple: { value: 1 },
+      uHaze: { value: 0 },
       uWakeMap: { value: null },
       uWakeArea: { value: new THREE.Vector3(0, 0, 1) },
       uWakeTexel: { value: 0 },
@@ -73,10 +81,25 @@ export class OceanSystem {
    * Mirror image of the world above the sea (see `OceanReflection`), or null
    * to reflect the sky alone.
    */
-  setReflection(texture: THREE.Texture | null, matrix: THREE.Matrix4, strength: number): void {
+  setReflection(texture: THREE.Texture | null, matrix: THREE.Matrix4, strength: number, width = 512, height = 512): void {
     this.uniforms.uReflectionMap.value = texture;
+    (this.uniforms.uReflectionTexel.value as THREE.Vector2).set(1 / Math.max(1, width), 1 / Math.max(1, height));
     (this.uniforms.uReflectionMatrix.value as THREE.Matrix4).copy(matrix);
     this.uniforms.uReflectionStrength.value = texture ? strength : 0;
+  }
+
+  /**
+   * Weather's hand on the sea: how high it runs (the shared wave scale that
+   * physics, wake and wildlife read as well), how hard the wind roughens it,
+   * how readily crests break, and the rain and mist over it.
+   */
+  setWeather(weather: WeatherSample): void {
+    setSeaScale(weather.waves);
+    this.uniforms.uMaxFold.value = maximumOceanFold();
+    this.uniforms.uRain.value = weather.rain;
+    this.uniforms.uBreaking.value = weather.breaking;
+    this.uniforms.uWindRipple.value = Math.min(2.4, 1 + (weather.wind - 1) * 0.42);
+    this.uniforms.uHaze.value = weather.haze;
   }
 
   /**
@@ -164,6 +187,7 @@ export class OceanSystem {
   }
 
   dispose(scene: THREE.Scene): void {
+    setSeaScale(1);
     scene.remove(this.mesh);
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();

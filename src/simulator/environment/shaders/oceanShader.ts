@@ -44,21 +44,31 @@ function unit(x: number, z: number): [number, number] {
   return [x / length, z / length];
 }
 
-const displacementCalls = OCEAN_WAVES.map((wave) => {
+/**
+ * Per-component amplitude factors of the sea state (see `seaWaveFactors`),
+ * shared by reference with every material that evaluates the waves.
+ */
+export const SEA_FACTORS_UNIFORM = `
+  #ifndef SEA_FACTORS_DECLARED
+  #define SEA_FACTORS_DECLARED
+  uniform float uSeaFactors[${OCEAN_WAVES.length}];
+  #endif`;
+
+function amplitude(wave: (typeof OCEAN_WAVES)[number], index: number): string {
+  return `${glsl(wave.amplitude)} * uSeaFactors[${index}]`;
+}
+
+const displacementCalls = OCEAN_WAVES.map((wave, index) => {
   const [dx, dz] = unit(wave.directionX, wave.directionZ);
-  return `    offset += gerstnerOffset(vec2(${glsl(dx)}, ${glsl(dz)}), ${glsl(wave.amplitude)}, ${glsl(
+  return `    offset += gerstnerOffset(vec2(${glsl(dx)}, ${glsl(dz)}), ${amplitude(wave, index)}, ${glsl(
     wave.wavelength,
   )}, ${glsl(wave.speed)}, ${glsl(wave.steepness)}, worldBase.xz, cellSize);`;
 }).join("\n");
 
-const maximumFold = OCEAN_WAVES.reduce(
-  (total, wave) => total + wave.steepness * wave.amplitude * ((Math.PI * 2) / wave.wavelength),
-  0,
-);
 
-const swellCalls = OCEAN_WAVES.map((wave) => {
+const swellCalls = OCEAN_WAVES.map((wave, index) => {
   const [dx, dz] = unit(wave.directionX, wave.directionZ);
-  return `    swellWave(vec2(${glsl(dx)}, ${glsl(dz)}), ${glsl(wave.amplitude)}, ${glsl(wave.wavelength)}, ${glsl(
+  return `    swellWave(vec2(${glsl(dx)}, ${glsl(dz)}), ${amplitude(wave, index)}, ${glsl(wave.wavelength)}, ${glsl(
     wave.speed,
   )}, ${glsl(wave.steepness)}, base, footprint, slope, fold, lostVariance);`;
 }).join("\n");
@@ -70,18 +80,18 @@ const detailCalls = OCEAN_DETAIL_WAVES.map((wave, index) => {
   )}, ${glsl(index * 1.7)}, base, footprint, gust, warp, slope, lostVariance);`;
 }).join("\n");
 
-const heightTerms = OCEAN_WAVES.map((wave) => {
+const heightTerms = OCEAN_WAVES.map((wave, index) => {
   const [dx, dz] = unit(wave.directionX, wave.directionZ);
   const k = (Math.PI * 2) / wave.wavelength;
-  return `    height += ${glsl(wave.amplitude)} * sin(${glsl(k)} * dot(vec2(${glsl(dx)}, ${glsl(dz)}), base) - ${glsl(
+  return `    height += ${amplitude(wave, index)} * sin(${glsl(k)} * dot(vec2(${glsl(dx)}, ${glsl(dz)}), base) - ${glsl(
     Math.sqrt(9.81 * k) * wave.speed,
   )} * time);`;
 }).join("\n");
 
-const excursionTerms = OCEAN_WAVES.map((wave) => {
+const excursionTerms = OCEAN_WAVES.map((wave, index) => {
   const [dx, dz] = unit(wave.directionX, wave.directionZ);
   const k = (Math.PI * 2) / wave.wavelength;
-  return `      offset += vec2(${glsl(dx)}, ${glsl(dz)}) * ${glsl(wave.steepness * wave.amplitude)} * cos(${glsl(
+  return `      offset += vec2(${glsl(dx)}, ${glsl(dz)}) * ${glsl(wave.steepness * wave.amplitude)} * uSeaFactors[${index}] * cos(${glsl(
     k,
   )} * dot(vec2(${glsl(dx)}, ${glsl(dz)}), base) - ${glsl(Math.sqrt(9.81 * k) * wave.speed)} * time);`;
 }).join("\n");
@@ -95,6 +105,7 @@ const excursionTerms = OCEAN_WAVES.map((wave) => {
 export const OCEAN_SURFACE_HEIGHT_GLSL = /* glsl */ `
   #ifndef OCEAN_SURFACE_HEIGHT
   #define OCEAN_SURFACE_HEIGHT
+  ${SEA_FACTORS_UNIFORM}
   float oceanSurfaceHeight(vec2 position, float time) {
     vec2 base = position;
     for (int iteration = 0; iteration < ${SURFACE_INVERSION_ITERATIONS}; iteration++) {
@@ -117,6 +128,7 @@ ${heightTerms}
 export const OCEAN_SURFACE_HEIGHT_FAST_GLSL = /* glsl */ `
   #ifndef OCEAN_SURFACE_HEIGHT_FAST
   #define OCEAN_SURFACE_HEIGHT_FAST
+  ${SEA_FACTORS_UNIFORM}
   float oceanSurfaceHeightFast(vec2 base, float time) {
     float height = 0.0;
 ${heightTerms}
@@ -126,6 +138,7 @@ ${heightTerms}
 `;
 
 export const oceanVertexShader = /* glsl */ `
+  ${SEA_FACTORS_UNIFORM}
   uniform float uTime;
   uniform mat4 uReflectionMatrix;
   attribute float cellSpacing;
@@ -184,6 +197,16 @@ export const oceanFragmentShader = /* glsl */ `
   uniform float uVesselSpeed;
   uniform sampler2D uReflectionMap;
   uniform float uReflectionStrength;
+  uniform vec2 uReflectionTexel;
+  ${SEA_FACTORS_UNIFORM}
+  // Weather: the largest crest fold of the present sea state (so a rising sea
+  // is not instantly all whitecaps), rain intensity, how much sooner crests
+  // break, how much harder the wind roughens the water, and the haze.
+  uniform float uMaxFold;
+  uniform float uRain;
+  uniform float uBreaking;
+  uniform float uWindRipple;
+  uniform float uHaze;
   // Wake field (see WakeField): R foam, G aerated slick, B − A height in metres.
   uniform sampler2D uWakeMap;
   uniform vec3 uWakeArea;
@@ -193,7 +216,6 @@ export const oceanFragmentShader = /* glsl */ `
   varying vec4 vReflectionCoord;
 
   const float OCEAN_PI = 3.141592653589793;
-  const float MAX_FOLD = ${glsl(maximumFold)};
   const float HULL_OFFSET_X = ${glsl(HULL_OFFSET_X)};
   const float HULL_CENTER_Z = ${glsl(HULL_CENTER_Z)};
   const float HULL_HALF_LENGTH = ${glsl(HULL_HALF_LENGTH)};
@@ -263,6 +285,88 @@ export const oceanFragmentShader = /* glsl */ `
     return max(abs(local.x) - halfWidth, abs(local.y) - HULL_HALF_LENGTH);
   }
 
+  // Raindrops on the sea: expanding rings, one drop per jittered cell, two
+  // layers of cells. Shading only (they are far too small to move anything),
+  // faded out as they shrink below the pixel footprint.
+  vec2 rainRings(vec2 position, float footprint) {
+    vec2 total = vec2(0.0);
+    float resolved = 1.0 - smoothstep(0.06, 0.5, footprint);
+    if (resolved <= 0.001) return total;
+    for (int layer = 0; layer < 2; layer++) {
+      float cellSize = layer == 0 ? 0.55 : 0.93;
+      float density = layer == 0 ? 1.0 : 0.7;
+      vec2 p = position / cellSize + float(layer) * 31.7;
+      vec2 cell = floor(p);
+      vec2 local = fract(p);
+      float h0 = skyHash(cell + 7.1);
+      float h1 = skyHash(cell + 19.3);
+      float h2 = skyHash(cell + 3.7);
+      float h3 = skyHash(cell + 41.9);
+      vec2 centre = vec2(0.3 + 0.4 * h0, 0.3 + 0.4 * h1);
+      float age = fract(uTime * (0.8 + 0.6 * h2) + h2 * 7.0 + h0);
+      float alive = step(h3, uRain * 0.85 * density);
+      vec2 offset = (local - centre) * cellSize;
+      float distance = length(offset);
+      float delta = distance - age * 0.3 * cellSize;
+      float width = 0.03 + 0.03 * age;
+      float profile = sin(delta / width * 2.6) * exp(-delta * delta / (width * width * 3.0));
+      total += offset / max(distance, 1.0e-3) * profile * (1.0 - age) * (1.0 - age) * 0.5 * alive;
+    }
+    return total * resolved;
+  }
+
+  vec4 mirrorFetch(vec2 uv, float lod) {
+    return textureLod(uReflectionMap, clamp(uv, vec2(0.003), vec2(0.997)), lod);
+  }
+
+  // The yacht, the islands and the birds, mirrored in the sea.
+  //
+  // Ripples tilt each facet of the surface. That slides the mirror image
+  // sideways and, far more, along the line of sight, so upright things are
+  // broken into wavering vertical streaks. The axes come from the camera, not
+  // from the world, so the streaking follows the view as it does on real water.
+  //
+  // A reflection is sharpest where the object meets the water and blurs and
+  // fades the higher the reflected point is. The mirror image is walked up
+  // toward the horizon until the object ends to find that height.
+  // Returns colour in rgb and weight in a; height (0 at the waterline) in the out value.
+  vec4 mirroredWorld(vec2 slope, float roughness, float viewDistance, out float height) {
+    vec2 uv = vReflectionCoord.xy / max(vReflectionCoord.w, 1.0e-4);
+    vec2 right = normalize(vec2(viewMatrix[0][0], viewMatrix[2][0]) + 1.0e-5);
+    vec2 forward = normalize(-vec2(viewMatrix[0][2], viewMatrix[2][2]) + 1.0e-5);
+    float reach = 1.0 / (1.0 + viewDistance * 0.01);
+    vec2 shift = vec2(dot(slope, right) * 0.3, dot(slope, forward) * 0.72) * reach;
+    shift = clamp(shift, vec2(-0.045, -0.085), vec2(0.045, 0.085));
+    uv += shift;
+
+    height = 0.5;
+    if (uDetail > 0.6) {
+      float travelled = 0.0;
+      float alive = 1.0;
+      float stepLength = 0.01;
+      for (int i = 0; i < 4; i++) {
+        alive *= step(0.35, mirrorFetch(uv + vec2(0.0, travelled + stepLength), 1.5).a);
+        travelled += stepLength * alive;
+        stepLength *= 2.3;
+      }
+      height = smoothstep(0.0, 0.2, travelled);
+    }
+
+    float blur = (0.003 + roughness * 0.045) * (0.35 + height * 1.6) * (1.0 + abs(shift.y) * 14.0);
+    float lod = log2(1.0 + blur / max(uReflectionTexel.y, 1.0e-4) * 0.3);
+    vec4 sum = vec4(0.0);
+    float total = 0.0;
+    for (int i = 0; i < 5; i++) {
+      float t = float(i) - 2.0;
+      float w = exp(-t * t * 0.3);
+      sum += mirrorFetch(uv + vec2(t * blur * 0.16, t * blur), lod) * w;
+      total += w;
+    }
+    sum /= total;
+    float weight = sum.a * (1.0 - height * 0.4);
+    return vec4(sum.rgb / max(sum.a, 1.0e-3), weight);
+  }
+
   void main() {
     vec2 base = vBase;
     vec3 toCamera = cameraPosition - vWorldPosition;
@@ -272,7 +376,7 @@ export const oceanFragmentShader = /* glsl */ `
 
     // Wind gusts travel across the water as darker, rougher patches.
     float gustNoise = skyNoise(base * 0.011 + vec2(uTime * 0.035, uTime * 0.021));
-    float gust = 0.68 + 0.74 * gustNoise;
+    float gust = (0.68 + 0.74 * gustNoise) * uWindRipple;
 
     vec2 slope = vec2(0.0);
     float fold = 0.0;
@@ -287,12 +391,19 @@ ${detailCalls}
       rippleLayer(base * 2.1 + uTime * vec2(0.52, 0.29), 0.48, 0.085, footprint, gust, slope, lostVariance);
       if (uDetail > 0.6) {
         rippleLayer(base * 5.7 - uTime * vec2(0.38, 0.71), 0.18, 0.06, footprint, gust, slope, lostVariance);
+        // Chop a metre across, from no particular direction, so the swell's
+        // straight crest lines never read as ruled bands in the glitter.
+        rippleLayer(base * 0.85 + uTime * vec2(-0.21, 0.33), 1.25, 0.05, footprint, gust, slope, lostVariance);
       }
     } else {
       lostVariance += 0.006;
     }
     vec2 rippleSlope = slope - swellSlope;
     float rippleVariance = lostVariance - swellVariance;
+    if (uRain > 0.01) {
+      rippleSlope += rainRings(base, footprint);
+      rippleVariance += 0.012 * uRain;
+    }
     float calm = surfaceImpacts(vWorldPosition.xz, footprint, swellSlope);
 
     // --- Wake -------------------------------------------------------------
@@ -358,16 +469,17 @@ ${detailCalls}
       vec4 clouds = skyClouds(normalize(calmReflected), 0.0);
       reflection = mix(reflection, clouds.rgb, clouds.a * 0.85);
     }
-    // The yacht, the islands and the birds, mirrored and bent by the waves:
-    // swell sways the image, ripples break its edges into streaks.
+    // The yacht, the islands and the birds, mirrored and bent by the waves.
     if (uReflectionStrength > 0.0) {
-      vec2 mirrorUv = vReflectionCoord.xy / max(vReflectionCoord.w, 1.0e-4);
-      float sway = 1.0 / (1.0 + viewDistance * 0.03);
-      mirrorUv += vec2(swellSlope.x, swellSlope.y) * 0.05 * sway + vec2(slope.x - swellSlope.x, slope.y - swellSlope.y) * 0.11 * sway;
-      vec4 mirrored = texture2D(uReflectionMap, clamp(mirrorUv, vec2(0.001), vec2(0.999)));
-      // Rough, distant water scatters the image into a soft smudge.
-      float mirrorWeight = mirrored.a * uReflectionStrength * (1.0 - smoothstep(0.18, 0.42, roughness) * 0.6);
-      reflection = mix(reflection, mirrored.rgb, clamp(mirrorWeight, 0.0, 1.0));
+      float mirrorHeight;
+      vec4 mirrored = mirroredWorld(slope, roughness, viewDistance, mirrorHeight);
+      // Rough water scatters the image: fainter, a little greyer.
+      float mirrorWeight = mirrored.a * uReflectionStrength * (1.0 - smoothstep(0.2, 0.5, roughness) * 0.5);
+      vec3 mirrorColour = mirrored.rgb * mix(vec3(0.95, 0.98, 1.0), vec3(0.82, 0.91, 1.0), mirrorHeight);
+      reflection = mix(reflection, mirrorColour, clamp(mirrorWeight, 0.0, 1.0));
+      // Dark objects against a bright sky read through the water's own tint at
+      // low Fresnel: lift the reflectance where an image really is mirrored.
+      fresnel = max(fresnel, clamp(mirrorWeight, 0.0, 1.0) * 0.34);
     }
 
     // --- Water body -------------------------------------------------------
@@ -386,7 +498,7 @@ ${detailCalls}
     body = mix(body, uScatterColor * irradiance * 0.3 + body * 0.75, bubbles * 0.3);
 
     // Sunlight entering the back of a crest scatters toward the viewer.
-    float crest = clamp(fold / MAX_FOLD, -1.0, 1.0);
+    float crest = clamp(fold / max(uMaxFold, 1.0e-3), -1.0, 1.0);
     float throughWave = pow(max(dot(viewDirection, -normalize(uLightDirection + normal * 0.45)), 0.0), 3.0);
     float scatter = throughWave * smoothstep(-0.15, 0.85, crest) * (1.0 - nDotV * 0.6);
     body += uScatterColor * uLightColor * scatter * 0.085;
@@ -416,7 +528,7 @@ ${detailCalls}
     float sheenAlpha2 = pow(max(roughness * 2.4, 0.16), 4.0);
     float sheenDenominator = nDotH * nDotH * (sheenAlpha2 - 1.0) + 1.0;
     float sheen = sheenAlpha2 / (OCEAN_PI * sheenDenominator * sheenDenominator) * specularFresnel * visibility * nDotL;
-    color += uLightColor * (specular + min(sheen, 6.0) * 0.18);
+    color += uLightColor * (specular + min(sheen, 5.0) * 0.1);
 
     // Sparkles: single capillary facets tilted just right flash brighter
     // than white, so bloom turns them into points of light.
@@ -429,7 +541,7 @@ ${detailCalls}
       float glint = smoothstep(0.9965, 0.9993, facetAlign) * smoothstep(0.52, 0.72, sparkleA * sparkleB * 1.9);
       // Below a pixel the flashes would only shimmer; let the GGX lobe carry them.
       glint *= (1.0 - smoothstep(0.12, 0.45, footprint)) * smoothstep(0.0, 0.08, nDotL);
-      color += uLightColor * glint * 9.0;
+      color += uLightColor * glint * 7.0;
     }
 
     // --- Hulls -------------------------------------------------------------
@@ -453,13 +565,14 @@ ${detailCalls}
     float foamTexture = foamFine * 0.55 + foamMedium * 0.45;
     // Whitecaps break only on the steepest crests, mostly inside gusts: a
     // 15-knot breeze leaves the sea flecked with white, not covered in it.
-    float breaking = crest * 0.86 + (gust - 1.0) * 0.2;
+    float breaking = crest * 0.86 + (gust - 1.0) * 0.2 + uBreaking;
     float whitecap = smoothstep(0.66, 1.0, breaking);
     float foam = whitecap * whitecap * (0.5 + 0.5 * foamTexture) * 1.5;
     // A frayed, speckled fringe dissolves around each patch.
     foam += smoothstep(0.02, 0.5, whitecap) * smoothstep(0.58, 0.86, foamTexture) * 0.45;
     foam += smoothstep(0.36, 0.8, breaking) * smoothstep(0.66, 0.9, foamTexture) * 0.16;
     foam = min(foam, 0.88) * uFoamDensity * (1.0 - calm * 0.6);
+    foam = min(foam * (1.0 + uBreaking * 1.4), 0.95);
 
 
     // Water piling against the hulls: a lapping line at rest, a bow wave and
@@ -513,8 +626,9 @@ ${detailCalls}
     // --- Aerial perspective -------------------------------------------------
     vec3 horizonDirection = normalize(vec3(-viewDirection.x, 0.0, -viewDirection.z) + vec3(0.0, 1.0e-4, 0.0));
     vec3 horizon = skyAtmosphere(horizonDirection);
-    float haze = 1.0 - exp(-pow(viewDistance * 0.0011, 1.6));
-    haze = max(haze * 0.9, smoothstep(${glsl(HORIZON_FADE_START)}, ${glsl(HORIZON_FADE_END)}, viewDistance));
+    float hazeReach = 1.0 - 0.5 * uHaze;
+    float haze = 1.0 - exp(-pow(viewDistance * 0.0011 * (1.0 + uHaze * 5.0), 1.6));
+    haze = max(haze * 0.9, smoothstep(${glsl(HORIZON_FADE_START)} * hazeReach, ${glsl(HORIZON_FADE_END)} * hazeReach, viewDistance));
     color = mix(color, horizon, haze);
     alpha = mix(alpha, 1.0, smoothstep(60.0, 260.0, viewDistance));
 

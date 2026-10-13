@@ -29,7 +29,11 @@ export const MIN_GUST_FACTOR = 0.76;
 export const MAX_GUST_FACTOR = 1.26;
 export const MAX_WIND_SHIFT = 0.16;
 
-export function sampleWind(time: number, target: WindSample): WindSample {
+/**
+ * @param scale Weather's multiplier on the mean wind (1 = the trade wind). Gusts
+ *   stay proportional, so a gale is as gusty, in relative terms, as a breeze.
+ */
+export function sampleWind(time: number, target: WindSample, scale = 1): WindSample {
   // Incommensurate periods: the pattern does not audibly or visibly repeat.
   const slow = Math.sin(time * 0.071 + 0.6);
   const medium = Math.sin(time * 0.193 + 2.1);
@@ -43,7 +47,7 @@ export function sampleWind(time: number, target: WindSample): WindSample {
     Math.min(MAX_WIND_SHIFT, Math.sin(time * 0.043 + 1.3) * 0.1 + Math.sin(time * 0.131 + 0.2) * 0.05),
   );
   const heading = MEAN_WIND_HEADING + shift;
-  const speed = MEAN_WIND_SPEED * gust;
+  const speed = MEAN_WIND_SPEED * gust * Math.max(0, scale);
   target.x = Math.sin(heading) * speed;
   target.z = Math.cos(heading) * speed;
   target.speed = speed;

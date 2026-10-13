@@ -43,8 +43,10 @@ export class OceanReflection {
       type: THREE.HalfFloatType,
       format: THREE.RGBAFormat,
       depthBuffer: true,
-      generateMipmaps: false,
-      minFilter: THREE.LinearFilter,
+      // The mip chain is the cheap blur the water uses where it roughens the
+      // image (see `mirroredWorld` in the ocean shader).
+      generateMipmaps: true,
+      minFilter: THREE.LinearMipmapLinearFilter,
       magFilter: THREE.LinearFilter,
     });
     this.target.texture.name = "OceanReflection";

@@ -17,6 +17,8 @@ export type SkyUniforms = {
   uNight: THREE.IUniform<number>;
   uCloudTime: THREE.IUniform<number>;
   uCloudCover: THREE.IUniform<number>;
+  /** Lightning: 0 dark … 1 the whole sky lit from inside the clouds. */
+  uFlash: THREE.IUniform<number>;
 };
 
 export function createSkyUniforms(): SkyUniforms {
@@ -32,6 +34,7 @@ export function createSkyUniforms(): SkyUniforms {
     uNight: { value: 0 },
     uCloudTime: { value: 0 },
     uCloudCover: { value: 0.43 },
+    uFlash: { value: 0 },
   };
 }
 

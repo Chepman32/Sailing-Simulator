@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
 import type { CameraMode, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
+import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
 import { SoundPrompt } from "./SoundPrompt";
 import {
   getMessages,
@@ -31,7 +32,15 @@ type ControlIconName =
   | "orbit"
   | "drone"
   | "reset"
-  | "photo";
+  | "photo"
+  | "auto-time"
+  | "clear"
+  | "cloudy"
+  | "overcast"
+  | "rain"
+  | "downpour"
+  | "storm"
+  | "hurricane";
 
 function ControlIcon({ name }: { name: ControlIconName }) {
   return (
@@ -47,6 +56,41 @@ function ControlIcon({ name }: { name: ControlIconName }) {
         <>
           <circle cx="12" cy="12" r="3.4" />
           <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4" />
+        </>
+      )}
+      {name === "auto-time" && (
+        <>
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M12 7v5l3.2 2" />
+        </>
+      )}
+      {name === "clear" && (
+        <>
+          <circle cx="12" cy="12" r="3.4" />
+          <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" />
+        </>
+      )}
+      {(name === "cloudy" || name === "overcast") && (
+        <>
+          <path d="M7 18h10a4 4 0 0 0 .6-7.95A5.5 5.5 0 0 0 7 9.2 4.4 4.4 0 0 0 7 18Z" />
+          {name === "cloudy" && <path d="M4 5.5l1 1M8 3.5v1.4" />}
+        </>
+      )}
+      {(name === "rain" || name === "downpour") && (
+        <>
+          <path d="M7 14h10a3.6 3.6 0 0 0 .5-7.15A5 5 0 0 0 7.2 6.2 3.9 3.9 0 0 0 7 14Z" />
+          <path d={name === "rain" ? "M9 17l-1 2.5M13 17l-1 2.5M17 17l-1 2.5" : "M8 16.5l-1.4 4M12 16.5l-1.4 4M16 16.5l-1.4 4M10 18l-.8 2.5M14 18l-.8 2.5"} />
+        </>
+      )}
+      {name === "storm" && (
+        <>
+          <path d="M7 13h10a3.6 3.6 0 0 0 .5-7.15A5 5 0 0 0 7.2 5.2 3.9 3.9 0 0 0 7 13Z" />
+          <path d="m12.5 12-2.6 4.4h3L11.2 21" />
+        </>
+      )}
+      {name === "hurricane" && (
+        <>
+          <path d="M4 8h11a3 3 0 1 0-3-3M3 12.5h16a3 3 0 1 1-3 3M6 17h7a2.5 2.5 0 1 1-2.5 2.5" />
         </>
       )}
       {name === "moon" && <path d="M20.2 15.1A8.2 8.2 0 0 1 8.9 3.8 8.3 8.3 0 1 0 20.2 15.1Z" />}
@@ -321,6 +365,15 @@ export function SailingSimulator() {
   const wheelRotation = rudderInput * 2.7;
 
   const setLighting = (mode: LightingMode) => simulatorRef.current?.setLightingMode(mode);
+  const weatherLabels: Record<WeatherKind, string> = {
+    clear: messages.weatherClear,
+    cloudy: messages.weatherCloudy,
+    overcast: messages.weatherOvercast,
+    rain: messages.weatherRain,
+    downpour: messages.weatherDownpour,
+    storm: messages.weatherStorm,
+    hurricane: messages.weatherHurricane,
+  };
   const setCamera = (mode: CameraMode) => simulatorRef.current?.setCameraMode(mode);
   const setQuality = (preset: QualityPreset) => simulatorRef.current?.setQuality(preset);
   const resetScene = () => {
@@ -598,6 +651,14 @@ export function SailingSimulator() {
                 <button
                   type="button"
                   className="quiet-button icon-control"
+                  aria-label={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
+                  title={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
+                  aria-pressed={snapshot.autoTime}
+                  onClick={() => simulatorRef.current?.setAutoTime(!snapshot.autoTime)}
+                ><ControlIcon name="auto-time" /></button>
+                <button
+                  type="button"
+                  className="quiet-button icon-control"
                   aria-label={`${messages.engine}: ${engineInput ? messages.stop : messages.start}`}
                   title={`${messages.engine}: ${engineInput ? messages.stop : messages.start}`}
                   aria-pressed={engineInput}
@@ -643,6 +704,43 @@ export function SailingSimulator() {
                       <ControlIcon name={mode} />
                     </button>
                   ))}
+                </div>
+              </div>
+
+              <div className="panel-section">
+                <div className="section-label">
+                  <span>{messages.weather}</span>
+                  <strong>{weatherLabels[snapshot.weatherNow]}</strong>
+                </div>
+                <div className="weather-mode segmented" role="group" aria-label={messages.weather}>
+                  {(["auto", "manual"] as WeatherMode[]).map((mode) => (
+                    <button
+                      type="button"
+                      key={mode}
+                      aria-pressed={snapshot.weatherMode === mode}
+                      onClick={() => simulatorRef.current?.setWeatherMode(mode)}
+                    >{mode === "auto" ? messages.weatherAuto : messages.weatherManual}</button>
+                  ))}
+                </div>
+                <div className="weather-grid">
+                  {WEATHER_KINDS.map((kind) => (
+                    <button
+                      type="button"
+                      className="icon-control"
+                      key={kind}
+                      aria-label={`${messages.weather}: ${weatherLabels[kind]}`}
+                      title={weatherLabels[kind]}
+                      aria-pressed={snapshot.weatherMode === "manual" ? snapshot.weather === kind : snapshot.weatherNow === kind}
+                      data-auto={snapshot.weatherMode === "auto" ? "true" : undefined}
+                      onClick={() => simulatorRef.current?.setWeather(kind)}
+                    >
+                      <ControlIcon name={kind} />
+                    </button>
+                  ))}
+                </div>
+                <div className="sea-readout">
+                  <span>{messages.waves} <strong>{snapshot.waveHeight.toFixed(1)} m</strong></span>
+                  <span>{messages.wind} <strong>{Math.round(snapshot.trueWindKnots)} kn</strong></span>
                 </div>
               </div>
 

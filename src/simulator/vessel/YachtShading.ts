@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { injectAfter, injectBefore, patchMaterialShader } from "../core/ShaderPatch";
 import type { EnvironmentPalette } from "../environment/EnvironmentPalette";
+import { seaFactors } from "../environment/OceanMath";
 import { OCEAN_SURFACE_HEIGHT_GLSL } from "../environment/shaders/oceanShader";
 
 /**
@@ -33,6 +34,8 @@ export class YachtShading {
     uOceanTime: { value: 0 },
     uSunViewDirection: { value: new THREE.Vector3(0, 1, 0) },
     uSunLight: { value: new THREE.Color(1, 1, 1) },
+    /** The sea state, shared with the ocean so the wet band follows the real waterline. */
+    uSeaFactors: { value: seaFactors },
   };
 
   update(root: THREE.Object3D, time: number, camera: THREE.Camera, lightDirection: THREE.Vector3, palette: EnvironmentPalette): void {
@@ -53,6 +56,7 @@ export class YachtShading {
     patchMaterialShader(material, `yacht-hull-v1@${sheerHeight.toFixed(3)}`, (shader) => {
       this.declare(shader);
       shader.uniforms.uOceanTime = uniforms.uOceanTime;
+      shader.uniforms.uSeaFactors = uniforms.uSeaFactors;
       shader.fragmentShader = injectAfter(
         shader.fragmentShader,
         "common",
