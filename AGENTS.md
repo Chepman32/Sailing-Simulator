@@ -77,6 +77,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/math.ts` | Allocation-free scalar helpers |
 | `src/simulator/core/RenderLoop.ts` | Visibility-aware requestAnimationFrame loop with 60 Hz fixed-step accumulator |
 | `src/simulator/core/FramePacer.ts` | Pure frame-rate cap (60 fps, 30 fps unfocused) so 120/144 Hz displays do not double the GPU work |
+| `src/simulator/core/RenderBudget.ts` | Pure pixel budget (`budgetPixelRatio`) and GPU-time governor (`GpuGovernor`) that eases the render scale |
+| `src/simulator/core/GpuTimer.ts` | Asynchronous GPU frame timing through `EXT_disjoint_timer_query_webgl2`, where the browser has it |
 | `src/simulator/core/AssetManager.ts` | Manifest, parallel GLB loading, required/optional behavior, cloning, progress, disposal |
 | `src/simulator/core/QualityManager.ts` | Low/medium/high settings, DPR, shadows, ocean tessellation and shader detail, post-processing switches, adaptive quality |
 | `src/simulator/core/PostProcessing.ts` | HDR scene target, bloom, lens finish, tone mapping; bypassed on the low preset |
@@ -104,7 +106,9 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/IslandSystem.ts` | Terrain (two LODs per island), palms merged per cluster, seabed following the yacht, draw distances, collision, shore direction |
 | `src/simulator/environment/IslandSurface.ts` | Sand shading (grain, ripples, wet sand), swash on the beach, palm shadow map and trunk contact shading |
 | `src/simulator/environment/SurfMath.ts` | Pure surf model (breaking crest, bore, swash, drying sand) and its GLSL twin, shared by ocean and sand; the island slot uniforms the shaders read |
-| `src/simulator/environment/WeatherMath.ts` | Pure weather model: seven kinds (clear … hurricane) as presets, exponential easing, deterministic auto planner, lightning |
+| `src/simulator/environment/WeatherMath.ts` | Pure weather model: seven kinds (clear … hurricane) as presets, exponential easing, deterministic auto planner |
+| `src/simulator/environment/LightningMath.ts` | Pure lightning: strikes hashed from time slots (kind, distance, leader and return strokes), their light, thunder delay, the branching channel |
+| `src/simulator/environment/LightningSystem.ts` | Bolts as camera-facing HDR ribbons from a pool of three, the sky flash's direction and focus, strike events for the thunder |
 | `src/simulator/environment/RainSystem.ts` | One instanced draw of rain streaks in a camera-following box; intensity selects a stratified subset of the seeds |
 | `src/simulator/environment/OceanReflection.ts` | Planar mirror of the world above the sea (oblique near plane), sampled by the ocean shader |
 | `src/simulator/environment/UnderwaterLight.ts` | Beer–Lambert absorption for everything below the surface |
@@ -116,6 +120,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/vessel/Vessel.ts` | Detailed yacht GLB normalization, part classification, boom pivot, appendages, nav lights, visual pose |
 | `src/simulator/vessel/BoomDynamics.ts` | Pure boom swing on its sheet, gybe slam, mirrored pivot pose |
 | `src/simulator/vessel/Appendages.ts` | Procedural saildrive legs, three-bladed propellers and spade rudders |
+| `src/simulator/vessel/HelmStation.ts` | Starboard aft helm: pedestal, leather-rimmed wheel, instrument pod with chart plotter, speed/depth and wind displays (one canvas atlas), compass, engine lever, guard rail, seat, winch |
+| `src/simulator/vessel/HelmInstruments.ts` | Pure helm numbers: chart projection and range, wind needle, engine revolutions, compass card, lever angle |
 | `src/simulator/vessel/YachtShading.ts` | Antifouling, boot stripe, wet band, non-skid deck, sail seams and translucency |
 | `src/simulator/vessel/ShoreGuard.ts` | Pure collision avoidance near islands: look-ahead sweep of the hull, temporary helm override, hand-back |
 | `src/simulator/vessel/ShoreContact.ts` | Pure hull-outline shore cushion and impulse contact (physical backstop behind the guard) |
@@ -181,6 +187,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `tests/unit/assets.test.ts` | GLB quality/rig/animation/weight constraints and island geometry constraint |
 | `tests/unit/i18n.test.ts` | Language coverage, aliases, fallback, and preference semantics |
 | `tests/unit/rendering.test.ts` | Static batching, shell detection, shared skeletons, exact skinned merging, distant fish meshes |
+| `tests/unit/helm.test.ts` | Chart plotter orientation against the rendered view, range steps, needles, compass, lever |
 | `tests/unit/world.test.ts` | Archipelago, exact indexed coast search, shader slots, ship lanes, steering, contact, Kelvin wake, horns, gull flight, loop subdivision |
 | `tests/rendered-html.test.mjs` | Built-route smoke test |
 
@@ -190,7 +197,7 @@ Generated folders such as `dist`, `.next`, `.sites-runtime`, and `node_modules` 
 
 - World up is `+Y`.
 - Simulation forward/bow is `+Z`.
-- Simulation starboard/right is `+X`.
+- Simulation starboard/right is `+X`. Note that three.js is right-handed: a camera looking along `+Z` shows `+X` on the left of the screen. Anything drawn for the player (the chart plotter, the wind dial, the compass card, positional sound) must follow what the view shows, not the name; `HelmInstruments` and the thunder panning do, and `tests/unit/helm.test.ts` checks the chart against a projected camera.
 - Heading zero points along `+Z`; heading increases toward `+X`.
 - Distances are treated as meters.
 - Speeds in physics are meters per second. HUD knots use the factor `1.943844`.
@@ -282,7 +289,7 @@ React receives immutable `SimulationSnapshot` values. A UI control must invoke a
 
 The ocean is a focused `3600 × 3600` meter grid built by `OceanGrid.ts`. Its centre is a uniform lattice (about 1.25 m cells on high, 1.7 m on low) and the cells grow smoothly toward the horizon. The mesh is re-centred on the yacht in whole inner cells, so the dense lattice is locked to the world and never slides across the waves. Every vertex stores the size of its largest neighbouring cell; the vertex shader fades a wave out wherever the local cells can no longer resolve it.
 
-Six wave definitions in `OceanMath.ts` (`OCEAN_WAVES`) are the shared source for:
+Eight wave definitions in `OceanMath.ts` (`OCEAN_WAVES`) are the shared source for:
 
 - GLSL Gerstner displacement;
 - the per-pixel analytic surface normal;
@@ -292,7 +299,7 @@ Six wave definitions in `OceanMath.ts` (`OCEAN_WAVES`) are the shared source for
 - wildlife surface contact;
 - camera water-floor protection.
 
-They describe a moderate trade-wind sea aligned with the true wind. Every displaced wavelength stays above 5 m.
+The first six describe a moderate trade-wind sea aligned with the true wind. The last two (`storm: true`, 118 m and 76 m) are the storm swell: their amplitude factor is zero until the wave scale passes `STORM_SWELL_START` and full at `STORM_SWELL_FULL`, so fair weather is exactly the six-component sea, a storm runs about 6.5 m significant wave height and a hurricane about 10 m. The storm swell shoals away over the island shelves (`SurfMath.stormShoalAt` and its GLSL twin `stormShoalFactor`, from the nearest-island slots; the CPU sampler reads it through `setShoalField`), so a hurricane does not wash over the cays; the GLSL twins used by other materials (`OCEAN_SURFACE_HEIGHT_GLSL`) take it unshoaled. Its crests are kept out of the whitecap fold (`stormFold`, `maximumOceanFold(…, false)`): a long swell does not break, the wind sea on it does, and in a gale the foam is drawn out into streaks along the wind. Every displaced wavelength stays above 5 m.
 
 The GPU moves each vertex sideways as well as up, so `sampleOcean` first inverts the horizontal Gerstner excursion (two fixed-point steps, `surfaceBasePoint`) and returns the height and normal of the surface actually drawn over the queried point; `OCEAN_SURFACE_HEIGHT_GLSL` does the same in shaders. With a `depth` argument it instead returns the vertical motion of the water that far down (each wave attenuated by e^(−k·depth)): heavy swimmers ride this, so a whale at ten metres is barely moved by the swell and one at the surface rides it fully.
 
@@ -343,7 +350,7 @@ Forces and moments, in the order they are computed each fixed step:
 
 Sign conventions: positive pitch lowers the bow; positive roll lowers the starboard hull; `telemetry.apparentWindAngle` is the signed angle the wind comes *from* (0 = head to wind, positive = over the starboard side); `telemetry.leewardSide` is the side the sails fill toward. The yacht heels to leeward.
 
-Buoyancy samples ten points and derives the water plane under the hulls. Heave, pitch, and roll are driven toward that plane plus the steady trim caused by sail, engine, and turning loads. Avoid directly setting yacht visual `y` from a different wave formula; that creates the appearance that the boat is hanging in the air.
+Buoyancy samples ten points and derives the water plane under the hulls. The water's own vertical acceleration under the hulls is passed to the heave (`HEAVE_FOLLOW`), so the yacht climbs and falls with a storm swell several metres high instead of lagging into it (tested in a hurricane sea). Heave, pitch, and roll are driven toward that plane plus the steady trim caused by sail, engine, and turning loads. Avoid directly setting yacht visual `y` from a different wave formula; that creates the appearance that the boat is hanging in the air.
 
 Physics must remain finite. Any new force should be bounded, unit-tested, and stable at both 60 Hz and 120 Hz integration in the existing comparison test. The polar, top-speed, helm-sense, grounding, and seaway tests in `tests/unit/simulator.test.ts` are the acceptance criteria for retuning.
 
@@ -366,7 +373,7 @@ Rules for yacht work:
 - deform sails smoothly from wind and trim; do not simply snap a flat triangle between sides;
 - use the physics root for position, heading, pitch, and roll, with visual-only damping inside `Vessel`;
 - keep propellers/rudders tied to engine/rudder state if the asset exposes suitable nodes;
-- the helm wheel and pedestal are procedural (`createHelmWheel`, on the coachroof) because the asset has none: the wheel turns with the rudder, and the helm camera sits behind it;
+- the helm station is procedural (`HelmStation`) because the asset has none. It stands on the starboard aft deck, out of the boom's sweep (the boom clears the coachroof by only half a metre): a pedestal with a leather-rimmed five-spoke wheel that turns with the rudder, an instrument pod whose chart plotter shows the islands, the ships as AIS targets and the yacht head-up, a speed/depth/RPM display and a wind dial (one 1024×672 canvas atlas, redrawn about five times a second and only while the helm camera or a close camera can read it; red night palette), a binnacle compass whose card keeps north, the engine lever that follows the throttle, a guard rail, a helm seat and the sheet winch. Static parts are merged by material with vertex colours: eight draw calls. The helm camera stands at `HELM_EYE`;
 - validate close camera framing after any scale, pivot, or bounding-box change;
 - keep new fixed parts batchable (one material, no per-part animation); a part that must move on its own needs its own mesh outside the batches;
 - underwater parts do not cast shadows: nothing could show them.
@@ -490,8 +497,10 @@ The player (manual) or the planner `autoWeatherKind(time)` (auto, the default; t
 
 - the sea: `OceanMath.setSeaScale(sample.waves)` sets per-wave amplitude factors `seaFactors` (GLSL `uSeaFactors`, CPU `sampleOcean`), so buoyancy, wake, wildlife and the camera floor follow the same higher sea; `significantWaveHeight` feeds the HUD; `uMaxFold` replaces the old constant fold limit;
 - the wind: `VesselPhysics.windScale` and `reefFactor` (the crew reefs above `REEF_START_SPEED`), palm lean, wind ripples, whitecaps (`uBreaking`), haze;
-- sky and light: `EnvironmentPalette` storm darkening, exposure, fog, `lightningFlash` (only above `storm` 0.5) through `uFlash`, thunder in `AudioSystem`;
+- sky and light: `EnvironmentPalette` storm darkening, exposure, fog, lightning (below);
 - rain: `RainSystem` (`QualityManager.rainDrops`), ocean rain rings, rain hiss and patter.
+
+Lightning (`LightningMath`, `LightningSystem`) is drawn from 1.6 s time slots by hashing the slot, so it is reproducible at any frame rate. From `storm` 0.35 (a downpour) there is now and then a distant flash six to thirteen kilometres off; from 0.6 (a storm) several strikes a minute, mostly one to eleven kilometres away and one in seven or so close by, more in a hurricane. A strike is a cloud-to-ground bolt (a branching channel from the cloud base to the sea) or a flash inside the cloud. Its light is a stepped leader that reveals the channel downward in 45 ms, then one to four return strokes (a spike of a few milliseconds and a glowing tail). Bolts are camera-facing ribbons with an HDR core and halo, additive, at most three at once; one farther than `BOLT_RENDER_DISTANCE` (1.9 km) is drawn there at its true angular size, behind the islands and ships on the horizon, dimmed by the air and the rain. The sky flash (`uFlash`) lights the clouds around the strike's direction (`uFlashDirection`) and fills the whole sky only for a close one (`uFlashFocus`); the scene light (sun colour, hemisphere) follows `strikeProximity`. Each strike's thunder arrives `distance / 343 m/s` later, panned to where it struck: a crack and a crash close by, a long low roll from far away, nothing beyond `THUNDER_RANGE`.
 
 `autoTime` turns on the automatic day cycle (`dayCycleState`: day, dusk, night, dawn, with the sun climbing in the day); `EnvironmentSystem` follows the goal at the usual transition speed. Persisted: `autoTime`, `weatherMode`, `weather` (the present weather itself is not persisted).
 
@@ -587,6 +596,7 @@ Master → DynamicsCompressor → destination
   EngineBus → diesel firing pulses + half-speed crank + combustion knock + wet-exhaust burble → opening low-pass; starter cue
   EnvironmentBus → wave noise + soft low wind (weather-driven) + rigging whistle in strong wind + hull-water noise
   WildlifeBus → one-shot splashes (panned to where they happened, darker with distance) + positional gull calls (also when a bird is disturbed on the water or takes off)
+  EnvironmentBus → thunder per strike (delayed by distance, panned to the strike, crack when close, low roll when far)
   EnvironmentBus → two ship voices (diesel throb and beat, bow-wave rush, air absorption by distance) + ship horns (delayed by distance / 343 m/s)
 ```
 
@@ -623,7 +633,7 @@ When tuning audio, test on small phone speakers. Important engine fundamentals a
 Four camera modes are supported:
 
 - `chase`: damped third-person follow with speed-sensitive FOV;
-- `helm`: first-person position near the helm, limited look range, no zoom;
+- `helm`: the helmsman's eyes at the starboard helm (`HELM_EYE`), carried exactly with the yacht so nothing lags into the wheel or the pod, while the head keeps most of its level against her roll and pitch (`HEAD_ROLL_SHARE`, `HEAD_PITCH_SHARE`); limited look range, no zoom;
 - `orbit`: freer inspection around the yacht;
 - `drone`: elevated long-distance view.
 
@@ -703,13 +713,15 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 
 ## 20. Quality and performance
 
-| Preset | Max DPR | Ocean segments | Shadow map | Foam density | Gulls / dolphins | Reef fish | Ocean detail | Sky detail | HDR pipeline | Bloom | MSAA |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
-| Low | 1.0 | 96 | 512 | 0.45 | 3 / 2 | 35% | 0.30 | 0 | off | – | – |
-| Medium | 1.25 | 144 | 1024 | 0.70 | 6 / 3 | 60% | 0.55 | 1 | on | 0.20 | 2× |
-| High | 1.5 | 224 | 2048 | 0.90 | 6 / 4 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
+| Preset | Max DPR | Pixel budget | Ocean segments | Shadow map | Foam density | Gulls / dolphins | Reef fish | Ocean detail | Sky detail | HDR pipeline | Bloom | MSAA |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| Low | 1.0 | 1.0 MP | 96 | 512 | 0.45 | 3 / 2 | 35% | 0.30 | 0 | off | – | – |
+| Medium | 1.25 | 1.7 MP | 144 | 1024 | 0.70 | 6 / 3 | 60% | 0.55 | 1 | on | 0.20 | 2× |
+| High | 1.5 | 2.6 MP | 224 | 2048 | 0.90 | 6 / 4 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
 
 Ocean detail gates fragment work: above 0.2 the detail spectrum and one ripple layer are shaded; above 0.6 the second ripple layer and cloud reflections are added. Sky detail selects three- or five-octave clouds.
+
+The drawing buffer never holds more pixels than the preset's budget (`budgetPixelRatio`): a Retina laptop at full screen renders about 2.6 million pixels on high instead of 4–5 million. Where the browser can time GPU work (`GpuTimer`, Chrome and Edge on desktop), `GpuGovernor` eases the render scale (down to `MIN_RENDER_SCALE`) while a frame costs more than `GPU_TARGET_MS` (6.5 ms, about 40 % of a 60 Hz frame) and back up when there is room, at most once every `SCALE_CHANGE_INTERVAL`; a GPU still overloaded at the lowest scale steps the preset down, and only a long idle one steps it up (the frame rate alone no longer raises the preset there, since a GPU can deliver 60 fps working flat out). The canvas itself is not multisampled when the HDR pipeline will draw (it would only add a full-screen resolve every frame), and the context asks for the default power preference, so a laptop with two GPUs can stay on the efficient one.
 
 Coarse devices start low. Adaptive quality observes FPS windows, steps down quickly when slow, and requires a long stable period above 58 FPS before stepping up. Coarse devices never automatically step to high.
 
@@ -725,6 +737,8 @@ Important implementation caveats:
 - all shader programs are compiled during loading against the render target the scene actually uses; nothing should compile during play (check `renderer.info.programs` before and after a day/night cycle);
 - wake instance transforms are refreshed at approximately 30 Hz;
 - on phones the per-draw-call CPU work of three.js, not the triangle count, is usually what limits the frame rate: the high preset draws about 125 calls per frame including the shadow, mirror and post-processing passes, the low preset about 50 (the archipelago, the ships and the larger flock added about 45 and 12); keep it there by batching fixed parts by material (`StaticBatching`), merging the parts of one rig (`SkinnedMerge`), letting meshes of one animal share their skeleton (`shareSkeletons`, so its bones upload once per frame), and culling instanced groups with a real bounding sphere;
+- muting the sound suspends the `AudioContext` once the fade is done, so a muted simulator synthesises nothing; the next press (a trusted gesture) resumes it;
+- the duplicate coachroof shells are left out of the planar mirror (`Vessel.mirrorSkipped`, about 90k triangles);
 - the render loop and Web Audio suspend when the document is hidden, and `FramePacer` caps rendering at 60 fps (30 fps while the page is visible but unfocused), so a 120 Hz ProMotion display does not render twice as much; the mirror pass skips pixels with nothing mirrored nearby (one coarse tap).
 
 Before increasing visual cost, measure the current bottleneck (`renderer.info.render.calls` and `.triangles` with `info.autoReset` off across the post-processing passes, texture uploads per frame, and a CPU profile of `render`). Favor shader detail, instancing, LOD, texture compression, smaller shadow casters, and bounded effects over more individual objects.
@@ -791,7 +805,9 @@ The Sites checkpoint performs its own production build and rendered smoke verifi
 - Engine: start from neutral selects slow ahead, active throttle is preserved, stop returns neutral.
 - Physics: engine produces forward motion with believable inertia, no NaN, comparable outcomes at 60/120 Hz, buoyancy follows sloped samples, a correct sailing polar (no-go zone, fastest on a reach, heel to leeward, bounded leeway), realistic top speed, prop-wash steerage, correct helm sense, shaft spool-down, shoal drag without sticking, a beached yacht that rebounds and turns away, and a long seaway passage that stays finite and on the rendered surface.
 - Wake: low-speed hull wake, stationary prop wash, monotonic strength, reverse symmetry, sample spacing that keeps the whole wake in the pool, the Kelvin angle; splash kinds scaled by contact energy, a slap far larger and longer-lived than a dolphin entry.
-- Weather and surf: fair most of the time, clear at the start, occasional spells; waves that differ, break, run up and drain, sand that dries.
+- Weather and surf: fair most of the time, clear at the start, occasional spells; waves that differ, break, run up and drain, sand that dries; a storm swell several metres high that the yacht rides and that dies out over the shelves.
+- Lightning: none below a downpour, distant flashes only in a downpour, several strikes a minute in a storm; a leader, then return strokes that die within a second; thunder delayed by distance; a channel from cloud base to sea with branches above it, the same for the same seed.
+- Render budget: the pixel budget caps large canvases; the governor lowers the scale under load, restores it, spaces its changes and asks for a preset change only at its limits.
 - Shore guard: under power the yacht turns away before touching and the helm is handed back with speed restored; a helmsman steering into an island never strands her; under sail the sheets are eased.
 - Water contact: the sampler returns the displaced surface, motion fades with depth, ring waves spread and stay gentle, crossings have hysteresis.
 - Islands and animals: dolphins around a coast never cross the beach or enter very shallow water; sharks and whales keep to deep water; a distant breach is rare, far, continuous and varied.
@@ -1018,6 +1034,8 @@ The following are known constraints, not invitations to bypass the architecture:
 - gull folding is an approximation by sweep, roll and a scaled hand; the rig has no legs or neck to animate;
 - wake and wildlife capacities do not rebuild when changing quality after initialization;
 - palms are individually planted GLB trees, merged per island, with runtime vertex wind rather than LOD/impostor vegetation;
+- the steering is named by the simulation's convention (positive rudder and "starboard" turn the bow toward `+X`), which the right-handed renderer shows turning left from behind the yacht (see §5); the instruments follow the view, the names were left as they are;
+- lightning bolts are flat ribbons facing the camera, drawn at most at 1.9 km; the lighting capture does not flash with them (the directional and hemisphere lights do);
 - the dolphins (three skinned parts plus two eyes, textured) and the shark and whale are still drawn as their source meshes; the shark alone is 51k triangles when it is near enough to be drawn;
 - yacht sail deformation is simplified compared with cloth simulation;
 - camera collision guards water but does not perform general mesh collision with mast/islands;

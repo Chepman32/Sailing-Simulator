@@ -118,6 +118,8 @@ const LONGITUDINAL_STIFFNESS = MASS * GRAVITY * 13;
 const CENTRE_OF_GRAVITY_HEIGHT = 0.9;
 const HEAVE_FREQUENCY = 3.6;
 const HEAVE_DAMPING = 0.55;
+/** Share of the water's own vertical acceleration passed straight to the hulls. */
+const HEAVE_FOLLOW = 0.85;
 const PITCH_FREQUENCY = 3.1;
 const PITCH_DAMPING = 0.5;
 const ROLL_FREQUENCY = 3.4;
@@ -175,6 +177,7 @@ export class VesselPhysics {
   pitchRate = 0;
   rollRate = 0;
   heaveVelocity = 0;
+  private previousSurfaceVelocity = 0;
   /** Signed propeller shaft speed as a fraction of maximum. */
   engineShaft = 0;
   /** Collision avoidance near islands; `guard.output` is what the helm actually does. */
@@ -356,6 +359,7 @@ export class VesselPhysics {
     this.pitchRate = 0;
     this.rollRate = 0;
     this.heaveVelocity = 0;
+    this.previousSurfaceVelocity = 0;
     this.engineShaft = 0;
     this.guard.active = false;
     this.guard.urgency = 0;
@@ -413,12 +417,19 @@ export class VesselPhysics {
       this.previousSurfaceTarget = targetY;
       this.surfaceTargetReady = true;
     }
-    const surfaceVelocity = clamp((targetY - this.previousSurfaceTarget) / Math.max(delta, 1e-4), -2.4, 2.4);
+    // A storm swell lifts the hulls at several metres a second; the bounds only
+    // catch a numerical jump.
+    const surfaceVelocity = clamp((targetY - this.previousSurfaceTarget) / Math.max(delta, 1e-4), -7, 7);
     this.previousSurfaceTarget = targetY;
+    // The water accelerates the hulls with it (a long swell is followed almost
+    // exactly); the spring and damper only answer what differs from that.
+    const surfaceAcceleration = clamp((surfaceVelocity - this.previousSurfaceVelocity) / Math.max(delta, 1e-4), -12, 12);
+    this.previousSurfaceVelocity = surfaceVelocity;
     const heaveAcceleration =
+      surfaceAcceleration * HEAVE_FOLLOW +
       (targetY - this.position.y) * HEAVE_FREQUENCY * HEAVE_FREQUENCY +
       (surfaceVelocity - this.heaveVelocity) * 2 * HEAVE_DAMPING * HEAVE_FREQUENCY;
-    this.heaveVelocity = clamp(this.heaveVelocity + heaveAcceleration * delta, -3, 3);
+    this.heaveVelocity = clamp(this.heaveVelocity + heaveAcceleration * delta, -8, 8);
     this.position.y += this.heaveVelocity * delta;
 
     // Vessel.root uses +Z as the bow and applies rotation.z = -roll, so a

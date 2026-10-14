@@ -170,6 +170,26 @@ function nearestShoreAmong(x: number, z: number, indices: readonly number[]): { 
   return best;
 }
 
+/**
+ * Where the storm swell has shoaled away (see `OceanMath.setShoalField`):
+ * 0 within `SHOAL_NEAR` of an island's mean waterline, 1 beyond `SHOAL_FAR`.
+ * It uses the smooth ellipse of each coast, not the noisy one, because it
+ * only has to be right over tens of metres.
+ */
+export const SHOAL_NEAR = 12;
+export const SHOAL_FAR = 110;
+
+export function stormShoalAt(x: number, z: number): number {
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const index of islandCandidates(x, z) ?? ALL_ISLANDS) {
+    const island = ISLAND_DEFINITIONS[index]!;
+    const distance =
+      Math.hypot(x - island.centerX, (z - island.centerZ) / island.scaleZ) - island.beachRadius * WATERLINE_RADIAL;
+    if (distance < nearest) nearest = distance;
+  }
+  return smoothstep(SHOAL_NEAR, SHOAL_FAR, nearest);
+}
+
 const glslNumber = (value: number): string => (Number.isInteger(value) ? `${value}.0` : value.toFixed(6));
 
 /**
@@ -228,6 +248,16 @@ export const SURF_GLSL = /* glsl */ `
       + cos(angle * 11.0 + index * 0.6) * 0.012;
     float distance = centre - beachRadius * edge * ${glslNumber(WATERLINE_RADIAL)};
     if (distance < best.x) best = vec3(distance, angle, index);
+  }
+
+  float stormShoalFactor(vec2 position) {
+    float nearest = 1.0e5;
+    for (int slot = 0; slot < ${ISLAND_SLOTS}; slot++) {
+      vec4 shape = uIslandShape[slot];
+      vec2 local = vec2(position.x - shape.x, (position.y - shape.y) / shape.w);
+      nearest = min(nearest, length(local) - shape.z * ${glslNumber(WATERLINE_RADIAL)});
+    }
+    return smoothstep(${glslNumber(SHOAL_NEAR)}, ${glslNumber(SHOAL_FAR)}, nearest);
   }
 
   vec3 shoreInfo(vec2 position) {

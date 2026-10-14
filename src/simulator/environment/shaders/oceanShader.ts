@@ -40,6 +40,13 @@ function glsl(value: number): string {
   return Number.isInteger(value) ? `${value}.0` : value.toFixed(6);
 }
 
+const STORM_INDEX = OCEAN_WAVES.findIndex((wave) => wave.storm);
+
+/** The shoal factor, evaluated only while the storm swell is up. */
+function STORM_SHOAL_EXPRESSION(position: string): string {
+  return STORM_INDEX < 0 ? "1.0" : `(uSeaFactors[${STORM_INDEX}] > 0.0 ? stormShoalFactor(${position}) : 1.0)`;
+}
+
 function unit(x: number, z: number): [number, number] {
   const length = Math.hypot(x, z) || 1;
   return [x / length, z / length];
@@ -55,8 +62,9 @@ export const SEA_FACTORS_UNIFORM = `
   uniform float uSeaFactors[${OCEAN_WAVES.length}];
   #endif`;
 
+/** A component's amplitude in GLSL; storm swell is scaled by the local `stormShoal`. */
 function amplitude(wave: (typeof OCEAN_WAVES)[number], index: number): string {
-  return `${glsl(wave.amplitude)} * uSeaFactors[${index}]`;
+  return `${glsl(wave.amplitude)} * uSeaFactors[${index}]${wave.storm ? " * stormShoal" : ""}`;
 }
 
 const displacementCalls = OCEAN_WAVES.map((wave, index) => {
@@ -67,11 +75,13 @@ const displacementCalls = OCEAN_WAVES.map((wave, index) => {
 }).join("\n");
 
 
+// The long storm swell is too gentle to break: its crests are kept out of
+// `fold`, which decides the whitecaps (and `uMaxFold` leaves it out too).
 const swellCalls = OCEAN_WAVES.map((wave, index) => {
   const [dx, dz] = unit(wave.directionX, wave.directionZ);
   return `    swellWave(vec2(${glsl(dx)}, ${glsl(dz)}), ${amplitude(wave, index)}, ${glsl(wave.wavelength)}, ${glsl(
     wave.speed,
-  )}, ${glsl(wave.steepness)}, base, footprint, slope, fold, lostVariance);`;
+  )}, ${glsl(wave.steepness)}, base, footprint, slope, ${wave.storm ? "stormFold" : "fold"}, lostVariance);`;
 }).join("\n");
 
 const detailCalls = OCEAN_DETAIL_WAVES.map((wave, index) => {
@@ -92,7 +102,9 @@ const heightTerms = OCEAN_WAVES.map((wave, index) => {
 const excursionTerms = OCEAN_WAVES.map((wave, index) => {
   const [dx, dz] = unit(wave.directionX, wave.directionZ);
   const k = (Math.PI * 2) / wave.wavelength;
-  return `      offset += vec2(${glsl(dx)}, ${glsl(dz)}) * ${glsl(wave.steepness * wave.amplitude)} * uSeaFactors[${index}] * cos(${glsl(
+  return `      offset += vec2(${glsl(dx)}, ${glsl(dz)}) * ${glsl(wave.steepness * wave.amplitude)} * uSeaFactors[${index}]${
+    wave.storm ? " * stormShoal" : ""
+  } * cos(${glsl(
     k,
   )} * dot(vec2(${glsl(dx)}, ${glsl(dz)}), base) - ${glsl(Math.sqrt(9.81 * k) * wave.speed)} * time);`;
 }).join("\n");
@@ -108,6 +120,9 @@ export const OCEAN_SURFACE_HEIGHT_GLSL = /* glsl */ `
   #define OCEAN_SURFACE_HEIGHT
   ${SEA_FACTORS_UNIFORM}
   float oceanSurfaceHeight(vec2 position, float time) {
+    // Materials using this twin do not know the islands: the storm swell is
+    // taken at full height (a difference only on the shelves, in a gale).
+    float stormShoal = 1.0;
     vec2 base = position;
     for (int iteration = 0; iteration < ${SURFACE_INVERSION_ITERATIONS}; iteration++) {
       vec2 offset = vec2(0.0);
@@ -131,6 +146,7 @@ export const OCEAN_SURFACE_HEIGHT_FAST_GLSL = /* glsl */ `
   #define OCEAN_SURFACE_HEIGHT_FAST
   ${SEA_FACTORS_UNIFORM}
   float oceanSurfaceHeightFast(vec2 base, float time) {
+    float stormShoal = 1.0;
     float height = 0.0;
 ${heightTerms}
     return height;
@@ -141,6 +157,7 @@ ${heightTerms}
 export const oceanVertexShader = /* glsl */ `
   ${SEA_FACTORS_UNIFORM}
   ${SHIP_WAKE_GLSL}
+  ${SURF_GLSL}
   uniform float uTime;
   uniform mat4 uReflectionMatrix;
   attribute float cellSpacing;
@@ -173,6 +190,7 @@ export const oceanVertexShader = /* glsl */ `
     vec3 worldBase = (modelMatrix * vec4(position, 1.0)).xyz;
     vec3 offset = vec3(0.0);
     float cellSize = cellSpacing;
+    float stormShoal = ${STORM_SHOAL_EXPRESSION("worldBase.xz")};
 ${displacementCalls}
     vec3 world = worldBase + offset;
     // Ships' wakes: the same height the CPU sampler adds, where the grid can carry it.
@@ -393,6 +411,8 @@ export const oceanFragmentShader = /* glsl */ `
     vec2 slope = vec2(0.0);
     float fold = 0.0;
     float lostVariance = 0.0;
+    float stormShoal = ${STORM_SHOAL_EXPRESSION("base")};
+    float stormFold = 0.0;
 ${swellCalls}
     // Everything below is wind ripple; an impact's slick smooths it away.
     vec2 swellSlope = slope;
@@ -592,7 +612,12 @@ ${detailCalls}
     foam += smoothstep(0.02, 0.5, whitecap) * smoothstep(0.58, 0.86, foamTexture) * 0.45;
     foam += smoothstep(0.36, 0.8, breaking) * smoothstep(0.66, 0.9, foamTexture) * 0.16;
     foam = min(foam, 0.88) * uFoamDensity * (1.0 - calm * 0.6);
-    foam = min(foam * (1.0 + uBreaking * 1.4), 0.95);
+    // In a gale the foam is blown into long streaks along the wind, with dark
+    // water between them, rather than lying as a sheet.
+    float streaks = skyNoise(windFrame * vec2(0.16, 2.6) + vec2(uTime * 0.05, 0.0));
+    streaks = smoothstep(0.3, 0.72, streaks * 0.75 + foamFine * 0.25);
+    foam *= mix(1.0, 0.25 + 0.95 * streaks, clamp(uBreaking * 2.2, 0.0, 1.0));
+    foam = min(foam * (1.0 + uBreaking * 0.9), 0.92);
 
 
     // Water piling against the hulls: a lapping line at rest, a bow wave and

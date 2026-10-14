@@ -1,8 +1,11 @@
 import * as THREE from "three";
 import type { QualityPreset } from "../types";
+import { budgetPixelRatio, type GovernorVerdict } from "./RenderBudget";
 
 export type QualitySettings = {
   maxDpr: number;
+  /** Most pixels the drawing buffer may hold, whatever the window and display. */
+  pixelBudget: number;
   oceanSegments: number;
   shadowMapSize: number;
   /** Resolution of the planar water reflection relative to the screen; 0 = sky only. */
@@ -29,6 +32,7 @@ export type QualitySettings = {
 export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
   low: {
     maxDpr: 1,
+    pixelBudget: 1_000_000,
     oceanSegments: 96,
     shadowMapSize: 512,
     reflectionScale: 0,
@@ -45,6 +49,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
   },
   medium: {
     maxDpr: 1.25,
+    pixelBudget: 1_700_000,
     oceanSegments: 144,
     shadowMapSize: 1024,
     reflectionScale: 0.35,
@@ -61,6 +66,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
   },
   high: {
     maxDpr: 1.5,
+    pixelBudget: 2_600_000,
     oceanSegments: 224,
     shadowMapSize: 2048,
     reflectionScale: 0.5,
@@ -80,6 +86,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
 export class QualityManager {
   private preset: QualityPreset;
   private slowWindows = 0;
+  private gpuMeasured = false;
   private fastWindows = 0;
   private readonly coarseDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
 
@@ -106,6 +113,27 @@ export class QualityManager {
     this.fastWindows = 0;
   }
 
+  /** Pixel ratio for a canvas of this CSS size at the governor's render scale. */
+  pixelRatioFor(cssWidth: number, cssHeight: number, scale = 1): number {
+    const settings = QUALITY_SETTINGS[this.preset];
+    return budgetPixelRatio(window.devicePixelRatio || 1, settings.maxDpr, settings.pixelBudget, cssWidth, cssHeight, scale);
+  }
+
+  /**
+   * Where GPU time is measured it decides the preset instead of the frame
+   * rate (a GPU can deliver 60 fps while working flat out): overloaded at
+   * the lowest render scale steps down; long idle at full scale steps up.
+   */
+  observeGpu(verdict: GovernorVerdict): void {
+    this.gpuMeasured = true;
+    if (verdict === "overloaded" && this.preset !== "low") {
+      this.apply(this.preset === "high" ? "medium" : "low", true);
+    } else if (verdict === "idle" && this.preset !== "high") {
+      const nextPreset = this.preset === "low" ? "medium" : "high";
+      if (!(this.coarseDevice && nextPreset === "high")) this.apply(nextPreset, true);
+    }
+  }
+
   observeFps(fps: number): void {
     const slowThreshold = this.coarseDevice ? 44 : 36;
     if (fps < slowThreshold) {
@@ -122,7 +150,8 @@ export class QualityManager {
     if (this.slowWindows >= 2 && this.preset !== "low") {
       this.apply(this.preset === "high" ? "medium" : "low", true);
       this.slowWindows = 0;
-    } else if (this.fastWindows >= 30 && this.preset !== "high") {
+    } else if (this.fastWindows >= 30 && this.preset !== "high" && !this.gpuMeasured) {
+      // Without GPU timing a smooth frame rate is the only hint of headroom.
       const nextPreset = this.preset === "low" ? "medium" : "high";
       if (!(this.coarseDevice && nextPreset === "high")) this.apply(nextPreset, true);
       this.fastWindows = 0;
@@ -131,8 +160,6 @@ export class QualityManager {
 
   private apply(preset: QualityPreset, notify: boolean): void {
     this.preset = preset;
-    const settings = QUALITY_SETTINGS[preset];
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, settings.maxDpr));
     this.renderer.shadowMap.enabled = preset !== "low" && (!this.coarseDevice || preset === "high");
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     if (notify) this.onChange?.(preset);

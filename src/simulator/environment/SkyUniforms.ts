@@ -19,6 +19,10 @@ export type SkyUniforms = {
   uCloudCover: THREE.IUniform<number>;
   /** Lightning: 0 dark … 1 the whole sky lit from inside the clouds. */
   uFlash: THREE.IUniform<number>;
+  /** Direction of the brightest strike; the flash is brightest around it. */
+  uFlashDirection: THREE.IUniform<THREE.Vector3>;
+  /** 0: the flash fills the sky (a strike overhead) … 1: only around `uFlashDirection` (far off). */
+  uFlashFocus: THREE.IUniform<number>;
 };
 
 export function createSkyUniforms(): SkyUniforms {
@@ -35,6 +39,8 @@ export function createSkyUniforms(): SkyUniforms {
     uCloudTime: { value: 0 },
     uCloudCover: { value: 0.43 },
     uFlash: { value: 0 },
+    uFlashDirection: { value: new THREE.Vector3(0, 0.2, 1).normalize() },
+    uFlashFocus: { value: 0 },
   };
 }
 

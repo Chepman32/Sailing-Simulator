@@ -105,6 +105,7 @@ export class AudioSystem {
   private resumePromise?: Promise<boolean>;
   private ready = false;
   private enabled = true;
+  private muteTimer: number | undefined;
   private engineRunning = false;
   private engineMuted = false;
   private updateElapsed = 0;
@@ -124,6 +125,17 @@ export class AudioSystem {
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     this.setBusGain(this.master, enabled ? MASTER_GAIN : 0, 0.08);
+    window.clearTimeout(this.muteTimer);
+    if (!enabled) {
+      // A muted graph still synthesises every voice; once the fade is done the
+      // context is suspended, so muting also frees the audio thread. Turning
+      // sound back on is a press, a trusted gesture that resumes it.
+      this.muteTimer = window.setTimeout(() => {
+        if (this.enabled || !this.context || this.context.state !== "running") return;
+        this.setReady(false);
+        void this.context.suspend().catch(() => undefined);
+      }, 400);
+    }
   }
 
   isReady(): boolean {
@@ -246,41 +258,74 @@ export class AudioSystem {
   }
 
   /**
-   * A clap of thunder: a crack, then rolling rumble that deepens and dies away.
-   * @param distance 0 overhead … 1 far off: quieter, duller, longer.
-   * @param delay Seconds after now it arrives (sound lags the lightning).
+   * Thunder from a strike `distance` metres away, arriving `delay` seconds
+   * from now (sound crosses a kilometre in three seconds) from `pan` (−1
+   * left … 1 right). Close by it is a tearing crack and a crash, then a roar;
+   * kilometres off only the low rumble is left, longer and rolling, because
+   * the air absorbs the high frequencies and the sound from different parts
+   * of the channel arrives spread out in time.
    */
-  thunder(distance: number, delay = 0): void {
+  thunder(distance: number, delay = 0, pan = 0): void {
     const context = this.context;
     if (!context || context.state !== "running" || !this.environmentBus) return;
-    const far = clamp(distance, 0, 1);
+    const far = clamp((distance - 400) / 11000, 0, 1);
     const start = context.currentTime + Math.max(0, delay);
     this.thunderBuffer ??= this.createNoiseBuffer(6.5, "brown");
+    const output = context.createStereoPanner ? context.createStereoPanner() : null;
+    if (output) output.pan.value = clamp(pan, -1, 1) * (0.35 + 0.45 * (1 - far));
+    const destination: AudioNode = output ?? this.environmentBus;
+    if (output) output.connect(this.environmentBus);
+
+    // The rumble.
     const source = context.createBufferSource();
     source.buffer = this.thunderBuffer;
-    source.playbackRate.value = 0.8 + Math.random() * 0.3;
+    source.playbackRate.value = 0.75 + Math.random() * 0.3 - far * 0.15;
     const filter = context.createBiquadFilter();
     filter.type = "lowpass";
     filter.Q.value = 0.8;
-    filter.frequency.setValueAtTime(1500 * (1 - far * 0.55), start);
-    filter.frequency.exponentialRampToValueAtTime(110, start + 3.4 + far * 1.5);
+    filter.frequency.setValueAtTime(1700 * (1 - far * 0.72), start);
+    filter.frequency.exponentialRampToValueAtTime(95 + 40 * (1 - far), start + 3.2 + far * 2.5);
     const gain = context.createGain();
-    const peak = 0.85 * (1 - far * 0.55);
-    const length = 4.2 + far * 2;
+    const peak = 0.9 * (1 - far * 0.6);
+    const length = 4.5 + far * 3.5;
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(peak, start + 0.03 + far * 0.2);
-    // The roll: the sound swells again as each branch of the flash arrives.
-    let time = 0.5;
-    for (let roll = 0; roll < 4; roll += 1) {
-      time += 0.35 + Math.random() * 0.7;
-      const level = peak * (0.7 - roll * 0.12) * (0.6 + Math.random() * 0.4);
-      gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, level * 0.45), start + time);
-      gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, level), start + time + 0.2);
+    gain.gain.exponentialRampToValueAtTime(peak * (far > 0.5 ? 0.6 : 1), start + 0.03 + far * 0.6);
+    // The roll: the sound swells again as each part of the channel is heard.
+    let time = 0.4 + far * 0.5;
+    const rolls = 3 + Math.round(far * 3);
+    for (let roll = 0; roll < rolls; roll += 1) {
+      time += 0.3 + Math.random() * (0.6 + far * 0.6);
+      const level = peak * (0.75 - (roll / rolls) * 0.45) * (0.6 + Math.random() * 0.4);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, level * 0.4), start + time);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, level), start + time + 0.22 + far * 0.3);
     }
     gain.gain.exponentialRampToValueAtTime(0.0001, start + length);
-    source.connect(filter).connect(gain).connect(this.environmentBus);
+    source.connect(filter).connect(gain).connect(destination);
     source.start(start, Math.random() * 0.4);
     source.stop(start + length + 0.1);
+
+    // A close strike tears the air first: a sharp crack with real treble.
+    if (distance < 2200) {
+      const near = 1 - clamp((distance - 300) / 1900, 0, 1);
+      const crack = context.createBufferSource();
+      crack.buffer = this.thunderBuffer;
+      crack.playbackRate.value = 1.6 + Math.random() * 0.4;
+      const band = context.createBiquadFilter();
+      band.type = "highpass";
+      band.frequency.value = 900;
+      const crackGain = context.createGain();
+      crackGain.gain.setValueAtTime(0.0001, start);
+      crackGain.gain.exponentialRampToValueAtTime(0.75 * near, start + 0.008);
+      crackGain.gain.exponentialRampToValueAtTime(0.25 * near, start + 0.09);
+      crackGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.5 + near * 0.4);
+      crack.connect(band).connect(crackGain).connect(destination);
+      crack.start(start, Math.random() * 2);
+      crack.stop(start + 1);
+    }
+    if (output) {
+      // Released when the rumble ends.
+      source.onended = () => output.disconnect();
+    }
   }
 
   /** Where the listener (the camera) is, for positional sounds. */
@@ -560,6 +605,7 @@ export class AudioSystem {
   }
 
   dispose(): void {
+    window.clearTimeout(this.muteTimer);
     window.removeEventListener("pointerdown", this.onUserGesture, true);
     window.removeEventListener("mousedown", this.onUserGesture, true);
     window.removeEventListener("touchstart", this.onUserGesture, true);

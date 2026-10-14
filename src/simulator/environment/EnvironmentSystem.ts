@@ -6,7 +6,8 @@ import { deriveEnvironmentPalette, type EnvironmentPalette } from "./Environment
 import type { OceanSystem } from "./OceanSystem";
 import { applySkyPalette, setLinearColor, type SkyUniforms } from "./SkyUniforms";
 import { skyFragmentShader, skyVertexShader } from "./shaders/skyShader";
-import { createWeather, lightningFlash, settleWeather, stepWeather, type WeatherKind, type WeatherSample } from "./WeatherMath";
+import { createWeather, settleWeather, stepWeather, type WeatherKind, type WeatherSample } from "./WeatherMath";
+import { LightningSystem, type StrikeEvent } from "./LightningSystem";
 
 /** Half extent of the sun shadow frustum: just enough to hold the yacht. */
 const SHADOW_EXTENT = 17;
@@ -39,6 +40,7 @@ export class EnvironmentSystem {
   private weatherKind: WeatherKind = "clear";
   private settleWeatherNext = true;
   private flash = 0;
+  private readonly lightningSystem: LightningSystem;
   private cloudClock = 0;
   private readonly flashColor = new THREE.Color();
   // Image-based lighting: the analytic sky is captured into a prefiltered
@@ -123,6 +125,8 @@ export class EnvironmentSystem {
     this.captureScene.add(this.captureSky);
     this.pmrem = new THREE.PMREMGenerator(renderer);
 
+    this.lightningSystem = new LightningSystem(scene);
+
     this.sunLight = new THREE.DirectionalLight(0xffffff, 1);
     this.sunLight.castShadow = true;
     this.sunLight.shadow.camera.left = -SHADOW_EXTENT;
@@ -154,9 +158,14 @@ export class EnvironmentSystem {
     return this.weather;
   }
 
-  /** Lightning brightness right now, 0…1. */
+  /** Lightning light on the scene right now, 0…~1.6. */
   get lightning(): number {
     return this.flash;
+  }
+
+  /** Strikes that began since the last call: distance and bearing, for the thunder. */
+  consumeStrikes(): StrikeEvent[] {
+    return this.lightningSystem.consumeStrikes();
   }
 
   /** Whether it is (or is becoming) night, for the interface while the cycle runs by itself. */
@@ -222,8 +231,13 @@ export class EnvironmentSystem {
     } else {
       stepWeather(this.weather, this.weatherKind, delta, time);
     }
-    this.flash = lightningFlash(time, this.weather.storm);
-    this.skyUniforms.uFlash.value = this.flash;
+    if (camera instanceof THREE.PerspectiveCamera) {
+      const light = this.lightningSystem.update(time, this.weather.storm, this.weather.haze, camera, this.renderer.domElement.height);
+      this.flash = light.scene;
+      this.skyUniforms.uFlash.value = light.sky;
+      this.skyUniforms.uFlashFocus.value = light.focus;
+      this.skyUniforms.uFlashDirection.value.copy(light.direction);
+    }
     this.palette = deriveEnvironmentPalette(this.state, this.weather);
     const night = this.state.nightFactor;
     const palette = this.palette;
@@ -326,6 +340,7 @@ export class EnvironmentSystem {
       this.hemisphere,
     ];
     objects.forEach((object) => this.scene.remove(object));
+    this.lightningSystem.dispose(this.scene);
     this.scene.environment = null;
     this.scene.background = null;
     this.sky.geometry.dispose();

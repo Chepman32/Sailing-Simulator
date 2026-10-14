@@ -24,6 +24,8 @@ export const SKY_UNIFORM_DECLARATIONS = /* glsl */ `
   uniform float uCloudTime;
   uniform float uCloudCover;
   uniform float uFlash;
+  uniform vec3 uFlashDirection;
+  uniform float uFlashFocus;
 `;
 
 export const SKY_FUNCTIONS = /* glsl */ `
@@ -72,6 +74,15 @@ export const SKY_FUNCTIONS = /* glsl */ `
   // Clear-sky radiance: zenith-to-horizon gradient, low haze, and forward
   // scattering around the sun and moon. Directions below the horizon return
   // the horizon so a camera above the sea never sees a hard edge.
+  // How much of the lightning reaches this part of the sky: all of it for a
+  // strike overhead, a glowing patch of cloud around a strike far away.
+  float skyFlashShape(vec3 direction) {
+    float lobe = max(dot(direction, uFlashDirection), 0.0);
+    lobe = lobe * lobe;
+    lobe = lobe * lobe;
+    return mix(1.0, 0.06 + 2.6 * lobe * lobe, uFlashFocus);
+  }
+
   vec3 skyAtmosphere(vec3 direction) {
     float height = clamp(direction.y, 0.0, 1.0);
     vec3 sky = mix(uHorizon, uZenith, 1.0 - exp(-height * 3.6));
@@ -92,7 +103,7 @@ export const SKY_FUNCTIONS = /* glsl */ `
     float moonAmount = max(dot(direction, uMoonDirection), 0.0);
     sky += vec3(0.36, 0.5, 0.74) * (pow(moonAmount, 22.0) * 0.045 + pow(moonAmount, 300.0) * 0.2) * uNight;
     // Lightning lights the whole murk from within, most near the horizon.
-    sky += vec3(0.5, 0.6, 0.9) * uFlash * (0.5 + 0.5 * exp(-height * 3.0));
+    sky += vec3(0.5, 0.6, 0.9) * uFlash * skyFlashShape(direction) * (0.5 + 0.5 * exp(-height * 3.0));
     return sky;
   }
 
@@ -120,7 +131,7 @@ export const SKY_FUNCTIONS = /* glsl */ `
     float forward = pow(max(dot(direction, uLightDirection), 0.0), 9.0);
     cloud += uCloudLit * forward * (1.0 - density) * 0.9;
     // A stroke of lightning lights the cloud base from inside.
-    cloud += vec3(0.8, 0.9, 1.35) * uFlash * (0.35 + 0.65 * density);
+    cloud += vec3(0.8, 0.9, 1.35) * uFlash * skyFlashShape(direction) * (0.35 + 0.65 * density);
 
     // Aerial perspective pulls distant clouds toward the horizon colour.
     float nearness = smoothstep(0.02, 0.36, direction.y);

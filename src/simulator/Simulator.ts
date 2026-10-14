@@ -4,6 +4,8 @@ import { CameraController } from "./camera/CameraController";
 import { AssetManager } from "./core/AssetManager";
 import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
+import { GpuTimer } from "./core/GpuTimer";
+import { GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
 import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
@@ -11,8 +13,10 @@ import { IslandSystem } from "./environment/IslandSystem";
 import { distanceFromWaterline } from "./environment/IslandMath";
 import { OceanReflection } from "./environment/OceanReflection";
 import { OceanSystem } from "./environment/OceanSystem";
-import { significantWaveHeight } from "./environment/OceanMath";
+import { setShoalField, significantWaveHeight } from "./environment/OceanMath";
+import { stormShoalAt } from "./environment/SurfMath";
 import { RainSystem } from "./environment/RainSystem";
+import { thunderDelay } from "./environment/LightningMath";
 import { autoWeatherKind, isWeatherKind, type WeatherKind, type WeatherMode } from "./environment/WeatherMath";
 import { UnderwaterLight } from "./environment/UnderwaterLight";
 import { InputController } from "./input/InputController";
@@ -46,6 +50,8 @@ export class Simulator {
   private readonly state: SimulatorState;
   private readonly hud: HudController;
   private quality!: QualityManager;
+  private gpuTimer?: GpuTimer;
+  private readonly governor = new GpuGovernor();
   private ocean!: OceanSystem;
   private environment!: EnvironmentSystem;
   private islands!: IslandSystem;
@@ -55,6 +61,7 @@ export class Simulator {
   private wildlife!: WildlifeSystem;
   private ships!: ShipSystem;
   private readonly shipImpact = new THREE.Vector3();
+  private readonly helmPoint = new THREE.Vector3();
   private readonly sampleSurface = (x: number, z: number) => this.ocean.sample(x, z);
   private camera!: CameraController;
   private input!: InputController;
@@ -62,7 +69,6 @@ export class Simulator {
   private post!: PostProcessing;
   private reflection?: OceanReflection;
   private rain!: RainSystem;
-  private lightningWas = 0;
   private mirrorHidden: THREE.Object3D[] = [];
   private readonly mirrorList: THREE.Object3D[] = [];
   private audio!: AudioSystem;
@@ -94,11 +100,16 @@ export class Simulator {
     this.state = this.loadState();
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: !this.coarseDevice,
+      // The HDR pipeline renders into its own multisampled target, so a
+      // multisampled canvas would only add a full-screen resolve every frame.
+      // Only a desktop that starts on the low preset draws to the canvas.
+      antialias: !this.coarseDevice && this.state.quality === "low",
       alpha: false,
       depth: true,
       stencil: false,
-      powerPreference: "high-performance",
+      // Let a laptop with two GPUs stay on the efficient one; adaptive quality
+      // handles a slower GPU, and the discrete one is what spins up the fans.
+      powerPreference: "default",
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -131,12 +142,18 @@ export class Simulator {
         this.islands?.setDrawScale(preset === "low" ? 0.7 : 1);
         this.rain?.setDrops(this.quality.settings.rainDrops);
         this.post?.setQuality(this.quality.settings);
+        this.governor.reset();
+        this.resize();
         this.reflection?.setScale(this.quality.settings.reflectionScale, this.renderer.domElement.width, this.renderer.domElement.height);
         this.persistState();
       });
       this.state.quality = this.quality.current;
+      this.gpuTimer = new GpuTimer(this.renderer.getContext());
+      this.resize();
       await this.assets.load();
       this.ocean = new OceanSystem(this.scene, this.quality.settings);
+      // The storm swell dies out over the island shelves, for the CPU sampler as for the GPU.
+      setShoalField(stormShoalAt);
       this.environment = new EnvironmentSystem(this.scene, this.renderer, this.ocean);
       this.environment.setMode(this.state.lightingMode);
       this.environment.setAutoCycle(this.state.autoTime);
@@ -157,6 +174,7 @@ export class Simulator {
       this.ships.prebuild();
       this.ocean.setShips(this.ships.ships);
       this.vessel = new Vessel(this.scene, this.assets, this.underwater);
+      this.vessel.setChartTraffic(this.ships.ships);
       this.wake = new WakeSystem(this.scene, this.ocean, this.quality.settings, this.renderer);
       this.wildlife = new WildlifeSystem(
         this.scene,
@@ -184,7 +202,14 @@ export class Simulator {
       this.post = new PostProcessing(this.renderer, this.scene, this.camera.camera, this.quality.settings);
       this.reflection = new OceanReflection(this.quality.settings.reflectionScale);
       this.rain = new RainSystem(this.scene, this.quality.settings.rainDrops);
-      this.mirrorHidden = [this.ocean.mesh, this.wake.object, this.wildlife.underwater, this.rain.object, ...this.environment.celestial];
+      this.mirrorHidden = [
+        this.ocean.mesh,
+        this.wake.object,
+        this.wildlife.underwater,
+        this.rain.object,
+        ...this.environment.celestial,
+        ...this.vessel.mirrorSkipped,
+      ];
       this.input = new InputController(this.state.controls, () => this.reset());
       this.touch = new TouchControls(this.canvas, {
         orbit: (x, y) => this.camera.orbit(x, y),
@@ -329,6 +354,8 @@ export class Simulator {
     this.ships?.dispose();
     this.post?.dispose();
     this.reflection?.dispose();
+    this.gpuTimer?.dispose();
+    setShoalField(null);
     this.rain?.dispose(this.scene);
     this.wake?.dispose();
     this.vessel?.dispose();
@@ -378,13 +405,18 @@ export class Simulator {
       camera: this.camera.camera,
       lightDirection: this.environment.lightDirection,
       palette: this.environment.current.palette,
+      engineRunning: this.state.engineRunning,
+      // The displays are only redrawn while someone could read them.
+      helmReadable:
+        this.state.cameraMode === "helm" ||
+        this.camera.camera.position.distanceToSquared(this.vessel.worldPoint(this.vessel.helmEye, this.helmPoint)) < 64,
     });
     const slam = this.vessel.consumeBoomSlam();
     if (slam > 0) this.audio.boomSlam(slam);
     this.ships.update(delta, this.sampleSurface);
     this.wildlife.update(delta, this.physics, this.camera.camera);
     this.wake.update(this.elapsed);
-    this.camera.update(delta, this.physics);
+    this.camera.update(delta, this.physics, { root: this.vessel.root, eye: this.vessel.helmEye });
     this.environment.setWeatherKind(this.currentWeatherKind());
     this.environmentState = this.environment.update(
       delta,
@@ -446,9 +478,23 @@ export class Simulator {
   }
 
   private readonly render = (): void => {
+    const timer = this.gpuTimer;
+    if (timer?.available) {
+      const gpuMs = timer.poll();
+      if (gpuMs !== null) this.observeGpu(gpuMs);
+      timer.begin();
+    }
     this.renderReflection();
     this.post.render(this.frameDelta, this.elapsed);
+    timer?.end();
   };
+
+  /** GPU time of a finished frame: eases the render scale, and the preset if that is not enough. */
+  private observeGpu(gpuMs: number): void {
+    const verdict = this.governor.observe(gpuMs, this.elapsed, this.frameDelta);
+    if (verdict === "scaled") this.resize();
+    else if (verdict !== "steady") this.quality.observeGpu(verdict);
+  }
 
   /**
    * The mirror image needs the HDR pipeline's linear render target format;
@@ -483,6 +529,7 @@ export class Simulator {
     const parent = this.canvas.parentElement;
     const width = Math.max(1, parent?.clientWidth ?? window.innerWidth);
     const height = Math.max(1, parent?.clientHeight ?? window.innerHeight);
+    if (this.quality) this.renderer.setPixelRatio(this.quality.pixelRatioFor(width, height, this.governor.scale));
     this.renderer.setSize(width, height, false);
     this.camera?.resize(width, height);
     this.post?.setSize(width, height);
@@ -510,14 +557,18 @@ export class Simulator {
       this.physics.wind,
       this.environment.current.palette.rainLight,
     );
-    // Thunder follows the flash by the time sound takes to arrive: a close
-    // stroke cracks almost at once, a far one rumbles seconds later.
-    const flash = this.environment.lightning;
-    if (flash > 0.6 && this.lightningWas <= 0.6) {
-      const distance = Math.random();
-      this.audio.thunder(distance, 0.2 + distance * 3.2);
+    // Thunder follows each strike by the time its sound takes to cross the
+    // water, from where it struck: a close one cracks almost at once, a far
+    // one rumbles in half a minute later.
+    const forward = this.listenerForward;
+    const listenerYaw = Math.atan2(forward.x, forward.z);
+    for (const strike of this.environment.consumeStrikes()) {
+      const delay = thunderDelay(strike.distance);
+      if (delay === null) continue;
+      // Looking along +Z the camera's right is −X, so a strike turned toward
+      // +X from the view lies to the left.
+      this.audio.thunder(strike.distance, delay, -Math.sin(strike.azimuth - listenerYaw));
     }
-    this.lightningWas = flash;
   }
 
   private snapshot(): SimulationSnapshot {

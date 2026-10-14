@@ -624,6 +624,69 @@ test("the yacht stays finite and upright through a long passage in the shared se
   assert.ok(maximumGap < 0.7, `the hulls must ride the rendered surface, not hang above it (${maximumGap})`);
 });
 
+test("in a hurricane sea the yacht rides waves several metres high and stays finite", async () => {
+  const O = await import("../../src/simulator/environment/OceanMath");
+  try {
+    O.setSeaScale(4.5);
+    assert.ok(O.significantWaveHeight() > 8, "a hurricane sea is several metres high");
+    let time = 0;
+    const physics = new VesselPhysics({ sample: (x, z) => O.sampleOcean(x, z, time) }, OPEN_WATER);
+    physics.windScale = 3.3;
+    const controls = { throttle: 0.8, rudder: 0, sailTrim: 1 };
+    let lowest = Infinity;
+    let highest = -Infinity;
+    let maximumGap = 0;
+    let fastest = 0;
+    for (let step = 0; step < 180 * 60; step += 1) {
+      time += 1 / 60;
+      controls.rudder = Math.sin(time * 0.21) * 0.7;
+      physics.fixedUpdate(1 / 60, controls);
+      if (time < 10) continue;
+      lowest = Math.min(lowest, physics.position.y);
+      highest = Math.max(highest, physics.position.y);
+      fastest = Math.max(fastest, physics.telemetry.speedKnots);
+      const water = O.sampleOcean(physics.position.x, physics.position.z, time).height;
+      maximumGap = Math.max(maximumGap, Math.abs(physics.position.y - 0.46 - water));
+    }
+    assert.ok(Number.isFinite(physics.position.length() + physics.heading + physics.roll + physics.pitch));
+    assert.ok(highest - lowest > 6, `the yacht climbs and falls with the swell (${(highest - lowest).toFixed(1)} m)`);
+    assert.ok(maximumGap < 1.25, `she rides the surface, not above or under it (${maximumGap.toFixed(2)} m)`);
+    assert.ok(Math.abs(physics.roll) <= 0.4 && Math.abs(physics.pitch) <= 0.32);
+    assert.ok(fastest < 24, `surfing stays bounded (${fastest.toFixed(1)} kn)`);
+  } finally {
+    O.setSeaScale(1);
+  }
+});
+
+test("the storm swell dies out over the island shelves, for the sampler as for the shader", async () => {
+  const O = await import("../../src/simulator/environment/OceanMath");
+  const S = await import("../../src/simulator/environment/SurfMath");
+  const island = ISLAND_DEFINITIONS[0]!;
+  const coast = island.centerX + island.beachRadius;
+  assert.ok(S.stormShoalAt(coast + 2, island.centerZ) < 0.02, "no storm swell at the beach");
+  assert.ok(S.stormShoalAt(coast + 400, island.centerZ) > 0.98 || distanceFromWaterline(coast + 400, island.centerZ) < 150);
+  try {
+    O.setSeaScale(4.5);
+    const range = (x: number, z: number) => {
+      let highest = 0;
+      for (let t = 0; t < 40; t += 0.25) highest = Math.max(highest, Math.abs(O.sampleOcean(x, z, t).height));
+      return highest;
+    };
+    const unshoaled = range(coast + 4, island.centerZ);
+    O.setShoalField(S.stormShoalAt);
+    const shoaled = range(coast + 4, island.centerZ);
+    const offshore = range(0, 0);
+    assert.ok(offshore > 4, `open water runs high (${offshore.toFixed(1)} m)`);
+    assert.ok(shoaled < unshoaled * 0.6, `the beach is spared the storm swell (${shoaled.toFixed(1)} of ${unshoaled.toFixed(1)} m)`);
+    // Fair weather never consults the shoals: the swell is not there.
+    O.setSeaScale(1);
+    assert.ok(O.seaFactors.every((factor, index) => !O.OCEAN_WAVES[index]!.storm || factor === 0));
+  } finally {
+    O.setShoalField(null);
+    O.setSeaScale(1);
+  }
+});
+
 test("island bathymetry shoals toward a coast the ocean shader can follow", () => {
   for (const island of ISLAND_DEFINITIONS) {
     const beachX = island.centerX + island.beachRadius;
@@ -740,16 +803,85 @@ test("weather: presets climb the severity ladder, the sea eases toward them, aut
   assert.ok(severe / samples < 0.25, "a storm is an event");
 });
 
-test("lightning only flashes in a real storm, and stays bounded", async () => {
-  const { lightningFlash } = await import("../../src/simulator/environment/WeatherMath");
-  let flashed = 0;
+test("lightning: none in fair weather, distant flashes in a downpour, frequent strikes in a storm", async () => {
+  const L = await import("../../src/simulator/environment/LightningMath");
+  const count = (storm: number) => {
+    let strikes = 0;
+    let ground = 0;
+    let near = 0;
+    for (let slot = 0; slot < 2000; slot += 1) {
+      const strike = L.strikeInSlot(slot, storm);
+      if (!strike) continue;
+      strikes += 1;
+      if (strike.kind === "ground") ground += 1;
+      if (strike.distance < 2000) near += 1;
+      assert.ok(strike.distance > 400 && strike.distance < 17000);
+      assert.ok(strike.strokes.length >= 1 && strike.strokes.length <= 4);
+      assert.ok(strike.start >= slot * L.LIGHTNING_SLOT && strike.start < (slot + 1) * L.LIGHTNING_SLOT);
+    }
+    return { strikes, ground, near, minutes: (2000 * L.LIGHTNING_SLOT) / 60 };
+  };
+  for (const storm of [0, 0.14, 0.3]) assert.equal(count(storm).strikes, 0);
+  const downpour = count(0.38);
+  assert.ok(downpour.strikes > 0 && downpour.near === 0, "a downpour has only distant lightning");
+  const storm = count(0.82);
+  const hurricane = count(1);
+  assert.ok(storm.strikes / storm.minutes > 6, "a storm flashes several times a minute");
+  assert.ok(hurricane.strikes > storm.strikes);
+  assert.ok(storm.ground > storm.strikes * 0.3, "many strikes are visible bolts");
+  assert.ok(storm.near > 0 && storm.near < storm.strikes * 0.25, "close strikes happen, but rarely");
   for (let t = 0; t < 600; t += 0.05) {
-    assert.equal(lightningFlash(t, 0.3), 0);
-    const flash = lightningFlash(t, 1);
-    assert.ok(flash >= 0 && flash <= 1);
-    if (flash > 0.3) flashed += 1;
+    assert.equal(L.lightningFlash(t, 0.3), 0);
+    const flash = L.lightningFlash(t, 1);
+    assert.ok(Number.isFinite(flash) && flash >= 0 && flash <= 1.6);
   }
-  assert.ok(flashed > 0, "a hurricane has lightning");
+});
+
+test("lightning: a stroke is a leader, then bright return strokes that die within a second", async () => {
+  const L = await import("../../src/simulator/environment/LightningMath");
+  let strike = null;
+  for (let slot = 0; !strike || strike.kind !== "ground" || strike.strokes.length < 2; slot += 1) strike = L.strikeInSlot(slot, 1);
+  const during = L.strikeLight(strike, L.LEADER_SECONDS * 0.5);
+  assert.ok(during.reveal > 0 && during.reveal < 1, "the leader reveals the channel downward");
+  assert.ok(during.brightness < 0.2);
+  const peak = L.strikeLight(strike, strike.strokes[0]!.time + 0.001);
+  assert.equal(peak.reveal, 1);
+  assert.ok(peak.brightness > 0.9);
+  const second = L.strikeLight(strike, strike.strokes[1]!.time + 0.001);
+  assert.ok(second.brightness > 0.4, "a later stroke flashes again");
+  assert.equal(L.strikeLight(strike, L.STRIKE_SECONDS + 0.1).brightness, 0);
+  // Close strikes light the scene, far ones barely; thunder lags by the distance.
+  assert.ok(L.strikeProximity(500) > 0.75 && L.strikeProximity(10000) < 0.02);
+  assert.ok(Math.abs(L.thunderDelay(3430)! - 10) < 1e-9);
+  assert.equal(L.thunderDelay(L.THUNDER_RANGE + 1), null);
+});
+
+test("lightning: the channel descends from the cloud to the sea and branches stay above it", async () => {
+  const L = await import("../../src/simulator/environment/LightningMath");
+  for (let seed = 1; seed < 40; seed += 1) {
+    const shape = L.buildBolt(seed * 7919, L.createBoltShape());
+    assert.ok(shape.count > 64 && shape.count <= L.BOLT_MAX_SEGMENTS);
+    let lowest = 1;
+    let mainTop = 0;
+    for (let index = 0; index < shape.count; index += 1) {
+      const [x0, y0, x1, y1] = shape.segments.subarray(index * 4, index * 4 + 4);
+      for (const value of [x0, y0, x1, y1]) assert.ok(Number.isFinite(value));
+      assert.ok(y0! <= 1.001 && y1! >= -0.001);
+      assert.ok(Math.abs(x1!) < 1.2, "the channel stays within a plausible width");
+      const branch = shape.attributes[index * 4 + 3];
+      if (branch === 0) {
+        lowest = Math.min(lowest, y1!);
+        mainTop = Math.max(mainTop, y0!);
+      } else {
+        assert.ok(y1! > 0.01, "branches die out before reaching the sea");
+      }
+    }
+    assert.ok(lowest < 0.001 && mainTop > 0.999, "the main channel spans cloud base to sea");
+  }
+  // The same seed always draws the same bolt.
+  const a = L.buildBolt(42, L.createBoltShape());
+  const b = L.buildBolt(42, L.createBoltShape());
+  assert.deepEqual(Array.from(a.segments), Array.from(b.segments));
 });
 
 test("sea state: wave height grows with the scale, stays finite and keeps slopes resolvable", async () => {
@@ -767,7 +899,7 @@ test("sea state: wave height grows with the scale, stays finite and keeps slopes
       assert.ok(Number.isFinite(sample.height) && Math.abs(sample.height) < 8);
       assert.ok(sample.normalY > 0.35, "normals stay upward even in a hurricane sea");
     }
-    assert.ok(O.maximumOceanFold() < 1, "crests do not fold over themselves");
+    assert.ok(O.maximumOceanFold(O.seaFactors, true) < 1, "crests do not fold over themselves");
   } finally {
     O.setSeaScale(1);
   }

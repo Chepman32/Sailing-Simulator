@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { injectAfter, injectBefore, patchMaterialShader } from "../core/ShaderPatch";
 import { ISLAND_SLOT_UNIFORMS, SURF_GLSL } from "./SurfMath";
-import { SKY_FUNCTIONS } from "./shaders/skyShader";
+import { SKY_FUNCTIONS, SKY_UNIFORM_DECLARATIONS } from "./shaders/skyShader";
 
 /**
  * What the island surface needs beyond a lit vertex colour:
@@ -52,18 +52,7 @@ export function createIslandSurfaceUniforms(): IslandSurfaceUniforms {
 // The sky functions bring their noise; the sky uniforms they mention are
 // declared so the functions compile, though the sand never calls them.
 const SAND_DECLARATIONS = /* glsl */ `
-  uniform vec3 uZenith;
-  uniform vec3 uHorizon;
-  uniform vec3 uSunDirection;
-  uniform vec3 uMoonDirection;
-  uniform vec3 uLightDirection;
-  uniform vec3 uSunColor;
-  uniform vec3 uCloudLit;
-  uniform vec3 uCloudShade;
-  uniform float uNight;
-  uniform float uCloudTime;
-  uniform float uCloudCover;
-  uniform float uFlash;
+  ${SKY_UNIFORM_DECLARATIONS}
   uniform float uSurfTime;
   uniform vec2 uWindDirection;
   uniform sampler2D uPalmShadowMap;

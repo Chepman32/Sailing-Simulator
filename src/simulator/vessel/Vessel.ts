@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import type { AssetManager } from "../core/AssetManager";
 import { batchStaticMeshes, coincidentShells } from "../core/StaticBatching";
 import type { EnvironmentPalette } from "../environment/EnvironmentPalette";
@@ -11,6 +10,7 @@ import {
   createSaildriveGeometry,
   RUDDER_SPAN,
 } from "./Appendages";
+import { HELM_EYE, HelmStation, type HelmTraffic } from "./HelmStation";
 import { boomPivotPose, boomTarget, createBoomState, stepBoom } from "./BoomDynamics";
 import { SailSystem } from "./SailSystem";
 import type { VesselPhysics } from "./VesselPhysics";
@@ -21,12 +21,6 @@ const MIN_ACTIVE_PROPELLER_RPM = 220;
 const PROPELLER_RESPONSE = 7.5;
 /** Matches the physics: the HUD maps full helm to 35 degrees. */
 const MAX_RUDDER_ANGLE = 0.61;
-/** Helm wheel: how far it turns at full rudder (radians), and where it stands (vessel space, metres). */
-const WHEEL_LOCK = Math.PI * 1.1;
-const WHEEL_RADIUS = 0.3;
-const WHEEL_POSITION = new THREE.Vector3(0, 2.3, -1.5);
-/** The wheel faces the helmsman, tilted back like a flybridge pedestal. */
-const WHEEL_TILT = -0.5;
 /** Night-light intensities; lights stay in the scene by day at zero. */
 const NAVIGATION_LIGHT_INTENSITY = [0.9, 0.9, 0.72] as const;
 
@@ -40,6 +34,9 @@ export type VesselLighting = {
   camera: THREE.Camera;
   lightDirection: THREE.Vector3;
   palette: EnvironmentPalette;
+  /** For the helm displays: whether the engine runs, and whether anyone is close enough to read them. */
+  engineRunning?: boolean;
+  helmReadable?: boolean;
 };
 
 type HullProfile = {
@@ -67,7 +64,9 @@ export class Vessel {
   private readonly navigationLamps = new THREE.Group();
   private readonly hulls: HullProfile[] = [];
   private readonly boomPivot = new THREE.Group();
-  private readonly helmWheel = new THREE.Group();
+  private readonly helm = new HelmStation();
+  /** Parts left out of the planar mirror (see `batchStaticParts`). */
+  readonly mirrorSkipped: THREE.Object3D[] = [];
   private readonly boom = createBoomState();
   private authoredBoomAngle = 0;
   private hasRig = false;
@@ -155,7 +154,17 @@ export class Vessel {
     this.batchStaticParts();
     this.createAppendages();
     this.createNavigationLights();
-    this.createHelmWheel();
+    this.root.add(this.helm.group);
+  }
+
+  /** Where the helmsman's eyes are, in vessel space (the helm camera's anchor). */
+  get helmEye(): THREE.Vector3 {
+    return HELM_EYE;
+  }
+
+  /** Ships the chart plotter shows. */
+  setChartTraffic(traffic: readonly HelmTraffic[]): void {
+    this.helm.setTraffic(traffic);
   }
 
   update(
@@ -197,8 +206,22 @@ export class Vessel {
     this.rudders.forEach((rudder) => {
       rudder.rotation.y = -controls.rudder * MAX_RUDDER_ANGLE;
     });
-    // Starboard helm turns the wheel clockwise as the helmsman sees it.
-    this.helmWheel.rotation.z = THREE.MathUtils.damp(this.helmWheel.rotation.z, -controls.rudder * WHEEL_LOCK, 14, delta);
+    const telemetry = physics.telemetry;
+    this.helm.update(delta, {
+      x: physics.position.x,
+      z: physics.position.z,
+      heading: physics.heading,
+      speed: Math.hypot(physics.velocity.x, physics.velocity.z),
+      depth: telemetry.depth,
+      apparentWindSpeed: telemetry.apparentWindSpeed,
+      apparentWindAngle: telemetry.apparentWindAngle,
+      shaft: physics.engineShaft,
+      engineRunning: lighting?.engineRunning ?? Math.abs(physics.engineShaft) > 0.01,
+      throttle: controls.throttle,
+      rudder: controls.rudder,
+      night: nightFactor,
+      readable: lighting?.helmReadable ?? false,
+    });
     // Follow the simulated shaft so the screws spool up and down with the
     // engines instead of snapping to the lever position.
     const shaft = physics.engineShaft;
@@ -246,6 +269,7 @@ export class Vessel {
       materials.forEach((material) => material.dispose());
     });
     this.generatedGeometries.forEach((geometry) => geometry.dispose());
+    this.helm.dispose();
   }
 
   /**
@@ -343,16 +367,26 @@ export class Vessel {
         max: [box.max.x, box.max.y, box.max.z] as const,
       };
     });
+    const copies = new Set<THREE.Mesh>();
     coincidentShells(bounds, meshes.map(keyOf), SHELL_TOLERANCE).forEach((index) => {
       meshes[index].castShadow = false;
+      copies.add(meshes[index]);
     });
+    const copyNames = new Set([...copies].map((mesh) => mesh.name));
     const result = batchStaticMeshes(
       this.root,
       meshes,
-      (mesh) => `${keyOf(mesh)}|${mesh.castShadow}|${mesh.receiveShadow}`,
+      (mesh) => `${keyOf(mesh)}|${mesh.castShadow}|${mesh.receiveShadow}|${copies.has(mesh)}`,
       "YachtBatch",
     );
     this.generatedGeometries.push(...result.geometries);
+    // The copies only resolve each other's z-fighting up close; a blurred
+    // reflection does not need them (about 90k triangles less in the mirror).
+    for (const batch of result.batches) {
+      const from = batch.userData.batchedFrom as string[] | undefined;
+      if (from?.length && from.every((name) => copyNames.has(name))) this.mirrorSkipped.push(batch);
+    }
+    for (const mesh of copies) if (mesh.parent) this.mirrorSkipped.push(mesh);
   }
 
   private measureHull(mesh: THREE.Mesh, inverseRoot: THREE.Matrix4, bounds: THREE.Box3): HullProfile {
@@ -437,70 +471,6 @@ export class Vessel {
       this.rudders.push(rudder);
       this.generatedMeshes.push(rudder);
     });
-  }
-
-  /**
-   * The helm station on the coachroof: a pedestal and a spoked wheel that
-   * turns with the rudder. The source model has none. Three meshes (pedestal,
-   * wooden rim, steel hub and spokes) keep it to a handful of draw calls.
-   */
-  private createHelmWheel(): void {
-    const wood = new THREE.MeshStandardMaterial({ color: 0x6a4126, roughness: 0.55, metalness: 0 });
-    const steel = new THREE.MeshStandardMaterial({ color: 0xc9ced1, roughness: 0.2, metalness: 1, envMapIntensity: 1.3 });
-    const pedestalMaterial = new THREE.MeshStandardMaterial({ color: 0x2a2f33, roughness: 0.42, metalness: 0.7 });
-
-    const rim = new THREE.TorusGeometry(WHEEL_RADIUS, 0.021, 10, 40);
-    // Grip knobs poking out past the rim, one per spoke.
-    const spokes: THREE.BufferGeometry[] = [];
-    for (let index = 0; index < 8; index += 1) {
-      const angle = (index / 8) * Math.PI * 2;
-      const spoke = new THREE.CylinderGeometry(0.009, 0.012, WHEEL_RADIUS + 0.07, 6);
-      spoke.translate(0, (WHEEL_RADIUS + 0.07) / 2, 0);
-      spoke.rotateZ(angle);
-      spokes.push(spoke);
-      const knob = new THREE.SphereGeometry(0.019, 8, 6);
-      knob.translate(0, WHEEL_RADIUS + 0.07, 0);
-      knob.rotateZ(angle);
-      spokes.push(knob);
-    }
-    const hub = new THREE.CylinderGeometry(0.05, 0.05, 0.05, 16);
-    hub.rotateX(Math.PI / 2);
-    spokes.push(hub);
-    const metalGeometry = mergeGeometries(spokes, false);
-    for (const geometry of spokes) geometry.dispose();
-
-    const rimMesh = new THREE.Mesh(rim, wood);
-    const metalMesh = new THREE.Mesh(metalGeometry, steel);
-
-    // Pedestal from the roof up to the wheel's hub, plus a small binnacle.
-    const roofY = 1.53;
-    const column = WHEEL_POSITION.y - roofY;
-    const pedestalGeometry = mergeGeometries(
-      [
-        new THREE.CylinderGeometry(0.055, 0.075, column, 14).translate(0, roofY + column / 2, 0),
-        new THREE.CylinderGeometry(0.12, 0.14, 0.05, 18).translate(0, roofY + 0.025, 0),
-        new THREE.SphereGeometry(0.1, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2).translate(0, WHEEL_POSITION.y - 0.16, 0.0),
-      ],
-      false,
-    );
-    const pedestal = new THREE.Mesh(pedestalGeometry, pedestalMaterial);
-    pedestal.position.set(WHEEL_POSITION.x, 0, WHEEL_POSITION.z);
-    pedestal.name = "HelmPedestal";
-
-    const station = new THREE.Group();
-    station.name = "HelmWheel";
-    station.position.copy(WHEEL_POSITION);
-    station.rotation.order = "YXZ";
-    station.rotation.set(WHEEL_TILT, Math.PI, 0);
-    this.helmWheel.add(rimMesh, metalMesh);
-    station.add(this.helmWheel);
-    for (const mesh of [rimMesh, metalMesh, pedestal]) {
-      mesh.castShadow = true;
-      mesh.receiveShadow = false;
-      this.generatedMeshes.push(mesh);
-    }
-    this.generatedGeometries.push(rim, metalGeometry, pedestalGeometry);
-    this.root.add(station, pedestal);
   }
 
   private createNavigationLights(): void {

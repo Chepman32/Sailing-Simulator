@@ -237,3 +237,56 @@ test("rigs that cannot merge exactly are left alone", () => {
   });
   assert.equal(skinned, 3, "the model is untouched");
 });
+
+test("render budget: the pixel budget caps large Retina canvases, small ones keep their ratio", async () => {
+  const R = await import("../../src/simulator/core/RenderBudget");
+  const { QUALITY_SETTINGS } = await import("../../src/simulator/core/QualityManager");
+  const high = QUALITY_SETTINGS.high;
+  // A 1728×1117 laptop window at DPR 2.
+  const ratio = R.budgetPixelRatio(2, high.maxDpr, high.pixelBudget, 1728, 1117);
+  assert.ok(ratio < high.maxDpr);
+  assert.ok(1728 * 1117 * ratio * ratio <= high.pixelBudget * 1.0001);
+  // A phone-sized canvas is under budget: the preset's own ratio applies.
+  assert.equal(R.budgetPixelRatio(3, 1.25, QUALITY_SETTINGS.medium.pixelBudget, 390, 844), 1.25);
+  // The governor's scale multiplies, but never below its floor nor half a pixel.
+  assert.ok(R.budgetPixelRatio(1, 1, 2_000_000, 800, 600, 0.1) >= 0.5);
+  assert.ok(Math.abs(R.budgetPixelRatio(1, 1, 2_000_000, 800, 600, 0.8) - 0.8) < 1e-9);
+  for (const preset of ["low", "medium", "high"] as const) assert.ok(QUALITY_SETTINGS[preset].pixelBudget > 0);
+  assert.ok(QUALITY_SETTINGS.low.pixelBudget < QUALITY_SETTINGS.medium.pixelBudget);
+  assert.ok(QUALITY_SETTINGS.medium.pixelBudget < QUALITY_SETTINGS.high.pixelBudget);
+});
+
+test("render budget: the GPU governor lowers the scale under load, restores it with room, and calls for a preset change only at the limits", async () => {
+  const R = await import("../../src/simulator/core/RenderBudget");
+  const governor = new R.GpuGovernor(6.5);
+  let time = 0;
+  // A GPU at 13 ms a frame: the scale comes down, step by step, to the floor.
+  let verdicts = new Set<string>();
+  for (let frame = 0; frame < 60 * 30; frame += 1) {
+    time += 1 / 60;
+    verdicts.add(governor.observe(13, time, 1 / 60));
+  }
+  assert.ok(governor.scale <= R.MIN_RENDER_SCALE + 1e-9);
+  assert.ok(verdicts.has("scaled") && verdicts.has("overloaded"), "a GPU still overloaded at the floor asks for a lower preset");
+  // Changes are spaced out: never two inside the interval.
+  const changes: number[] = [];
+  governor.reset();
+  for (let frame = 0; frame < 60 * 20; frame += 1) {
+    time += 1 / 60;
+    if (governor.observe(9, time, 1 / 60) === "scaled") changes.push(time);
+  }
+  for (let index = 1; index < changes.length; index += 1) {
+    assert.ok(changes[index]! - changes[index - 1]! >= R.SCALE_CHANGE_INTERVAL - 1e-9);
+  }
+  // Plenty of room: back to full scale, and after a long while a hint that more would fit.
+  verdicts = new Set();
+  for (let frame = 0; frame < 60 * 60; frame += 1) {
+    time += 1 / 60;
+    verdicts.add(governor.observe(2, time, 1 / 60));
+  }
+  assert.equal(governor.scale, 1);
+  assert.ok(verdicts.has("idle"));
+  // Nonsense measurements change nothing.
+  assert.equal(governor.observe(Number.NaN, time, 1 / 60), "steady");
+  assert.equal(governor.observe(-1, time, 1 / 60), "steady");
+});

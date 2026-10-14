@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { distanceFromWaterline, ISLAND_DEFINITIONS, waterDepthAt } from "../../src/simulator/environment/IslandMath";
-import { OCEAN_WAVES, sampleOcean, surfaceBasePoint } from "../../src/simulator/environment/OceanMath";
+import { OCEAN_WAVES, sampleOcean, seaFactors, surfaceBasePoint } from "../../src/simulator/environment/OceanMath";
 import { surfaceImpactLife, surfaceImpactShape } from "../../src/simulator/environment/SurfaceImpacts";
 import { calculateSplashProfile } from "../../src/simulator/vessel/WakeSystem";
 import {
@@ -93,16 +93,17 @@ test("the CPU sampler returns the height of the displaced Gerstner surface actua
     let offsetX = 0;
     let offsetZ = 0;
     let height = 0;
-    for (const wave of OCEAN_WAVES) {
+    OCEAN_WAVES.forEach((wave, index) => {
+      const amplitude = wave.amplitude * seaFactors[index]!;
       const length = Math.hypot(wave.directionX, wave.directionZ);
       const dx = wave.directionX / length;
       const dz = wave.directionZ / length;
       const k = (Math.PI * 2) / wave.wavelength;
       const phase = k * (dx * x + dz * z) - Math.sqrt(9.81 * k) * wave.speed * time;
-      offsetX += dx * wave.steepness * wave.amplitude * Math.cos(phase);
-      offsetZ += dz * wave.steepness * wave.amplitude * Math.cos(phase);
-      height += wave.amplitude * Math.sin(phase);
-    }
+      offsetX += dx * wave.steepness * amplitude * Math.cos(phase);
+      offsetZ += dz * wave.steepness * amplitude * Math.cos(phase);
+      height += amplitude * Math.sin(phase);
+    });
     // … then sample where that vertex ended up.
     const sample = sampleOcean(x + offsetX, z + offsetZ, time);
     assert.ok(Math.abs(sample.height - height) < 0.01, `height mismatch ${sample.height} vs ${height}`);

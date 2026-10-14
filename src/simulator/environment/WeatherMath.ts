@@ -1,4 +1,4 @@
-import { clamp, smoothstep } from "../math";
+import { clamp } from "../math";
 
 /**
  * Weather as pure, testable numbers.
@@ -40,7 +40,7 @@ export type WeatherSample = {
   wind: number;
   /** Sea state scale for `OceanMath.setSeaScale` (1 = the trade-wind sea). */
   waves: number;
-  /** Gloom and thunder: darkens sky, clouds and water; lightning above 0.5. */
+  /** Gloom and thunder: darkens sky, clouds and water; lightning above `LIGHTNING_MIN_STORM` (see `LightningMath`). */
   storm: number;
   /** How much sooner crests break into whitecaps, 0…~0.45. */
   breaking: number;
@@ -180,31 +180,4 @@ export function autoWeatherKind(time: number): WeatherKind {
     else high = middle - 1;
   }
   return WEATHER_KINDS[segmentLevel[low]!]!;
-}
-
-// --- Lightning -------------------------------------------------------------------
-
-const LIGHTNING_SLOT = 7;
-
-/**
- * Brightness (0…1) of the lightning at `time`. Flashes only happen in a real
- * storm (`storm` above 0.5) and come in two quick strokes at irregular times;
- * more often the wilder it is. A closed-form function of time, so it is
- * reproducible and needs no state.
- */
-export function lightningFlash(time: number, storm: number): number {
-  if (storm < 0.5) return 0;
-  const intensity = smoothstep(0.5, 1, storm);
-  const slot = Math.floor(time / LIGHTNING_SLOT);
-  let flash = 0;
-  // A flash can start in the previous slot and still be fading in this one.
-  for (let index = slot - 1; index <= slot; index += 1) {
-    if (index < 0 || hash(index, 11) > 0.38 + 0.4 * intensity) continue;
-    const start = index * LIGHTNING_SLOT + hash(index, 12) * (LIGHTNING_SLOT - 1.2);
-    const first = time - start;
-    const second = time - start - 0.17 - hash(index, 13) * 0.12;
-    if (first >= 0 && first < 1.2) flash = Math.max(flash, Math.exp(-first * 11));
-    if (second >= 0 && second < 1.2) flash = Math.max(flash, 0.8 * Math.exp(-second * 8));
-  }
-  return flash * (0.6 + 0.4 * intensity);
 }
