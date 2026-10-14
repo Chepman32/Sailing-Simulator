@@ -4,6 +4,8 @@ import type { EnvironmentPalette } from "./EnvironmentPalette";
 import { createOceanGrid } from "./OceanGrid";
 import { maximumOceanFold, OCEAN_WAVES, sampleOcean, seaFactors, setSeaScale, type OceanSample } from "./OceanMath";
 import { createSkyUniforms, setLinearColor, type SkyUniforms } from "./SkyUniforms";
+import { ISLAND_SLOT_UNIFORMS } from "./SurfMath";
+import { emptyWakeSample, sampleShipWakes, SHIP_WAKE_UNIFORMS, type Ship } from "../ships/ShipMath";
 import { MAX_IMPACT_STRENGTH, MAX_SURFACE_IMPACTS, surfaceImpactLife } from "./SurfaceImpacts";
 import { oceanFragmentShader, oceanVertexShader } from "./shaders/oceanShader";
 import type { WeatherSample } from "./WeatherMath";
@@ -24,12 +26,18 @@ export class OceanSystem {
   readonly skyUniforms: SkyUniforms = createSkyUniforms();
   private readonly uniforms: Record<string, THREE.IUniform>;
   private currentTime = 0;
+  private ships: readonly Ship[] = [];
+  private readonly shipWake = emptyWakeSample();
   private segments: number;
   private cellSize: number;
 
   constructor(scene: THREE.Scene, quality: QualitySettings) {
     this.uniforms = {
       ...this.skyUniforms,
+      // The islands nearest the yacht: shallows, surf and shore colour.
+      ...ISLAND_SLOT_UNIFORMS,
+      // Passing ships' wakes (see ShipMath).
+      ...SHIP_WAKE_UNIFORMS,
       uTime: { value: 0 },
       uDeepColor: { value: new THREE.Color() },
       uShallowColor: { value: new THREE.Color() },
@@ -122,7 +130,29 @@ export class OceanSystem {
    * the vertical excursion of the water that far below the mean surface.
    */
   sample(x: number, z: number, depth = 0): OceanSample {
-    return sampleOcean(x, z, this.currentTime, depth);
+    const sample = sampleOcean(x, z, this.currentTime, depth);
+    if (this.ships.length === 0) return sample;
+    // Ships' wakes are part of the surface too: the vertex stage displaces
+    // it by the same height, so a passing wake really rocks the yacht.
+    const wake = sampleShipWakes(this.ships, x, z, this.shipWake);
+    if (wake.height === 0 && wake.slopeX === 0 && wake.slopeZ === 0) return sample;
+    // Long waves reach down; at depth their motion fades like the swell's.
+    const attenuation = depth > 0 ? Math.exp(-0.2 * depth) : 1;
+    sample.height += wake.height * attenuation;
+    if (depth <= 0) {
+      const nx = sample.normalX / sample.normalY - wake.slopeX;
+      const nz = sample.normalZ / sample.normalY - wake.slopeZ;
+      const inverse = 1 / Math.hypot(nx, 1, nz);
+      sample.normalX = nx * inverse;
+      sample.normalY = inverse;
+      sample.normalZ = nz * inverse;
+    }
+    return sample;
+  }
+
+  /** The ships whose wakes join the surface (shared by reference). */
+  setShips(ships: readonly Ship[]): void {
+    this.ships = ships;
   }
 
   /**

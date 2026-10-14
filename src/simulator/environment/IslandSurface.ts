@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import { injectAfter, injectBefore, patchMaterialShader } from "../core/ShaderPatch";
-import { ISLAND_DEFINITIONS } from "./IslandMath";
-import { SURF_GLSL } from "./SurfMath";
+import { ISLAND_SLOT_UNIFORMS, SURF_GLSL } from "./SurfMath";
 import { SKY_FUNCTIONS } from "./shaders/skyShader";
 
 /**
@@ -33,6 +32,10 @@ export type IslandSurfaceUniforms = {
 };
 
 export const MAX_PALM_TRUNKS = 32;
+/** Half the side of the square of islands the palm shadow map covers, metres. */
+export const PALM_SHADOW_HALF_EXTENT = 260;
+/** The covered square moves in steps of this many metres. */
+const PALM_SHADOW_STEP = 120;
 
 export function createIslandSurfaceUniforms(): IslandSurfaceUniforms {
   return {
@@ -112,8 +115,8 @@ export function applyIslandSurface(
   surface: IslandSurfaceUniforms,
   sky: Record<string, THREE.IUniform>,
 ): void {
-  patchMaterialShader(material, "island-surface-v1", (shader) => {
-    Object.assign(shader.uniforms, sky, surface);
+  patchMaterialShader(material, "island-surface-v2", (shader) => {
+    Object.assign(shader.uniforms, sky, surface, ISLAND_SLOT_UNIFORMS);
     shader.vertexShader = injectAfter(
       shader.vertexShader.replace(
         "#include <common>",
@@ -223,7 +226,7 @@ export class PalmShadowMap {
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 700);
   private readonly depthMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
   private readonly lastDirection = new THREE.Vector3(0, -2, 0);
-  private readonly centre = new THREE.Vector3();
+  private readonly centre = new THREE.Vector3(Number.NaN, 0, Number.NaN);
   private readonly bias = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
   private readonly clearColor = new THREE.Color();
   private readonly halfExtent: number;
@@ -242,18 +245,7 @@ export class PalmShadowMap {
       depthBuffer: true,
     });
     this.target.texture.name = "PalmShadowMap";
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minZ = Infinity;
-    let maxZ = -Infinity;
-    for (const island of ISLAND_DEFINITIONS) {
-      minX = Math.min(minX, island.centerX - island.beachRadius * 1.1);
-      maxX = Math.max(maxX, island.centerX + island.beachRadius * 1.1);
-      minZ = Math.min(minZ, island.centerZ - island.beachRadius * island.scaleZ * 1.1);
-      maxZ = Math.max(maxZ, island.centerZ + island.beachRadius * island.scaleZ * 1.1);
-    }
-    this.centre.set((minX + maxX) / 2, 0, (minZ + maxZ) / 2);
-    this.halfExtent = Math.hypot(maxX - minX, maxZ - minZ) / 2 + 12;
+    this.halfExtent = PALM_SHADOW_HALF_EXTENT;
     this.camera.left = -this.halfExtent;
     this.camera.right = this.halfExtent;
     this.camera.top = this.halfExtent;
@@ -262,10 +254,19 @@ export class PalmShadowMap {
     uniforms.uPalmShadowMap.value = this.target.texture;
   }
 
-  /** Redraws the map if the light has moved; `strength` fades the shadows (night, low sun). */
-  update(renderer: THREE.WebGLRenderer, lightDirection: THREE.Vector3, strength: number): void {
+  /**
+   * Redraws the map if the light has moved or the yacht has sailed into
+   * another part of the archipelago; `strength` fades the shadows (night,
+   * low sun). The map covers the islands around (focusX, focusZ), on a grid
+   * so it does not have to follow every metre.
+   */
+  update(renderer: THREE.WebGLRenderer, lightDirection: THREE.Vector3, strength: number, focusX = 0, focusZ = 0): boolean {
     this.uniforms.uPalmShadowStrength.value = strength;
-    if (strength <= 0.001 || lightDirection.angleTo(this.lastDirection) < 0.004) return;
+    const centreX = Math.round(focusX / PALM_SHADOW_STEP) * PALM_SHADOW_STEP;
+    const centreZ = Math.round(focusZ / PALM_SHADOW_STEP) * PALM_SHADOW_STEP;
+    const moved = centreX !== this.centre.x || centreZ !== this.centre.z;
+    if (strength <= 0.001 || (!moved && lightDirection.angleTo(this.lastDirection) < 0.004)) return false;
+    this.centre.set(centreX, 0, centreZ);
     this.lastDirection.copy(lightDirection);
     this.camera.position.copy(this.centre).addScaledVector(lightDirection, 300);
     this.camera.up.set(0, 1, 0);
@@ -300,6 +301,7 @@ export class PalmShadowMap {
     this.scene.overrideMaterial = previousOverride;
     this.scene.background = previousBackground;
     this.scene.fog = previousFog;
+    return moved;
   }
 
   dispose(): void {

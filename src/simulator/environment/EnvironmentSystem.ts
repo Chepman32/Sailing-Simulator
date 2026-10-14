@@ -139,7 +139,7 @@ export class EnvironmentSystem {
     // only lifts shadowed faces that the low-resolution capture under-lights.
     this.hemisphere = new THREE.HemisphereLight(0xffffff, 0xffffff, 1);
     scene.add(this.hemisphere);
-    scene.fog = new THREE.FogExp2(0x91cddb, 0.00105);
+    scene.fog = new THREE.FogExp2(0x91cddb, 0.0008);
     scene.environmentIntensity = 0.85;
     this.update(0, null, new THREE.Vector3(), 0);
   }
@@ -295,7 +295,7 @@ export class EnvironmentSystem {
     setLinearColor(this.fogColor, palette.horizon);
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.color.copy(this.fogColor);
-      this.scene.fog.density = (0.00105 + night * 0.0001) * (1 + this.weather.haze * 3.4);
+      this.scene.fog.density = (0.0008 + night * 0.0001) * (1 + this.weather.haze * 3.4);
     }
     this.scene.background = this.fogColor;
 

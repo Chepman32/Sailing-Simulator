@@ -1,5 +1,13 @@
 import { clamp, smoothstep } from "../math";
-import { ISLAND_DEFINITIONS, WATERLINE_RADIAL } from "./IslandMath";
+import {
+  ALL_ISLANDS,
+  ISLAND_DEFINITIONS,
+  ISLAND_SLOTS,
+  islandCandidates,
+  islandEdgeNoise,
+  MAX_EDGE_NOISE,
+  WATERLINE_RADIAL,
+} from "./IslandMath";
 
 /**
  * Surf on the island beaches, as one pure function of position and time with
@@ -144,17 +152,19 @@ export function sampleSurf(
 
 /** Nearest island, its angle around the centre, and the distance from its rendered waterline. */
 export function nearestShore(x: number, z: number): { index: number; angle: number; distance: number } {
+  return nearestShoreAmong(x, z, islandCandidates(x, z) ?? ALL_ISLANDS);
+}
+
+function nearestShoreAmong(x: number, z: number, indices: readonly number[]): { index: number; angle: number; distance: number } {
   let best = { index: 0, angle: 0, distance: Number.POSITIVE_INFINITY };
-  ISLAND_DEFINITIONS.forEach((island, index) => {
+  indices.forEach((index) => {
+    const island = ISLAND_DEFINITIONS[index]!;
     const dx = x - island.centerX;
     const dz = (z - island.centerZ) / island.scaleZ;
+    const centre = Math.hypot(dx, dz);
+    if (centre - island.beachRadius * MAX_EDGE_NOISE * WATERLINE_RADIAL >= best.distance) return;
     const angle = Math.atan2(dz, dx);
-    const edge =
-      1 +
-      Math.sin(angle * 3 + index * 1.7) * 0.038 +
-      Math.sin(angle * 7 - index * 0.9) * 0.023 +
-      Math.cos(angle * 11 + index * 0.6) * 0.012;
-    const distance = Math.hypot(dx, dz) - island.beachRadius * edge * WATERLINE_RADIAL;
+    const distance = centre - island.beachRadius * islandEdgeNoise(angle, index) * WATERLINE_RADIAL;
     if (distance < best.distance) best = { index, angle, distance };
   });
   return best;
@@ -162,11 +172,29 @@ export function nearestShore(x: number, z: number): { index: number; angle: numb
 
 const glslNumber = (value: number): string => (Number.isInteger(value) ? `${value}.0` : value.toFixed(6));
 
-const islandCalls = ISLAND_DEFINITIONS.map(
-  (island, index) => `    shoreCandidate(position, vec2(${glslNumber(island.centerX)}, ${glslNumber(island.centerZ)}), ${glslNumber(
-    island.beachRadius,
-  )}, ${glslNumber(island.scaleZ)}, ${glslNumber(index)}, best);`,
-).join("\n");
+/**
+ * The islands the shaders evaluate (see `selectIslandSlots`), shared by
+ * reference between every material that includes {@link SURF_GLSL}:
+ * (centre x, centre z, beach radius, scale z) and (index, lobe, 0, 0).
+ */
+export type IslandSlotUniforms = {
+  uIslandShape: { value: Float32Array };
+  uIslandFrame: { value: Float32Array };
+};
+
+export function createIslandSlotUniforms(): IslandSlotUniforms {
+  const shape = new Float32Array(ISLAND_SLOTS * 4);
+  for (let slot = 0; slot < ISLAND_SLOTS; slot += 1) {
+    shape[slot * 4] = 1.0e6;
+    shape[slot * 4 + 1] = 1.0e6;
+    shape[slot * 4 + 2] = 1;
+    shape[slot * 4 + 3] = 1;
+  }
+  return { uIslandShape: { value: shape }, uIslandFrame: { value: new Float32Array(ISLAND_SLOTS * 4) } };
+}
+
+/** One set for the whole scene: the ocean, the sand and the swash all read it. */
+export const ISLAND_SLOT_UNIFORMS: IslandSlotUniforms = createIslandSlotUniforms();
 
 /**
  * GLSL twin. `shoreInfo` returns (distance from the rendered waterline, angle
@@ -176,20 +204,37 @@ const islandCalls = ISLAND_DEFINITIONS.map(
 export const SURF_GLSL = /* glsl */ `
   #ifndef SURF_GLSL
   #define SURF_GLSL
-  void shoreCandidate(vec2 position, vec2 center, float beachRadius, float scaleZ, float index, inout vec3 best) {
-    vec2 local = vec2(position.x - center.x, (position.y - center.y) / scaleZ);
+  uniform vec4 uIslandShape[${ISLAND_SLOTS}];
+  uniform vec4 uIslandFrame[${ISLAND_SLOTS}];
+
+  void shoreCandidate(vec4 shape, vec4 frame, vec2 position, inout vec3 best) {
+    vec2 local = vec2(position.x - shape.x, (position.y - shape.y) / shape.w);
+    float centre = length(local);
+    float beachRadius = shape.z;
+    float index = frame.x;
+    // Far from this coast only the distance matters (the depth colour); the
+    // angle and the noise are needed near the shore alone.
+    float bound = centre - beachRadius * ${glslNumber(MAX_EDGE_NOISE * WATERLINE_RADIAL)};
+    if (bound >= best.x) return;
+    if (bound > 60.0) {
+      best = vec3(centre - beachRadius * ${glslNumber(WATERLINE_RADIAL)}, 0.0, index);
+      return;
+    }
     float angle = atan(local.y, local.x);
     float edge = 1.0
+      + sin(angle * 2.0 + index * 2.3) * frame.y
       + sin(angle * 3.0 + index * 1.7) * 0.038
       + sin(angle * 7.0 - index * 0.9) * 0.023
       + cos(angle * 11.0 + index * 0.6) * 0.012;
-    float distance = length(local) - beachRadius * edge * ${glslNumber(WATERLINE_RADIAL)};
+    float distance = centre - beachRadius * edge * ${glslNumber(WATERLINE_RADIAL)};
     if (distance < best.x) best = vec3(distance, angle, index);
   }
 
   vec3 shoreInfo(vec2 position) {
     vec3 best = vec3(1.0e5, 0.0, 0.0);
-${islandCalls}
+    for (int slot = 0; slot < ${ISLAND_SLOTS}; slot++) {
+      shoreCandidate(uIslandShape[slot], uIslandFrame[slot], position, best);
+    }
     return best;
   }
 

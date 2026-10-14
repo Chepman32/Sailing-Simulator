@@ -14,7 +14,8 @@ The experience should communicate the following at a glance:
 - engine, throttle, rudder, sails, current heading, and apparent wind are distinct concepts;
 - the two hulls create two wakes, while the engine creates a separate propeller wash;
 - day and night are coherent environment states rather than unrelated color filters;
-- islands are tropical land masses with shallow water and collision boundaries, not circular platforms;
+- islands are tropical land masses with shallow water and collision boundaries, not circular platforms, scattered as an archipelago of dozens of cays and islands of every size over several kilometres;
+- large ships (container ships, tankers, bulk carriers, car carriers, cruise liners) pass in the distance or lie at anchor; they can be reached, their wakes rock the yacht, and they are heard and seen at night;
 - wildlife uses authored, licensed, rigged 3D models and moves forward with inertia;
 - whales stay hidden at depth most of the time; a surfacing is a rare event in which only the back, the blowhole and, when lobtailing, the peduncle and flukes clear the water; a full breach happens only far from the yacht, rarely, by a separate distant whale;
 - dolphins leap only at real speed, in one continuous ballistic arc; sharks are mostly a dark shape below the surface;
@@ -82,6 +83,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/core/ShaderPatch.ts` | Composable `onBeforeCompile` patches for built-in materials |
 | `src/simulator/core/StaticBatching.ts` | Merges fixed parts that share a material into one mesh each; finds stacked copies of one shell |
 | `src/simulator/core/SkinnedMerge.ts` | Merges the flat-coloured skinned parts of one rig into a single skinned mesh with vertex colours |
+| `src/simulator/core/Subdivision.ts` | One step of Loop subdivision for a skinned, flat-coloured mesh: welded topology, crease rules, inherited colours, blended skin weights |
 
 ### Environment
 
@@ -98,10 +100,10 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/EnvironmentPalette.ts` | Pure scene-linear colour palette for day, dusk, and night |
 | `src/simulator/environment/WindMath.ts` | Pure, deterministic true-wind gusts and shifts |
 | `src/simulator/environment/EnvironmentSystem.ts` | Sky dome, image-based lighting capture, fog, exposure, sun, moon, stars, directional light |
-| `src/simulator/environment/IslandMath.ts` | Pure island definitions, bathymetry, coastline noise, terrain noise |
-| `src/simulator/environment/IslandSystem.ts` | Terrain, palms, seabed, collision, shore direction |
+| `src/simulator/environment/IslandMath.ts` | Pure, seeded archipelago generator, bathymetry, coastline noise, terrain noise, exact indexed nearest-coast search, shader island slots |
+| `src/simulator/environment/IslandSystem.ts` | Terrain (two LODs per island), palms merged per cluster, seabed following the yacht, draw distances, collision, shore direction |
 | `src/simulator/environment/IslandSurface.ts` | Sand shading (grain, ripples, wet sand), swash on the beach, palm shadow map and trunk contact shading |
-| `src/simulator/environment/SurfMath.ts` | Pure surf model (breaking crest, bore, swash, drying sand) and its GLSL twin, shared by ocean and sand |
+| `src/simulator/environment/SurfMath.ts` | Pure surf model (breaking crest, bore, swash, drying sand) and its GLSL twin, shared by ocean and sand; the island slot uniforms the shaders read |
 | `src/simulator/environment/WeatherMath.ts` | Pure weather model: seven kinds (clear … hurricane) as presets, exponential easing, deterministic auto planner, lightning |
 | `src/simulator/environment/RainSystem.ts` | One instanced draw of rain streaks in a camera-following box; intensity selects a stratified subset of the seeds |
 | `src/simulator/environment/OceanReflection.ts` | Planar mirror of the world above the sea (oblique near plane), sampled by the ocean shader |
@@ -123,6 +125,14 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/vessel/WakeField.ts` | Top-down wake texture (foam, aerated slick, wave height) the ocean shader samples |
 | `src/simulator/vessel/WakeSystem.ts` | Twin hull tracks, prop wash, bow droplets; wildlife splashes by contact kind: droplets, mist, crown sheets, rings, foam fields, fin trails, whale blows |
 
+### Ships
+
+| Path | Responsibility |
+| --- | --- |
+| `src/simulator/ships/ShipMath.ts` | Pure ship types, lane and anchorage planning, steering (shoal avoidance, give way to starboard), hull waterplane and contact, sound signals, Kelvin wake (CPU sampler and GLSL twin) |
+| `src/simulator/ships/ShipGeometry.ts` | Procedural ships: lofted hull with raked stem, sheer and transom, paint bands, fittings, superstructure per type, night lights |
+| `src/simulator/ships/ShipSystem.ts` | Owns the ships: placement and replacement, one mesh per ship, points of light at night, wake uniforms, yacht contact, horn events, sound sources |
+
 ### Wildlife
 
 | Path | Responsibility |
@@ -141,7 +151,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `BodyRig.ts` | Procedural bones in the animal frame, body points, clip filtering, animation LOD intervals |
 | `ReefFishController.ts` | Instanced reef fish extracted from the school asset, vertex-shader swimming |
 | `ReefFishMath.ts` | Pure boids schooling, depth band, flight from threats, tail-beat rules |
-| `GullFlockController.ts` | Animated aerial flock; each bird one merged skinned mesh with smoothed normals; the flap clip is driven by a measured loop window and phase, with procedural shoulder/hand roll and glides |
+| `GullBehavior.ts` | Pure gull flight: soar, follow the yacht's wake, skim, dive, land, rest on the water, take off; coordinated banking, flap bouts, wing pose |
+| `GullFlockController.ts` | The flock: the rig turned into the flight frame, merged, Loop-subdivided once, painted as herring gulls with feather detail in the shader; flap clip driven by the behaviour's phase, procedural shoulder/hand/tip stroke, glide "M" and folding |
 | `SwimmerDynamics.ts` | Shared forward-only swimmer: turn radius, bounded rates, pitch steering and overshoot-free depth holding |
 | `WildlifeModel.ts` | GLB normalization, animation selection, asset validation, heading helpers |
 
@@ -170,6 +181,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `tests/unit/assets.test.ts` | GLB quality/rig/animation/weight constraints and island geometry constraint |
 | `tests/unit/i18n.test.ts` | Language coverage, aliases, fallback, and preference semantics |
 | `tests/unit/rendering.test.ts` | Static batching, shell detection, shared skeletons, exact skinned merging, distant fish meshes |
+| `tests/unit/world.test.ts` | Archipelago, exact indexed coast search, shader slots, ship lanes, steering, contact, Kelvin wake, horns, gull flight, loop subdivision |
 | `tests/rendered-html.test.mjs` | Built-route smoke test |
 
 Generated folders such as `dist`, `.next`, `.sites-runtime`, and `node_modules` are not source. Never hand-edit or commit their generated contents unless the hosting tool explicitly owns a required metadata change.
@@ -199,7 +211,7 @@ When introducing a model, document its native axis, units, expected bounding dim
 3. create the GPU ocean;
 4. create the unified environment and current light mode;
 5. create islands and bathymetry;
-6. create vessel physics;
+6. create vessel physics and the ships (every ship type is built here, before the first frame);
 7. create the yacht visual and sail system;
 8. create wake, foam, and particle pools;
 9. create wildlife controllers from loaded assets;
@@ -224,8 +236,9 @@ The order of each simulation frame is an invariant.
 1. advance shared ocean time and focus;
 2. apply keyboard/gamepad input;
 3. force throttle to neutral if the engine is stopped;
-4. integrate vessel forces, collision, and buoyancy;
-5. sample and advance wake, spray, splash decals, and droplets.
+4. step the ships (`ShipSystem.fixedUpdate`), so their wakes are current for buoyancy;
+5. integrate vessel forces, collision, and buoyancy; then keep the yacht out of the ships' hulls;
+6. sample and advance wake, spray, splash decals, and droplets.
 
 The loop clamps a long frame to 50 ms, caps the accumulator at five fixed steps, and performs no more than five catch-up steps. That prevents a backgrounded or stalled tab from creating a spiral of death.
 
@@ -233,7 +246,7 @@ The loop clamps a long frame to 50 ms, caps the accumulator at five fixed steps,
 
 1. refresh ocean focus/uniforms;
 2. animate palms;
-3. interpolate yacht and sails, and swing the boom; a gybe slam is passed to audio;
+3. interpolate yacht and sails, and swing the boom; a gybe slam is passed to audio; place the ships on the swell;
 4. update wildlife movement and animation mixers, and the reef-fish schools (which flee the hulls, dolphins and shark);
 5. redraw the wake field at a throttled rate (about 30 Hz);
 6. update camera spring and FOV;
@@ -267,7 +280,7 @@ React receives immutable `SimulationSnapshot` values. A UI control must invoke a
 
 ## 9. Ocean system
 
-The ocean is a focused `1800 × 1800` meter grid built by `OceanGrid.ts`. Its centre is a uniform lattice (about 1.25 m cells on high, 1.7 m on low) and the cells grow smoothly toward the horizon. The mesh is re-centred on the yacht in whole inner cells, so the dense lattice is locked to the world and never slides across the waves. Every vertex stores the size of its largest neighbouring cell; the vertex shader fades a wave out wherever the local cells can no longer resolve it.
+The ocean is a focused `3600 × 3600` meter grid built by `OceanGrid.ts`. Its centre is a uniform lattice (about 1.25 m cells on high, 1.7 m on low) and the cells grow smoothly toward the horizon. The mesh is re-centred on the yacht in whole inner cells, so the dense lattice is locked to the world and never slides across the waves. Every vertex stores the size of its largest neighbouring cell; the vertex shader fades a wave out wherever the local cells can no longer resolve it.
 
 Six wave definitions in `OceanMath.ts` (`OCEAN_WAVES`) are the shared source for:
 
@@ -285,6 +298,8 @@ The GPU moves each vertex sideways as well as up, so `sampleOcean` first inverts
 
 `SurfaceImpacts.ts` adds up to eight ring-wave impacts (`OceanSystem.addImpact`): a group of crests spreading from each splash and a glassy slick behind it that damps the wind ripples, lasting up to about twenty seconds for a fluke slap. Like the detail spectrum they only shape the normal. If a wave parameter changes, verify GPU and CPU calculations still use the same direction, amplitude, wavelength, speed, steepness, phase convention, and world coordinates, and keep `maximumOceanSlope()` under the tested limit.
 
+Passing ships add their wakes to the same surface (`ShipMath`, uniforms `uShipPose`/`uShipShape`, four slots): the vertex stage displaces it by the Kelvin waves' height wherever the grid can carry them, `OceanSystem.sample` adds the same height and slope (so a ship's wake really rocks the yacht and moves the camera floor), and the fragment stage shades their slope like the swell and draws their foam and slick through the yacht's wake path. The yacht's wet band (`OCEAN_SURFACE_HEIGHT_GLSL`) does not include ship wakes.
+
 `OCEAN_DETAIL_WAVES` are shorter waves that only perturb the shading normal. They have no CPU companion on purpose: they are too small to move the yacht.
 
 `shaders/oceanShader.ts` generates both stages from those tables, so there is exactly one copy of each number. The fragment stage:
@@ -293,14 +308,14 @@ The GPU moves each vertex sideways as well as up, so `sampleOcean` first inverts
 - adds the detail spectrum and two drifting capillary ripple layers, each faded against the pixel footprint, with the faded energy converted into specular roughness instead of being dropped;
 - reflects the shared analytic sky (and, on high, its clouds) with Schlick Fresnel, and on medium/high a planar mirror of the yacht, islands and birds (`OceanReflection`) distorted by the swell and ripples;
 - draws the sun and moon glitter path with a GGX lobe whose width follows the unresolved wave energy, a broad sheen around it, and HDR sparkles from individual facets that bloom;
-- colours the water body from the island bathymetry: deep blue offshore, turquoise over the shelf, sand showing through at the beach;
+- colours the water body from the island bathymetry: deep blue offshore, turquoise over the shelf, sand showing through at the beach; the shaders evaluate only the eight islands nearest the yacht (`ISLAND_SLOTS`, uniforms `uIslandShape`/`uIslandFrame`, refreshed every frame by `IslandSystem.update`), and only measure the irregular coast within 60 m of it;
 - scatters sunlight forward through wave crests;
 - breaks whitecaps on the steepest crests inside gusts;
 - draws the surf from `SurfMath`: each wave steepens on the shelf (its face tilts the normal along the shore normal), breaks into a bore of white water and runs in; every wave has its own strength and run-up, and the timing drifts along the coast;
 - samples the wake field (`WakeField`): its wave height bends the normal, its aerated band pales the water and damps the ripples, and its foam is broken into lace at pixel scale;
 - keeps a local contact shadow under both hulls;
 - is clear looking down (about 58 % see-through at the nadir, closing toward grazing angles), so what swims below shows its own colour, already veiled by `UnderwaterLight`;
-- fades into the sky's own horizon colour so sea and sky meet without a seam.
+- fades into the sky's own horizon colour between `HORIZON_FADE_START` (640 m) and `HORIZON_FADE_END` (1250 m), so sea and sky meet without a seam and ships a kilometre off still sit on visible water.
 
 All colours are scene-linear and the shader ends with the renderer's tone-mapping and colour-space chunks, so it renders identically with and without the HDR pipeline.
 
@@ -392,7 +407,9 @@ A wildlife splash position must be an actual world-space water-contact position,
 
 ## 13. Islands and bathymetry
 
-Three island definitions provide center, beach radius, and elliptical Z scale. `IslandSystem.depthAt()` derives a shallow-water profile near each beach and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint, and direction back toward open water.
+`IslandMath.generateArchipelago` scatters the islands deterministically (seeded): the three home islands near the start, then about thirty more within `ARCHIPELAGO_RADIUS` (2.6 km) — mostly cays and islets, some wooded islands, one in eight a large high island with ridged hills, forest and bare rock — never closer to each other than their shelves plus a channel, never near the start. Each definition provides center, beach radius, elliptical Z scale, summit height and a two-lobed coastline bulge.
+
+Coast queries (`distanceFromWaterline`, `nearestShore`) use a grid index: every 200 m cell lists the islands that can be nearest to some point in it (exact lower and upper bounds), so the answer is exact and a query measures only a few islands. `IslandSystem.depthAt()` derives a shallow-water profile near each beach and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint, and direction back toward open water.
 
 Island definitions, bathymetry, coastline noise, and terrain noise live in the pure module `IslandMath.ts`. The ocean shader compiles the same definitions, so shore wash and shallow-water colour follow the rendered coast.
 
@@ -402,7 +419,9 @@ The rendered island uses irregular radial geometry (rings crowd toward the beach
 
 Water depth (`waterDepthAt`) slopes down from the rendered, irregular waterline, so physics, wildlife and the ocean colour agree on where the shallows are.
 
-The palm asset is a row of five tree variants. `plantPalms` lifts each tree out of that row and plants it individually inside the vegetated zone; never place the whole asset group as one object, or the trees trail out to sea. All palms share one material per source material and one wind uniform, and sway in world space; because the wind needs nothing per tree, each island's grove is then merged into one mesh per material (two or three draw calls per island instead of one per trunk and crown). The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
+Each island's terrain is a `THREE.LOD` of two meshes (the coarse one beyond 380 m); its vertex count follows its size. Islands are drawn to 2 km (70 % of that on the low preset), groves to 1.3 km, and islands beyond 650 m are left out of the planar mirror. The palm shadow map covers a 520 m square around the yacht on a 120 m grid and is redrawn when the yacht moves into another square or the light moves; the 32 trunk-contact slots hold the trunks nearest that square. The seabed plane follows the yacht.
+
+The palm asset is a row of five tree variants. `plantPalms` lifts each tree out of that row and plants it individually inside the vegetated zone; never place the whole asset group as one object, or the trees trail out to sea. All palms share one material per source material and one wind uniform, and sway in world space; because the wind needs nothing per tree, the groves are then merged per 1.5 km cluster into one mesh per material (a few draw calls for every palm in view instead of one per trunk and crown). The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
 
 Island constraints:
 
@@ -540,6 +559,25 @@ The slap fires once per downstroke when a tracked fluke point crosses down throu
 
 `WhaleBreach` runs a second, separate whale that is only ever seen breaching: rarely (`BREACH_MIN_INTERVAL`–`BREACH_MAX_INTERVAL`, the first a few minutes in), `BREACH_MIN_DISTANCE`–`BREACH_MAX_DISTANCE` from the yacht, ahead or off her bow, over deep water, running across the line of sight. It accelerates up from twelve metres, leaves the water on the arc its plan needs (full breach onto its back, flank breach, or chin breach), flies ballistically while its body lags the path and rolls, and crashes down; the water stops it within a body length and it dives out of sight. `WhaleBreachController` draws it with its own rig and throws spray where body points actually cross the surface: a sheet of water on the way out, the largest splash, mist and ring waves on the way down, and churned water afterwards. The whale near the yacht still never lifts its body out.
 
+### Gulls
+
+`GullBehavior` flies each bird: `soar` (circling a centre that drifts with the yacht, rising and sinking on the circle), `follow` (a station over the wake when she is under way; birds that overtake weave and fall back), `skim` (a long glide a metre or two above the waves), `dive` (climb, fold, plunge: a splash), `land` (a slowing glide into the wind and a soft touchdown), `rest` (afloat at `GULL_FLOAT_HEIGHT`, riding the swell head to wind, paddling) and `takeoff` (running along the surface on fast strokes; a resting bird takes off with an alarm call when the yacht comes within `GULL_ALARM_DISTANCE`). Airspeed stays forward and above `GULL_MIN_SPEED` in flight; the turn rate is bounded and the bank is that of a coordinated turn (tan bank = V·ω/g, at most `GULL_MAX_BANK`); flapping comes in bouts and harder to climb, accelerate and take off; birds keep a few metres apart.
+
+`GullFlockController` measures the rig's flight frame from the posed skeleton once (the source is built upright and only lies down in its clips) and corrects it on a body node, so the root's frame is the bird's. The merged bird is Loop-subdivided once (`subdivideSkinnedLoop`, creases kept) and shared by the flock; the plumage is painted per triangle (white body, silver-grey mantle and upper wing on whichever face of the single-sheet wing shows the top, white trailing edge, black tips with white mirrors, yellow bill with a red spot) and the shader adds primary shafts, scalloped secondaries and sunlight through the wing. The flap and glide clips always sum to full weight (the second glide clip, which turns the body, is stopped); on top, the shoulder, hand and tip are stroked a beat apart so the wing whips, hold a shallow "M" in a glide, and fold back along the body (the hand tucked by scale) to dive or sit.
+
+## 15a. Ships
+
+`ShipSystem` keeps four ships near the yacht: three under way and one at anchor (`MOVING_SHIPS`, `MAX_SHIPS`). Types (`SHIP_SPECS`): a 236 m container ship, a 222 m tanker, a 188 m bulk carrier, a 198 m car carrier and a 252 m cruise liner, each in one of three paint schemes; a tanker or bulk carrier is laden or in ballast (riding up to five metres high, red antifouling showing).
+
+- **Lanes** (`planLane`): a straight course whose closest approach to the yacht lies 340–1000 m off, clear of every coast by `LANE_SHORE_CLEARANCE` over the passage. A new ship appears 1.9–2.4 km up her lane, in the haze; at the start the first ship already crosses ahead of the yacht and the others are within sight. A ship far astern and moving away (`RECYCLE_DISTANCE`) is replaced; a slot that finds no clear lane retries a few seconds later.
+- **Anchorage** (`planAnchorage`): open water well off the islands, head to wind, swinging slowly; moved ahead of the yacht once she is more than `ANCHOR_RECYCLE_DISTANCE` away. It is the ship the yacht can always reach.
+- **Steering** (`stepShip`): service speed with bounded acceleration and turn rate; turns away when shoal water lies ahead; gives way to starboard to a ship on her starboard side on a collision course (and to an anchored ship).
+- **Contact**: the hull waterplane (`hullHalfWidth`, the same planform the geometry and the wake use) is a wall; points of the yacht's outline inside it are pushed out and her motion into the side is reversed with restitution, relative to the ship's motion; a hard contact throws a slap splash and a thud.
+- **Wake**: a Kelvin pattern (divergent waves on the 19.47° arms, transverse waves following at the ship's speed with wavenumber g/V²), white water along the arms and a turbulent foam centreline that lasts `WAKE_FOAM_SECONDS`, a smooth slick that lasts `WAKE_SLICK_SECONDS`, a bow wave and a lapping line along the hull (see §9).
+- **Visual** (`ShipGeometry`): one geometry per type and scheme with vertex colours, one shared-program material per ship (one draw call); the lofted hull has a raked stem, flared bow, sheer, flat bottom and bilge, transom; hawse pipes and anchors, draught marks, rubbing strake; container stacks, a tanker's pipe deck, catwalk and manifold crane, hatch covers and cranes, a liner's ten terraced decks of balconies and lifeboats, a car carrier's slab sides. Below the waterline the hull is veiled by `UnderwaterLight`. The ships ride the swell (heave, pitch, roll from four samples, heavily damped).
+- **Night**: windows and deck lights glow (an emissive `shipLight` attribute, channel 0); masthead, side and stern lights burn under way (channel 1), anchor lights at anchor (channel 2). A `THREE.Points` layer keeps the lamps and lit windows a few pixels wide at any range, dimmed by the haze.
+- **Sound** (`AudioSystem.updateShips`, `shipHorn`): the two nearest ships each have a voice — a low throb with the beat of a slow two-stroke diesel, losing its highs with distance, and the rush of the bow wave when close. A ship sounds five short blasts when the yacht stands into her path within 650 m ahead, and now and then one prolonged blast; the sound arrives as late as it takes to cross the water.
+
 ## 16. Audio system
 
 The current audio implementation is procedural Web Audio. There are no runtime audio downloads. The graph contains:
@@ -548,7 +586,8 @@ The current audio implementation is procedural Web Audio. There are no runtime a
 Master → DynamicsCompressor → destination
   EngineBus → diesel firing pulses + half-speed crank + combustion knock + wet-exhaust burble → opening low-pass; starter cue
   EnvironmentBus → wave noise + soft low wind (weather-driven) + rigging whistle in strong wind + hull-water noise
-  WildlifeBus → one-shot splashes (panned to where they happened, darker with distance) + positional gull calls
+  WildlifeBus → one-shot splashes (panned to where they happened, darker with distance) + positional gull calls (also when a bird is disturbed on the water or takes off)
+  EnvironmentBus → two ship voices (diesel throb and beat, bow-wave rush, air absorption by distance) + ship horns (delayed by distance / 343 m/s)
 ```
 
 The master sound setting and audio readiness are different states:
@@ -666,9 +705,9 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 
 | Preset | Max DPR | Ocean segments | Shadow map | Foam density | Gulls / dolphins | Reef fish | Ocean detail | Sky detail | HDR pipeline | Bloom | MSAA |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
-| Low | 1.0 | 96 | 512 | 0.45 | 2 / 2 | 35% | 0.30 | 0 | off | – | – |
-| Medium | 1.25 | 144 | 1024 | 0.70 | 4 / 3 | 60% | 0.55 | 1 | on | 0.20 | 2× |
-| High | 1.5 | 224 | 2048 | 0.90 | 4 / 4 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
+| Low | 1.0 | 96 | 512 | 0.45 | 3 / 2 | 35% | 0.30 | 0 | off | – | – |
+| Medium | 1.25 | 144 | 1024 | 0.70 | 6 / 3 | 60% | 0.55 | 1 | on | 0.20 | 2× |
+| High | 1.5 | 224 | 2048 | 0.90 | 6 / 4 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
 
 Ocean detail gates fragment work: above 0.2 the detail spectrum and one ripple layer are shaded; above 0.6 the second ripple layer and cloud reflections are added. Sky detail selects three- or five-octave clouds.
 
@@ -685,7 +724,7 @@ Important implementation caveats:
 - animation mixers are advanced at approximately 30 Hz while movement remains per-frame;
 - all shader programs are compiled during loading against the render target the scene actually uses; nothing should compile during play (check `renderer.info.programs` before and after a day/night cycle);
 - wake instance transforms are refreshed at approximately 30 Hz;
-- on phones the per-draw-call CPU work of three.js, not the triangle count, is usually what limits the frame rate: the high preset draws about 80 calls and the low preset about 40 (from about 190 and 110 before batching); keep it there by batching fixed parts by material (`StaticBatching`), merging the parts of one rig (`SkinnedMerge`), letting meshes of one animal share their skeleton (`shareSkeletons`, so its bones upload once per frame), and culling instanced groups with a real bounding sphere;
+- on phones the per-draw-call CPU work of three.js, not the triangle count, is usually what limits the frame rate: the high preset draws about 125 calls per frame including the shadow, mirror and post-processing passes, the low preset about 50 (the archipelago, the ships and the larger flock added about 45 and 12); keep it there by batching fixed parts by material (`StaticBatching`), merging the parts of one rig (`SkinnedMerge`), letting meshes of one animal share their skeleton (`shareSkeletons`, so its bones upload once per frame), and culling instanced groups with a real bounding sphere;
 - the render loop and Web Audio suspend when the document is hidden, and `FramePacer` caps rendering at 60 fps (30 fps while the page is visible but unfocused), so a 120 Hz ProMotion display does not render twice as much; the mirror pass skips pixels with nothing mirrored nearby (one coarse tap).
 
 Before increasing visual cost, measure the current bottleneck (`renderer.info.render.calls` and `.triangles` with `info.autoReset` off across the post-processing passes, texture uploads per frame, and a CPU profile of `render`). Favor shader detail, instancing, LOD, texture compression, smaller shadow casters, and bounded effects over more individual objects.
@@ -745,7 +784,9 @@ The Sites checkpoint performs its own production build and rendered smoke verifi
 - Ocean: finite height/normal samples over a large world range, bounded summed slope, resolvable wavelengths, and a focused grid with a uniform centre and upward-facing triangles.
 - Environment: bounded day/night state, moon at 30 degrees, readable night exposure, a finite palette that warms at dusk and stays readable at night.
 - Wind: bounded, deterministic gusts and shifts.
-- Islands: bathymetry that shoals toward a coast matching the rendered waterline.
+- Islands: bathymetry that shoals toward a coast matching the rendered waterline; an archipelago of every size that keeps its channels and the start clear; an indexed coast search identical to the brute-force one; shader slots that always hold the nearest island.
+- Ships: lanes clear of every coast that pass within reach of the yacht and start out of sight; ships that never touch land and keep apart over a long run; an anchored ship that stays put; a hull that pushes the yacht out; foam on the Kelvin arms; bounded, finite wake waves, nothing ahead of the bow, nothing from a stopped ship; the danger signal and recycling.
+- Gulls: forward flight on coordinated, bounded banks; never in the water except to dive, land or take off; afloat on the swell when resting; every mode reached; an alarmed take-off when the yacht closes.
 - Quality: presets that scale cost monotonically, with no post-processing on low.
 - Engine: start from neutral selects slow ahead, active throttle is preserved, stop returns neutral.
 - Physics: engine produces forward motion with believable inertia, no NaN, comparable outcomes at 60/120 Hz, buoyancy follows sloped samples, a correct sailing polar (no-go zone, fastest on a reach, heel to leeward, bounded leeway), realistic top speed, prop-wash steerage, correct helm sense, shaft spool-down, shoal drag without sticking, a beached yacht that rebounds and turns away, and a long seaway passage that stays finite and on the rendered surface.
@@ -759,7 +800,7 @@ The Sites checkpoint performs its own production build and rendered smoke verifi
 - Underwater light: red absorbed first, nothing above the surface, path bounded by view distance.
 - Assets: detailed whale rig/clip/PBR/triangle/byte limits, visible island radius constraint, future model budgets.
 - Localization: exactly thirty language entries, complete message keys, locale aliases, manual preference precedence, RTL set.
-- Rendering: batching keeps world placement and outward-facing triangles (also for mirrored parts), finds stacked shells only within the tolerance, shares skeletons only for identical bindings, a merged skinned rig deforms exactly as its parts did and refuses textured or inconsistent rigs, distant fish keep their shape with far fewer triangles.
+- Rendering: Loop subdivision keeps flat colours and normalised skin weights and rounds the shape; batching keeps world placement and outward-facing triangles (also for mirrored parts), finds stacked shells only within the tolerance, shares skeletons only for identical bindings, a merged skinned rig deforms exactly as its parts did and refuses textured or inconsistent rigs, distant fish keep their shape with far fewer triangles.
 
 Add a pure helper and a unit test when introducing a new numerical rule. Three.js scene integration can remain in a controller, but thresholds, state transitions, and bounded dynamics should be testable without WebGL.
 
@@ -972,6 +1013,9 @@ The following are known constraints, not invitations to bypass the architecture:
 - the ocean's own transparency is a blend rather than a refraction, and underwater absorption uses the uninverted wave height per vertex (a few centimetres of error);
 - the yacht's three cabin meshes overlap substantially (about 140k triangles together, only one of them casting shadows); removing two of them changes the cabin's detail, so it needs an asset rework;
 - reef fish are lifted from one rigged asset and animated procedurally; they do not use the asset's authored clip;
+- the ships are procedural (no licensed ship model was reachable); they do not alter course for the yacht (she rebounds from their sides), only for shoals and each other, and the wildlife ignores them;
+- the yacht's wet band and the underwater absorption use the swell without ship wakes (a few tens of centimetres in a wake);
+- gull folding is an approximation by sweep, roll and a scaled hand; the rig has no legs or neck to animate;
 - wake and wildlife capacities do not rebuild when changing quality after initialization;
 - palms are individually planted GLB trees, merged per island, with runtime vertex wind rather than LOD/impostor vegetation;
 - the dolphins (three skinned parts plus two eyes, textured) and the shark and whale are still drawn as their source meshes; the shark alone is 51k triangles when it is near enough to be drawn;

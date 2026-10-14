@@ -25,6 +25,28 @@ export type AudioWeather = {
   waves: number;
 };
 
+/** A ship as a sound source (see `ShipSystem.soundSources`). */
+export type ShipSound = {
+  position: { x: number; y: number; z: number };
+  speed: number;
+  anchored: boolean;
+  length: number;
+};
+
+/** Speed of sound in air, m/s: a distant horn arrives seconds late. */
+const SPEED_OF_SOUND = 343;
+/** Ships voiced at once (the nearest ones). */
+const SHIP_VOICES = 2;
+
+type ShipVoice = {
+  panner: PannerNode;
+  air: BiquadFilterNode;
+  rumble: GainNode;
+  beat: GainNode;
+  beatRate: OscillatorNode;
+  wash: GainNode;
+};
+
 export type ListenerPose = {
   position: { x: number; y: number; z: number };
   forward: { x: number; y: number; z: number };
@@ -76,6 +98,10 @@ export class AudioSystem {
   private gullClock = 4 + Math.random() * 6;
   private engineLoad = 0;
   private hullGain?: GainNode;
+  private readonly shipVoices: ShipVoice[] = [];
+  private listenerX = 0;
+  private listenerY = 0;
+  private listenerZ = 0;
   private resumePromise?: Promise<boolean>;
   private ready = false;
   private enabled = true;
@@ -259,6 +285,9 @@ export class AudioSystem {
 
   /** Where the listener (the camera) is, for positional sounds. */
   setListener(pose: ListenerPose): void {
+    this.listenerX = pose.position.x;
+    this.listenerY = pose.position.y;
+    this.listenerZ = pose.position.z;
     const context = this.context;
     if (!context || context.state !== "running") return;
     const listener = context.listener;
@@ -280,6 +309,110 @@ export class AudioSystem {
   }
 
   /**
+   * The nearest ships: the deep, slow beat of a large two-stroke diesel
+   * carried kilometres over the water, losing its highs with distance, and
+   * the rush of the bow wave when one passes close. A ship at anchor only
+   * hums with her generators.
+   */
+  updateShips(ships: readonly ShipSound[]): void {
+    const context = this.context;
+    if (!context || context.state !== "running" || this.shipVoices.length === 0) return;
+    const now = context.currentTime;
+    const distanceTo = (ship: ShipSound): number =>
+      Math.hypot(ship.position.x - this.listenerX, ship.position.y - this.listenerY, ship.position.z - this.listenerZ);
+    const nearest = [...ships].sort((a, b) => distanceTo(a) - distanceTo(b));
+    this.shipVoices.forEach((voice, index) => {
+      const ship = nearest[index];
+      if (!ship) {
+        voice.rumble.gain.setTargetAtTime(0, now, 1.5);
+        voice.beat.gain.setTargetAtTime(0, now, 1.5);
+        voice.wash.gain.setTargetAtTime(0, now, 1.5);
+        return;
+      }
+      const distance = distanceTo(ship);
+      if (voice.panner.positionX) {
+        voice.panner.positionX.setTargetAtTime(ship.position.x, now, 0.2);
+        voice.panner.positionY.setTargetAtTime(ship.position.y, now, 0.2);
+        voice.panner.positionZ.setTargetAtTime(ship.position.z, now, 0.2);
+      } else {
+        voice.panner.setPosition(ship.position.x, ship.position.y, ship.position.z);
+      }
+      const under = clamp(ship.speed / 7, 0, 1);
+      const reach = Math.pow(clamp(1 - distance / 2600, 0, 1), 2.2);
+      const size = clamp(ship.length / 220, 0.6, 1.3);
+      voice.rumble.gain.setTargetAtTime(reach * (ship.anchored ? 0.05 : 0.12 + under * 0.1) * size, now, 1.2);
+      voice.beat.gain.setTargetAtTime(reach * (ship.anchored ? 0 : 0.08 * under) * size, now, 1.2);
+      // About 85 rpm on six cylinders: a beat of eight or nine a second.
+      voice.beatRate.frequency.setTargetAtTime(ship.anchored ? 0 : 7 + under * 2, now, 2);
+      voice.wash.gain.setTargetAtTime(Math.pow(clamp(1 - distance / 480, 0, 1), 2) * under * 0.2 * size, now, 0.8);
+      // Air absorbs the highs: far off only the low throb is left.
+      voice.air.frequency.setTargetAtTime(220 + 2400 * Math.exp(-distance / 420), now, 0.8);
+    });
+  }
+
+  /**
+   * A ship's whistle: one prolonged blast, or five short ones (the danger
+   * signal) when the yacht stands into her path. Big ships sound low; the
+   * sound arrives as late as it takes to cross the water.
+   */
+  shipHorn(position: { x: number; y: number; z: number }, signal: "danger" | "prolonged", length = 200): void {
+    const context = this.context;
+    if (!context || context.state !== "running" || !this.environmentBus || !this.enabled) return;
+    const distance = Math.hypot(position.x - this.listenerX, position.y - this.listenerY, position.z - this.listenerZ);
+    const level = 0.42 * (600 / (600 + distance));
+    if (level < 0.02) return;
+    const start = context.currentTime + distance / SPEED_OF_SOUND;
+    const panner = context.createPanner();
+    panner.panningModel = "equalpower";
+    panner.distanceModel = "linear";
+    panner.rolloffFactor = 0;
+    if (panner.positionX) {
+      panner.positionX.value = position.x;
+      panner.positionY.value = position.y;
+      panner.positionZ.value = position.z;
+    } else {
+      panner.setPosition(position.x, position.y, position.z);
+    }
+    panner.connect(this.environmentBus);
+    const air = context.createBiquadFilter();
+    air.type = "lowpass";
+    air.frequency.value = 500 + 3000 * Math.exp(-distance / 500);
+    air.Q.value = 0.5;
+    air.connect(panner);
+    const envelope = context.createGain();
+    envelope.gain.value = 0.0001;
+    envelope.connect(air);
+    // Two reeds a little apart in pitch, the larger the ship the lower.
+    const fundamental = clamp(118 - (length - 180) * 0.25, 70, 130);
+    const tones = [fundamental, fundamental * 1.26].map((frequency) => {
+      const tone = context.createOscillator();
+      tone.type = "sawtooth";
+      tone.frequency.value = frequency;
+      const formant = context.createBiquadFilter();
+      formant.type = "bandpass";
+      formant.frequency.value = frequency * 4;
+      formant.Q.value = 0.9;
+      tone.connect(formant).connect(envelope);
+      return tone;
+    });
+    const blasts: [number, number][] = signal === "prolonged" ? [[0, 4.8]] : [0, 1, 2, 3, 4].map((index) => [index * 1.6, 0.85]);
+    let end = 0;
+    for (const [offset, duration] of blasts) {
+      const t0 = start + offset;
+      envelope.gain.setValueAtTime(0.0001, t0);
+      envelope.gain.exponentialRampToValueAtTime(level, t0 + 0.12);
+      envelope.gain.setValueAtTime(level, t0 + duration - 0.15);
+      envelope.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+      end = Math.max(end, offset + duration);
+    }
+    tones.forEach((tone) => {
+      tone.start(start);
+      tone.stop(start + end + 0.1);
+    });
+    window.setTimeout(() => panner.disconnect(), (distance / SPEED_OF_SOUND + end + 0.6) * 1000);
+  }
+
+  /**
    * Lets the flock call now and then: at irregular intervals one bird (the
    * caller chooses which, by position) gives one of several calls from where
    * it is flying.
@@ -292,6 +425,12 @@ export class AudioSystem {
     this.gullClock = Math.random() < 0.3 ? GULL_CALL_MIN_GAP * (0.6 + Math.random() * 0.6) : GULL_CALL_MIN_GAP + Math.random() * (GULL_CALL_MAX_GAP - GULL_CALL_MIN_GAP);
     const bird = birds[Math.floor(Math.random() * birds.length)]!;
     this.gullCall(bird, Math.floor(Math.random() * 4));
+  }
+
+  /** One call from a particular gull (a bird disturbed on the water, or taking off). */
+  gullCallAt(position: { x: number; y: number; z: number }, variant: number): void {
+    if (!this.context || this.context.state !== "running" || !this.enabled) return;
+    this.gullCall(position, variant);
   }
 
   /**
@@ -435,6 +574,8 @@ export class AudioSystem {
     this.engineCrank?.stop();
     this.engineKnock?.stop();
     this.exhaustPulse?.stop();
+    this.shipVoices.forEach((voice) => voice.beatRate.stop());
+    this.shipVoices.length = 0;
     if (this.context && this.context.state !== "closed") void this.context.close();
   }
 
@@ -591,7 +732,73 @@ export class AudioSystem {
     this.hullGain.gain.value = 0;
     hull.connect(hullFilter).connect(this.hullGain).connect(this.environmentBus);
     hull.start(0, 1.13);
+    this.createShipVoices(this.context, this.environmentBus);
     this.setReady(this.context.state === "running");
+  }
+
+  /** Continuous voices for the nearest ships, silent until `updateShips` gives them a ship. */
+  private createShipVoices(context: AudioContext, bus: GainNode): void {
+    const rumbleNoise = this.createNoiseBuffer(5.7, "brown");
+    const washNoise = this.createNoiseBuffer(4.3, "pink");
+    for (let index = 0; index < SHIP_VOICES; index += 1) {
+      const panner = context.createPanner();
+      panner.panningModel = "equalpower";
+      panner.distanceModel = "linear";
+      panner.rolloffFactor = 0;
+      panner.connect(bus);
+      const air = context.createBiquadFilter();
+      air.type = "lowpass";
+      air.frequency.value = 600;
+      air.Q.value = 0.4;
+      air.connect(panner);
+      // The throb: low noise with its energy just above 100 Hz, so a phone
+      // speaker still carries it.
+      const rumbleSource = context.createBufferSource();
+      rumbleSource.buffer = rumbleNoise;
+      rumbleSource.loop = true;
+      rumbleSource.playbackRate.value = 0.9 + index * 0.13;
+      const rumbleFilter = context.createBiquadFilter();
+      rumbleFilter.type = "bandpass";
+      rumbleFilter.frequency.value = 130;
+      rumbleFilter.Q.value = 0.9;
+      const rumble = context.createGain();
+      rumble.gain.value = 0;
+      rumbleSource.connect(rumbleFilter).connect(rumble).connect(air);
+      rumbleSource.start(0, index * 1.7);
+      // The beat of the cylinders: the same noise, pulsed.
+      const beatSource = context.createBufferSource();
+      beatSource.buffer = rumbleNoise;
+      beatSource.loop = true;
+      const beatFilter = context.createBiquadFilter();
+      beatFilter.type = "bandpass";
+      beatFilter.frequency.value = 180;
+      beatFilter.Q.value = 1.6;
+      const pulse = context.createGain();
+      pulse.gain.value = 0.5;
+      const beatRate = context.createOscillator();
+      beatRate.frequency.value = 0;
+      const beatDepth = context.createGain();
+      beatDepth.gain.value = 0.5;
+      beatRate.connect(beatDepth).connect(pulse.gain);
+      beatRate.start();
+      const beat = context.createGain();
+      beat.gain.value = 0;
+      beatSource.connect(beatFilter).connect(pulse).connect(beat).connect(air);
+      beatSource.start(0, 2.3 + index);
+      // The bow wave breaking along her side.
+      const washSource = context.createBufferSource();
+      washSource.buffer = washNoise;
+      washSource.loop = true;
+      const washFilter = context.createBiquadFilter();
+      washFilter.type = "bandpass";
+      washFilter.frequency.value = 650;
+      washFilter.Q.value = 0.6;
+      const wash = context.createGain();
+      wash.gain.value = 0;
+      washSource.connect(washFilter).connect(wash).connect(air);
+      washSource.start(0, index * 0.9);
+      this.shipVoices.push({ panner, air, rumble, beat, beatRate, wash });
+    }
   }
 
   /**

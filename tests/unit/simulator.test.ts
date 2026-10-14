@@ -12,7 +12,7 @@ import {
 } from "../../src/simulator/environment/IslandMath";
 import { HULL_OUTLINE, SHORE_CONTACT_CLEARANCE } from "../../src/simulator/vessel/ShoreContact";
 import { hullFreeRun } from "../../src/simulator/vessel/ShoreGuard";
-import { createOceanGrid } from "../../src/simulator/environment/OceanGrid";
+import { createOceanGrid, OCEAN_SIZE } from "../../src/simulator/environment/OceanGrid";
 import {
   OCEAN_DETAIL_WAVES,
   OCEAN_WAVES,
@@ -325,7 +325,7 @@ test("focused ocean grid has a uniform, world-locked centre and grows monotonica
       previous = x;
     }
     assert.ok(Math.abs(finest - grid.cellSize) < 1e-3);
-    assert.ok(Math.abs(grid.positions[0] + 900) < 1e-2 && Math.abs(previous - 900) < 1e-2);
+    assert.ok(Math.abs(grid.positions[0] + OCEAN_SIZE / 2) < 1e-2 && Math.abs(previous - OCEAN_SIZE / 2) < 1e-2);
     assert.ok(grid.innerRadius >= 40, "the dense lattice must cover the yacht, its wake and nearby wildlife");
     assert.ok(grid.cellSize <= Math.max(...OCEAN_WAVES.map((wave) => wave.wavelength)) / 8);
     // The top face must be the front face: counter-clockwise seen from +Y.

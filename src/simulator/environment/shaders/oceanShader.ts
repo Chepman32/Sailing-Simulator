@@ -2,6 +2,7 @@ import { OPEN_WATER_DEPTH, SHELF_SLOPE, SHORE_DEPTH } from "../IslandMath";
 import { OCEAN_DETAIL_WAVES, OCEAN_WAVES, SURFACE_INVERSION_ITERATIONS } from "../OceanMath";
 import { SURFACE_IMPACT_GLSL } from "../SurfaceImpacts";
 import { BREAK_START, SURF_GLSL } from "../SurfMath";
+import { SHIP_WAKE_GLSL } from "../../ships/ShipMath";
 import { SKY_FUNCTIONS, SKY_UNIFORM_DECLARATIONS } from "./skyShader";
 
 /**
@@ -32,8 +33,8 @@ export const HULL_HALF_LENGTH = 4.32;
 export const HULL_HALF_BEAM = 0.46;
 
 /** Distance from the camera at which the surface has fully become horizon. */
-export const HORIZON_FADE_START = 520;
-export const HORIZON_FADE_END = 860;
+export const HORIZON_FADE_START = 640;
+export const HORIZON_FADE_END = 1250;
 
 function glsl(value: number): string {
   return Number.isInteger(value) ? `${value}.0` : value.toFixed(6);
@@ -139,6 +140,7 @@ ${heightTerms}
 
 export const oceanVertexShader = /* glsl */ `
   ${SEA_FACTORS_UNIFORM}
+  ${SHIP_WAKE_GLSL}
   uniform float uTime;
   uniform mat4 uReflectionMatrix;
   attribute float cellSpacing;
@@ -173,6 +175,11 @@ export const oceanVertexShader = /* glsl */ `
     float cellSize = cellSpacing;
 ${displacementCalls}
     vec3 world = worldBase + offset;
+    // Ships' wakes: the same height the CPU sampler adds, where the grid can carry it.
+    float shipHeight = 0.0;
+    vec2 shipSlope = vec2(0.0);
+    shipWakes(worldBase.xz, shipHeight, shipSlope);
+    world.y += shipHeight * (1.0 - smoothstep(4.0, 10.0, cellSize));
     vWorldPosition = world;
     vBase = worldBase.xz;
     // Sampled at the mean surface, so the swell does not slide the mirror image.
@@ -224,6 +231,7 @@ export const oceanFragmentShader = /* glsl */ `
   ${SKY_FUNCTIONS}
   ${SURFACE_IMPACT_GLSL}
   ${SURF_GLSL}
+  ${SHIP_WAKE_GLSL}
 
   // Shared displacement spectrum, evaluated per pixel for a crisp normal.
   void swellWave(
@@ -433,6 +441,14 @@ ${detailCalls}
     wakeSlope = clamp(wakeSlope * 1.6, vec2(-0.45), vec2(0.45)) * wakeFade;
     float wakeFoam = max(wake.r, 0.0) * wakeFade;
     float wakeSlick = clamp(wake.g, 0.0, 1.0) * wakeFade;
+    // Passing ships: Kelvin waves lit like the swell, white water along the
+    // arms and astern, and the long smooth slick they leave.
+    float shipHeight = 0.0;
+    vec2 shipSlope = vec2(0.0);
+    vec2 shipWater = shipWakes(base, shipHeight, shipSlope);
+    swellSlope += shipSlope;
+    wakeFoam = max(wakeFoam, shipWater.x);
+    wakeSlick = max(wakeSlick, shipWater.y);
 
     float smoothing = max(calm * 0.82, wakeSlick * 0.7);
     slope = swellSlope + rippleSlope * (1.0 - smoothing) + wakeSlope;
@@ -631,7 +647,7 @@ ${detailCalls}
     vec3 horizonDirection = normalize(vec3(-viewDirection.x, 0.0, -viewDirection.z) + vec3(0.0, 1.0e-4, 0.0));
     vec3 horizon = skyAtmosphere(horizonDirection);
     float hazeReach = 1.0 - 0.5 * uHaze;
-    float haze = 1.0 - exp(-pow(viewDistance * 0.0011 * (1.0 + uHaze * 5.0), 1.6));
+    float haze = 1.0 - exp(-pow(viewDistance * 0.00085 * (1.0 + uHaze * 5.0), 1.6));
     haze = max(haze * 0.9, smoothstep(${glsl(HORIZON_FADE_START)} * hazeReach, ${glsl(HORIZON_FADE_END)} * hazeReach, viewDistance));
     color = mix(color, horizon, haze);
     alpha = mix(alpha, 1.0, smoothstep(60.0, 260.0, viewDistance));

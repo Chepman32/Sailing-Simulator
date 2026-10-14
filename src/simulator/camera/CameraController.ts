@@ -19,7 +19,7 @@ export class CameraController {
     aspect: number,
     private readonly ocean: OceanSystem,
   ) {
-    this.camera = new THREE.PerspectiveCamera(52, aspect, 0.08, 2600);
+    this.camera = new THREE.PerspectiveCamera(52, aspect, 0.08, 3400);
     this.camera.position.set(0, 7, -16);
   }
 

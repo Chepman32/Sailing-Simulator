@@ -12,7 +12,7 @@
  * stage keeps shading those waves analytically.
  */
 
-export const OCEAN_SIZE = 1800;
+export const OCEAN_SIZE = 3600;
 const INNER_FRACTION = 0.6;
 
 export type OceanGrid = {

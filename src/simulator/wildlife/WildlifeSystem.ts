@@ -79,7 +79,15 @@ export class WildlifeSystem {
     this.breach = new WhaleBreachController(this.group, ocean, this.world, assets, effects);
     this.breach.materials.forEach((material) => underwater.apply(material));
     this.fish = new ReefFishController(this.marineGroup, ocean, assets, underwater, counts.fishDensity);
-    this.gulls = new GullFlockController(this.group, assets, counts.gulls);
+    // Gulls rest head to wind; the trade wind's mean direction is enough for that.
+    const windLength = Math.hypot(6.8, 4.2);
+    this.gulls = new GullFlockController(
+      this.group,
+      assets,
+      counts.gulls,
+      { surfaceHeight: (x, z) => ocean.sample(x, z).height, windX: 6.8 / windLength, windZ: 4.2 / windLength },
+      { splash: (position, intensity, kind, velocity) => effects.splash(position, intensity, kind, velocity), ripple: (position, strength) => effects.ripple(position, strength) },
+    );
   }
 
   /** Everything that lives under the surface (left out of the water's mirror). */
@@ -121,6 +129,16 @@ export class WildlifeSystem {
     const gullAnimation = this.gullClock >= 1 / 30 ? this.gullClock : 0;
     if (gullAnimation > 0) this.gullClock = 0;
     this.gulls.update(delta, physics, gullAnimation);
+  }
+
+  /** Calls given by gulls disturbed on the water or taking off, since the last call. */
+  consumeGullCalls(): { position: THREE.Vector3; variant: number }[] {
+    return this.gulls.calls.splice(0);
+  }
+
+  /** Direction toward the dominant light, for the sun through the gulls' wings. */
+  setLightDirection(direction: THREE.Vector3): void {
+    this.gulls.setLightDirection(direction);
   }
 
   /** Where each gull is flying, for their calls. */
