@@ -1,6 +1,9 @@
+import { ACTIVE_MAX_FPS, FramePacer, UNFOCUSED_MAX_FPS } from "./FramePacer";
+
 export type FrameCallbacks = {
   fixedUpdate: (fixedDelta: number) => void;
-  update: (delta: number, elapsed: number) => void;
+  /** `alpha`: how far the clock is from the last fixed step to the next, 0…1. */
+  update: (delta: number, elapsed: number, alpha: number) => void;
   render: () => void;
   onFps?: (fps: number) => void;
   onPauseChange?: (paused: boolean) => void;
@@ -16,6 +19,7 @@ export class RenderLoop {
   private fpsElapsed = 0;
   private fpsFrames = 0;
   private pausedByVisibility = document.hidden;
+  private readonly pacer = new FramePacer();
 
   constructor(private readonly callbacks: FrameCallbacks) {
     document.addEventListener("visibilitychange", this.handleVisibility);
@@ -42,6 +46,7 @@ export class RenderLoop {
     this.pausedByVisibility = document.hidden;
     this.accumulator = 0;
     this.lastTime = performance.now();
+    this.pacer.reset();
     this.callbacks.onPauseChange?.(this.pausedByVisibility);
   };
 
@@ -49,6 +54,9 @@ export class RenderLoop {
     if (!this.running) return;
     this.frame = requestAnimationFrame(this.tick);
     if (this.pausedByVisibility) return;
+    // Render at most 60 times a second whatever the display's refresh rate, and
+    // half as often while another window has the focus.
+    if (!this.pacer.shouldRender(now, document.hasFocus() ? ACTIVE_MAX_FPS : UNFOCUSED_MAX_FPS)) return;
 
     const unclamped = (now - this.lastTime) / 1000;
     const delta = Math.min(0.05, Math.max(0, unclamped));
@@ -63,7 +71,7 @@ export class RenderLoop {
       steps += 1;
     }
 
-    this.callbacks.update(delta, this.elapsed);
+    this.callbacks.update(delta, this.elapsed, this.accumulator / this.fixedDelta);
     this.callbacks.render();
 
     this.fpsElapsed += delta;

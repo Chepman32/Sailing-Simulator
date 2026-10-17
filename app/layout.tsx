@@ -33,9 +33,17 @@ export const metadata: Metadata = {
     description: "High-fidelity interactive tropical sailing simulator.",
     images: ["/og.png"],
   },
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "Sailing Simulator",
+    statusBarStyle: "black-translucent",
+  },
+  formatDetection: { telephone: false },
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
+    apple: "/apple-touch-icon.png",
   },
 };
 

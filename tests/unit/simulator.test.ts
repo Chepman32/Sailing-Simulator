@@ -2,15 +2,57 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 import { deriveTimeOfDay } from "../../src/simulator/environment/EnvironmentMath";
-import { sampleOcean } from "../../src/simulator/environment/OceanMath";
+import { deriveEnvironmentPalette } from "../../src/simulator/environment/EnvironmentPalette";
+import {
+  ISLAND_DEFINITIONS,
+  distanceFromBeach,
+  distanceFromWaterline,
+  shoreClearance,
+  waterDepthAt,
+} from "../../src/simulator/environment/IslandMath";
+import { HULL_OUTLINE, SHORE_CONTACT_CLEARANCE } from "../../src/simulator/vessel/ShoreContact";
+import { hullFreeRun } from "../../src/simulator/vessel/ShoreGuard";
+import { createOceanGrid, OCEAN_SIZE } from "../../src/simulator/environment/OceanGrid";
+import {
+  OCEAN_DETAIL_WAVES,
+  OCEAN_WAVES,
+  maximumOceanSlope,
+  sampleOcean,
+} from "../../src/simulator/environment/OceanMath";
+import {
+  MAX_GUST_FACTOR,
+  MAX_WIND_SHIFT,
+  MEAN_WIND_HEADING,
+  MEAN_WIND_SPEED,
+  MIN_GUST_FACTOR,
+  sampleWind,
+} from "../../src/simulator/environment/WindMath";
+import { QUALITY_SETTINGS } from "../../src/simulator/core/QualityManager";
+import {
+  MAX_SHEET_ANGLE,
+  MIN_SHEET_ANGLE,
+  createSailState,
+  sailCoefficients,
+  solveSail,
+} from "../../src/simulator/vessel/SailAerodynamics";
 import {
   applyEnginePower,
   createSimulatorState,
   ENGINE_START_THROTTLE,
 } from "../../src/simulator/state";
-import { VesselPhysics, type IslandPhysics, type OceanSampler } from "../../src/simulator/vessel/VesselPhysics";
+import {
+  VesselPhysics,
+  propellerThrust,
+  shaftTargetForThrottle,
+  type IslandPhysics,
+  type OceanSampler,
+} from "../../src/simulator/vessel/VesselPhysics";
 import { MAX_PROPELLER_RPM, propellerRpmForThrottle } from "../../src/simulator/vessel/Vessel";
-import { calculateSplashProfile, calculateWakeEmission } from "../../src/simulator/vessel/WakeSystem";
+import {
+  BOW_SPRAY_MIN_SPEED,
+  bowSprayRate,
+  calculateWakeEmission,
+} from "../../src/simulator/vessel/WakeSystem";
 import {
   forwardBiasedHeading,
   shortestAngleDifference,
@@ -21,25 +63,6 @@ import {
   type SwimmerKinematics,
   type SwimmerLimits,
 } from "../../src/simulator/wildlife/SwimmerDynamics";
-import {
-  WHALE_MAX_BOAT_DISTANCE,
-  WHALE_MIN_BOAT_DISTANCE,
-  WHALE_SUBMERGED_FADE_START,
-  WHALE_SURFACE_REVEAL_CLEARANCE,
-  WHALE_TAIL_IMPACT_ARM_CLEARANCE,
-  WHALE_TAIL_SPLASH_INTENSITY,
-  canStartBreach,
-  didWhaleFlukeStrike,
-  isWhaleWithinBoatRange,
-  nextDolphinState,
-  nextWhalePhase,
-  whaleOrbitHeading,
-  whaleSpawnDistance,
-  whaleSurfaceVisibility,
-  whaleTailSlapPose,
-  type DolphinState,
-  type WhalePhase,
-} from "../../src/simulator/wildlife/WildlifeState";
 
 test("GPU wave companion sampler stays finite over a wide world range", () => {
   for (let x = -1200; x <= 1200; x += 97) {
@@ -114,27 +137,20 @@ test("engaging the engine from neutral produces forward motion", () => {
     avoidanceForce: (_position, _velocity, target) => target.set(0, 0, 0),
     constrainToWater: () => false,
     nearestShoreDirection: (_position, target) => target.set(0, 0, 1),
+    shoreClearance: () => 1000,
   };
   const physics = new VesselPhysics(ocean, islands);
   physics.heading = Math.atan2(6.8, 4.2);
   const state = createSimulatorState();
   applyEnginePower(state, true);
   for (let index = 0; index < 60; index += 1) physics.fixedUpdate(1 / 60, state.controls);
-  assert.ok(physics.telemetry.forwardSpeed > 1, "slow-ahead propeller thrust should move the vessel within one second");
+  const afterOneSecond = physics.telemetry.forwardSpeed;
+  assert.ok(afterOneSecond > 0.2, "slow ahead must gather visible way within one second");
+  assert.ok(afterOneSecond < 1.6, "six tonnes of yacht cannot leap to cruising speed in one second");
+  for (let index = 0; index < 180; index += 1) physics.fixedUpdate(1 / 60, state.controls);
+  assert.ok(physics.telemetry.forwardSpeed > 1, "slow ahead should reach a metre per second within four seconds");
   assert.ok(physics.telemetry.speedKnots > 1.9);
-});
-
-test("dolphin breach state machine always returns to swim and is speed gated", () => {
-  const visited: DolphinState[] = [];
-  let state: DolphinState = "swim";
-  for (let index = 0; index < 7; index += 1) {
-    state = nextDolphinState(state);
-    visited.push(state);
-  }
-  assert.deepEqual(visited, ["approach", "breach_ascent", "airborne", "reentry", "splash", "dive", "swim"]);
-  assert.equal(canStartBreach(6.19, 0), false);
-  assert.equal(canStartBreach(7.2, 0.01), false);
-  assert.equal(canStartBreach(7.2, 0), true);
+  assert.ok(physics.telemetry.forwardSpeed > afterOneSecond);
 });
 
 test("swimmer dynamics keep motion forward with bounded acceleration and turn inertia", () => {
@@ -195,62 +211,6 @@ test("wildlife course, depth, pitch, and bank helpers reject abrupt or inverted 
   assert.ok(Math.abs(swimmerBank(4, 8, 0.14)) <= 0.14);
 });
 
-test("whale state machine completes one submerged tail-slap cycle", () => {
-  const visited: WhalePhase[] = [];
-  let phase: WhalePhase = "cruise";
-  for (let index = 0; index < 4; index += 1) {
-    phase = nextWhalePhase(phase);
-    visited.push(phase);
-  }
-  assert.deepEqual(visited, ["tail_rise", "tail_strike", "dive", "cruise"]);
-
-  const raised = whaleTailSlapPose("tail_rise", 1);
-  const impact = whaleTailSlapPose("tail_strike", 0.35);
-  assert.ok(raised.bodyDepth <= -6, "the whale's body must remain deeply below the waterline");
-  assert.ok(raised.tailFlex >= 0.75, "only the articulated tail should rise above the surface");
-  assert.equal(impact.impact, true);
-  assert.ok(Math.abs(impact.bodyPitch) < 0.1, "the full whale must never stand vertically");
-});
-
-test("the translucent ocean cannot reveal a submerged whale body", () => {
-  assert.equal(whaleSurfaceVisibility(WHALE_SUBMERGED_FADE_START - 0.01), 0);
-  assert.equal(whaleSurfaceVisibility(WHALE_SURFACE_REVEAL_CLEARANCE + 0.01), 1);
-  const edgeVisibility = whaleSurfaceVisibility((WHALE_SUBMERGED_FADE_START + WHALE_SURFACE_REVEAL_CLEARANCE) / 2);
-  assert.ok(edgeVisibility > 0 && edgeVisibility < 1, "the waterline transition must stay soft");
-});
-
-test("whale splash fires only when an armed fluke crosses down through the surface", () => {
-  assert.ok(WHALE_TAIL_IMPACT_ARM_CLEARANCE >= 0.15);
-  assert.equal(didWhaleFlukeStrike("tail_strike", true, 0.42, -0.03), true);
-  assert.equal(didWhaleFlukeStrike("tail_rise", true, 0.42, -0.03), false);
-  assert.equal(didWhaleFlukeStrike("tail_strike", false, 0.42, -0.03), false);
-  assert.equal(didWhaleFlukeStrike("tail_strike", true, -0.02, -0.1), false);
-});
-
-test("the single whale remains in a 50–100 meter viewing band around the yacht", () => {
-  assert.equal(isWhaleWithinBoatRange(WHALE_MIN_BOAT_DISTANCE), true);
-  assert.equal(isWhaleWithinBoatRange(WHALE_MAX_BOAT_DISTANCE), true);
-  assert.equal(isWhaleWithinBoatRange(WHALE_MIN_BOAT_DISTANCE - 0.01), false);
-  assert.equal(isWhaleWithinBoatRange(WHALE_MAX_BOAT_DISTANCE + 0.01), false);
-  assert.ok(isWhaleWithinBoatRange(whaleSpawnDistance(0)));
-  assert.ok(isWhaleWithinBoatRange(whaleSpawnDistance(1)));
-
-  const nearHeading = whaleOrbitHeading(0, 45, 1, 76);
-  const farHeading = whaleOrbitHeading(0, 106, 1, 76);
-  assert.ok(Math.cos(nearHeading) > 0, "a close whale must steer away from the yacht");
-  assert.ok(Math.cos(farHeading) < 0, "a distant whale must steer back toward the yacht");
-});
-
-test("whale tail slap creates substantially more foam and particles than a dolphin splash", () => {
-  const dolphin = calculateSplashProfile(0.8);
-  const whale = calculateSplashProfile(WHALE_TAIL_SPLASH_INTENSITY);
-  assert.ok(whale.dropletCount >= dolphin.dropletCount * 3.5);
-  assert.ok(whale.ringCount >= 7);
-  assert.ok(whale.foamPatchCount >= 9);
-  assert.ok(whale.radius >= 14);
-  assert.ok(whale.particleSize >= 0.65);
-});
-
 test("force-based vessel remains finite and is stable across integration rates", () => {
   const ocean: OceanSampler = { sample: () => ({ height: 0, normalX: 0, normalY: 1, normalZ: 0 }) };
   const islands: IslandPhysics = {
@@ -258,6 +218,7 @@ test("force-based vessel remains finite and is stable across integration rates",
     avoidanceForce: (_position, _velocity, target) => target.set(0, 0, 0),
     constrainToWater: () => false,
     nearestShoreDirection: (_position, target) => target.set(0, 0, 1),
+    shoreClearance: () => 1000,
   };
   const run = (delta: number) => {
     const physics = new VesselPhysics(ocean, islands);
@@ -280,6 +241,7 @@ test("buoyancy settles on the waterline and follows the sampled surface plane", 
     avoidanceForce: (_position, _velocity, target) => target.set(0, 0, 0),
     constrainToWater: () => false,
     nearestShoreDirection: (_position, target) => target.set(0, 0, 1),
+    shoreClearance: () => 1000,
   };
   const controls = { throttle: 0, rudder: 0, sailTrim: 0.2 };
   const run = (ocean: OceanSampler) => {
@@ -293,6 +255,797 @@ test("buoyancy settles on the waterline and follows the sampled surface plane", 
   const portHigh = run({ sample: (x) => ({ height: x * -0.06, normalX: 0, normalY: 1, normalZ: 0 }) });
 
   assert.ok(Math.abs(flat.position.y - 0.46) < 0.04);
-  assert.ok(bowHigh.pitch < -0.02, "a higher bow surface should rotate the +Z bow upward");
-  assert.ok(portHigh.roll > 0.025, "a higher port surface should rotate the port hull upward");
+  // Sail and windage load trim the yacht slightly even on calm water, so the
+  // surface-following part is measured against that calm-water attitude.
+  assert.ok(bowHigh.pitch - flat.pitch < -0.02, "a higher bow surface should rotate the +Z bow upward");
+  assert.ok(portHigh.roll - flat.roll > 0.025, "a higher port surface should rotate the port hull upward");
+});
+
+const CALM: OceanSampler = { sample: () => ({ height: 0, normalX: 0, normalY: 1, normalZ: 0 }) };
+const OPEN_WATER: IslandPhysics = {
+  depthAt: () => 18,
+  avoidanceForce: (_position, _velocity, target) => target.set(0, 0, 0),
+  constrainToWater: () => false,
+  nearestShoreDirection: (_position, target) => target.set(0, 0, 1),
+  shoreClearance: () => 1000,
+};
+
+/** Heading that puts the mean true wind `degrees` off the starboard bow. */
+function headingForTrueWindAngle(degrees: number): number {
+  return MEAN_WIND_HEADING + Math.PI - THREE.MathUtils.degToRad(degrees);
+}
+
+/** Sail a held course for `seconds` with a simple proportional helm. */
+function sailCourse(trueWindAngle: number, seconds: number, trim = 1): VesselPhysics {
+  const physics = new VesselPhysics(CALM, OPEN_WATER);
+  const course = headingForTrueWindAngle(trueWindAngle);
+  physics.heading = course;
+  const controls = { throttle: 0, rudder: 0, sailTrim: trim };
+  for (let step = 0; step < seconds * 60; step += 1) {
+    const error = Math.atan2(Math.sin(course - physics.heading), Math.cos(course - physics.heading));
+    controls.rudder = THREE.MathUtils.clamp(error * 2.5 - physics.yawRate * 2.2, -1, 1);
+    physics.fixedUpdate(1 / 60, controls);
+  }
+  return physics;
+}
+
+test("shared wave spectrum stays gentle enough for stable physics and a resolvable mesh", () => {
+  assert.ok(maximumOceanSlope() < 0.5, "summed slope must keep sampled normals well above the 0.8 limit");
+  for (const wave of OCEAN_WAVES) {
+    assert.ok(wave.wavelength >= 5, "displacement waves must be long enough for the focused grid");
+    assert.ok(wave.steepness > 0 && wave.steepness < 0.5);
+  }
+  const shortestDisplaced = Math.min(...OCEAN_WAVES.map((wave) => wave.wavelength));
+  for (const wave of OCEAN_DETAIL_WAVES) {
+    assert.ok(wave.wavelength < shortestDisplaced, "detail waves must be shorter than every displaced wave");
+    assert.ok(wave.slope > 0 && wave.slope < 0.08);
+  }
+});
+
+test("focused ocean grid has a uniform, world-locked centre and grows monotonically", () => {
+  for (const preset of ["low", "medium", "high"] as const) {
+    const grid = createOceanGrid(QUALITY_SETTINGS[preset].oceanSegments);
+    const side = Math.round(Math.sqrt(grid.positions.length / 3));
+    assert.equal(side * side * 3, grid.positions.length);
+    assert.equal(grid.spacing.length, side * side);
+    assert.equal(grid.indices.length, (side - 1) * (side - 1) * 6);
+    let previous = Number.NEGATIVE_INFINITY;
+    let finest = Number.POSITIVE_INFINITY;
+    for (let column = 0; column < side; column += 1) {
+      const x = grid.positions[column * 3];
+      assert.ok(x > previous, "grid coordinates must increase monotonically");
+      if (column > 0) finest = Math.min(finest, x - previous);
+      if (Math.abs(x) < grid.innerRadius - 1e-3) {
+        const centreRow = (side - 1) / 2;
+        assert.ok(
+          Math.abs(grid.spacing[centreRow * side + column] - grid.cellSize) < 1e-3,
+          "the centre must be a uniform lattice",
+        );
+      }
+      previous = x;
+    }
+    assert.ok(Math.abs(finest - grid.cellSize) < 1e-3);
+    assert.ok(Math.abs(grid.positions[0] + OCEAN_SIZE / 2) < 1e-2 && Math.abs(previous - OCEAN_SIZE / 2) < 1e-2);
+    assert.ok(grid.innerRadius >= 40, "the dense lattice must cover the yacht, its wake and nearby wildlife");
+    assert.ok(grid.cellSize <= Math.max(...OCEAN_WAVES.map((wave) => wave.wavelength)) / 8);
+    // The top face must be the front face: counter-clockwise seen from +Y.
+    const [a, b, c] = [grid.indices[0], grid.indices[1], grid.indices[2]].map((vertex) => [
+      grid.positions[vertex * 3],
+      grid.positions[vertex * 3 + 2],
+    ]);
+    const normalY = (b[1] - a[1]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[1] - a[1]);
+    assert.ok(normalY > 0, "ocean triangles must face upward");
+  }
+});
+
+test("true wind gusts and shifts stay bounded and deterministic", () => {
+  const sample = { x: 0, z: 0, speed: 0, gust: 1 };
+  let minimum = Number.POSITIVE_INFINITY;
+  let maximum = Number.NEGATIVE_INFINITY;
+  for (let time = 0; time < 1800; time += 0.5) {
+    sampleWind(time, sample);
+    assert.ok(sample.gust >= MIN_GUST_FACTOR && sample.gust <= MAX_GUST_FACTOR);
+    assert.ok(Math.abs(Math.hypot(sample.x, sample.z) - sample.speed) < 1e-9);
+    const shift = Math.atan2(sample.x, sample.z) - MEAN_WIND_HEADING;
+    assert.ok(Math.abs(shift) <= MAX_WIND_SHIFT + 1e-9);
+    minimum = Math.min(minimum, sample.speed);
+    maximum = Math.max(maximum, sample.speed);
+  }
+  assert.ok(maximum - minimum > MEAN_WIND_SPEED * 0.2, "the breeze must audibly and visibly vary");
+  const first = sampleWind(123.4, { x: 0, z: 0, speed: 0, gust: 1 });
+  const second = sampleWind(123.4, { x: 0, z: 0, speed: 0, gust: 1 });
+  assert.deepEqual(first, second);
+});
+
+test("sail polar luffs head to wind, lifts when reaching, and drags when running", () => {
+  const coefficients = { lift: 0, drag: 0 };
+  assert.equal(sailCoefficients(0, coefficients).lift, 0);
+  const attached = { ...sailCoefficients(0.28, coefficients) };
+  const stalled = { ...sailCoefficients(1.2, coefficients) };
+  const square = { ...sailCoefficients(Math.PI / 2, coefficients) };
+  assert.ok(attached.lift > 1.2 && attached.lift / attached.drag > 4, "an attached sail is an efficient wing");
+  assert.ok(stalled.lift < attached.lift && stalled.drag > attached.drag);
+  assert.ok(square.lift < 0.05 && square.drag > 1.1, "square to the wind a sail is a drag device");
+
+  const sail = createSailState();
+  solveSail(0, 10, 1, sail);
+  assert.equal(sail.lift, 0);
+  assert.equal(sail.luff, 1);
+  assert.equal(sail.sheetAngle, MIN_SHEET_ANGLE);
+
+  const reach = { ...solveSail(Math.PI / 2, 10, 1, sail) };
+  assert.equal(reach.luff, 0);
+  assert.ok(reach.lift > reach.drag * 3);
+  assert.ok(reach.sheetAngle > MIN_SHEET_ANGLE && reach.sheetAngle < MAX_SHEET_ANGLE);
+
+  const run = { ...solveSail(Math.PI, 10, 1, sail) };
+  assert.equal(run.sheetAngle, MAX_SHEET_ANGLE);
+  assert.ok(run.drag > run.lift * 3);
+
+  const eased = { ...solveSail(Math.PI / 2, 10, 0.2, sail) };
+  assert.ok(eased.lift < reach.lift * 0.5, "easing the sheets must depower the sail");
+  const gust = { ...solveSail(Math.PI / 2, 15, 1, sail) };
+  assert.ok(Math.abs(gust.lift / reach.lift - 2.25) < 1e-9, "sail force follows wind speed squared below the reefing wind");
+});
+
+test("propellers spool with shaft speed squared and lose thrust as the hull catches up", () => {
+  assert.equal(shaftTargetForThrottle(0), 0);
+  assert.ok(shaftTargetForThrottle(ENGINE_START_THROTTLE) > 0.3);
+  assert.equal(shaftTargetForThrottle(1), 1);
+  assert.equal(shaftTargetForThrottle(-1), -1);
+  assert.equal(propellerThrust(0, 3), 0);
+  const bollard = propellerThrust(1, 0);
+  assert.ok(bollard > 4000 && bollard < 20000, "twin auxiliaries produce kilonewtons, not tens of them");
+  assert.ok(Math.abs(propellerThrust(0.5, 0) / bollard - 0.25) < 1e-9);
+  assert.ok(propellerThrust(1, 4) < bollard);
+  assert.ok(propellerThrust(-1, 0) < 0 && -propellerThrust(-1, 0) < bollard, "astern thrust is weaker than ahead");
+});
+
+test("the yacht cannot sail into the wind, reaches fastest, and heels to leeward", () => {
+  const inIrons = sailCourse(0, 60);
+  const closeHauled = sailCourse(50, 90);
+  const beamReach = sailCourse(90, 90);
+  const running = sailCourse(180, 90);
+  assert.ok(inIrons.telemetry.speedKnots < 2, "head to wind the sails only flog");
+  assert.ok(closeHauled.telemetry.speedKnots > 4, "fifty degrees off the wind is a workable close-hauled course");
+  assert.ok(beamReach.telemetry.speedKnots > closeHauled.telemetry.speedKnots);
+  assert.ok(beamReach.telemetry.speedKnots > running.telemetry.speedKnots, "reaching is faster than running");
+  assert.ok(beamReach.telemetry.speedKnots > 6 && beamReach.telemetry.speedKnots < 12, "a believable cruising speed");
+  assert.ok(running.telemetry.speedKnots > 3);
+  // Wind over the starboard side pushes the rig to port: a negative roll.
+  assert.equal(beamReach.telemetry.leewardSide, -1);
+  assert.ok(beamReach.roll < -0.01 && beamReach.roll > -0.2, "a catamaran heels a few degrees to leeward");
+  assert.ok(beamReach.telemetry.leeway < 0, "the yacht makes leeway away from the wind");
+  assert.ok(Math.abs(beamReach.telemetry.leeway) < 0.5, "the keels must hold the yacht on her course");
+  assert.ok(Math.abs(closeHauled.telemetry.apparentWindAngle) < Math.PI / 2, "apparent wind draws ahead upwind");
+
+  const eased = sailCourse(90, 90, 0.2);
+  assert.ok(eased.telemetry.speedKnots < beamReach.telemetry.speedKnots * 0.6, "easing sheets slows the yacht");
+});
+
+test("engines give a realistic top speed, steerage from prop wash, and correct helm sense", () => {
+  const motor = new VesselPhysics(CALM, OPEN_WATER);
+  motor.heading = MEAN_WIND_HEADING;
+  const controls = { throttle: 1, rudder: 0, sailTrim: 0.2 };
+  for (let step = 0; step < 40 * 60; step += 1) motor.fixedUpdate(1 / 60, controls);
+  assert.ok(motor.engineShaft === 1);
+  assert.ok(motor.telemetry.speedKnots > 6 && motor.telemetry.speedKnots < 14.5, "an auxiliary-powered cruising speed");
+
+  const headingBefore = motor.heading;
+  controls.rudder = 1;
+  for (let step = 0; step < 5 * 60; step += 1) motor.fixedUpdate(1 / 60, controls);
+  assert.ok(motor.heading > headingBefore + 0.3, "starboard helm turns the bow to starboard");
+  assert.ok(motor.yawRate < 0.5, "a nine-metre catamaran does not spin on the spot");
+
+  const stopped = new VesselPhysics(CALM, OPEN_WATER);
+  stopped.heading = MEAN_WIND_HEADING;
+  const kick = { throttle: 0.5, rudder: 1, sailTrim: 0.2 };
+  for (let step = 0; step < 90; step += 1) stopped.fixedUpdate(1 / 60, kick);
+  assert.ok(stopped.yawRate > 0.01, "prop wash over the rudders must turn a yacht that has barely gathered way");
+
+  const coasting = new VesselPhysics(CALM, OPEN_WATER);
+  coasting.heading = MEAN_WIND_HEADING;
+  const ahead = { throttle: 1, rudder: 0, sailTrim: 0.2 };
+  for (let step = 0; step < 120; step += 1) coasting.fixedUpdate(1 / 60, ahead);
+  ahead.throttle = 0;
+  coasting.fixedUpdate(1 / 60, ahead);
+  assert.ok(coasting.engineShaft > 0.8, "the shafts must spool down, not stop instantly");
+});
+
+test("shoal water adds drag without stopping the yacht", () => {
+  const shoal: IslandPhysics = { ...OPEN_WATER, depthAt: () => 1.2 };
+  const run = (islands: IslandPhysics) => {
+    const physics = new VesselPhysics(CALM, islands);
+    physics.heading = MEAN_WIND_HEADING;
+    const controls = { throttle: 1, rudder: 0, sailTrim: 0.2 };
+    for (let step = 0; step < 20 * 60; step += 1) physics.fixedUpdate(1 / 60, controls);
+    return physics;
+  };
+  const deep = run(OPEN_WATER);
+  const shallow = run(shoal);
+  assert.equal(deep.telemetry.grounding, 0);
+  assert.equal(shallow.telemetry.grounding, 1);
+  assert.ok(shallow.telemetry.speedKnots < deep.telemetry.speedKnots, "shallow water must cost speed");
+  assert.ok(shallow.telemetry.speedKnots > deep.telemetry.speedKnots * 0.4, "but never pin her in place");
+});
+
+const COAST: IslandPhysics = {
+  depthAt: waterDepthAt,
+  avoidanceForce: (_position, _velocity, target) => target.set(0, 0, 0),
+  constrainToWater: () => false,
+  nearestShoreDirection: (_position, target) => target.set(0, 0, 1),
+  shoreClearance,
+};
+
+/** A yacht 30 m off island 0 on `bearing`, aimed `approach` degrees off its centre. */
+function offTheBeach(bearing: number, approach: number, distance = 30): VesselPhysics {
+  const island = ISLAND_DEFINITIONS[0];
+  const normal = { x: 0, z: 1 };
+  const physics = new VesselPhysics(CALM, COAST);
+  let radius = island.beachRadius * 1.6;
+  const x = (r: number) => island.centerX + Math.cos(bearing) * r;
+  const z = (r: number) => island.centerZ + Math.sin(bearing) * r * island.scaleZ;
+  while (shoreClearance(x(radius), z(radius), normal) > distance) radius -= 0.5;
+  physics.position.set(x(radius), physics.position.y, z(radius));
+  physics.heading = Math.atan2(island.centerX - x(radius), island.centerZ - z(radius)) + THREE.MathUtils.degToRad(approach);
+  return physics;
+}
+
+function hullClearance(physics: VesselPhysics): number {
+  const normal = { x: 0, z: 1 };
+  let worst = Infinity;
+  for (const [side, ahead] of HULL_OUTLINE) {
+    const px = physics.position.x + physics.right.x * side + physics.forward.x * ahead;
+    const pz = physics.position.z + physics.right.z * side + physics.forward.z * ahead;
+    worst = Math.min(worst, shoreClearance(px, pz, normal));
+  }
+  return worst;
+}
+
+test("under power, the shore guard turns the yacht away before she touches and hands the helm back", () => {
+  for (const approach of [0, 25, 55, -40]) {
+    for (const bearing of [0, 1.3, 2.6, 4.2]) {
+      const physics = offTheBeach(bearing, approach);
+      const controls = { throttle: 1, rudder: 0, sailTrim: 0.2 };
+      const wouldHit = hullFreeRun(shoreClearance, physics.position.x, physics.position.z, physics.heading, 300) < 300;
+      let worst = Infinity;
+      let impacts = 0;
+      let engaged = 0;
+      const normal = { x: 0, z: 1 };
+      // Handed back, out in open water, and up to speed again on the player's throttle.
+      let recovered = false;
+      for (let step = 0; step < 50 * 60; step += 1) {
+        physics.fixedUpdate(1 / 60, controls, true);
+        if (physics.telemetry.shoreImpact > 0) impacts += 1;
+        if (physics.guard.active) engaged += 1;
+        worst = Math.min(worst, hullClearance(physics));
+        if (
+          !physics.guard.active &&
+          shoreClearance(physics.position.x, physics.position.z, normal) > 25 &&
+          physics.telemetry.speedKnots > 7
+        ) {
+          recovered = true;
+        }
+      }
+      const label = `bearing ${bearing}, approach ${approach} deg`;
+      if (wouldHit) assert.ok(engaged > 0, `${label}: the guard should have taken the helm`);
+      assert.equal(impacts, 0, `${label}: the hulls struck the shore`);
+      assert.ok(worst > SHORE_CONTACT_CLEARANCE, `${label}: a hull came within ${worst.toFixed(2)} m of the sand`);
+      assert.ok(recovered, `${label}: never back in open water at speed with the helm handed back`);
+    }
+  }
+});
+
+test("a helmsman who keeps steering into an island cannot strand the yacht", () => {
+  const island = ISLAND_DEFINITIONS[0];
+  for (const [bearing, mode] of [
+    [0.4, "pursuit"],
+    [2.2, "pursuit"],
+    [3.6, "circle"],
+    [5.1, "circle"],
+  ] as const) {
+    const physics = offTheBeach(bearing, 0, 40);
+    const controls = { throttle: 0.85, rudder: 0, sailTrim: 0.6 };
+    let impacts = 0;
+    let worst = Infinity;
+    // Distance sailed in each twenty-second window (a hard-over circle can bring
+    // her back to where she was, so displacement would call that "stuck").
+    const sailed: number[] = [];
+    let previous = physics.position.clone();
+    for (let step = 0; step < 180 * 60; step += 1) {
+      if (mode === "pursuit") {
+        // Always aims straight back at the island centre.
+        const wanted = Math.atan2(island.centerX - physics.position.x, island.centerZ - physics.position.z);
+        const error = Math.atan2(Math.sin(wanted - physics.heading), Math.cos(wanted - physics.heading));
+        controls.rudder = THREE.MathUtils.clamp(error * 2, -1, 1);
+      } else {
+        // Hard over the whole time, on a circle that crosses the beach.
+        controls.rudder = 0.8;
+      }
+      physics.fixedUpdate(1 / 60, controls, true);
+      if (physics.telemetry.shoreImpact > 0) impacts += 1;
+      worst = Math.min(worst, hullClearance(physics));
+      const window = Math.floor(step / (20 * 60));
+      sailed[window] = (sailed[window] ?? 0) + physics.position.distanceTo(previous);
+      previous = physics.position.clone();
+      assert.ok(Number.isFinite(physics.position.x + physics.position.z + physics.heading));
+    }
+    const label = `${mode} from bearing ${bearing}`;
+    assert.equal(impacts, 0, `${label}: struck the shore`);
+    assert.ok(worst > 0.8, `${label}: a hull came within ${worst.toFixed(2)} m of the sand`);
+    // Never parked: she keeps moving through every twenty-second window.
+    sailed.forEach((distance, index) => {
+      assert.ok(distance > 6, `${label}: stuck between ${index * 20} and ${index * 20 + 20} s`);
+    });
+  }
+});
+
+test("under sail with the engine off, the guard eases the sheets and the shore still never holds her", () => {
+  for (const bearing of [0, 1.3, 2.6, 4.2]) {
+    const physics = offTheBeach(bearing, 10);
+    const controls = { throttle: 0, rudder: 0, sailTrim: 1 };
+    let worst = Infinity;
+    let eased = false;
+    for (let step = 0; step < 60 * 60; step += 1) {
+      physics.fixedUpdate(1 / 60, controls, false);
+      worst = Math.min(worst, hullClearance(physics));
+      if (physics.guard.active && physics.guard.output.sailTrim < 1) eased = true;
+    }
+    const label = `bearing ${bearing}`;
+    const normal = { x: 0, z: 1 };
+    assert.ok(worst > 0.3, `${label}: a hull ran ${(-worst).toFixed(2)} m up the sand`);
+    assert.ok(shoreClearance(physics.position.x, physics.position.z, normal) > 5, `${label}: still on the beach`);
+    if (worst < 6) assert.ok(eased, `${label}: the sheets should have been eased near the beach`);
+  }
+});
+
+test("the yacht stays finite and upright through a long passage in the shared seaway", () => {
+  let time = 0;
+  const physics = new VesselPhysics({ sample: (x, z) => sampleOcean(x, z, time) }, OPEN_WATER);
+  const controls = { throttle: 0.8, rudder: 0, sailTrim: 1 };
+  let maximumRoll = 0;
+  let maximumPitch = 0;
+  let maximumGap = 0;
+  for (let step = 0; step < 240 * 60; step += 1) {
+    time += 1 / 60;
+    controls.rudder = Math.sin(time * 0.21) * 0.7;
+    controls.throttle = Math.sin(time * 0.05) > 0 ? 0.8 : -0.4;
+    physics.fixedUpdate(1 / 60, controls);
+    maximumRoll = Math.max(maximumRoll, Math.abs(physics.roll));
+    maximumPitch = Math.max(maximumPitch, Math.abs(physics.pitch));
+    if (time > 10) {
+      const water = sampleOcean(physics.position.x, physics.position.z, time).height;
+      maximumGap = Math.max(maximumGap, Math.abs(physics.position.y - 0.46 - water));
+    }
+  }
+  assert.ok(Number.isFinite(physics.position.length() + physics.heading));
+  assert.ok(maximumRoll < 0.3, `roll stayed seamanlike (${maximumRoll})`);
+  assert.ok(maximumPitch < 0.28, `pitch stayed seamanlike (${maximumPitch})`);
+  assert.ok(maximumGap < 0.7, `the hulls must ride the rendered surface, not hang above it (${maximumGap})`);
+});
+
+test("in a hurricane sea the yacht rides waves several metres high and stays finite", async () => {
+  const O = await import("../../src/simulator/environment/OceanMath");
+  try {
+    O.setSeaScale(4.5);
+    assert.ok(O.significantWaveHeight() > 8, "a hurricane sea is several metres high");
+    let time = 0;
+    const physics = new VesselPhysics({ sample: (x, z) => O.sampleOcean(x, z, time) }, OPEN_WATER);
+    physics.windScale = 3.3;
+    const controls = { throttle: 0.8, rudder: 0, sailTrim: 1 };
+    let lowest = Infinity;
+    let highest = -Infinity;
+    let maximumGap = 0;
+    let fastest = 0;
+    for (let step = 0; step < 180 * 60; step += 1) {
+      time += 1 / 60;
+      controls.rudder = Math.sin(time * 0.21) * 0.7;
+      physics.fixedUpdate(1 / 60, controls);
+      if (time < 10) continue;
+      lowest = Math.min(lowest, physics.position.y);
+      highest = Math.max(highest, physics.position.y);
+      fastest = Math.max(fastest, physics.telemetry.speedKnots);
+      const water = O.sampleOcean(physics.position.x, physics.position.z, time).height;
+      maximumGap = Math.max(maximumGap, Math.abs(physics.position.y - 0.46 - water));
+    }
+    assert.ok(Number.isFinite(physics.position.length() + physics.heading + physics.roll + physics.pitch));
+    assert.ok(highest - lowest > 6, `the yacht climbs and falls with the swell (${(highest - lowest).toFixed(1)} m)`);
+    assert.ok(maximumGap < 1.25, `she rides the surface, not above or under it (${maximumGap.toFixed(2)} m)`);
+    assert.ok(Math.abs(physics.roll) <= 0.4 && Math.abs(physics.pitch) <= 0.32);
+    assert.ok(fastest < 24, `surfing stays bounded (${fastest.toFixed(1)} kn)`);
+  } finally {
+    O.setSeaScale(1);
+  }
+});
+
+test("the storm swell dies out over the island shelves, for the sampler as for the shader", async () => {
+  const O = await import("../../src/simulator/environment/OceanMath");
+  const S = await import("../../src/simulator/environment/SurfMath");
+  const island = ISLAND_DEFINITIONS[0]!;
+  const coast = island.centerX + island.beachRadius;
+  assert.ok(S.stormShoalAt(coast + 2, island.centerZ) < 0.02, "no storm swell at the beach");
+  assert.ok(S.stormShoalAt(coast + 400, island.centerZ) > 0.98 || distanceFromWaterline(coast + 400, island.centerZ) < 150);
+  try {
+    O.setSeaScale(4.5);
+    const range = (x: number, z: number) => {
+      let highest = 0;
+      for (let t = 0; t < 40; t += 0.25) highest = Math.max(highest, Math.abs(O.sampleOcean(x, z, t).height));
+      return highest;
+    };
+    const unshoaled = range(coast + 4, island.centerZ);
+    O.setShoalField(S.stormShoalAt);
+    const shoaled = range(coast + 4, island.centerZ);
+    const offshore = range(0, 0);
+    assert.ok(offshore > 4, `open water runs high (${offshore.toFixed(1)} m)`);
+    assert.ok(shoaled < unshoaled * 0.6, `the beach is spared the storm swell (${shoaled.toFixed(1)} of ${unshoaled.toFixed(1)} m)`);
+    // Fair weather never consults the shoals: the swell is not there.
+    O.setSeaScale(1);
+    assert.ok(O.seaFactors.every((factor, index) => !O.OCEAN_WAVES[index]!.storm || factor === 0));
+  } finally {
+    O.setShoalField(null);
+    O.setSeaScale(1);
+  }
+});
+
+test("island bathymetry shoals toward a coast the ocean shader can follow", () => {
+  for (const island of ISLAND_DEFINITIONS) {
+    const beachX = island.centerX + island.beachRadius;
+    assert.ok(Math.abs(distanceFromBeach(island, beachX, island.centerZ)) < 1e-9);
+    // Depth is measured from the rendered waterline, which the noise moves a
+    // little off the nominal ellipse.
+    let waterlineX = beachX;
+    while (distanceFromWaterline(waterlineX, island.centerZ) > 0) waterlineX -= 0.05;
+    while (distanceFromWaterline(waterlineX, island.centerZ) < 0) waterlineX += 0.05;
+    const atBeach = waterDepthAt(waterlineX, island.centerZ);
+    const offshore = waterDepthAt(beachX + 12, island.centerZ);
+    const openWater = waterDepthAt(beachX + 60, island.centerZ);
+    assert.ok(atBeach < 0.5);
+    assert.ok(offshore > atBeach + 3 && offshore < openWater);
+    // The rendered, irregular waterline stays within a few metres of the
+    // collision ellipse all the way round.
+    for (let step = 0; step < 24; step += 1) {
+      const angle = (step / 24) * Math.PI * 2;
+      const x = island.centerX + Math.cos(angle) * island.beachRadius;
+      const z = island.centerZ + Math.sin(angle) * island.beachRadius * island.scaleZ;
+      assert.ok(Math.abs(distanceFromWaterline(x, z)) < island.beachRadius * 0.12);
+    }
+    assert.ok(distanceFromWaterline(island.centerX, island.centerZ) < 0, "the island centre is dry land");
+  }
+  assert.ok(distanceFromWaterline(0, 0) > 30, "the yacht starts in open water");
+});
+
+test("environment palette is finite, darker at night, and keeps the night readable", () => {
+  const luminance = (color: readonly number[]) => 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
+  for (let step = 0; step <= 20; step += 1) {
+    const palette = deriveEnvironmentPalette(deriveTimeOfDay(step / 20));
+    for (const color of [
+      palette.zenith,
+      palette.horizon,
+      palette.sunColor,
+      palette.lightColor,
+      palette.ambientColor,
+      palette.cloudLit,
+      palette.cloudShade,
+    ]) {
+      assert.ok(color.every((channel) => Number.isFinite(channel) && channel >= 0));
+    }
+    assert.ok(palette.cloudCover > 0.2 && palette.cloudCover < 0.7);
+    assert.ok(palette.twilight >= 0 && palette.twilight <= 1);
+    assert.ok(luminance(palette.cloudLit) > luminance(palette.cloudShade));
+  }
+  const day = deriveEnvironmentPalette(deriveTimeOfDay(0));
+  const night = deriveEnvironmentPalette(deriveTimeOfDay(1));
+  assert.equal(day.moonBlend, 0);
+  assert.equal(night.moonBlend, 1);
+  assert.ok(luminance(day.lightColor) > luminance(night.lightColor) * 4);
+  assert.ok(luminance(night.lightColor) > 0.2, "moonlight must still model the yacht");
+  assert.ok(luminance(night.horizon) > 0.04, "the night horizon must stay visible");
+  assert.ok(luminance(day.horizon) > luminance(day.zenith), "the sky brightens toward the horizon");
+  assert.ok(day.zenith[2] > day.zenith[0] * 4, "the day sky is blue");
+  const dusk = deriveEnvironmentPalette(deriveTimeOfDay(0.61));
+  assert.ok(dusk.twilight > 0.8 && dusk.horizon[0] > dusk.horizon[2], "the horizon warms as the sun sets");
+});
+
+test("quality presets scale cost monotonically and keep the low preset free of post-processing", () => {
+  const { low, medium, high } = QUALITY_SETTINGS;
+  assert.equal(low.postProcessing, false);
+  assert.equal(low.msaaSamples, 0);
+  assert.ok(medium.postProcessing && high.postProcessing);
+  assert.ok(low.oceanDetail < medium.oceanDetail && medium.oceanDetail < high.oceanDetail);
+  assert.ok(low.oceanSegments < medium.oceanSegments && medium.oceanSegments < high.oceanSegments);
+  assert.ok(medium.bloomStrength <= high.bloomStrength && high.bloomStrength < 0.6);
+  assert.ok(medium.msaaSamples <= high.msaaSamples);
+});
+
+test("bow spray starts at a realistic cruising speed and grows with speed and helm", () => {
+  assert.equal(bowSprayRate(BOW_SPRAY_MIN_SPEED, 0), 0);
+  assert.equal(bowSprayRate(1, 1), 0);
+  const cruising = bowSprayRate(4, 0);
+  assert.ok(cruising > 0);
+  assert.ok(bowSprayRate(5, 0) > cruising);
+  assert.ok(bowSprayRate(4, 1) > cruising);
+  assert.equal(bowSprayRate(-4, 0), cruising);
+});
+
+// --- Weather, surf -------------------------------------------------------------
+
+test("weather: presets climb the severity ladder, the sea eases toward them, auto weather opens clear and favours calm", async () => {
+  const W = await import("../../src/simulator/environment/WeatherMath");
+  const keys = ["rain", "wind", "waves", "storm", "breaking", "haze", "overcast"] as const;
+  for (const key of keys) {
+    for (let index = 1; index < W.WEATHER_KINDS.length; index += 1) {
+      const lower = W.WEATHER_PRESETS[W.WEATHER_KINDS[index - 1]!][key];
+      const higher = W.WEATHER_PRESETS[W.WEATHER_KINDS[index]!][key];
+      assert.ok(higher >= lower, `${key} never falls as the weather worsens`);
+    }
+  }
+  assert.ok(W.WEATHER_PRESETS.hurricane.waves > W.WEATHER_PRESETS.clear.waves * 3, "a hurricane sea is several times higher");
+
+  const state = W.createWeather("clear");
+  for (let second = 0; second < 90; second += 1) W.stepWeather(state, "storm", 1, second);
+  assert.ok(state.waves > 2.5 && state.rain > 0.7 && state.storm > 0.6, "weather eases toward the preset");
+  assert.ok(state.waves < W.WEATHER_PRESETS.storm.waves + 1e-6);
+
+  let calm = 0;
+  let severe = 0;
+  const total = 6 * 3600;
+  for (let second = 0; second < total; second += 5) {
+    const kind = W.autoWeatherKind(second);
+    if (second < W.AUTO_FIRST_CHANGE) assert.equal(kind, "clear", "every session opens under a clear sky");
+    if (second < W.AUTO_SEVERE_AFTER) assert.ok(W.weatherSeverity(kind) <= W.weatherSeverity("downpour"));
+    assert.equal(W.autoWeatherKind(second), kind, "the planner is deterministic");
+    if (W.weatherSeverity(kind) <= 2) calm += 1;
+    if (W.weatherSeverity(kind) >= 5) severe += 1;
+  }
+  const samples = total / 5;
+  assert.ok(calm / samples > 0.5, "calm weather (clear, cloudy, overcast) dominates");
+  assert.ok(severe > 0, "storms do come");
+  assert.ok(severe / samples < 0.25, "a storm is an event");
+});
+
+test("lightning: none in fair weather, distant flashes in a downpour, frequent strikes in a storm", async () => {
+  const L = await import("../../src/simulator/environment/LightningMath");
+  const count = (storm: number) => {
+    let strikes = 0;
+    let ground = 0;
+    let near = 0;
+    for (let slot = 0; slot < 2000; slot += 1) {
+      const strike = L.strikeInSlot(slot, storm);
+      if (!strike) continue;
+      strikes += 1;
+      if (strike.kind === "ground") ground += 1;
+      if (strike.distance < 2000) near += 1;
+      assert.ok(strike.distance > 400 && strike.distance < 17000);
+      assert.ok(strike.strokes.length >= 1 && strike.strokes.length <= 4);
+      assert.ok(strike.start >= slot * L.LIGHTNING_SLOT && strike.start < (slot + 1) * L.LIGHTNING_SLOT);
+    }
+    return { strikes, ground, near, minutes: (2000 * L.LIGHTNING_SLOT) / 60 };
+  };
+  for (const storm of [0, 0.14, 0.3]) assert.equal(count(storm).strikes, 0);
+  const downpour = count(0.38);
+  assert.ok(downpour.strikes > 0 && downpour.near === 0, "a downpour has only distant lightning");
+  const storm = count(0.82);
+  const hurricane = count(1);
+  assert.ok(storm.strikes / storm.minutes > 6, "a storm flashes several times a minute");
+  assert.ok(hurricane.strikes > storm.strikes);
+  assert.ok(storm.ground > storm.strikes * 0.3, "many strikes are visible bolts");
+  assert.ok(storm.near > 0 && storm.near < storm.strikes * 0.25, "close strikes happen, but rarely");
+  for (let t = 0; t < 600; t += 0.05) {
+    assert.equal(L.lightningFlash(t, 0.3), 0);
+    const flash = L.lightningFlash(t, 1);
+    assert.ok(Number.isFinite(flash) && flash >= 0 && flash <= 1.6);
+  }
+});
+
+test("lightning: a stroke is a leader, then bright return strokes that die within a second", async () => {
+  const L = await import("../../src/simulator/environment/LightningMath");
+  let strike = null;
+  for (let slot = 0; !strike || strike.kind !== "ground" || strike.strokes.length < 2; slot += 1) strike = L.strikeInSlot(slot, 1);
+  const during = L.strikeLight(strike, L.LEADER_SECONDS * 0.5);
+  assert.ok(during.reveal > 0 && during.reveal < 1, "the leader reveals the channel downward");
+  assert.ok(during.brightness < 0.2);
+  const peak = L.strikeLight(strike, strike.strokes[0]!.time + 0.001);
+  assert.equal(peak.reveal, 1);
+  assert.ok(peak.brightness > 0.9);
+  const second = L.strikeLight(strike, strike.strokes[1]!.time + 0.001);
+  assert.ok(second.brightness > 0.4, "a later stroke flashes again");
+  assert.equal(L.strikeLight(strike, L.STRIKE_SECONDS + 0.1).brightness, 0);
+  // Close strikes light the scene, far ones barely; thunder lags by the distance.
+  assert.ok(L.strikeProximity(500) > 0.75 && L.strikeProximity(10000) < 0.02);
+  assert.ok(Math.abs(L.thunderDelay(3430)! - 10) < 1e-9);
+  assert.equal(L.thunderDelay(L.THUNDER_RANGE + 1), null);
+});
+
+test("lightning: the channel descends from the cloud to the sea and branches stay above it", async () => {
+  const L = await import("../../src/simulator/environment/LightningMath");
+  for (let seed = 1; seed < 40; seed += 1) {
+    const shape = L.buildBolt(seed * 7919, L.createBoltShape());
+    assert.ok(shape.count > 64 && shape.count <= L.BOLT_MAX_SEGMENTS);
+    let lowest = 1;
+    let mainTop = 0;
+    for (let index = 0; index < shape.count; index += 1) {
+      const [x0, y0, x1, y1] = shape.segments.subarray(index * 4, index * 4 + 4);
+      for (const value of [x0, y0, x1, y1]) assert.ok(Number.isFinite(value));
+      assert.ok(y0! <= 1.001 && y1! >= -0.001);
+      assert.ok(Math.abs(x1!) < 1.2, "the channel stays within a plausible width");
+      const branch = shape.attributes[index * 4 + 3];
+      if (branch === 0) {
+        lowest = Math.min(lowest, y1!);
+        mainTop = Math.max(mainTop, y0!);
+      } else {
+        assert.ok(y1! > 0.01, "branches die out before reaching the sea");
+      }
+    }
+    assert.ok(lowest < 0.001 && mainTop > 0.999, "the main channel spans cloud base to sea");
+  }
+  // The same seed always draws the same bolt.
+  const a = L.buildBolt(42, L.createBoltShape());
+  const b = L.buildBolt(42, L.createBoltShape());
+  assert.deepEqual(Array.from(a.segments), Array.from(b.segments));
+});
+
+test("sea state: wave height grows with the scale, stays finite and keeps slopes resolvable", async () => {
+  const O = await import("../../src/simulator/environment/OceanMath");
+  const heights = [0.35, 1, 1.75, 2.4, 3.3, 4.5].map((scale) => O.significantWaveHeight(scale));
+  for (let index = 1; index < heights.length; index += 1) assert.ok(heights[index]! > heights[index - 1]!);
+  assert.ok(heights[5]! > 3 * heights[1]!);
+  try {
+    O.setSeaScale(4.5);
+    assert.equal(O.getSeaScale(), 4.5);
+    for (let n = 0; n < 400; n += 1) {
+      const x = Math.sin(n * 12.9) * 900;
+      const z = Math.cos(n * 7.3) * 900;
+      const sample = O.sampleOcean(x, z, n * 0.7);
+      assert.ok(Number.isFinite(sample.height) && Math.abs(sample.height) < 8);
+      assert.ok(sample.normalY > 0.35, "normals stay upward even in a hurricane sea");
+    }
+    assert.ok(O.maximumOceanFold(O.seaFactors, true) < 1, "crests do not fold over themselves");
+  } finally {
+    O.setSeaScale(1);
+  }
+});
+
+test("day cycle: runs day, dusk, night and dawn, with the sun climbing in the day", async () => {
+  const E = await import("../../src/simulator/environment/EnvironmentMath");
+  assert.equal(E.dayCycleState(0).progress, 0);
+  assert.ok(E.dayCycleState(E.DAY_HOLD_SECONDS / 2).sunArc > 0.95);
+  assert.equal(E.dayCycleState(E.CYCLE_NIGHT_START + 5).progress, 1);
+  let last = 0;
+  for (let t = E.DAY_HOLD_SECONDS; t <= E.CYCLE_NIGHT_START; t += 1) {
+    const { progress } = E.dayCycleState(t);
+    assert.ok(progress >= last - 1e-9 && progress <= 1);
+    last = progress;
+  }
+  assert.ok(Math.abs(E.dayCycleState(E.DAY_CYCLE_SECONDS).progress - E.dayCycleState(0).progress) < 1e-9, "the cycle repeats");
+});
+
+test("reefing: the crew shortens sail in a gale, so the yacht stays bounded", async () => {
+  const { reefFactor, REEF_START_SPEED } = await import("../../src/simulator/vessel/SailAerodynamics");
+  assert.equal(reefFactor(REEF_START_SPEED - 1), 1);
+  assert.ok(reefFactor(30) < 0.3);
+  assert.ok(reefFactor(20) > reefFactor(30));
+});
+
+test("rain quality scales monotonically", () => {
+  assert.ok(QUALITY_SETTINGS.low.rainDrops < QUALITY_SETTINGS.medium.rainDrops);
+  assert.ok(QUALITY_SETTINGS.medium.rainDrops < QUALITY_SETTINGS.high.rainDrops);
+});
+
+test("surf: waves break, run up the beach by different amounts, and leave sand that dries", async () => {
+  const { sampleSurf, SURF_PERIOD, waveRunup } = await import("../../src/simulator/environment/SurfMath");
+  const runups = new Set<number>();
+  for (let n = 0; n < 24; n += 1) runups.add(Math.round(waveRunup(n, 0).runup * 10));
+  assert.ok(runups.size > 6, "every wave runs up differently");
+  for (let n = 0; n < 60; n += 1) {
+    const { runup } = waveRunup(n, 1);
+    assert.ok(runup > 1 && runup < 6.5);
+  }
+  let foamOffshore = 0;
+  let sheetSeen = 0;
+  let maxWet = 0;
+  for (let step = 0; step < SURF_PERIOD * 30; step += 1) {
+    const time = step / 30;
+    const breaker = sampleSurf(3, 0.4, 0, time);
+    const beach = sampleSurf(-1.2, 0.4, 0, time);
+    const dry = sampleSurf(-9, 0.4, 0, time);
+    const open = sampleSurf(30, 0.4, 0, time);
+    for (const sample of [breaker, beach, dry, open]) {
+      assert.ok(sample.foam >= 0 && sample.foam <= 1 && sample.wetness >= 0 && sample.wetness <= 1);
+      assert.ok(Number.isFinite(sample.slope) && Math.abs(sample.slope) < 0.5);
+    }
+    foamOffshore = Math.max(foamOffshore, breaker.foam);
+    if (beach.sheet > 0) sheetSeen += 1;
+    maxWet = Math.max(maxWet, beach.wetness);
+    assert.equal(dry.wetness, 0, "nine metres up the beach the sand stays dry");
+    assert.equal(open.foam, 0, "no surf in open water");
+  }
+  assert.ok(foamOffshore > 0.5, "waves break into white water on the shelf");
+  assert.ok(sheetSeen > 0, "the swash runs up the beach");
+  assert.ok(sheetSeen < SURF_PERIOD * 30, "and drains away again");
+  assert.ok(maxWet > 0.9);
+  // Waves arrive at different times along the coast, not as parallel stripes.
+  const a = sampleSurf(-1, 0, 0, 3).edge;
+  const b = sampleSurf(-1, 1.2, 0, 3).edge;
+  const c = sampleSurf(-1, 2.4, 0, 3).edge;
+  assert.ok(new Set([a.toFixed(2), b.toFixed(2), c.toFixed(2)]).size > 1);
+});
+
+test("wake samples spread with speed so the bounded pool holds the whole wake", async () => {
+  const { wakeSampleSpacing, HULL_TRACK_LIFE, KELVIN_TANGENT } = await import("../../src/simulator/vessel/WakeSystem");
+  assert.ok(Math.abs(Math.atan(KELVIN_TANGENT) - (19.47 * Math.PI) / 180) < 1e-9);
+  for (const speed of [0.5, 2, 4.5, 6]) {
+    const samples = (speed * HULL_TRACK_LIFE) / wakeSampleSpacing(speed);
+    // Two stern tracks and two bow waves per sample, within the high preset's pool.
+    assert.ok(samples * 4 <= 145 * 0.9 * 4 + 1e-9 || speed < 2, `${speed} m/s needs ${samples * 4} stamps`);
+  }
+  assert.equal(wakeSampleSpacing(0), 0.28);
+});
+
+test("a frame is drawn between two physics steps, so a quick yacht does not judder", () => {
+  const physics = new VesselPhysics({ sample: () => ({ height: 0, normalX: 0, normalY: 1, normalZ: 0 }) }, OPEN_WATER);
+  const controls = { throttle: 1, rudder: 0.2, sailTrim: 1 };
+  for (let step = 0; step < 600; step += 1) physics.fixedUpdate(1 / 60, controls);
+  const before = { x: physics.position.x, z: physics.position.z, heading: physics.heading };
+  physics.fixedUpdate(1 / 60, controls);
+  const after = { x: physics.position.x, z: physics.position.z, heading: physics.heading };
+  assert.ok(Math.hypot(after.x - before.x, after.z - before.z) > 0.05, "she moves each step");
+
+  physics.blendPose(0.5);
+  assert.ok(Math.abs(physics.position.x - (before.x + after.x) / 2) < 1e-9);
+  assert.ok(Math.abs(physics.position.z - (before.z + after.z) / 2) < 1e-9);
+  assert.ok(Math.abs(physics.heading - (before.heading + after.heading) / 2) < 1e-9);
+  // The axes drawn with follow the blended heading.
+  assert.ok(Math.abs(physics.forward.x - Math.sin(physics.heading)) < 1e-12);
+  // Blending twice does not blend the blend.
+  physics.blendPose(0.9);
+  assert.ok(Math.abs(physics.position.x - (before.x + after.x) / 2) < 1e-9);
+  physics.restorePose();
+  assert.equal(physics.position.x, after.x);
+  assert.equal(physics.heading, after.heading);
+
+  // A step taken while blended starts from the true pose, never the blended one.
+  physics.blendPose(0.3);
+  physics.fixedUpdate(1 / 60, controls);
+  const next = physics.position.x;
+  const replay = new VesselPhysics({ sample: () => ({ height: 0, normalX: 0, normalY: 1, normalZ: 0 }) }, OPEN_WATER);
+  for (let step = 0; step < 602; step += 1) replay.fixedUpdate(1 / 60, controls);
+  assert.ok(Math.abs(next - replay.position.x) < 1e-9);
+});
+
+test("a heading crossing ±π is blended the short way round", () => {
+  const physics = new VesselPhysics({ sample: () => ({ height: 0, normalX: 0, normalY: 1, normalZ: 0 }) }, OPEN_WATER);
+  const controls = { throttle: 0, rudder: 0, sailTrim: 1 };
+  physics.heading = Math.PI - 0.01;
+  physics.fixedUpdate(1 / 60, controls);
+  physics.heading = -Math.PI + 0.01;
+  physics.blendPose(0.5);
+  assert.ok(Math.abs(Math.cos(physics.heading) + 1) < 1e-3, `blended through ±π, not through 0 (${physics.heading})`);
+  physics.restorePose();
+  assert.equal(physics.heading, -Math.PI + 0.01);
+});
+
+test("the yacht's heave ignores a flicker in the sampled water level instead of shaking with it", () => {
+  let time = 0;
+  // A 20 Hz, 12 cm shimmer on top of the real sea: a stand-in for the chop the
+  // sample points sweep across at speed.
+  const sea = {
+    sample: (x: number, z: number) => {
+      const sample = ({ ...sampleOcean(x, z, time) });
+      sample.height += 0.12 * Math.sin(time * Math.PI * 2 * 20);
+      return sample;
+    },
+  };
+  const physics = new VesselPhysics(sea, OPEN_WATER);
+  const controls = { throttle: 0.8, rudder: 0, sailTrim: 1 };
+  let previous = 0;
+  let before = 0;
+  let worst = 0;
+  for (let step = 0; step < 40 * 60; step += 1) {
+    time += 1 / 60;
+    physics.fixedUpdate(1 / 60, controls);
+    if (time > 10) worst = Math.max(worst, Math.abs(physics.position.y - 2 * previous + before) * 3600);
+    before = previous;
+    previous = physics.position.y;
+  }
+  assert.ok(worst < 4, `vertical acceleration stays smooth (${worst.toFixed(2)} m/s²)`);
 });

@@ -1,6 +1,8 @@
 export type CameraMode = "chase" | "helm" | "orbit" | "drone";
 export type QualityPreset = "low" | "medium" | "high";
 export type LightingMode = "day" | "night";
+export type { WeatherKind, WeatherMode } from "./environment/WeatherMath";
+import type { WeatherKind, WeatherMode } from "./environment/WeatherMath";
 
 export type LoadingState = {
   loaded: number;
@@ -21,10 +23,24 @@ export type SimulationSnapshot = {
   sailTrim: number;
   cameraMode: CameraMode;
   lightingMode: LightingMode;
+  /** The time of day follows its own automatic cycle. */
+  autoTime: boolean;
+  /** Weather chosen by the planner (auto) or by the player (manual). */
+  weatherMode: WeatherMode;
+  /** The player's choice, used in manual mode. */
+  weather: WeatherKind;
+  /** The weather in force right now, whichever mode picked it. */
+  weatherNow: WeatherKind;
+  /** Significant wave height of the sea at present, metres. */
+  waveHeight: number;
+  /** True wind speed at present, knots. */
+  trueWindKnots: number;
   quality: QualityPreset;
   soundEnabled: boolean;
   audioReady: boolean;
   engineRunning: boolean;
+  /** The helm is temporarily steering clear of an island. */
+  shoreGuardActive: boolean;
   engineMuted: boolean;
   fps: number;
   status: "loading" | "running" | "paused" | "error";

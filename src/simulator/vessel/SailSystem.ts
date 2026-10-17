@@ -13,12 +13,6 @@ type SailUniforms = {
   amplitude: { value: number };
 };
 
-type SailNode = {
-  object: THREE.Object3D;
-  baseRotationY: number;
-  allowRotation: boolean;
-};
-
 function axisVector(index: number): THREE.Vector3 {
   const axis = new THREE.Vector3();
   axis.setComponent(index, 1);
@@ -29,9 +23,15 @@ function axisSize(size: THREE.Vector3, index: number): number {
   return size.getComponent(index);
 }
 
+/**
+ * Direction, in the cloth's own deformation axis, that deepens the authored
+ * sail's belly toward its leeward side. Checked from directly above: a
+ * negative bend deepens the camber the model was built with.
+ */
+export const SAIL_CAMBER_SIGN = -1;
+
 export class SailSystem {
   private readonly uniforms: SailUniforms[] = [];
-  private readonly sails: SailNode[] = [];
   private bend = 0;
 
   constructor(model: THREE.Object3D) {
@@ -64,11 +64,6 @@ export class SailSystem {
       const chordMax = bounds.max.getComponent(chordIndex);
       const chordSpan = Math.max(0.01, chordMax - chordMin);
 
-      this.sails.push({
-        object,
-        baseRotationY: object.rotation.y,
-        allowRotation: objectName.includes("sail"),
-      });
       const materials = sourceMaterials.map((source) => {
         const material = source;
         const uniforms: SailUniforms = {
@@ -121,7 +116,7 @@ export class SailSystem {
         };
         material.customProgramCacheKey = () => "deformable-sail-v3";
         if (material instanceof THREE.MeshStandardMaterial) {
-          material.roughness = 0.72;
+          material.roughness = 0.82;
           material.metalness = 0;
           material.side = THREE.DoubleSide;
           material.transparent = false;
@@ -134,21 +129,24 @@ export class SailSystem {
     });
   }
 
-  update(time: number, apparentWindAngle: number, apparentWindSpeed: number, trim: number, delta: number): void {
-    const side = Math.sign(apparentWindAngle || 1);
-    const targetBend = side * Math.min(0.78, apparentWindSpeed * 0.028) * trim;
+  /**
+   * Camber and flogging. The swing of the sail and boom around the mast is
+   * owned by `Vessel`, which mirrors the rig across the centreline on the
+   * other tack, so the camber here is always toward the authored leeward
+   * side of the cloth.
+   * @param luff 0 drawing … 1 flogging head to wind.
+   */
+  update(time: number, apparentWindSpeed: number, luff: number, trim: number, delta: number): void {
+    const drawing = 1 - luff;
+    // A drawing sail bellies to leeward in proportion to the pressure on it;
+    // a luffing sail goes slack and shakes.
+    const targetBend = SAIL_CAMBER_SIGN * Math.min(0.82, apparentWindSpeed * 0.03) * (0.35 + trim * 0.65) * drawing;
     this.bend = damp(this.bend, targetBend, 3.4, delta);
-    const luff = Math.abs(apparentWindAngle) < 0.52 || trim < 0.3;
-    const flutter = luff ? Math.min(0.13, apparentWindSpeed * 0.008) : 0.006;
+    const flutter = Math.min(0.14, apparentWindSpeed * 0.009) * luff + 0.006;
     this.uniforms.forEach((uniforms) => {
       uniforms.time.value = time;
       uniforms.bend.value = this.bend;
       uniforms.flutter.value = flutter;
-    });
-    this.sails.forEach(({ object, baseRotationY, allowRotation }, index) => {
-      if (!allowRotation) return;
-      const delay = 1 - index * 0.08;
-      object.rotation.y = baseRotationY + side * trim * 0.18 * delay;
     });
   }
 }

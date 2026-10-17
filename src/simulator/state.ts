@@ -4,12 +4,19 @@ import type {
   QualityPreset,
   SimulationSnapshot,
   SimulatorControls,
+  WeatherKind,
+  WeatherMode,
 } from "./types";
 
 export type SimulatorState = {
   controls: SimulatorControls;
   cameraMode: CameraMode;
   lightingMode: LightingMode;
+  /** The day cycle runs by itself (see `dayCycleState`). */
+  autoTime: boolean;
+  weatherMode: WeatherMode;
+  /** The weather the player picked; it applies in manual mode. */
+  weather: WeatherKind;
   quality: QualityPreset;
   soundEnabled: boolean;
   engineRunning: boolean;
@@ -23,6 +30,9 @@ export function createSimulatorState(): SimulatorState {
     controls: { throttle: 0, rudder: 0, sailTrim: 0.68 },
     cameraMode: "chase",
     lightingMode: "day",
+    autoTime: false,
+    weatherMode: "auto",
+    weather: "clear",
     quality: "high",
     soundEnabled: true,
     engineRunning: false,
@@ -57,10 +67,17 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   sailTrim: 0.68,
   cameraMode: "chase",
   lightingMode: "day",
+  autoTime: false,
+  weatherMode: "auto",
+  weather: "clear",
+  weatherNow: "clear",
+  waveHeight: 0.9,
+  trueWindKnots: 15,
   quality: "high",
   soundEnabled: true,
   audioReady: false,
   engineRunning: false,
+  shoreGuardActive: false,
   engineMuted: false,
   fps: 60,
   status: "loading",

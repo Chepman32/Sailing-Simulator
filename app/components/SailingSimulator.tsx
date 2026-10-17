@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
 import type { CameraMode, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
+import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
+import { SoundPrompt } from "./SoundPrompt";
 import {
   getMessages,
   isLanguageCode,
@@ -30,7 +32,15 @@ type ControlIconName =
   | "orbit"
   | "drone"
   | "reset"
-  | "photo";
+  | "photo"
+  | "auto-time"
+  | "clear"
+  | "cloudy"
+  | "overcast"
+  | "rain"
+  | "downpour"
+  | "storm"
+  | "hurricane";
 
 function ControlIcon({ name }: { name: ControlIconName }) {
   return (
@@ -46,6 +56,41 @@ function ControlIcon({ name }: { name: ControlIconName }) {
         <>
           <circle cx="12" cy="12" r="3.4" />
           <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4" />
+        </>
+      )}
+      {name === "auto-time" && (
+        <>
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M12 7v5l3.2 2" />
+        </>
+      )}
+      {name === "clear" && (
+        <>
+          <circle cx="12" cy="12" r="3.4" />
+          <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" />
+        </>
+      )}
+      {(name === "cloudy" || name === "overcast") && (
+        <>
+          <path d="M7 18h10a4 4 0 0 0 .6-7.95A5.5 5.5 0 0 0 7 9.2 4.4 4.4 0 0 0 7 18Z" />
+          {name === "cloudy" && <path d="M4 5.5l1 1M8 3.5v1.4" />}
+        </>
+      )}
+      {(name === "rain" || name === "downpour") && (
+        <>
+          <path d="M7 14h10a3.6 3.6 0 0 0 .5-7.15A5 5 0 0 0 7.2 6.2 3.9 3.9 0 0 0 7 14Z" />
+          <path d={name === "rain" ? "M9 17l-1 2.5M13 17l-1 2.5M17 17l-1 2.5" : "M8 16.5l-1.4 4M12 16.5l-1.4 4M16 16.5l-1.4 4M10 18l-.8 2.5M14 18l-.8 2.5"} />
+        </>
+      )}
+      {name === "storm" && (
+        <>
+          <path d="M7 13h10a3.6 3.6 0 0 0 .5-7.15A5 5 0 0 0 7.2 5.2 3.9 3.9 0 0 0 7 13Z" />
+          <path d="m12.5 12-2.6 4.4h3L11.2 21" />
+        </>
+      )}
+      {name === "hurricane" && (
+        <>
+          <path d="M4 8h11a3 3 0 1 0-3-3M3 12.5h16a3 3 0 1 1-3 3M6 17h7a2.5 2.5 0 1 1-2.5 2.5" />
         </>
       )}
       {name === "moon" && <path d="M20.2 15.1A8.2 8.2 0 0 1 8.9 3.8 8.3 8.3 0 1 0 20.2 15.1Z" />}
@@ -128,6 +173,7 @@ export function SailingSimulator() {
   const photoButtonRef = useRef<HTMLButtonElement>(null);
   const photoModeRef = useRef(false);
   const [photoMode, setPhotoMode] = useState(false);
+  const [photoHint, setPhotoHint] = useState(false);
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT);
   const [loading, setLoading] = useState<LoadingState>({
     loaded: 0,
@@ -142,11 +188,59 @@ export function SailingSimulator() {
   const [throttleInput, setThrottleInput] = useState(0);
   const [engineInput, setEngineInput] = useState(false);
   const [engineNotice, setEngineNotice] = useState("");
+  const [noticeKey, setNoticeKey] = useState(0);
   const [language, setLanguage] = useState<LanguageCode>("en");
   const rudderDragging = useRef(false);
   const throttleDragging = useRef(false);
   const soundReadyAtPress = useRef(false);
+  const soundDockRef = useRef<HTMLButtonElement>(null);
+  const soundDockUnlocked = useRef(false);
+  const [soundArrived, setSoundArrived] = useState(false);
+  const soundArrivedTimer = useRef<number | undefined>(undefined);
+  const onSoundPromptArrived = useCallback(() => {
+    // The dust has settled into the corner button: let it glow for a moment.
+    setSoundArrived(true);
+    if (soundArrivedTimer.current !== undefined) window.clearTimeout(soundArrivedTimer.current);
+    soundArrivedTimer.current = window.setTimeout(() => setSoundArrived(false), 900);
+  }, []);
+  useEffect(() => () => window.clearTimeout(soundArrivedTimer.current), []);
   const engineNoticeTimer = useRef<number | undefined>(undefined);
+
+  // Keep the phone awake while the yacht is on screen: a screen that dims in the middle of a passage is the
+  // most common complaint of a handheld sim. The lock is released by the browser whenever the page is hidden,
+  // so it is requested again each time the page becomes visible.
+  useEffect(() => {
+    type WakeLockHandle = { release: () => Promise<void> };
+    const nav = navigator as Navigator & { wakeLock?: { request: (type: "screen") => Promise<WakeLockHandle> } };
+    if (!nav.wakeLock) return;
+    let lock: WakeLockHandle | null = null;
+    let disposed = false;
+    const acquire = async () => {
+      if (disposed || document.visibilityState !== "visible" || lock) return;
+      try {
+        const handle = await nav.wakeLock!.request("screen");
+        if (disposed) {
+          void handle.release().catch(() => undefined);
+          return;
+        }
+        lock = handle;
+        (handle as unknown as EventTarget).addEventListener?.("release", () => {
+          if (lock === handle) lock = null;
+        });
+      } catch {
+        // Denied (battery saver, permissions policy): the screen simply dims as usual.
+      }
+    };
+    const onVisibility = () => void acquire();
+    document.addEventListener("visibilitychange", onVisibility);
+    void acquire();
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      void lock?.release().catch(() => undefined);
+      lock = null;
+    };
+  }, []);
 
   const exitPhotoMode = useCallback(() => {
     photoModeRef.current = false;
@@ -157,6 +251,9 @@ export function SailingSimulator() {
     if (!photoMode) return;
     const photoButton = photoButtonRef.current;
     canvasRef.current?.focus({ preventScroll: true });
+    // The interface is hidden in photo mode, so say once how to get it back.
+    setPhotoHint(true);
+    const hintTimer = window.setTimeout(() => setPhotoHint(false), 3200);
     const onKeyDown = (event: KeyboardEvent) => {
       // Tab restores the interface as well, so keyboard users cannot end up
       // navigating invisible controls or trapped on the canvas.
@@ -166,8 +263,47 @@ export function SailingSimulator() {
       }
     };
     window.addEventListener("keydown", onKeyDown);
+    // One tap or click on the picture ends photo mode. A drag still frames
+    // the shot (the camera gestures keep working), so only a short press that
+    // barely moved counts as a tap.
+    const canvas = canvasRef.current;
+    let pressX = 0;
+    let pressY = 0;
+    let pressTime = 0;
+    let pressId = -1;
+    let pointers = 0;
+    const onPointerDown = (event: PointerEvent) => {
+      pointers += 1;
+      if (pointers > 1) {
+        pressId = -1;
+        return;
+      }
+      pressId = event.pointerId;
+      pressX = event.clientX;
+      pressY = event.clientY;
+      pressTime = event.timeStamp;
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      pointers = Math.max(0, pointers - 1);
+      if (event.pointerId !== pressId) return;
+      pressId = -1;
+      const moved = Math.hypot(event.clientX - pressX, event.clientY - pressY);
+      if (moved < 10 && event.timeStamp - pressTime < 450) exitPhotoMode();
+    };
+    const onPointerCancel = () => {
+      pointers = Math.max(0, pointers - 1);
+      pressId = -1;
+    };
+    canvas?.addEventListener("pointerdown", onPointerDown);
+    canvas?.addEventListener("pointerup", onPointerUp);
+    canvas?.addEventListener("pointercancel", onPointerCancel);
     return () => {
+      window.clearTimeout(hintTimer);
+      setPhotoHint(false);
       window.removeEventListener("keydown", onKeyDown);
+      canvas?.removeEventListener("pointerdown", onPointerDown);
+      canvas?.removeEventListener("pointerup", onPointerUp);
+      canvas?.removeEventListener("pointercancel", onPointerCancel);
       photoButton?.focus({ preventScroll: true });
     };
   }, [photoMode, exitPhotoMode]);
@@ -266,8 +402,27 @@ export function SailingSimulator() {
   const wheelRotation = rudderInput * 2.7;
 
   const setLighting = (mode: LightingMode) => simulatorRef.current?.setLightingMode(mode);
+  const weatherLabels: Record<WeatherKind, string> = {
+    clear: messages.weatherClear,
+    cloudy: messages.weatherCloudy,
+    overcast: messages.weatherOvercast,
+    rain: messages.weatherRain,
+    downpour: messages.weatherDownpour,
+    storm: messages.weatherStorm,
+    hurricane: messages.weatherHurricane,
+  };
   const setCamera = (mode: CameraMode) => simulatorRef.current?.setCameraMode(mode);
-  const setQuality = (preset: QualityPreset) => simulatorRef.current?.setQuality(preset);
+  const setQuality = (preset: QualityPreset) => {
+    simulatorRef.current?.setQuality(preset);
+    showNotice(`${messages.quality}: ${qualityLabels[preset]}`);
+  };
+  /** A plaque naming what a switch has just done, for a couple of seconds. */
+  const showNotice = (text: string) => {
+    setEngineNotice(text);
+    setNoticeKey((key) => key + 1);
+    if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
+    engineNoticeTimer.current = window.setTimeout(() => setEngineNotice(""), 2400);
+  };
   const resetScene = () => {
     if (!loading.ready || error) return;
     rudderDragging.current = false;
@@ -277,11 +432,14 @@ export function SailingSimulator() {
     setEngineNotice("");
     if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
     simulatorRef.current?.reset();
+    showNotice(messages.reset);
   };
   const setEngineRunning = (running: boolean) => {
     const simulator = simulatorRef.current;
     if (!simulator || !loading.ready) return;
     simulator.resumeAudioFromGesture();
+    // A short tick under the thumb confirms the switch on phones without sound; ignored where unsupported.
+    try { navigator.vibrate?.(running ? 18 : 10); } catch { /* not available */ }
     setEngineInput(running);
     if (!running) {
       throttleDragging.current = false;
@@ -289,24 +447,31 @@ export function SailingSimulator() {
     }
     simulator.setEngineRunning(running);
     const activeThrottle = running && Math.abs(displayedThrottle) <= 0.08 ? 0.12 : displayedThrottle;
-    setEngineNotice(
+    showNotice(
       running
         ? `${messages.engine}: ${messages.on} · ${throttleLabel(activeThrottle, messages)} · ${messages.engineSound}: ${messages.on}`
         : `${messages.engine}: ${messages.off} · ${messages.throttle}: ${messages.neutral}`,
     );
-    if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
-    engineNoticeTimer.current = window.setTimeout(() => setEngineNotice(""), 2600);
     navigator.vibrate?.(running ? 24 : 14);
   };
+
+  const soundLocked = snapshot.soundEnabled && !snapshot.audioReady;
+  const soundLabel = snapshot.soundEnabled
+    ? snapshot.audioReady
+      ? `${messages.sound}: ${messages.on}`
+      : messages.tapSound
+    : `${messages.sound}: ${messages.off}`;
 
   const toggleSound = () => {
     const simulator = simulatorRef.current;
     if (!simulator) return;
     if (snapshot.soundEnabled && !soundReadyAtPress.current) {
       simulator.resumeAudioFromGesture();
+      showNotice(`${messages.sound}: ${messages.on}`);
       return;
     }
     simulator.setSoundEnabled(!snapshot.soundEnabled);
+    showNotice(`${messages.sound}: ${snapshot.soundEnabled ? messages.off : messages.on}`);
   };
 
   const unlockSound = () => {
@@ -344,7 +509,11 @@ export function SailingSimulator() {
         aria-label={photoMode ? `${messages.photoMode}. ${messages.photoModeHint}` : messages.sailingControls}
       />
 
-      <div className="simulator-interface" hidden={photoMode}>
+      {photoMode && photoHint && <p className="photo-toast" aria-hidden="true">{messages.photoModeHint}</p>}
+
+      {/* Faded rather than removed, so leaving photo mode is a smooth return;
+          inert keeps the hidden controls out of reach meanwhile. */}
+      <div className={`simulator-interface ${photoMode ? "photo-hidden" : ""}`} inert={photoMode} aria-hidden={photoMode}>
 
         {!loading.ready && !error && (
           <section className="loading-screen" aria-live="polite">
@@ -365,25 +534,85 @@ export function SailingSimulator() {
           </section>
         )}
 
-        {loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error && (
-          <button
-            type="button"
-            className="audio-unlock"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              unlockSound();
-            }}
-            onClick={unlockSound}
-          >
-            <span aria-hidden="true">♪</span>
-            <strong>{messages.tapSound}</strong>
-          </button>
-        )}
+        {/* Transient prompts share one centred column, so they never collide
+            with each other or with the controls at any screen size. */}
+        <div className="notice-stack">
+          <SoundPrompt
+            active={loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error}
+            targetRef={soundDockRef}
+            label={messages.tapSound}
+            onUnlock={unlockSound}
+            onArrived={onSoundPromptArrived}
+          />
+          {engineNotice && <div className="engine-notice" role="status" key={noticeKey}>{engineNotice}</div>}
+          {snapshot.shoreGuardActive && loading.ready && !error && (
+            <div className="engine-notice shore-guard-notice" role="status">{messages.shoreGuard}</div>
+          )}
+          {showHelp && loading.ready && !error && (
+            <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
+              {messages.help}
+            </button>
+          )}
+        </div>
 
         <div className="scene-actions">
-          <button type="button" className="scene-action" disabled={!loading.ready || Boolean(error)} onClick={resetScene}>
+          {/* Permanent mute/unmute. While the browser still holds sound back it
+              pulses; one press both unlocks and plays. */}
+          <button
+            ref={soundDockRef}
+            type="button"
+            className={`scene-action sound-dock${soundLocked ? " is-locked" : ""}${soundArrived ? " is-arriving" : ""}`}
+            disabled={!loading.ready || Boolean(error)}
+            aria-label={soundLabel}
+            title={soundLabel}
+            aria-pressed={snapshot.soundEnabled && snapshot.audioReady}
+            onPointerDown={() => {
+              soundDockUnlocked.current = false;
+              if (!snapshot.soundEnabled || !snapshot.audioReady) {
+                // Unlock inside the trusted pointer gesture (iOS needs it here).
+                soundDockUnlocked.current = true;
+                unlockSound();
+              }
+            }}
+            onClick={() => {
+              if (soundDockUnlocked.current) {
+                soundDockUnlocked.current = false;
+                showNotice(`${messages.sound}: ${messages.on}`);
+                return;
+              }
+              const simulator = simulatorRef.current;
+              if (!simulator) return;
+              if (!snapshot.soundEnabled || !snapshot.audioReady) unlockSound();
+              else simulator.setSoundEnabled(false);
+              showNotice(`${messages.sound}: ${!snapshot.soundEnabled || !snapshot.audioReady ? messages.on : messages.off}`);
+            }}
+          >
+            <ControlIcon name={snapshot.soundEnabled && snapshot.audioReady ? "sound-on" : "sound-off"} />
+          </button>
+          <button
+            type="button"
+            className="scene-action"
+            aria-label={`${messages.camera}: ${cameraLabels[snapshot.cameraMode]}`}
+            title={`${messages.camera}: ${cameraLabels[snapshot.cameraMode]}`}
+            onClick={() => {
+              const modes = Object.keys(cameraLabels) as CameraMode[];
+              const next = modes[(modes.indexOf(snapshot.cameraMode) + 1) % modes.length]!;
+              setCamera(next);
+              showNotice(`${messages.camera}: ${cameraLabels[next]}`);
+            }}
+          >
+            <ControlIcon name={snapshot.cameraMode} />
+            <span className="scene-action-label">{cameraLabels[snapshot.cameraMode]}</span>
+          </button>
+          <button
+            type="button"
+            className="scene-action"
+            disabled={!loading.ready || Boolean(error)}
+            title={messages.reset}
+            onClick={resetScene}
+          >
             <ControlIcon name="reset" />
-            <span>{messages.reset}</span>
+            <span className="scene-action-label">{messages.reset}</span>
           </button>
           <button
             ref={photoButtonRef}
@@ -398,7 +627,7 @@ export function SailingSimulator() {
             }}
           >
             <ControlIcon name="photo" />
-            <span>{messages.photoMode}</span>
+            <span className="scene-action-label">{messages.photoMode}</span>
           </button>
           <p id="photo-mode-hint" className="photo-mode-hint">{messages.photoModeHint}</p>
         </div>
@@ -407,8 +636,8 @@ export function SailingSimulator() {
           <div className="instrument"><span>{messages.speed}</span><strong>{snapshot.speedKnots.toFixed(1)}</strong><small>kn</small></div>
           <div className="instrument"><span>{messages.depth}</span><strong>{snapshot.depthMeters.toFixed(1)}</strong><small>m</small></div>
           <div className="instrument wind-instrument">
-            <span>{messages.apparentWind}</span><strong>{snapshot.apparentWindKnots.toFixed(1)}</strong>
-            <small>kn · {Math.abs(snapshot.apparentWindAngle).toFixed(0)}°</small>
+            <span><span className="wind-label-full">{messages.apparentWind}</span><span className="wind-label-short">{messages.wind}</span></span><strong>{snapshot.apparentWindKnots.toFixed(1)}</strong>
+            <small>kn<span className="wind-angle"> · {Math.abs(snapshot.apparentWindAngle).toFixed(0)}°</span></small>
           </div>
         </section>
 
@@ -437,9 +666,12 @@ export function SailingSimulator() {
                 <span className="full-control-title">{messages.sailingControls}</span>
                 <span className="mobile-control-title">{messages.controls}</span>
               </p>
+              {/* On phones the heading card is hidden and this line carries the
+                  heading. The sound prompt has its own button, and a live
+                  region here would announce every degree of a turn. */}
               {panelMinimized && (
-                <span className="panel-mini-status" aria-live="polite">
-                  {snapshot.soundEnabled && !snapshot.audioReady ? messages.tapSound : `${compass} ${messages.heading}`}
+                <span className="panel-mini-status">
+                  {compass}<span className="mini-status-word"> {messages.heading}</span>
                 </span>
               )}
               {!panelMinimized && (
@@ -455,7 +687,12 @@ export function SailingSimulator() {
               aria-controls="simulator-settings"
               aria-expanded={!panelMinimized}
               aria-label={panelMinimized ? messages.expand : messages.minimize}
-              onClick={() => setPanelMinimized((value) => !value)}
+              onClick={() => {
+                // Opening the settings is an interaction of its own; the
+                // first-run hint has done its job and would sit under the panel.
+                setShowHelp(false);
+                setPanelMinimized((value) => !value);
+              }}
             >{panelMinimized ? "≡" : "×"}</button>
           </header>
 
@@ -463,7 +700,7 @@ export function SailingSimulator() {
           {!panelMinimized && (
             <div className="panel-body">
               <div className="compact-row">
-                <div className="segmented" aria-label={`${messages.day} / ${messages.night}`}>
+                <div className="segmented time-group" role="group" aria-label={`${messages.day} / ${messages.night}`}>
                   {(["day", "night"] as LightingMode[]).map((mode) => (
                     <button
                       type="button"
@@ -472,11 +709,25 @@ export function SailingSimulator() {
                       aria-label={mode === "day" ? messages.day : messages.night}
                       title={mode === "day" ? messages.day : messages.night}
                       aria-pressed={snapshot.lightingMode === mode}
-                      onClick={() => setLighting(mode)}
+                      onClick={() => {
+                        setLighting(mode);
+                        showNotice(`${messages.timeOfDay}: ${mode === "day" ? messages.day : messages.night}`);
+                      }}
                     >
                       <ControlIcon name={mode === "day" ? "sun" : "moon"} />
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    className="icon-control"
+                    aria-label={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
+                    title={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
+                    aria-pressed={snapshot.autoTime}
+                    onClick={() => {
+                      simulatorRef.current?.setAutoTime(!snapshot.autoTime);
+                      showNotice(`${messages.autoTime}: ${snapshot.autoTime ? messages.off : messages.on}`);
+                    }}
+                  ><ControlIcon name="auto-time" /></button>
                 </div>
                 <button
                   type="button"
@@ -506,11 +757,14 @@ export function SailingSimulator() {
                   aria-label={`${messages.engineSound}: ${snapshot.engineMuted ? messages.off : messages.on}`}
                   title={`${messages.engineSound}: ${snapshot.engineMuted ? messages.off : messages.on}`}
                   aria-pressed={!snapshot.engineMuted}
-                  onClick={() => simulatorRef.current?.setEngineMuted(!snapshot.engineMuted)}
+                  onClick={() => {
+                    simulatorRef.current?.setEngineMuted(!snapshot.engineMuted);
+                    showNotice(`${messages.engineSound}: ${snapshot.engineMuted ? messages.on : messages.off}`);
+                  }}
                 ><ControlIcon name={snapshot.engineMuted ? "engine-muted" : "engine-sound"} /></button>
               </div>
 
-              <div className="panel-section">
+              <div className="panel-section panel-camera">
                 <div className="section-label"><span>{messages.camera}</span><strong>{cameraLabels[snapshot.cameraMode]}</strong></div>
                 <div className="camera-grid">
                   {(Object.keys(cameraLabels) as CameraMode[]).map((mode) => (
@@ -521,11 +775,57 @@ export function SailingSimulator() {
                       aria-label={`${messages.camera}: ${cameraLabels[mode]}`}
                       title={`${messages.camera}: ${cameraLabels[mode]}`}
                       aria-pressed={snapshot.cameraMode === mode}
-                      onClick={() => setCamera(mode)}
+                      onClick={() => {
+                        setCamera(mode);
+                        showNotice(`${messages.camera}: ${cameraLabels[mode]}`);
+                      }}
                     >
                       <ControlIcon name={mode} />
                     </button>
                   ))}
+                </div>
+              </div>
+
+              <div className="panel-section panel-weather">
+                <div className="section-label">
+                  <span>{messages.weather}</span>
+                  <strong>{weatherLabels[snapshot.weatherNow]}</strong>
+                </div>
+                <div className="weather-mode segmented" role="group" aria-label={messages.weather}>
+                  {(["auto", "manual"] as WeatherMode[]).map((mode) => (
+                    <button
+                      type="button"
+                      key={mode}
+                      aria-pressed={snapshot.weatherMode === mode}
+                      onClick={() => {
+                        simulatorRef.current?.setWeatherMode(mode);
+                        showNotice(`${messages.weather}: ${mode === "auto" ? messages.weatherAuto : messages.weatherManual}`);
+                      }}
+                    >{mode === "auto" ? messages.weatherAuto : messages.weatherManual}</button>
+                  ))}
+                </div>
+                <div className="weather-grid">
+                  {WEATHER_KINDS.map((kind) => (
+                    <button
+                      type="button"
+                      className="icon-control"
+                      key={kind}
+                      aria-label={`${messages.weather}: ${weatherLabels[kind]}`}
+                      title={weatherLabels[kind]}
+                      aria-pressed={snapshot.weatherMode === "manual" ? snapshot.weather === kind : snapshot.weatherNow === kind}
+                      data-auto={snapshot.weatherMode === "auto" ? "true" : undefined}
+                      onClick={() => {
+                        simulatorRef.current?.setWeather(kind);
+                        showNotice(`${messages.weather}: ${weatherLabels[kind]}`);
+                      }}
+                    >
+                      <ControlIcon name={kind} />
+                    </button>
+                  ))}
+                </div>
+                <div className="sea-readout">
+                  <span>{messages.waves} <strong>{snapshot.waveHeight.toFixed(1)} m</strong></span>
+                  <span>{messages.wind} <strong>{Math.round(snapshot.trueWindKnots)} kn</strong></span>
                 </div>
               </div>
 
@@ -669,13 +969,6 @@ export function SailingSimulator() {
           </section>
         </div>
 
-        {engineNotice && <div className="engine-notice" role="status">{engineNotice}</div>}
-
-        {showHelp && loading.ready && !error && (
-          <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
-            {messages.help}
-          </button>
-        )}
       </div>
     </main>
   );

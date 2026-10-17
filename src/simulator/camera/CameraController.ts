@@ -4,6 +4,22 @@ import { clamp, damp } from "../math";
 import type { CameraMode } from "../types";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
 
+/** The helmsman's eyes: a point in the yacht's frame, carried exactly with her. */
+export type HelmFrame = { root: THREE.Object3D; eye: THREE.Vector3 };
+
+/** Share of the yacht's roll and pitch the helmsman's head goes with (the rest the neck takes out). */
+const HEAD_ROLL_SHARE = 0.3;
+const HEAD_PITCH_SHARE = 0.45;
+
+/**
+ * Near plane: inside the helm station things are a hand's breadth from the
+ * eye; from outside nothing is nearer than several metres, and the larger
+ * value gives the 24-bit depth buffer four times the resolution at range,
+ * so a ship or an island kilometres off does not shimmer where surfaces meet.
+ */
+const NEAR_PLANE_CLOSE = 0.08;
+const NEAR_PLANE_OUTSIDE = 0.35;
+
 export class CameraController {
   readonly camera: THREE.PerspectiveCamera;
   private readonly desiredPosition = new THREE.Vector3();
@@ -19,7 +35,7 @@ export class CameraController {
     aspect: number,
     private readonly ocean: OceanSystem,
   ) {
-    this.camera = new THREE.PerspectiveCamera(52, aspect, 0.08, 2600);
+    this.camera = new THREE.PerspectiveCamera(52, aspect, 0.08, 3400);
     this.camera.position.set(0, 7, -16);
   }
 
@@ -44,17 +60,33 @@ export class CameraController {
 
   recenter(): void {
     this.yawOffset = 0;
-    this.pitch = this.mode === "helm" ? 0.02 : this.mode === "drone" ? 0.58 : this.mode === "orbit" ? 0.24 : 0.1;
+    this.pitch = this.mode === "helm" ? 0.1 : this.mode === "drone" ? 0.58 : this.mode === "orbit" ? 0.24 : 0.1;
   }
 
-  update(delta: number, physics: VesselPhysics): void {
+  update(delta: number, physics: VesselPhysics, helm?: HelmFrame): void {
     const focus = physics.position;
     const heading = physics.heading + this.yawOffset;
     const horizontalDirectionX = Math.sin(heading);
     const horizontalDirectionZ = Math.cos(heading);
 
+    if (this.mode === "helm" && helm) {
+      // Standing at the wheel: the eyes move exactly with the yacht (nothing
+      // lags into the wheel or the pod), while the head keeps most of its
+      // own level against her roll and pitch, as a helmsman's does.
+      this.camera.position.copy(helm.eye).applyMatrix4(helm.root.matrixWorld);
+      this.camera.rotation.set(
+        -this.pitch - physics.pitch * HEAD_PITCH_SHARE,
+        physics.heading + this.yawOffset + Math.PI,
+        physics.roll * HEAD_ROLL_SHARE,
+        "YXZ",
+      );
+      this.camera.fov = damp(this.camera.fov, 66, 2.6, delta);
+      this.camera.near = NEAR_PLANE_CLOSE;
+      this.camera.updateProjectionMatrix();
+      return;
+    }
     if (this.mode === "helm") {
-      this.desiredPosition.copy(focus).addScaledVector(physics.forward, -2.55).setY(focus.y + 1.92);
+      this.desiredPosition.copy(focus).addScaledVector(physics.forward, -3.1).setY(focus.y + 2.85);
       this.viewDirection.set(horizontalDirectionX, Math.sin(-this.pitch), horizontalDirectionZ).normalize();
       this.lookTarget.copy(this.desiredPosition).addScaledVector(this.viewDirection, 18);
       this.camera.position.lerp(this.desiredPosition, 1 - Math.exp(-12 * delta));
@@ -76,14 +108,15 @@ export class CameraController {
       this.desiredPosition.y = Math.max(this.desiredPosition.y, waterHeight + 0.65);
       const spring = this.mode === "chase" ? 4.8 : 3.1;
       this.camera.position.lerp(this.desiredPosition, 1 - Math.exp(-spring * delta));
-      this.lookTarget.copy(focus).addScaledVector(physics.forward, Math.min(6, Math.abs(physics.telemetry.forwardSpeed) * 0.25));
+      this.lookTarget.copy(focus).addScaledVector(physics.forward, Math.min(5, Math.abs(physics.telemetry.forwardSpeed) * 0.7));
       this.lookTarget.y += 1.35;
       this.lookTarget.y += clamp(-this.pitch - 0.02, 0, 0.22) * distance * 0.9;
       this.smoothedTarget.lerp(this.lookTarget, 1 - Math.exp(-5.5 * delta));
     }
     this.camera.lookAt(this.smoothedTarget);
-    const targetFov = this.mode === "helm" ? 64 : 50 + Math.min(10, Math.abs(physics.telemetry.forwardSpeed) * 0.28);
+    const targetFov = this.mode === "helm" ? 64 : 50 + Math.min(9, Math.abs(physics.telemetry.forwardSpeed) * 1.15);
     this.camera.fov = damp(this.camera.fov, targetFov, 2.6, delta);
+    this.camera.near = NEAR_PLANE_OUTSIDE;
     this.camera.updateProjectionMatrix();
   }
 
