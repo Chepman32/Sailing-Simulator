@@ -980,3 +980,72 @@ test("wake samples spread with speed so the bounded pool holds the whole wake", 
   }
   assert.equal(wakeSampleSpacing(0), 0.28);
 });
+
+test("a frame is drawn between two physics steps, so a quick yacht does not judder", () => {
+  const physics = new VesselPhysics({ sample: () => ({ height: 0, normalX: 0, normalY: 1, normalZ: 0 }) }, OPEN_WATER);
+  const controls = { throttle: 1, rudder: 0.2, sailTrim: 1 };
+  for (let step = 0; step < 600; step += 1) physics.fixedUpdate(1 / 60, controls);
+  const before = { x: physics.position.x, z: physics.position.z, heading: physics.heading };
+  physics.fixedUpdate(1 / 60, controls);
+  const after = { x: physics.position.x, z: physics.position.z, heading: physics.heading };
+  assert.ok(Math.hypot(after.x - before.x, after.z - before.z) > 0.05, "she moves each step");
+
+  physics.blendPose(0.5);
+  assert.ok(Math.abs(physics.position.x - (before.x + after.x) / 2) < 1e-9);
+  assert.ok(Math.abs(physics.position.z - (before.z + after.z) / 2) < 1e-9);
+  assert.ok(Math.abs(physics.heading - (before.heading + after.heading) / 2) < 1e-9);
+  // The axes drawn with follow the blended heading.
+  assert.ok(Math.abs(physics.forward.x - Math.sin(physics.heading)) < 1e-12);
+  // Blending twice does not blend the blend.
+  physics.blendPose(0.9);
+  assert.ok(Math.abs(physics.position.x - (before.x + after.x) / 2) < 1e-9);
+  physics.restorePose();
+  assert.equal(physics.position.x, after.x);
+  assert.equal(physics.heading, after.heading);
+
+  // A step taken while blended starts from the true pose, never the blended one.
+  physics.blendPose(0.3);
+  physics.fixedUpdate(1 / 60, controls);
+  const next = physics.position.x;
+  const replay = new VesselPhysics({ sample: () => ({ height: 0, normalX: 0, normalY: 1, normalZ: 0 }) }, OPEN_WATER);
+  for (let step = 0; step < 602; step += 1) replay.fixedUpdate(1 / 60, controls);
+  assert.ok(Math.abs(next - replay.position.x) < 1e-9);
+});
+
+test("a heading crossing ±π is blended the short way round", () => {
+  const physics = new VesselPhysics({ sample: () => ({ height: 0, normalX: 0, normalY: 1, normalZ: 0 }) }, OPEN_WATER);
+  const controls = { throttle: 0, rudder: 0, sailTrim: 1 };
+  physics.heading = Math.PI - 0.01;
+  physics.fixedUpdate(1 / 60, controls);
+  physics.heading = -Math.PI + 0.01;
+  physics.blendPose(0.5);
+  assert.ok(Math.abs(Math.cos(physics.heading) + 1) < 1e-3, `blended through ±π, not through 0 (${physics.heading})`);
+  physics.restorePose();
+  assert.equal(physics.heading, -Math.PI + 0.01);
+});
+
+test("the yacht's heave ignores a flicker in the sampled water level instead of shaking with it", () => {
+  let time = 0;
+  // A 20 Hz, 12 cm shimmer on top of the real sea: a stand-in for the chop the
+  // sample points sweep across at speed.
+  const sea = {
+    sample: (x: number, z: number) => {
+      const sample = ({ ...sampleOcean(x, z, time) });
+      sample.height += 0.12 * Math.sin(time * Math.PI * 2 * 20);
+      return sample;
+    },
+  };
+  const physics = new VesselPhysics(sea, OPEN_WATER);
+  const controls = { throttle: 0.8, rudder: 0, sailTrim: 1 };
+  let previous = 0;
+  let before = 0;
+  let worst = 0;
+  for (let step = 0; step < 40 * 60; step += 1) {
+    time += 1 / 60;
+    physics.fixedUpdate(1 / 60, controls);
+    if (time > 10) worst = Math.max(worst, Math.abs(physics.position.y - 2 * previous + before) * 3600);
+    before = previous;
+    previous = physics.position.y;
+  }
+  assert.ok(worst < 4, `vertical acceleration stays smooth (${worst.toFixed(2)} m/s²)`);
+});

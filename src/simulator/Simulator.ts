@@ -21,7 +21,7 @@ import { autoWeatherKind, isWeatherKind, type WeatherKind, type WeatherMode } fr
 import { UnderwaterLight } from "./environment/UnderwaterLight";
 import { InputController } from "./input/InputController";
 import { TouchControls } from "./input/TouchControls";
-import { wrapDegrees } from "./math";
+import { smoothstep, wrapDegrees } from "./math";
 import { applyEnginePower, createSimulatorState, type SimulatorState } from "./state";
 import type {
   CameraMode,
@@ -397,7 +397,18 @@ export class Simulator {
     }
   };
 
-  private readonly update = (delta: number): void => {
+  private readonly update = (delta: number, _elapsed = 0, alpha = 1): void => {
+    // The yacht is drawn between her last two physics steps, not at the latest
+    // one, so frames that get no step or two steps do not make her judder.
+    this.physics.blendPose(alpha);
+    try {
+      this.updateFrame(delta);
+    } finally {
+      this.physics.restorePose();
+    }
+  };
+
+  private updateFrame(delta: number): void {
     this.frameDelta = delta;
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.islands.update(this.elapsed, this.environment.currentWeather.wind, this.physics.position.x, this.physics.position.z);
@@ -455,7 +466,7 @@ export class Simulator {
     this.audio.updateShips(this.ships.soundSources);
     for (const horn of this.ships.consumeHorns()) this.audio.shipHorn(horn.position, horn.signal, horn.length);
     this.hud.update(delta, () => this.snapshot());
-  };
+  }
 
   /**
    * Compiles every shader program before the first visible frame, so nothing
@@ -504,14 +515,19 @@ export class Simulator {
   private renderReflection(): void {
     const reflection = this.reflection;
     if (!reflection) return;
-    if (this.post.enabled && this.quality.settings.reflectionScale > 0) {
+    // A gale's sea is too rough and too broken to hold a mirror image: the
+    // yacht and the islands would show as a smear. The second scene render
+    // that draws it is switched off from a storm on, which is also when the
+    // frame is dearest (the whole sky is cloud, the sea is at its steepest).
+    const calmSea = 1 - smoothstep(0.45, 0.75, this.environment.currentWeather.storm);
+    if (this.post.enabled && this.quality.settings.reflectionScale > 0 && calmSea > 0.02) {
       this.mirrorList.length = 0;
       this.mirrorList.push(...this.mirrorHidden, ...this.islands.farFromMirror);
       reflection.render(this.renderer, this.scene, this.camera.camera, this.mirrorList);
       this.ocean.setReflection(
         reflection.active ? reflection.target.texture : null,
         reflection.textureMatrix,
-        0.92,
+        0.92 * calmSea,
         reflection.target.width,
         reflection.target.height,
       );

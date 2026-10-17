@@ -21,7 +21,7 @@ const CAPTURE_SIZE = 128;
  */
 const TRANSITION_SECONDS = 11;
 /** HDR radiance of the solar disc relative to the sun's tint. */
-const SUN_DISC_RADIANCE = 16;
+const SUN_DISC_RADIANCE = 9;
 
 export class EnvironmentSystem {
   private readonly sky: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;

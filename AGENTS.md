@@ -253,7 +253,7 @@ The loop clamps a long frame to 50 ms, caps the accumulator at five fixed steps,
 
 1. refresh ocean focus/uniforms;
 2. animate palms;
-3. interpolate yacht and sails, and swing the boom; a gybe slam is passed to audio; place the ships on the swell;
+3. put the yacht between her last two fixed steps (`VesselPhysics.blendPose(alpha)`, undone by `restorePose` before the next step; heading is blended the short way round), so a fast yacht does not judder when frames and 60 Hz steps drift apart; interpolate sails and swing the boom; a gybe slam is passed to audio; place the ships on the swell;
 4. update wildlife movement and animation mixers, and the reef-fish schools (which flee the hulls, dolphins and shark);
 5. redraw the wake field at a throttled rate (about 30 Hz);
 6. update camera spring and FOV;
@@ -503,6 +503,8 @@ The player (manual) or the planner `autoWeatherKind(time)` (auto, the default; t
 Lightning (`LightningMath`, `LightningSystem`) is drawn from 1.6 s time slots by hashing the slot, so it is reproducible at any frame rate. From `storm` 0.35 (a downpour) there is now and then a distant flash six to thirteen kilometres off; from 0.6 (a storm) several strikes a minute, mostly one to eleven kilometres away and one in seven or so close by, more in a hurricane. A strike is a cloud-to-ground bolt (a branching channel from the cloud base to the sea) or a flash inside the cloud. Its light is a stepped leader that reveals the channel downward in 45 ms, then one to four return strokes (a spike of a few milliseconds and a glowing tail). Bolts are camera-facing ribbons with an HDR core and halo, additive, at most three at once; one farther than `BOLT_RENDER_DISTANCE` (1.9 km) is drawn there at its true angular size, behind the islands and ships on the horizon, dimmed by the air and the rain. The sky flash (`uFlash`) lights the clouds around the strike's direction (`uFlashDirection`) and fills the whole sky only for a close one (`uFlashFocus`); the scene light (sun colour, hemisphere) follows `strikeProximity`. Each strike's thunder arrives `distance / 343 m/s` later, panned to where it struck: a crack and a crash close by, a long low roll from far away, nothing beyond `THUNDER_RANGE`.
 
 `autoTime` turns on the automatic day cycle (`dayCycleState`: day, dusk, night, dawn, with the sun climbing in the day); `EnvironmentSystem` follows the goal at the usual transition speed. Persisted: `autoTime`, `weatherMode`, `weather` (the present weather itself is not persisted).
+
+`OceanReflection` is a whole second scene render, so it is skipped once the sea is rough (`calmSea = 1 − smoothstep(0.45, 0.75, storm)`): the storm sea reflects the sky and clouds only, with the cheap cloud path (`skyClouds` detail < 0). The heave of the yacht is driven by moving averages of the sampled water level (`VesselPhysics`), which take chop flicker out of its velocity and acceleration without delaying a swell. Outside the helm the camera near plane is 0.35 m (finer depth at range); ships have their own lighter haze patch (`ship-haze-v1`) so they read at several kilometres, and the sun's glow is deliberately tight so a clear sun is not veiled.
 
 The mirror target of `OceanReflection` has a mip chain; the ocean shader blurs it by roughness and contact distance (`mirroredWorld`) and lifts Fresnel where an object is really mirrored.
 

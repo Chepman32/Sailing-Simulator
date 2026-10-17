@@ -11,6 +11,15 @@ export type HelmFrame = { root: THREE.Object3D; eye: THREE.Vector3 };
 const HEAD_ROLL_SHARE = 0.3;
 const HEAD_PITCH_SHARE = 0.45;
 
+/**
+ * Near plane: inside the helm station things are a hand's breadth from the
+ * eye; from outside nothing is nearer than several metres, and the larger
+ * value gives the 24-bit depth buffer four times the resolution at range,
+ * so a ship or an island kilometres off does not shimmer where surfaces meet.
+ */
+const NEAR_PLANE_CLOSE = 0.08;
+const NEAR_PLANE_OUTSIDE = 0.35;
+
 export class CameraController {
   readonly camera: THREE.PerspectiveCamera;
   private readonly desiredPosition = new THREE.Vector3();
@@ -72,6 +81,7 @@ export class CameraController {
         "YXZ",
       );
       this.camera.fov = damp(this.camera.fov, 66, 2.6, delta);
+      this.camera.near = NEAR_PLANE_CLOSE;
       this.camera.updateProjectionMatrix();
       return;
     }
@@ -106,6 +116,7 @@ export class CameraController {
     this.camera.lookAt(this.smoothedTarget);
     const targetFov = this.mode === "helm" ? 64 : 50 + Math.min(9, Math.abs(physics.telemetry.forwardSpeed) * 1.15);
     this.camera.fov = damp(this.camera.fov, targetFov, 2.6, delta);
+    this.camera.near = NEAR_PLANE_OUTSIDE;
     this.camera.updateProjectionMatrix();
   }
 

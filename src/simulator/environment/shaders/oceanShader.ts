@@ -506,7 +506,7 @@ ${detailCalls}
       vec3 calmNormal = normalize(mix(normal, vec3(0.0, 1.0, 0.0), 0.5));
       vec3 calmReflected = reflect(-viewDirection, calmNormal);
       calmReflected.y = abs(calmReflected.y) + 0.02;
-      vec4 clouds = skyClouds(normalize(calmReflected), 0.0);
+      vec4 clouds = skyClouds(normalize(calmReflected), -1.0);
       reflection = mix(reflection, clouds.rgb, clouds.a * 0.85);
     }
     // The yacht, the islands and the birds, mirrored and bent by the waves.

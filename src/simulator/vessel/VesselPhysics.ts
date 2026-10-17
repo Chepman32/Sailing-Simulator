@@ -177,7 +177,13 @@ export class VesselPhysics {
   pitchRate = 0;
   rollRate = 0;
   heaveVelocity = 0;
+  /** Recent water levels under the hulls, newest first (see `updateSeakeeping`). */
   private previousSurfaceVelocity = 0;
+  private readonly surfaceHistory: number[] = [];
+  /** The pose one fixed step ago, so a frame can be drawn between two steps (see `blendPose`). */
+  private readonly previousPose = { x: 0, y: FLOAT_HEIGHT, z: 0, heading: 0, pitch: 0, roll: 0 };
+  private readonly truePose = { x: 0, y: FLOAT_HEIGHT, z: 0, heading: 0, pitch: 0, roll: 0 };
+  private blended = false;
   /** Signed propeller shaft speed as a fraction of maximum. */
   engineShaft = 0;
   /** Collision avoidance near islands; `guard.output` is what the helm actually does. */
@@ -208,8 +214,6 @@ export class VesselPhysics {
   private wavePitchTarget = 0;
   private waveSlopeForward = 0;
   private waveSlopeRight = 0;
-  private previousSurfaceTarget = FLOAT_HEIGHT;
-  private surfaceTargetReady = false;
 
   constructor(
     private readonly ocean: OceanSampler,
@@ -221,6 +225,8 @@ export class VesselPhysics {
    * guard may override them for a while (see `ShoreGuard`).
    */
   fixedUpdate(delta: number, helm: SimulatorControls, engineRunning = true): void {
+    this.restorePose();
+    this.rememberPose();
     this.time += delta;
     this.forward.set(Math.sin(this.heading), 0, Math.cos(this.heading));
     this.right.set(Math.cos(this.heading), 0, -Math.sin(this.heading));
@@ -349,7 +355,64 @@ export class VesselPhysics {
     }
   }
 
+  /** Remembers the pose before a step, the earlier end of the span a frame is drawn in. */
+  private rememberPose(): void {
+    const previous = this.previousPose;
+    previous.x = this.position.x;
+    previous.y = this.position.y;
+    previous.z = this.position.z;
+    previous.heading = this.heading;
+    previous.pitch = this.pitch;
+    previous.roll = this.roll;
+  }
+
+  /**
+   * Puts the yacht where she is `alpha` of the way from the previous step to
+   * the latest one, for everything drawn this frame. Physics runs at a fixed
+   * 60 Hz while frames arrive at the display's pace, so a frame is
+   * sometimes drawn with no new step and sometimes with two; shown as they
+   * are, steps of a quick yacht make her judder. Call `restorePose`
+   * afterwards (the next step does too).
+   */
+  blendPose(alpha: number): void {
+    if (this.blended) return;
+    const amount = clamp(alpha, 0, 1);
+    const previous = this.previousPose;
+    const truth = this.truePose;
+    truth.x = this.position.x;
+    truth.y = this.position.y;
+    truth.z = this.position.z;
+    truth.heading = this.heading;
+    truth.pitch = this.pitch;
+    truth.roll = this.roll;
+    this.blended = true;
+    this.position.set(
+      previous.x + (truth.x - previous.x) * amount,
+      previous.y + (truth.y - previous.y) * amount,
+      previous.z + (truth.z - previous.z) * amount,
+    );
+    const turn = Math.atan2(Math.sin(truth.heading - previous.heading), Math.cos(truth.heading - previous.heading));
+    this.heading = previous.heading + turn * amount;
+    this.pitch = previous.pitch + (truth.pitch - previous.pitch) * amount;
+    this.roll = previous.roll + (truth.roll - previous.roll) * amount;
+    this.forward.set(Math.sin(this.heading), 0, Math.cos(this.heading));
+    this.right.set(Math.cos(this.heading), 0, -Math.sin(this.heading));
+  }
+
+  restorePose(): void {
+    if (!this.blended) return;
+    const truth = this.truePose;
+    this.position.set(truth.x, truth.y, truth.z);
+    this.heading = truth.heading;
+    this.pitch = truth.pitch;
+    this.roll = truth.roll;
+    this.forward.set(Math.sin(this.heading), 0, Math.cos(this.heading));
+    this.right.set(Math.cos(this.heading), 0, -Math.sin(this.heading));
+    this.blended = false;
+  }
+
   reset(): void {
+    this.blended = false;
     this.position.set(0, FLOAT_HEIGHT, 0);
     this.velocity.set(0, 0, 0);
     this.heading = 0;
@@ -367,8 +430,8 @@ export class VesselPhysics {
     this.wavePitchTarget = 0;
     this.waveSlopeForward = 0;
     this.waveSlopeRight = 0;
-    this.previousSurfaceTarget = FLOAT_HEIGHT;
-    this.surfaceTargetReady = false;
+    this.surfaceHistory.length = 0;
+    this.previousSurfaceVelocity = 0;
   }
 
   /**
@@ -413,21 +476,26 @@ export class VesselPhysics {
     const absoluteSpeed = Math.abs(forwardSpeed);
     const dynamicSquat = clamp(absoluteSpeed * absoluteSpeed * 0.004, 0, 0.1);
     const targetY = averageHeight + FLOAT_HEIGHT - dynamicSquat;
-    if (!this.surfaceTargetReady) {
-      this.previousSurfaceTarget = targetY;
-      this.surfaceTargetReady = true;
-    }
     // A storm swell lifts the hulls at several metres a second; the bounds only
     // catch a numerical jump.
-    const surfaceVelocity = clamp((targetY - this.previousSurfaceTarget) / Math.max(delta, 1e-4), -7, 7);
-    this.previousSurfaceTarget = targetY;
-    // The water accelerates the hulls with it (a long swell is followed almost
-    // exactly); the spring and damper only answer what differs from that.
-    const surfaceAcceleration = clamp((surfaceVelocity - this.previousSurfaceVelocity) / Math.max(delta, 1e-4), -12, 12);
+    // Moving averages over three steps: they take a one-step flicker out of
+    // the level, its rate and its change of rate, and delay a swell by only a
+    // few hundredths of a second.
+    const history = this.surfaceHistory;
+    if (history.length === 0) history.push(targetY, targetY, targetY, targetY, targetY, targetY, targetY);
+    history.unshift(targetY);
+    history.length = 7;
+    const recent = (history[0] + history[1] + history[2]) / 3;
+    const earlier = (history[2] + history[3] + history[4]) / 3;
+    const earliest = (history[4] + history[5] + history[6]) / 3;
+    const step = Math.max(delta, 1e-4);
+    const surfaceLevel = recent;
+    const surfaceVelocity = clamp((recent - earlier) / (2 * step), -7, 7);
+    const surfaceAcceleration = clamp((recent - 2 * earlier + earliest) / (4 * step * step), -12, 12);
     this.previousSurfaceVelocity = surfaceVelocity;
     const heaveAcceleration =
       surfaceAcceleration * HEAVE_FOLLOW +
-      (targetY - this.position.y) * HEAVE_FREQUENCY * HEAVE_FREQUENCY +
+      (surfaceLevel - this.position.y) * HEAVE_FREQUENCY * HEAVE_FREQUENCY +
       (surfaceVelocity - this.heaveVelocity) * 2 * HEAVE_DAMPING * HEAVE_FREQUENCY;
     this.heaveVelocity = clamp(this.heaveVelocity + heaveAcceleration * delta, -8, 8);
     this.position.y += this.heaveVelocity * delta;

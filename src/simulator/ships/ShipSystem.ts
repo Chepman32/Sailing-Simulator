@@ -273,7 +273,7 @@ export class ShipSystem {
     if (slot >= MOVING_SHIPS) {
       // An anchorage anywhere in sight at the start; later, ahead of the yacht.
       const bearing = initial ? this.random() * Math.PI * 2 : this.yachtHeading + (this.random() - 0.5) * 1.6;
-      placed = planAnchorage(ship, this.world, yacht.x, yacht.z, bearing, this.ships, this.random, initial ? 650 : 1900, initial ? 1300 : 2400);
+      placed = planAnchorage(ship, this.world, yacht.x, yacht.z, bearing, this.ships, this.random, initial ? 450 : 1400, initial ? 950 : 1900);
     } else {
       // At the start the first ship crosses ahead, so one is in view at once.
       placed =
@@ -334,6 +334,18 @@ export class ShipSystem {
     });
     // Below the waterline the hull is veiled by the sea like everything else.
     this.underwater.apply(material);
+    // A ship is a landmark: the sea haze (tuned for the water and the islands)
+    // would melt a vessel three kilometres off into the horizon, so it veils
+    // her at about half strength and her silhouette stays readable.
+    patchMaterialShader(material, "ship-haze-v1", (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        "#include <fog_fragment>",
+        `#ifdef USE_FOG
+          float shipFog = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth * 0.28 );
+          gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, shipFog );
+        #endif`,
+      );
+    });
     const placeholder = new THREE.BufferGeometry();
     const hull = new THREE.Mesh(placeholder, material);
     hull.castShadow = false;

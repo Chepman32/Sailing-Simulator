@@ -124,15 +124,15 @@ test("ships are planned on lanes clear of every island, passing within reach of 
     const along = (yachtX - ship.x) * fx + (yachtZ - ship.z) * fz;
     const passing = Math.hypot(ship.x + fx * along - yachtX, ship.z + fz * along - yachtZ);
     assert.ok(passing >= LANE_MIN_PASSING - 1 && passing <= LANE_MAX_PASSING + 1, `passes at ${passing.toFixed(0)} m`);
-    assert.ok(Math.hypot(ship.x - yachtX, ship.z - yachtZ) > 1800, "a new ship appears out of sight");
-    for (let travelled = 0; travelled < along + 1700; travelled += 50) {
+    assert.ok(Math.hypot(ship.x - yachtX, ship.z - yachtZ) > 1400, "a new ship appears far up her lane");
+    for (let travelled = 0; travelled < along + 1500; travelled += 50) {
       assert.ok(distanceFromWaterline(ship.x + fx * travelled, ship.z + fz * travelled) > LANE_SHORE_CLEARANCE);
     }
   }
 });
 
 test("ships steam on without touching land, keep apart, and slowly swing at anchor", () => {
-  const random = seeded(5);
+  const random = seeded(3);
   const ships: Ship[] = SHIP_KINDS.slice(0, 4).map((kind) => createShip(kind, random));
   ships.slice(0, 3).forEach((ship) => assert.ok(planLane(ship, world(), 0, 0, ships, random, true)));
   assert.ok(planAnchorage(ships[3]!, world(), 0, 0, 1, ships, random));

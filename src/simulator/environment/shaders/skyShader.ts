@@ -91,9 +91,9 @@ export const SKY_FUNCTIONS = /* glsl */ `
     float sunAmount = max(dot(direction, uSunDirection), 0.0);
     float sunVisible = smoothstep(-0.1, 0.05, uSunDirection.y) * (1.0 - uNight);
     vec3 sunGlow = uSunColor * (
-      pow(sunAmount, 5.0) * 0.07 +
-      pow(sunAmount, 40.0) * 0.26 +
-      pow(sunAmount, 360.0) * 1.15
+      pow(sunAmount, 6.0) * 0.032 +
+      pow(sunAmount, 64.0) * 0.2 +
+      pow(sunAmount, 700.0) * 1.05
     );
     // Low suns redden the haze beneath them.
     float lowSun = (1.0 - smoothstep(0.0, 0.45, uSunDirection.y)) * exp(-height * 6.0);
@@ -118,18 +118,26 @@ export const SKY_FUNCTIONS = /* glsl */ `
 
     float shape = detail > 0.5 ? skyFbm5(uv) : skyFbm3(uv);
     float threshold = 1.0 - uCloudCover;
-    float density = smoothstep(threshold - 0.02, threshold + 0.2, shape);
+    float density = smoothstep(threshold - 0.02, threshold + 0.14, shape);
     if (density <= 0.001) return vec4(0.0);
 
     // Self-shadowing: compare against the density one step toward the light.
-    vec2 lightStep = uLightDirection.xz / max(length(uLightDirection.xz), 0.001) * 0.14;
-    float towardLight = skyFbm3(uv + lightStep);
-    float lit = clamp(0.62 + (shape - towardLight) * 4.2 - density * 0.26, 0.0, 1.0);
+    // detail < 0 is the sea's mirrored sky: ripples blur it, so the second
+    // fbm for the shading is skipped (a saving on every ocean pixel under a
+    // cloudy sky, which is all of them in a storm).
+    float lit = 0.62 - density * 0.26;
+    if (detail > -0.5) {
+      vec2 lightStep = uLightDirection.xz / max(length(uLightDirection.xz), 0.001) * 0.14;
+      float towardLight = skyFbm3(uv + lightStep);
+      lit = clamp(lit + (shape - towardLight) * 4.2, 0.0, 1.0);
+    } else {
+      lit = clamp(lit + (shape - 0.5) * 1.1, 0.0, 1.0);
+    }
     vec3 cloud = mix(uCloudShade, uCloudLit, lit);
 
     // Thin edges glow when they sit in front of the light source.
-    float forward = pow(max(dot(direction, uLightDirection), 0.0), 9.0);
-    cloud += uCloudLit * forward * (1.0 - density) * 0.9;
+    float forward = pow(max(dot(direction, uLightDirection), 0.0), 24.0);
+    cloud += uCloudLit * forward * (1.0 - density) * 0.4;
     // A stroke of lightning lights the cloud base from inside.
     cloud += vec3(0.8, 0.9, 1.35) * uFlash * skyFlashShape(direction) * (0.35 + 0.65 * density);
 

@@ -31,11 +31,11 @@ export type ShipSpec = {
 };
 
 export const SHIP_SPECS: Record<ShipKind, ShipSpec> = {
-  container: { length: 236, beam: 34, draft: 10.5, freeboard: 11, cruiseSpeed: 8.2 },
-  tanker: { length: 222, beam: 38, draft: 12, freeboard: 7.5, cruiseSpeed: 6.6 },
-  cruise: { length: 252, beam: 32, draft: 8.2, freeboard: 9, cruiseSpeed: 8.6 },
-  bulk: { length: 188, beam: 30, draft: 10, freeboard: 8.5, cruiseSpeed: 6.8 },
-  carrier: { length: 198, beam: 32, draft: 9, freeboard: 27, cruiseSpeed: 8 },
+  container: { length: 334, beam: 46, draft: 13.5, freeboard: 15, cruiseSpeed: 8.2 },
+  tanker: { length: 310, beam: 54, draft: 17, freeboard: 10, cruiseSpeed: 6.6 },
+  cruise: { length: 330, beam: 40, draft: 9, freeboard: 12, cruiseSpeed: 8.6 },
+  bulk: { length: 262, beam: 42, draft: 14, freeboard: 11, cruiseSpeed: 6.8 },
+  carrier: { length: 300, beam: 42, draft: 11, freeboard: 30, cruiseSpeed: 8 },
 };
 
 export const SHIP_KINDS = Object.keys(SHIP_SPECS) as ShipKind[];
@@ -46,15 +46,15 @@ export const MAX_SHIPS = 4;
 export const MOVING_SHIPS = 3;
 
 /** Closest approach of a planned lane to the yacht, metres. */
-export const LANE_MIN_PASSING = 340;
-export const LANE_MAX_PASSING = 1000;
+export const LANE_MIN_PASSING = 300;
+export const LANE_MAX_PASSING = 800;
 /** A new ship appears this far up her lane before the closest approach (in the haze). */
-export const SPAWN_MIN_RUN = 1900;
-export const SPAWN_MAX_RUN = 2400;
+export const SPAWN_MIN_RUN = 1500;
+export const SPAWN_MAX_RUN = 1950;
 /** A ship this far from the yacht, and moving away, is replaced. */
-export const RECYCLE_DISTANCE = 2700;
+export const RECYCLE_DISTANCE = 2300;
 /** An anchored ship this far from the yacht is moved to a new anchorage. */
-export const ANCHOR_RECYCLE_DISTANCE = 3200;
+export const ANCHOR_RECYCLE_DISTANCE = 2600;
 /** Deep water a lane keeps between itself and any coast, metres. */
 export const LANE_SHORE_CLEARANCE = 150;
 /** Fastest a ship's heading changes, rad/s (a large ship turns slowly). */
@@ -298,7 +298,7 @@ function courseBlocked(world: ShipWorld, ship: Ship, heading: number, reach: num
   const forwardX = Math.sin(heading);
   const forwardZ = Math.cos(heading);
   for (let travelled = ship.halfLength; travelled <= reach; travelled += 50) {
-    if (world.shoreDistance(ship.x + forwardX * travelled, ship.z + forwardZ * travelled) < ship.halfBeam + 90) return true;
+    if (world.shoreDistance(ship.x + forwardX * travelled, ship.z + forwardZ * travelled) < ship.halfBeam + 150) return true;
   }
   return false;
 }
@@ -364,7 +364,18 @@ export function stepShip(ship: Ship, others: readonly Ship[], world: ShipWorld, 
       ship.avoidTime = Math.max(ship.avoidTime, 30);
     }
   }
-  if (ship.avoidTime > 0) desired = ship.heading + ship.avoidSide * 0.6;
+  if (ship.avoidTime > 0) {
+    // Giving way never turns a ship toward shoal water: if the chosen side is
+    // closed she takes the other when that is open.
+    const lookTurn = ship.halfLength * 2 + ship.speed * 35;
+    if (
+      courseBlocked(world, ship, ship.heading + ship.avoidSide * 0.6, lookTurn) &&
+      !courseBlocked(world, ship, ship.heading - ship.avoidSide * 0.6, lookTurn)
+    ) {
+      ship.avoidSide = -ship.avoidSide;
+    }
+    desired = ship.heading + ship.avoidSide * 0.6;
+  }
   const error = wrapAngle(desired - ship.heading);
   ship.heading = wrapAngle(ship.heading + clamp(error * 0.08, -SHIP_MAX_TURN_RATE, SHIP_MAX_TURN_RATE) * dt);
   // A large ship slows a little while turning hard.

@@ -239,7 +239,9 @@ export class IslandSystem {
   private createSeabed(): void {
     const seabed = new THREE.Mesh(
       // It follows the yacht (see `update`), so it only needs to reach the haze.
-      new THREE.PlaneGeometry(4200, 4200, 1, 1),
+      // Subdivided: the water's depth over it is read per vertex, and two
+      // triangles four kilometres across would put a straight seam in it.
+      new THREE.PlaneGeometry(4200, 4200, 48, 48),
       // Sand; eighteen metres of water above it turn it deep blue.
       new THREE.MeshStandardMaterial({ color: 0x9c8a62, roughness: 1, metalness: 0 }),
     );

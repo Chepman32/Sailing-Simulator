@@ -2,7 +2,8 @@ import { ACTIVE_MAX_FPS, FramePacer, UNFOCUSED_MAX_FPS } from "./FramePacer";
 
 export type FrameCallbacks = {
   fixedUpdate: (fixedDelta: number) => void;
-  update: (delta: number, elapsed: number) => void;
+  /** `alpha`: how far the clock is from the last fixed step to the next, 0…1. */
+  update: (delta: number, elapsed: number, alpha: number) => void;
   render: () => void;
   onFps?: (fps: number) => void;
   onPauseChange?: (paused: boolean) => void;
@@ -70,7 +71,7 @@ export class RenderLoop {
       steps += 1;
     }
 
-    this.callbacks.update(delta, this.elapsed);
+    this.callbacks.update(delta, this.elapsed, this.accumulator / this.fixedDelta);
     this.callbacks.render();
 
     this.fpsElapsed += delta;
