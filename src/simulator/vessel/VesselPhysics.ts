@@ -186,8 +186,21 @@ export class VesselPhysics {
   private blended = false;
   /** Signed propeller shaft speed as a fraction of maximum. */
   engineShaft = 0;
-  /** Collision avoidance near islands; `guard.output` is what the helm actually does. */
+  /** Collision avoidance near islands and ships; `guard.output` is what the helm actually does. */
   readonly guard: ShoreGuardState = createShoreGuard();
+  /** Distance to the nearest ship's hull, if ships exist; the guard avoids it like a shore. */
+  hullClearance: ((x: number, z: number, normal: { x: number; z: number }) => number) | null = null;
+  private readonly hullNormal = { x: 0, z: 1 };
+  /** Island shore or ship hull, whichever is nearer, for the guard. */
+  private readonly guardClearance = (x: number, z: number, normal: { x: number; z: number }): number => {
+    const shore = this.islands.shoreClearance(x, z, normal);
+    if (!this.hullClearance) return shore;
+    const hull = this.hullClearance(x, z, this.hullNormal);
+    if (hull >= shore) return shore;
+    normal.x = this.hullNormal.x;
+    normal.z = this.hullNormal.z;
+    return hull;
+  };
   telemetry: VesselTelemetry = {
     forwardSpeed: 0,
     speedKnots: 0,
@@ -230,7 +243,7 @@ export class VesselPhysics {
     this.time += delta;
     this.forward.set(Math.sin(this.heading), 0, Math.cos(this.heading));
     this.right.set(Math.cos(this.heading), 0, -Math.sin(this.heading));
-    const controls = updateShoreGuard(this.guard, this, helm, engineRunning, this.islands.shoreClearance, delta);
+    const controls = updateShoreGuard(this.guard, this, helm, engineRunning, this.guardClearance, delta);
 
     const forwardSpeed = this.velocity.dot(this.forward);
     const lateralSpeed = this.velocity.dot(this.right);

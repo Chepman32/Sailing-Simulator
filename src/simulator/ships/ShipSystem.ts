@@ -11,6 +11,7 @@ import {
   planLane,
   SHIP_KINDS,
   shipContact,
+  nearestHullClearance,
   shipHornSignal,
   shipOutOfRange,
   stepShip,
@@ -141,6 +142,14 @@ export class ShipSystem {
     });
     writeShipUniforms(this.ships);
   }
+
+  /**
+   * Metres from the nearest ship's hull (large when none is near) and the
+   * outward normal there: the helmsman's reflex treats a ship's side like a
+   * shore (see `ShoreGuard`).
+   */
+  readonly hullClearance = (x: number, z: number, normal: { x: number; z: number }): number =>
+    nearestHullClearance(this.ships, x, z, normal);
 
   /**
    * Keeps the yacht out of the ships' hulls: the outline point deepest inside

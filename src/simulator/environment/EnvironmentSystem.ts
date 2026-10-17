@@ -283,7 +283,7 @@ export class EnvironmentSystem {
       THREE.LinearSRGBColorSpace,
     );
     const moonUp = clamp((night - 0.04) / 0.3, 0, 1) * (this.state.moonElevation > -0.02 ? 1 : 0);
-    this.moonDisc.value.setRGB(2.1 * moonUp, 2.25 * moonUp, 2.5 * moonUp, THREE.LinearSRGBColorSpace);
+    this.moonDisc.value.setRGB(1.12 * moonUp, 1.2 * moonUp, 1.34 * moonUp, THREE.LinearSRGBColorSpace);
     this.starLight.value = this.state.starVisibility;
 
     this.sunLight.position.copy(focus).addScaledVector(this.celestialLightDirection, 60);
@@ -351,6 +351,12 @@ export class EnvironmentSystem {
     this.captureTarget = null;
     this.pmrem.dispose();
     this.sunLight.shadow.map?.dispose();
+  }
+
+  /** Forgets the lighting capture (the GPU lost it); the next update draws it again. */
+  invalidateLighting(): void {
+    this.capturedNight = Number.NaN;
+    this.captureCooldown = 0;
   }
 
   private captureLighting(night: number): void {

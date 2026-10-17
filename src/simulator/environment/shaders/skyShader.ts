@@ -91,8 +91,9 @@ export const SKY_FUNCTIONS = /* glsl */ `
     float sunAmount = max(dot(direction, uSunDirection), 0.0);
     float sunVisible = smoothstep(-0.1, 0.05, uSunDirection.y) * (1.0 - uNight);
     vec3 sunGlow = uSunColor * (
-      pow(sunAmount, 6.0) * 0.032 +
-      pow(sunAmount, 64.0) * 0.2 +
+      pow(sunAmount, 6.0) * 0.04 +
+      pow(sunAmount, 24.0) * 0.16 +
+      pow(sunAmount, 140.0) * 0.55 +
       pow(sunAmount, 700.0) * 1.05
     );
     // Low suns redden the haze beneath them.
@@ -186,6 +187,33 @@ const CELESTIAL_FUNCTIONS = /* glsl */ `
     return vec2(dot(direction, side), dot(direction, up));
   }
 
+  // One scale of craters on the moon's face (the disc is the unit circle):
+  // a dark floor, a bright raised rim, and the inner wall facing the light
+  // brighter than the one away from it. Cells hold at most one crater each.
+  float moonCraters(vec2 p, float scale, float density) {
+    vec2 q = p * scale;
+    vec2 cell = floor(q);
+    float value = 0.0;
+    for (int i = -1; i <= 1; i++) {
+      for (int j = -1; j <= 1; j++) {
+        vec2 id = cell + vec2(float(i), float(j));
+        float chance = skyHash(id + scale * 7.13);
+        if (chance > density) continue;
+        vec2 centre = id + 0.2 + 0.6 * vec2(skyHash(id + 13.7), skyHash(id - 5.3));
+        float radius = 0.2 + 0.3 * skyHash(id + 29.1);
+        vec2 offset = (q - centre) / radius;
+        float d = length(offset);
+        if (d > 1.5) continue;
+        float floorDark = -smoothstep(1.0, 0.15, d) * 0.3;
+        float rim = exp(-pow((d - 1.0) * 4.2, 2.0)) * 0.26;
+        float wall = smoothstep(0.25, 1.0, d) * (1.0 - smoothstep(1.0, 1.12, d));
+        float lit = dot(offset / max(d, 0.01), vec2(-0.6, 0.8)) * wall * -0.22;
+        value += floorDark + rim + lit;
+      }
+    }
+    return value;
+  }
+
   vec3 skyCelestial(vec3 direction) {
     vec3 light = vec3(0.0);
     // Pixel size in radians, for edges that stay crisp but never alias.
@@ -212,12 +240,14 @@ const CELESTIAL_FUNCTIONS = /* glsl */ `
       float radial = length(local);
       float edge = 1.0 - smoothstep(1.0 - pixel / MOON_RADIUS, 1.0 + pixel / MOON_RADIUS, radial);
       if (edge > 0.0) {
-        // Maria: soft dark seas in the bright highlands, and a gentle limb.
-        float maria = smoothstep(0.42, 0.72, skyFbm3(local * 2.4 + vec2(3.1, 7.7)));
-        float craters = skyNoise(local * 9.0 + 1.7);
-        float albedo = 1.0 - maria * 0.32 - (craters - 0.5) * 0.08;
+        // Maria: broad dark seas in the bright highlands; craters of three
+        // sizes over both, the large ones sparse; fine mottling; a soft limb.
+        float seas = smoothstep(0.36, 0.5, skyFbm3(local * 1.5 + vec2(3.1, 7.7)));
+        float surface = moonCraters(local, 2.3, 0.4) * 1.2 + moonCraters(local, 5.2, 0.45) * 0.8 + moonCraters(local, 12.0, 0.45) * 0.4;
+        float mottling = (skyFbm3(local * 11.0 + 5.2) - 0.5) * 0.12;
+        float albedo = clamp(0.92 - seas * 0.42 + surface * (1.0 - seas * 0.4) + mottling, 0.25, 1.15);
         float mu = sqrt(max(0.0, 1.0 - radial * radial));
-        light += uMoonDisc * albedo * (0.72 + 0.28 * mu) * edge;
+        light += uMoonDisc * albedo * (0.8 + 0.2 * mu) * edge;
       }
     }
 

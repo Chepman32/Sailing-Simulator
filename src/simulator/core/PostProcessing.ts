@@ -21,6 +21,25 @@ import type { QualitySettings } from "./QualityManager";
 /** Luminance above which a pixel is treated as a light source. */
 export const BLOOM_THRESHOLD = 1.35;
 const BLOOM_RADIUS = 0.62;
+/**
+ * Brightest value a pixel may carry into bloom and the finish. The half-float
+ * target overflows to infinity above 65504, and one infinite or NaN pixel is
+ * smeared by the blur over the whole frame: the screen blinks or goes black
+ * until the next clean frame. Nothing real is brighter than this (the sun
+ * disc is about 9, a lightning core a few tens).
+ */
+export const HDR_CEILING = 96;
+
+/** GLSL: a colour made finite and non-negative (a NaN fails every comparison, so becomes 0). */
+export const SANE_COLOR_GLSL = /* glsl */ `
+  vec3 saneColor(vec3 c) {
+    return vec3(
+      c.r >= 0.0 ? min(c.r, ${HDR_CEILING.toFixed(1)}) : 0.0,
+      c.g >= 0.0 ? min(c.g, ${HDR_CEILING.toFixed(1)}) : 0.0,
+      c.b >= 0.0 ? min(c.b, ${HDR_CEILING.toFixed(1)}) : 0.0
+    );
+  }
+`;
 
 const FinishShader = {
   name: "LensFinish",
@@ -48,6 +67,8 @@ const FinishShader = {
     uniform float uSaturation;
     varying vec2 vUv;
 
+    ${SANE_COLOR_GLSL}
+
     float grainHash(vec2 p) {
       vec3 p3 = fract(vec3(p.xyx) * 0.1031);
       p3 += dot(p3, p3.yzx + 33.33);
@@ -65,6 +86,7 @@ const FinishShader = {
         texture2D(tDiffuse, vUv).g,
         texture2D(tDiffuse, vUv + fringe).b
       );
+      color = saneColor(color);
       float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
       color = max(mix(vec3(luminance), color, uSaturation), 0.0);
       color *= 1.0 - smoothstep(0.1, 0.52, radius2) * uVignette;
@@ -77,6 +99,13 @@ const FinishShader = {
     }
   `,
 };
+
+/** The bloom bright-pass shader with its input made finite (see `HDR_CEILING`). */
+export function hardenBrightPass(source: string): string {
+  const read = "vec4 texel = texture2D( tDiffuse, vUv );";
+  if (!source.includes(read)) return source;
+  return `${SANE_COLOR_GLSL}\n${source.replace(read, "vec4 texel = texture2D( tDiffuse, vUv ); texel.rgb = saneColor(texel.rgb);")}`;
+}
 
 export class PostProcessing {
   private readonly composer: EffectComposer;
@@ -122,6 +151,9 @@ export class PostProcessing {
       BLOOM_THRESHOLD,
     );
     this.bloom.enabled = quality.bloomStrength > 0;
+    // The bright-pass is where an overflowed pixel would enter the blur.
+    this.bloom.materialHighPassFilter.fragmentShader = hardenBrightPass(this.bloom.materialHighPassFilter.fragmentShader);
+    this.bloom.materialHighPassFilter.needsUpdate = true;
     this.finish = new ShaderPass(FinishShader);
     this.composer.addPass(this.renderPass);
     this.composer.addPass(this.bloom);

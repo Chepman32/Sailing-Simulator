@@ -188,6 +188,7 @@ export function SailingSimulator() {
   const [throttleInput, setThrottleInput] = useState(0);
   const [engineInput, setEngineInput] = useState(false);
   const [engineNotice, setEngineNotice] = useState("");
+  const [noticeKey, setNoticeKey] = useState(0);
   const [language, setLanguage] = useState<LanguageCode>("en");
   const rudderDragging = useRef(false);
   const throttleDragging = useRef(false);
@@ -411,7 +412,17 @@ export function SailingSimulator() {
     hurricane: messages.weatherHurricane,
   };
   const setCamera = (mode: CameraMode) => simulatorRef.current?.setCameraMode(mode);
-  const setQuality = (preset: QualityPreset) => simulatorRef.current?.setQuality(preset);
+  const setQuality = (preset: QualityPreset) => {
+    simulatorRef.current?.setQuality(preset);
+    showNotice(`${messages.quality}: ${qualityLabels[preset]}`);
+  };
+  /** A plaque naming what a switch has just done, for a couple of seconds. */
+  const showNotice = (text: string) => {
+    setEngineNotice(text);
+    setNoticeKey((key) => key + 1);
+    if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
+    engineNoticeTimer.current = window.setTimeout(() => setEngineNotice(""), 2400);
+  };
   const resetScene = () => {
     if (!loading.ready || error) return;
     rudderDragging.current = false;
@@ -421,6 +432,7 @@ export function SailingSimulator() {
     setEngineNotice("");
     if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
     simulatorRef.current?.reset();
+    showNotice(messages.reset);
   };
   const setEngineRunning = (running: boolean) => {
     const simulator = simulatorRef.current;
@@ -435,13 +447,11 @@ export function SailingSimulator() {
     }
     simulator.setEngineRunning(running);
     const activeThrottle = running && Math.abs(displayedThrottle) <= 0.08 ? 0.12 : displayedThrottle;
-    setEngineNotice(
+    showNotice(
       running
         ? `${messages.engine}: ${messages.on} · ${throttleLabel(activeThrottle, messages)} · ${messages.engineSound}: ${messages.on}`
         : `${messages.engine}: ${messages.off} · ${messages.throttle}: ${messages.neutral}`,
     );
-    if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
-    engineNoticeTimer.current = window.setTimeout(() => setEngineNotice(""), 2600);
     navigator.vibrate?.(running ? 24 : 14);
   };
 
@@ -457,9 +467,11 @@ export function SailingSimulator() {
     if (!simulator) return;
     if (snapshot.soundEnabled && !soundReadyAtPress.current) {
       simulator.resumeAudioFromGesture();
+      showNotice(`${messages.sound}: ${messages.on}`);
       return;
     }
     simulator.setSoundEnabled(!snapshot.soundEnabled);
+    showNotice(`${messages.sound}: ${snapshot.soundEnabled ? messages.off : messages.on}`);
   };
 
   const unlockSound = () => {
@@ -532,7 +544,7 @@ export function SailingSimulator() {
             onUnlock={unlockSound}
             onArrived={onSoundPromptArrived}
           />
-          {engineNotice && <div className="engine-notice" role="status">{engineNotice}</div>}
+          {engineNotice && <div className="engine-notice" role="status" key={noticeKey}>{engineNotice}</div>}
           {snapshot.shoreGuardActive && loading.ready && !error && (
             <div className="engine-notice shore-guard-notice" role="status">{messages.shoreGuard}</div>
           )}
@@ -565,12 +577,14 @@ export function SailingSimulator() {
             onClick={() => {
               if (soundDockUnlocked.current) {
                 soundDockUnlocked.current = false;
+                showNotice(`${messages.sound}: ${messages.on}`);
                 return;
               }
               const simulator = simulatorRef.current;
               if (!simulator) return;
               if (!snapshot.soundEnabled || !snapshot.audioReady) unlockSound();
               else simulator.setSoundEnabled(false);
+              showNotice(`${messages.sound}: ${!snapshot.soundEnabled || !snapshot.audioReady ? messages.on : messages.off}`);
             }}
           >
             <ControlIcon name={snapshot.soundEnabled && snapshot.audioReady ? "sound-on" : "sound-off"} />
@@ -582,7 +596,9 @@ export function SailingSimulator() {
             title={`${messages.camera}: ${cameraLabels[snapshot.cameraMode]}`}
             onClick={() => {
               const modes = Object.keys(cameraLabels) as CameraMode[];
-              setCamera(modes[(modes.indexOf(snapshot.cameraMode) + 1) % modes.length]!);
+              const next = modes[(modes.indexOf(snapshot.cameraMode) + 1) % modes.length]!;
+              setCamera(next);
+              showNotice(`${messages.camera}: ${cameraLabels[next]}`);
             }}
           >
             <ControlIcon name={snapshot.cameraMode} />
@@ -693,7 +709,10 @@ export function SailingSimulator() {
                       aria-label={mode === "day" ? messages.day : messages.night}
                       title={mode === "day" ? messages.day : messages.night}
                       aria-pressed={snapshot.lightingMode === mode}
-                      onClick={() => setLighting(mode)}
+                      onClick={() => {
+                        setLighting(mode);
+                        showNotice(`${messages.timeOfDay}: ${mode === "day" ? messages.day : messages.night}`);
+                      }}
                     >
                       <ControlIcon name={mode === "day" ? "sun" : "moon"} />
                     </button>
@@ -704,7 +723,10 @@ export function SailingSimulator() {
                     aria-label={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
                     title={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
                     aria-pressed={snapshot.autoTime}
-                    onClick={() => simulatorRef.current?.setAutoTime(!snapshot.autoTime)}
+                    onClick={() => {
+                      simulatorRef.current?.setAutoTime(!snapshot.autoTime);
+                      showNotice(`${messages.autoTime}: ${snapshot.autoTime ? messages.off : messages.on}`);
+                    }}
                   ><ControlIcon name="auto-time" /></button>
                 </div>
                 <button
@@ -735,7 +757,10 @@ export function SailingSimulator() {
                   aria-label={`${messages.engineSound}: ${snapshot.engineMuted ? messages.off : messages.on}`}
                   title={`${messages.engineSound}: ${snapshot.engineMuted ? messages.off : messages.on}`}
                   aria-pressed={!snapshot.engineMuted}
-                  onClick={() => simulatorRef.current?.setEngineMuted(!snapshot.engineMuted)}
+                  onClick={() => {
+                    simulatorRef.current?.setEngineMuted(!snapshot.engineMuted);
+                    showNotice(`${messages.engineSound}: ${snapshot.engineMuted ? messages.on : messages.off}`);
+                  }}
                 ><ControlIcon name={snapshot.engineMuted ? "engine-muted" : "engine-sound"} /></button>
               </div>
 
@@ -750,7 +775,10 @@ export function SailingSimulator() {
                       aria-label={`${messages.camera}: ${cameraLabels[mode]}`}
                       title={`${messages.camera}: ${cameraLabels[mode]}`}
                       aria-pressed={snapshot.cameraMode === mode}
-                      onClick={() => setCamera(mode)}
+                      onClick={() => {
+                        setCamera(mode);
+                        showNotice(`${messages.camera}: ${cameraLabels[mode]}`);
+                      }}
                     >
                       <ControlIcon name={mode} />
                     </button>
@@ -769,7 +797,10 @@ export function SailingSimulator() {
                       type="button"
                       key={mode}
                       aria-pressed={snapshot.weatherMode === mode}
-                      onClick={() => simulatorRef.current?.setWeatherMode(mode)}
+                      onClick={() => {
+                        simulatorRef.current?.setWeatherMode(mode);
+                        showNotice(`${messages.weather}: ${mode === "auto" ? messages.weatherAuto : messages.weatherManual}`);
+                      }}
                     >{mode === "auto" ? messages.weatherAuto : messages.weatherManual}</button>
                   ))}
                 </div>
@@ -783,7 +814,10 @@ export function SailingSimulator() {
                       title={weatherLabels[kind]}
                       aria-pressed={snapshot.weatherMode === "manual" ? snapshot.weather === kind : snapshot.weatherNow === kind}
                       data-auto={snapshot.weatherMode === "auto" ? "true" : undefined}
-                      onClick={() => simulatorRef.current?.setWeather(kind)}
+                      onClick={() => {
+                        simulatorRef.current?.setWeather(kind);
+                        showNotice(`${messages.weather}: ${weatherLabels[kind]}`);
+                      }}
                     >
                       <ControlIcon name={kind} />
                     </button>

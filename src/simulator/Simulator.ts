@@ -172,6 +172,7 @@ export class Simulator {
       // Merchant ships and liners passing at a distance, or lying at anchor.
       this.ships = new ShipSystem(this.scene, this.underwater, distanceFromWaterline);
       this.ships.prebuild();
+      this.physics.hullClearance = this.ships.hullClearance;
       this.ocean.setShips(this.ships.ships);
       this.vessel = new Vessel(this.scene, this.assets, this.underwater);
       this.vessel.setChartTraffic(this.ships.ships);
@@ -664,6 +665,11 @@ export class Simulator {
   };
 
   private readonly onContextRestored = (): void => {
+    // The GPU forgot every texture and target: draw the lighting capture
+    // again, start the render budget afresh and rebuild the buffers.
+    this.environment?.invalidateLighting();
+    this.governor.reset();
+    this.resize();
     this.status = "running";
     this.loop?.start();
   };

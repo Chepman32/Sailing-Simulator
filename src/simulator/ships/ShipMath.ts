@@ -188,6 +188,45 @@ export function shipHullDistance(ship: Ship, x: number, z: number): number {
 }
 
 /**
+ * Metres from the nearest active ship's hull (a large number when none is
+ * near) and the outward normal there. A ship's side is treated like a shore
+ * by the yacht's helmsman's reflex (see `ShoreGuard`).
+ */
+export function nearestHullClearance(
+  ships: readonly Ship[],
+  x: number,
+  z: number,
+  normal: { x: number; z: number },
+): number {
+  let best = 1e6;
+  let nearest: Ship | null = null;
+  for (const ship of ships) {
+    if (!ship.active) continue;
+    const dx = x - ship.x;
+    const dz = z - ship.z;
+    const reach = ship.halfLength + 220;
+    if (dx * dx + dz * dz > reach * reach) continue;
+    const distance = shipHullDistance(ship, x, z);
+    if (distance < best) {
+      best = distance;
+      nearest = ship;
+    }
+  }
+  if (!nearest) return best;
+  const gx = shipHullDistance(nearest, x + 0.5, z) - shipHullDistance(nearest, x - 0.5, z);
+  const gz = shipHullDistance(nearest, x, z + 0.5) - shipHullDistance(nearest, x, z - 0.5);
+  const length = Math.hypot(gx, gz);
+  if (length < 1e-6) {
+    normal.x = Math.cos(nearest.heading);
+    normal.z = -Math.sin(nearest.heading);
+  } else {
+    normal.x = gx / length;
+    normal.z = gz / length;
+  }
+  return best;
+}
+
+/**
  * Plans a lane: a straight course clear of every coast whose closest
  * approach to (yachtX, yachtZ) lies between {@link LANE_MIN_PASSING} and
  * {@link LANE_MAX_PASSING}. With `initial`, the ship is already near that
