@@ -332,5 +332,27 @@ export const SURF_GLSL = /* glsl */ `
     }
     return vec4(foam, sheet, clamp(wet, 0.0, 1.0), slope);
   }
+
+  // Shading only (no CPU twin: nothing physical reads it). The white water a
+  // broken wave leaves behind it on its way in: a fading field of foam over
+  // the surf zone, freshest just behind the bore, that thins out over the
+  // rest of the cycle instead of vanishing the moment the bore has passed.
+  float surfTrail(float distance, float angle, float index, float time) {
+    float cycle = time / ${glslNumber(SURF_PERIOD)}
+      + 0.22 * sin(angle * 3.0 + index * 1.9) + 0.09 * sin(angle * 7.0 - index) + index * 0.37;
+    float f = fract(cycle);
+    vec2 wave = surfWave(floor(cycle), index);
+    float zone = smoothstep(${glslNumber(BREAK_DEPTH_DISTANCE + 1.4)}, ${glslNumber(BREAK_DEPTH_DISTANCE - 0.4)}, distance)
+      * smoothstep(-0.4, 0.6, distance);
+    if (f >= ${glslNumber(APPROACH_END)}) {
+      float age = (f - ${glslNumber(APPROACH_END)}) * ${glslNumber(SURF_PERIOD)};
+      return wave.x * zone * 0.55 * exp(-age / 2.6);
+    }
+    float approach = f / ${glslNumber(APPROACH_END)};
+    float crest = ${glslNumber(BREAK_START)} * (1.0 - (1.0 - (1.0 - approach) * (1.0 - approach)) * 0.94) - 0.2;
+    float behind = distance - crest;
+    float broke = smoothstep(${glslNumber(BREAK_DEPTH_DISTANCE + 0.6)}, ${glslNumber(BREAK_DEPTH_DISTANCE - 0.8)}, crest);
+    return wave.x * zone * broke * step(0.0, behind) * (0.25 + 0.6 * exp(-behind / 2.2));
+  }
   #endif
 `;

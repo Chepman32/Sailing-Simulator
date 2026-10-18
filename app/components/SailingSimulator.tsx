@@ -547,15 +547,6 @@ export function SailingSimulator() {
             onUnlock={unlockSound}
             onArrived={onSoundPromptArrived}
           />
-          {engineNotice && <div className="engine-notice" role="status" key={noticeKey}>{engineNotice}</div>}
-          {snapshot.shoreGuardActive && loading.ready && !error && (
-            <div className="engine-notice shore-guard-notice" role="status">{messages.shoreGuard}</div>
-          )}
-          {showHelp && loading.ready && !error && (
-            <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
-              {messages.help}
-            </button>
-          )}
         </div>
 
         <div className="scene-actions">
@@ -691,9 +682,7 @@ export function SailingSimulator() {
               aria-expanded={!panelMinimized}
               aria-label={panelMinimized ? messages.expand : messages.minimize}
               onClick={() => {
-                // Opening the settings is an interaction of its own; the
-                // first-run hint has done its job and would sit under the panel.
-                setShowHelp(false);
+                // The first-run tip waits inside the panel until it is dismissed.
                 setPanelMinimized((value) => !value);
               }}
             >{panelMinimized ? "≡" : "×"}</button>
@@ -702,6 +691,22 @@ export function SailingSimulator() {
 
           {!panelMinimized && (
             <div className="panel-body">
+              {/* Status lines (settings changed, the helm steering clear of an
+                  island, the first-run tip) live in the control panel only:
+                  nothing is laid over the scene itself. */}
+              {(engineNotice || (snapshot.shoreGuardActive && loading.ready && !error) || (showHelp && loading.ready && !error)) && (
+                <div className="panel-status">
+                  {engineNotice && <div className="engine-notice" role="status" key={noticeKey}>{engineNotice}</div>}
+                  {snapshot.shoreGuardActive && loading.ready && !error && (
+                    <div className="engine-notice shore-guard-notice" role="status">{messages.shoreGuard}</div>
+                  )}
+                  {showHelp && loading.ready && !error && (
+                    <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
+                      {messages.help}
+                    </button>
+                  )}
+                </div>
+              )}
               <div className="compact-row">
                 <div className="segmented time-group" role="group" aria-label={`${messages.day} / ${messages.night}`}>
                   {(["day", "night"] as LightingMode[]).map((mode) => (

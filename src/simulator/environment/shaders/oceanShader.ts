@@ -308,6 +308,28 @@ export const oceanFragmentShader = /* glsl */ `
     lostVariance += 0.25 * strength * strength * (1.0 - resolved * resolved);
   }
 
+  // Foam lace: the distance to the nearest cell border of a jittered grid
+  // (Worley F2 − F1). Bubbles gather along the borders of the cells left by
+  // bursting larger bubbles, which is what makes foam a net with dark holes.
+  // Returns 1 on a strand, 0 in a hole; width is the strand half-width in cells.
+  float foamLace(vec2 p, float width) {
+    vec2 cell = floor(p);
+    vec2 local = p - cell;
+    float nearest = 8.0;
+    float second = 8.0;
+    for (int y = -1; y <= 1; y++) {
+      for (int x = -1; x <= 1; x++) {
+        vec2 offset = vec2(float(x), float(y));
+        vec2 id = cell + offset;
+        vec2 point = offset + vec2(skyHash(id), skyHash(id + 19.7)) * 0.9 + 0.05 - local;
+        float d = dot(point, point);
+        if (d < nearest) { second = nearest; nearest = d; }
+        else if (d < second) { second = d; }
+      }
+    }
+    return 1.0 - smoothstep(0.0, width, sqrt(second) - sqrt(nearest));
+  }
+
   // Waterplane of one hull: a fine entry at the bow, a transom at the stern.
   // local.x is across the hull, local.y along it (bow positive). Negative
   // inside the hull.
@@ -490,12 +512,20 @@ ${detailCalls}
     // along the shore normal, the white water is drawn with the foam below.
     vec3 shoreHere = shoreInfo(base);
     float surfFoam = 0.0;
+    float surfTrailFoam = 0.0;
     if (shoreHere.x < ${glsl(BREAK_START + 2)}) {
       float surfEdgeOut;
-      vec4 surf = surfSample(shoreHere.x, shoreHere.y, shoreHere.z, uTime, surfEdgeOut);
+      // A breaking crest is never a clean contour: it breaks earlier here and
+      // later there. The jitter fades out toward the beach, where the swash
+      // must meet the wet sand drawn by the island material exactly.
+      float ragged = ((skyNoise(base * 0.42 + 13.1) - 0.5) * 1.8 + (skyNoise(base * 1.6 - 4.7) - 0.5) * 0.6)
+        * smoothstep(1.0, 3.5, shoreHere.x);
+      float surfDistance = shoreHere.x + ragged;
+      vec4 surf = surfSample(surfDistance, shoreHere.y, shoreHere.z, uTime, surfEdgeOut);
       vec2 shoreGradient = vec2(shoreInfo(base + vec2(0.4, 0.0)).x, shoreInfo(base + vec2(0.0, 0.4)).x) - shoreHere.x;
       slope += shoreGradient / max(length(shoreGradient), 1.0e-4) * surf.w;
       surfFoam = surf.x;
+      surfTrailFoam = surfTrail(surfDistance, shoreHere.y, shoreHere.z, uTime);
     }
     lostVariance = swellVariance + rippleVariance * (1.0 - smoothing);
 
@@ -662,9 +692,22 @@ ${detailCalls}
     lace = mix(0.5, lace, laceResolved);
     float wakeCover = smoothstep(0.22, 1.0, wakeFoam * (0.1 + lace * 1.2) * (0.4 + patches * 1.2));
     foam = max(foam, min(wakeCover, 0.96));
-    // Breakers: a dense roller at the crest, a frayed bore behind it.
-    float surfCover = smoothstep(0.12, 0.8, surfFoam * (0.25 + lace * 1.0) * (0.55 + patches * 0.9));
-    foam = max(foam, min(surfCover, 0.97));
+    // Breakers. Real white water is not a white sheet: it is a network of
+    // bubble strands around dark holes (a cellular lace), dense and nearly
+    // solid in the bore itself, opening up into strands and then scattered
+    // flecks in the foam the wave leaves behind.
+    if (surfFoam + surfTrailFoam > 0.01) {
+      float strands = foamLace(vWorldPosition.xz * 0.95 + vec2(uTime * 0.06, uTime * 0.04), 0.2);
+      float fineStrands = foamLace(mat2(0.6, 0.8, -0.8, 0.6) * vWorldPosition.xz * 2.7 - vec2(uTime * 0.11, 0.0), 0.22);
+      float web = mix(0.5, max(strands, fineStrands * 0.85), laceResolved);
+      float body = surfFoam * (0.55 + patches * 0.6);
+      // The bore: solid where it is thick, strands toward its frayed edges.
+      float bore = smoothstep(0.45, 0.85, body) + smoothstep(0.1, 0.5, body) * web;
+      // Behind it: strands only, thinning out as the trail fades.
+      float trail = smoothstep(0.08, 0.55, surfTrailFoam * (0.4 + patches * 0.9)) * web;
+      trail = max(trail, smoothstep(0.75, 0.98, web) * smoothstep(0.02, 0.2, surfTrailFoam) * 0.6);
+      foam = max(foam, min(max(bore, trail), 0.97));
+    }
     // Shallow water over sand is clearer, and churned by the surf.
     float shallowFoam = (1.0 - smoothstep(0.0, 1.2, shore)) * smoothstep(0.45, 0.8, lace) * 0.25;
     foam = max(foam, shallowFoam);

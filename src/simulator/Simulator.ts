@@ -80,6 +80,8 @@ export class Simulator {
   private resizeObserver?: ResizeObserver;
   private elapsed = 0;
   private frameDelta = 1 / 60;
+  /** The preset the player chose by hand, if any: the only one remembered between visits. */
+  private chosenQuality: QualityPreset | null = null;
   private fps = 60;
   private status: SimulationSnapshot["status"] = "loading";
   private initialized = false;
@@ -313,7 +315,9 @@ export class Simulator {
   }
 
   setQuality(preset: QualityPreset): void {
+    this.chosenQuality = preset;
     this.quality?.setPreset(preset);
+    this.persistState();
   }
 
   setSoundEnabled(enabled: boolean): void {
@@ -640,8 +644,14 @@ export class Simulator {
       if (typeof saved.autoTime === "boolean") base.autoTime = saved.autoTime;
       if (["auto", "manual"].includes(saved.weatherMode ?? "")) base.weatherMode = saved.weatherMode!;
       if (isWeatherKind(saved.weather)) base.weather = saved.weather;
-      if (!this.coarseDevice && ["low", "medium", "high"].includes(saved.quality ?? "")) {
-        base.quality = saved.quality!;
+      // Only a preset the player picked is remembered. The automatic fallback
+      // used to be saved too, so a single slow moment (or a session paced
+      // down while another app had the focus) left every later visit on the
+      // low preset; the old `quality` field is therefore ignored.
+      const chosen = (saved as { qualityChoice?: string }).qualityChoice;
+      if (!this.coarseDevice && (chosen === "low" || chosen === "medium" || chosen === "high")) {
+        base.quality = chosen;
+        this.chosenQuality = chosen;
       }
       if (typeof saved.soundEnabled === "boolean") base.soundEnabled = saved.soundEnabled;
       if (typeof saved.engineMuted === "boolean") base.engineMuted = saved.engineMuted;
@@ -660,7 +670,7 @@ export class Simulator {
         weatherMode: this.state.weatherMode,
         weather: this.state.weather,
         cameraMode: this.state.cameraMode,
-        quality: this.state.quality,
+        qualityChoice: this.chosenQuality ?? undefined,
         soundEnabled: this.state.soundEnabled,
         engineMuted: this.state.engineMuted,
       }),

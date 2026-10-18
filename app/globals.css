@@ -607,6 +607,21 @@ input:focus-visible {
   padding: 0 10px 10px;
 }
 
+/* Notices inside the control panel: the scene itself carries no overlays. */
+.panel-status {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+}
+
+.panel-status .engine-notice,
+.panel-status .help-toast {
+  box-shadow: none;
+  backdrop-filter: none;
+  background: rgba(4, 26, 36, 0.6);
+  text-align: start;
+}
+
 .compact-row,
 .panel-section,
 .panel-footer {
@@ -1213,11 +1228,14 @@ input[type="range"]:disabled {
   .panel-body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-areas:
+      "status status"
       "time camera"
       "weather trim"
       "weather footer";
     align-items: stretch;
   }
+
+  .panel-body > .panel-status { grid-area: status; }
 
   .panel-body > .compact-row { grid-area: time; }
   .panel-body > .panel-camera { grid-area: camera; }
