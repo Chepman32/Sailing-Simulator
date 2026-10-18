@@ -692,6 +692,7 @@ test("a distant whale breaches regularly, far from the yacht, on a ballistic arc
       const distance = Math.hypot(state.x - vessel.x, state.z - vessel.z);
       assert.ok(distance > breach.BREACH_MIN_DISTANCE * 0.7, `breached ${distance.toFixed(0)} m from the yacht`);
       assert.ok(world.seabedDepth(state.x, state.z) >= breach.BREACH_MIN_WATER - 1);
+      assert.ok(world.shoreDistance(state.x, state.z) >= breach.BREACH_MIN_SHORE - 10, `breached ${world.shoreDistance(state.x, state.z).toFixed(0)} m off an island`);
       apex = -Infinity;
     }
     if (state.phase === "air") apex = Math.max(apex, state.y - world.surfaceHeight(state.x, state.z));
@@ -710,4 +711,33 @@ test("a distant whale breaches regularly, far from the yacht, on a ballistic arc
   assert.ok(apexes.length >= 4);
   assert.ok(Math.max(...apexes) - Math.min(...apexes) > 1, "breaches differ in height");
   assert.ok(variants.size >= 2, "more than one kind of breach");
+});
+
+test("a whale never breaches close to an island, even with the yacht sailing along its coast", async () => {
+  const breach = await import("../../src/simulator/wildlife/WhaleBreach");
+  const { START_ISLANDS } = await import("../../src/simulator/environment/IslandMath");
+  const island = START_ISLANDS[0]!;
+  const random = seeded(5);
+  const { world, clock } = liveWorld();
+  const radius = island.beachRadius + 70;
+  let angle = 0;
+  const vessel: VesselState = { x: island.centerX + radius, z: island.centerZ, heading: 0, speed: 2.5 };
+  const state = breach.createBreachState(random);
+  const delta = 1 / 30;
+  let starts = 0;
+  for (let step = 0; step < 30 * 60 * 25; step += 1) {
+    clock.time += delta;
+    // Round the island, coast on the beam.
+    angle += (vessel.speed / radius) * delta;
+    vessel.x = island.centerX + Math.cos(angle) * radius;
+    vessel.z = island.centerZ + Math.sin(angle) * radius;
+    vessel.heading = Math.atan2(-Math.sin(angle), Math.cos(angle));
+    const entered = breach.stepBreach(state, world, vessel, delta, random);
+    if (entered === "run") starts += 1;
+    if (state.phase === "run" || state.phase === "air" || state.phase === "splash") {
+      const offshore = world.shoreDistance(state.x, state.z);
+      assert.ok(offshore >= breach.BREACH_MIN_SHORE - 15, `a whale ${state.phase} only ${offshore.toFixed(0)} m off the coast`);
+    }
+  }
+  assert.ok(starts >= 3, `only ${starts} breaches in 25 minutes along the coast`);
 });

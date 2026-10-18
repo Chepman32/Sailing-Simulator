@@ -77,3 +77,47 @@ test("helm instruments: needles, revolutions, compass and lever", () => {
   assert.equal(leverAngle(-3), -LEVER_THROW);
   assert.equal(leverAngle(Number.NaN), 0);
 });
+
+test("the helm station stands on the aft deck, not over the water behind the transom", async () => {
+  const { readFileSync } = await import("node:fs");
+  const THREE = await import("three");
+  const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+  const { HELM_EYE, HELM_SEAT_AFT_Z, HELM_X } = await import("../../src/simulator/vessel/HelmStation");
+  const data = readFileSync(new URL("../../public/models/yacht-sailboat-pbr.glb", import.meta.url));
+  const gltf = await new Promise<{ scene: import("three").Group }>((resolve, reject) =>
+    new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), "", resolve, reject),
+  );
+  // The same placement as `Vessel`: bow to +Z, 9.4 m long, waterline offset.
+  const model = gltf.scene;
+  model.rotation.y = Math.PI;
+  model.updateMatrixWorld(true);
+  const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+  model.scale.setScalar(9.4 / Math.max(size.z, size.x));
+  model.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(model);
+  model.position.z -= bounds.getCenter(new THREE.Vector3()).z;
+  model.position.y -= bounds.min.y + 1.06;
+  model.updateMatrixWorld(true);
+  const meshes: import("three").Mesh[] = [];
+  model.traverse((object) => {
+    const mesh = object as import("three").Mesh;
+    if (!mesh.isMesh) return;
+    (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).forEach((material) => (material.side = THREE.DoubleSide));
+    meshes.push(mesh);
+  });
+  const ray = new THREE.Raycaster();
+  const deckUnder = (x: number, z: number): number | null => {
+    ray.set(new THREE.Vector3(x, 1.25, z), new THREE.Vector3(0, -1, 0));
+    ray.far = 4;
+    return ray.intersectObjects(meshes, false)[0]?.point.y ?? null;
+  };
+  // Under the helmsman's feet and under the seat's after edge (its corners too).
+  for (const [x, z] of [
+    [HELM_EYE.x, HELM_EYE.z],
+    [HELM_X - 0.3, HELM_SEAT_AFT_Z + 0.02],
+    [HELM_X + 0.3, HELM_SEAT_AFT_Z + 0.02],
+  ] as const) {
+    const deck = deckUnder(x, z);
+    assert.ok(deck !== null && deck > 0.4, `no deck under (${x.toFixed(2)}, ${z.toFixed(2)}): ${deck}`);
+  }
+});

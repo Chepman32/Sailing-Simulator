@@ -33,6 +33,9 @@ export type ShipSound = {
   length: number;
 };
 
+/** Overall level of the wind and the rigging's whistle (1 = the former mix; 0.35 ≈ −9 dB). */
+export const WIND_LEVEL = 0.35;
+
 /** Speed of sound in air, m/s: a distant horn arrives seconds late. */
 const SPEED_OF_SOUND = 343;
 /** Ships voiced at once (the nearest ones). */
@@ -247,9 +250,11 @@ export class AudioSystem {
     const overcast = weather.overcast;
     const breeze = clamp((apparentWind - 2) / 14, 0, 1);
     const gale = clamp((apparentWind - 16) / 14, 0, 1);
-    this.windGain?.gain.setTargetAtTime(0.018 + breeze * 0.045 + overcast * 0.02 + gale * 0.1, now, 1.4);
+    // The wind is a bed under the water and the boat, not the lead: it sits
+    // about 9 dB below where it was (`WIND_LEVEL`).
+    this.windGain?.gain.setTargetAtTime((0.018 + breeze * 0.045 + overcast * 0.02 + gale * 0.1) * WIND_LEVEL, now, 1.4);
     this.windFilter?.frequency.setTargetAtTime(380 + breeze * 420 + overcast * 120 + gale * 520, now, 1.6);
-    this.rigGain?.gain.setTargetAtTime(Math.max(0, breeze - 0.7) * 0.012 + gale * 0.03, now, 2);
+    this.rigGain?.gain.setTargetAtTime((Math.max(0, breeze - 0.7) * 0.012 + gale * 0.03) * WIND_LEVEL, now, 2);
     // Rain: a hiss on the sea and a patter on the deck.
     const rain = clamp(weather.rain, 0, 1);
     this.rainHissGain?.gain.setTargetAtTime(Math.pow(rain, 1.2) * 0.1, now, 0.9);
@@ -805,12 +810,12 @@ export class AudioSystem {
     windSoftener.type = "lowpass";
     windSoftener.frequency.value = 1400;
     this.windGain = this.context.createGain();
-    this.windGain.gain.value = 0.02;
+    this.windGain.gain.value = 0.02 * WIND_LEVEL;
     // Slow gusts swell and ease the wind over several seconds.
     const gust = this.context.createOscillator();
     gust.frequency.value = 0.07;
     const gustDepth = this.context.createGain();
-    gustDepth.gain.value = 0.008;
+    gustDepth.gain.value = 0.008 * WIND_LEVEL;
     gust.connect(gustDepth).connect(this.windGain.gain);
     gust.start();
     wind.connect(this.windFilter).connect(windSoftener).connect(this.windGain).connect(this.environmentBus);

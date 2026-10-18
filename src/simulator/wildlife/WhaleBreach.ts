@@ -32,6 +32,13 @@ export const BREACH_MIN_DISTANCE = 75;
 export const BREACH_MAX_DISTANCE = 150;
 /** Water needed under the breach, metres. */
 export const BREACH_MIN_WATER = 15;
+/**
+ * Open water kept between a breach and any coast, metres (from the rendered
+ * waterline), along the whole run-up, flight and dive: a forty-tonne whale
+ * leaping beside a beach looks wrong, and deep water starts only well off
+ * the shelf anyway.
+ */
+export const BREACH_MIN_SHORE = 200;
 const RUN_START_DEPTH = 12;
 const RUN_DURATION = 3.6;
 const DIVE_DURATION = 7;
@@ -143,6 +150,12 @@ function planSite(
     const runX = x - Math.sin(heading) * 30;
     const runZ = z - Math.cos(heading) * 30;
     if (world.seabedDepth(x, z) < BREACH_MIN_WATER || world.seabedDepth(runX, runZ) < BREACH_MIN_WATER) continue;
+    // Run-up, breach and dive all well off every island.
+    let offshore = true;
+    for (let along = -30; along <= 30 && offshore; along += 15) {
+      if (world.shoreDistance(x + Math.sin(heading) * along, z + Math.cos(heading) * along) < BREACH_MIN_SHORE) offshore = false;
+    }
+    if (!offshore) continue;
     return { x, z, heading };
   }
   return null;

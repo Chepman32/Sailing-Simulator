@@ -30,8 +30,20 @@ import {
 
 const DECK_Y = 0.62;
 export const HELM_X = 1.72;
+/**
+ * The whole station is moved this far forward (+Z) from where its parts are
+ * laid out below. The starboard hull's transom is at z ≈ −4.0: laid out as
+ * drawn, the helm seat (z −4.47) and the helmsman (z −4.16) stood beyond it,
+ * over open water, which showed as soon as the helm camera looked down. With
+ * the shift the seat's after edge is on the aft deck, inside the transom.
+ */
+export const HELM_STATION_SHIFT = 0.75;
 /** Where the helmsman's eyes are, standing at the wheel (vessel space). */
-export const HELM_EYE = new THREE.Vector3(HELM_X, DECK_Y + 1.6, -4.16);
+export const HELM_EYE = new THREE.Vector3(HELM_X, DECK_Y + 1.6, -4.16 + HELM_STATION_SHIFT);
+/** After edge of the starboard hull's aft deck (its transom), vessel space. */
+export const HULL_TRANSOM_Z = -4.0;
+/** After edge of the helm seat once the station is in place (vessel space). */
+export const HELM_SEAT_AFT_Z = -4.47 - 0.17 + HELM_STATION_SHIFT;
 const WHEEL_CENTRE = new THREE.Vector3(HELM_X, 1.42, -3.62);
 const WHEEL_RADIUS = 0.36;
 /** The wheel's top leans forward, like a pedestal wheel. */
@@ -152,6 +164,7 @@ export class HelmStation {
 
   constructor() {
     this.group.name = "HelmStation";
+    this.group.position.z = HELM_STATION_SHIFT;
     this.canvas = typeof document !== "undefined" ? document.createElement("canvas") : null;
     if (this.canvas) {
       this.canvas.width = ATLAS_WIDTH;
