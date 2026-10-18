@@ -189,6 +189,10 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `tests/unit/rendering.test.ts` | Static batching, shell detection, shared skeletons, exact skinned merging, distant fish meshes |
 | `tests/unit/helm.test.ts` | Chart plotter orientation against the rendered view, range steps, needles, compass, lever |
 | `tests/unit/world.test.ts` | Archipelago, exact indexed coast search, shader slots, ship lanes, steering, contact, Kelvin wake, horns, gull flight, loop subdivision |
+| `tests/unit/rig-and-reef.test.ts` | Boom and gybe, underwater absorption, wet band, foil sections, reef-fish schooling |
+| `tests/unit/shipguard.test.ts` | Hull clearance to the nearest ship; the yacht turns away from and leaves a ship's side by herself |
+| `tests/unit/postprocessing.test.ts` | Bloom bright-pass and finish guarded against NaN and half-float overflow |
+| `tests/unit/framepacer.test.ts`, `gestures.test.ts` | Frame cap and resynchronisation; double-tap recognition |
 | `tests/rendered-html.test.mjs` | Built-route smoke test |
 
 Generated folders such as `dist`, `.next`, `.sites-runtime`, and `node_modules` are not source. Never hand-edit or commit their generated contents unless the hosting tool explicitly owns a required metadata change.
@@ -453,7 +457,7 @@ One analytic sky function (`shaders/skyShader.ts`) is evaluated by three consume
 
 The capture is refreshed only when the night factor has moved, at most a few times per second during a day/night transition, and the previous target is disposed.
 
-The sun, moon and stars are drawn by the sky shader itself (`skyCelestial`), under the clouds: clouds drift across them, and every piece of geometry hides them by being drawn later. The solar disc is HDR (it blooms), with limb darkening, and dims near the horizon so it stays red-orange; the moon has maria and a soft limb; stars twinkle on a stereographic grid, sized to a pixel. The lighting capture leaves them out (`uCelestial` 0): the directional light already carries the sun and the moon.
+The sun, moon and stars are drawn by the sky shader itself (`skyCelestial`), under the clouds: clouds drift across them, and every piece of geometry hides them by being drawn later. The solar disc is HDR (it blooms), with limb darkening, and dims near the horizon so it stays red-orange; the moon has craters, maria and a soft limb; stars twinkle on a stereographic grid, sized to a pixel. The lighting capture leaves them out (`uCelestial` 0): the directional light already carries the sun and the moon.
 
 Weather comes from `WeatherMath` (see “Weather, sea state and the day cycle” below): fair-weather cumulus over about a quarter of the sky when clear, thicker and darker as the weather worsens. A day/night change takes `TRANSITION_SECONDS` (11 s) and passes through a full sunset or sunrise.
 
@@ -506,7 +510,7 @@ Lightning (`LightningMath`, `LightningSystem`) is drawn from 1.6 s time slots by
 
 The moon's face is drawn in the sky shader (`moonCraters`: three scales of craters with a bright rim and a lit inner wall, broad dark seas, fine mottling) at a radiance below the bloom threshold, so the detail is not washed out; the sun has a wide soft glow (`skyAtmosphere`) around its disc. Every HDR value entering bloom and the finish pass is made finite and capped at `HDR_CEILING` (`saneColor`, `hardenBrightPass`): one overflowed or NaN half-float pixel is otherwise smeared by the blur over the whole frame (blinking or a black screen). After a lost WebGL context is restored the lighting capture, render budget and buffers are rebuilt.
 
-`OceanReflection` is a whole second scene render, so it is skipped once the sea is rough (`calmSea = 1 − smoothstep(0.45, 0.75, storm)`): the storm sea reflects the sky and clouds only, with the cheap cloud path (`skyClouds` detail < 0). The heave of the yacht is driven by moving averages of the sampled water level (`VesselPhysics`), which take chop flicker out of its velocity and acceleration without delaying a swell. Outside the helm the camera near plane is 0.35 m (finer depth at range); ships have their own lighter haze patch (`ship-haze-v1`) so they read at several kilometres, and the sun's glow is deliberately tight so a clear sun is not veiled.
+`OceanReflection` is a whole second scene render, so it is skipped once the sea is rough (`calmSea = 1 − smoothstep(0.45, 0.75, storm)`): the storm sea reflects the sky and clouds only, with the cheap cloud path (`skyClouds` detail < 0). The heave of the yacht is driven by moving averages of the sampled water level (`VesselPhysics`), which take chop flicker out of its velocity and acceleration without delaying a swell. Outside the helm the camera near plane is 0.35 m (finer depth at range); ships have their own lighter haze patch (`ship-haze-v1`) so they read at several kilometres.
 
 The mirror target of `OceanReflection` has a mip chain; the ocean shader blurs it by roughness and contact distance (`mirroredWorld`) and lifts Fresnel where an object is really mirrored.
 
@@ -580,11 +584,11 @@ The slap fires once per downstroke when a tracked fluke point crosses down throu
 
 ## 15a. Ships
 
-`ShipSystem` keeps four ships near the yacht: three under way and one at anchor (`MOVING_SHIPS`, `MAX_SHIPS`). Types (`SHIP_SPECS`): a 236 m container ship, a 222 m tanker, a 188 m bulk carrier, a 198 m car carrier and a 252 m cruise liner, each in one of three paint schemes; a tanker or bulk carrier is laden or in ballast (riding up to five metres high, red antifouling showing).
+`ShipSystem` keeps four ships near the yacht: three under way and one at anchor (`MOVING_SHIPS`, `MAX_SHIPS`). Types (`SHIP_SPECS`): a 334 m container ship, a 310 m tanker, a 262 m bulk carrier, a 300 m car carrier and a 330 m cruise liner, each in one of three paint schemes; a tanker or bulk carrier is laden or in ballast (riding up to five metres high, red antifouling showing).
 
-- **Lanes** (`planLane`): a straight course whose closest approach to the yacht lies 340–1000 m off, clear of every coast by `LANE_SHORE_CLEARANCE` over the passage. A new ship appears 1.9–2.4 km up her lane, in the haze; at the start the first ship already crosses ahead of the yacht and the others are within sight. A ship far astern and moving away (`RECYCLE_DISTANCE`) is replaced; a slot that finds no clear lane retries a few seconds later.
+- **Lanes** (`planLane`): a straight course whose closest approach to the yacht lies 300–800 m off, clear of every coast by `LANE_SHORE_CLEARANCE` over the passage. A new ship appears 1.5–1.95 km up her lane, in the haze; at the start the first ship already crosses ahead of the yacht and the others are within sight. A ship far astern and moving away (`RECYCLE_DISTANCE`) is replaced; a slot that finds no clear lane retries a few seconds later.
 - **Anchorage** (`planAnchorage`): open water well off the islands, head to wind, swinging slowly; moved ahead of the yacht once she is more than `ANCHOR_RECYCLE_DISTANCE` away. It is the ship the yacht can always reach.
-- **Steering** (`stepShip`): service speed with bounded acceleration and turn rate; turns away when shoal water lies ahead; gives way to starboard to a ship on her starboard side on a collision course (and to an anchored ship).
+- **Steering** (`stepShip`): service speed with bounded acceleration and turn rate; turns away when shoal water lies ahead; gives way to starboard to a ship on her starboard side on a collision course (and to an anchored ship), but takes the other side when the chosen one runs toward shoal water.
 - **Contact**: the hull waterplane (`hullHalfWidth`, the same planform the geometry and the wake use) is a wall; points of the yacht's outline inside it are pushed out and her motion into the side is reversed with restitution, relative to the ship's motion; a hard contact throws a slap splash and a thud.
 - **Wake**: a Kelvin pattern (divergent waves on the 19.47° arms, transverse waves following at the ship's speed with wavenumber g/V²), white water along the arms and a turbulent foam centreline that lasts `WAKE_FOAM_SECONDS`, a smooth slick that lasts `WAKE_SLICK_SECONDS`, a bow wave and a lapping line along the hull (see §9).
 - **Visual** (`ShipGeometry`): one geometry per type and scheme with vertex colours, one shared-program material per ship (one draw call); the lofted hull has a raked stem, flared bow, sheer, flat bottom and bilge, transom; hawse pipes and anchors, draught marks, rubbing strake; container stacks, a tanker's pipe deck, catwalk and manifold crane, hatch covers and cranes, a liner's ten terraced decks of balconies and lifeboats, a car carrier's slab sides. Below the waterline the hull is veiled by `UnderwaterLight`. The ships ride the swell (heave, pitch, roll from four samples, heavily damped).
@@ -1033,7 +1037,7 @@ The following are known constraints, not invitations to bypass the architecture:
 - the ocean's own transparency is a blend rather than a refraction, and underwater absorption uses the uninverted wave height per vertex (a few centimetres of error);
 - the yacht's three cabin meshes overlap substantially (about 140k triangles together, only one of them casting shadows); removing two of them changes the cabin's detail, so it needs an asset rework;
 - reef fish are lifted from one rigged asset and animated procedurally; they do not use the asset's authored clip;
-- the ships are procedural (no licensed ship model was reachable); they do not alter course for the yacht (she rebounds from their sides), only for shoals and each other, and the wildlife ignores them;
+- the ships are procedural (no licensed ship model was reachable); they do not alter course for the yacht (her shore guard turns her away from their sides, and she rebounds if it cannot), only for shoals and each other, and the wildlife ignores them; ships converging in a tight spot can still pass closer than they should (the keep-apart test uses a fixed seed);
 - the yacht's wet band and the underwater absorption use the swell without ship wakes (a few tens of centimetres in a wake);
 - gull folding is an approximation by sweep, roll and a scaled hand; the rig has no legs or neck to animate;
 - wake and wildlife capacities do not rebuild when changing quality after initialization;
