@@ -48,12 +48,12 @@ export type ShipSpec = {
 
 export const SHIP_SPECS: Record<ShipKind, ShipSpec> = {
   container: { length: 334, beam: 46, draft: 13.5, freeboard: 15, cruiseSpeed: 8.2 },
-  tanker: { length: 310, beam: 54, draft: 17, freeboard: 10, cruiseSpeed: 6.6 },
-  cruise: { length: 330, beam: 40, draft: 9, freeboard: 12, cruiseSpeed: 8.6 },
-  bulk: { length: 262, beam: 42, draft: 14, freeboard: 11, cruiseSpeed: 6.8 },
+  tanker: { length: 310, beam: 39, draft: 17, freeboard: 10, cruiseSpeed: 6.6 },
+  cruise: { length: 330, beam: 44, draft: 9, freeboard: 12, cruiseSpeed: 8.6 },
+  bulk: { length: 262, beam: 46, draft: 14, freeboard: 11, cruiseSpeed: 6.8 },
   carrier: { length: 300, beam: 42, draft: 11, freeboard: 30, cruiseSpeed: 8 },
-  lng: { length: 290, beam: 46, draft: 11.5, freeboard: 18, cruiseSpeed: 9.2 },
-  ferry: { length: 201, beam: 32, draft: 6.8, freeboard: 12, cruiseSpeed: 10.5 },
+  lng: { length: 290, beam: 44, draft: 11.5, freeboard: 18, cruiseSpeed: 9.2 },
+  ferry: { length: 201, beam: 34, draft: 6.8, freeboard: 12, cruiseSpeed: 10.5 },
   cargo: { length: 150, beam: 23, draft: 8.5, freeboard: 7.5, cruiseSpeed: 7.2 },
 };
 

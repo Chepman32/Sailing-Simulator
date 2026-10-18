@@ -404,3 +404,20 @@ test("imported ship models are turned bow to +Z, scaled to the type and floated 
   assert.equal(models.instance("container", 0), null, "a type without a model keeps the procedural ship");
   models.dispose();
 });
+
+test("every listed ship model is shipped, credited and fits its type", async () => {
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { SHIP_MODELS } = await import("../../src/simulator/ships/ShipModelMath");
+  const credits = readFileSync(new URL("../../public/models/README.md", import.meta.url), "utf8");
+  for (const kind of SHIP_KINDS) {
+    for (const source of SHIP_MODELS[kind]) {
+      const file = new URL(`../../public${source.url}`, import.meta.url);
+      assert.ok(existsSync(file), `${source.url} is missing`);
+      const name = source.url.split("/").pop()!;
+      assert.ok(credits.includes(name), `${name} has no credit in public/models/README.md`);
+      assert.match(source.credit, /CC BY 4\.0/u);
+      // A ship model is a few megabytes at most: it loads in the background.
+      assert.ok(readFileSync(file).byteLength < 8_000_000, `${name} is too heavy`);
+    }
+  }
+});

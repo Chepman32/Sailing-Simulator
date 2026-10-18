@@ -112,6 +112,8 @@ export class ShipSystem {
     private readonly underwater: UnderwaterLight,
     shoreDistance: (x: number, z: number) => number,
     random: () => number = Math.random,
+    /** Whether to fetch the imported ship models (about 20 MB; off on the low preset). */
+    loadModels = true,
   ) {
     this.random = random;
     this.group.name = "DistantShips";
@@ -122,7 +124,7 @@ export class ShipSystem {
       this.underwater.apply(material);
       applyShipHaze(material);
     });
-    void this.models.load();
+    if (loadModels) void this.models.load();
     const kinds = [...SHIP_KINDS].sort(() => this.random() - 0.5);
     for (let slot = 0; slot < MAX_SHIPS; slot += 1) {
       const ship = createShip(kinds[slot % kinds.length]!, this.random);

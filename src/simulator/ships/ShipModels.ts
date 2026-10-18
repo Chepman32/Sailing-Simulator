@@ -105,7 +105,7 @@ export class ShipModels {
     turned.rotation.y = bowYaw(source.bow);
     turned.add(scene);
     turned.updateMatrixWorld(true);
-    const fit = fitShipModel(boundsOf(turned), SHIP_SPECS[kind], source.keel ?? 1);
+    const fit = fitShipModel(boundsOf(turned), SHIP_SPECS[kind], source.keel ?? 1, source.waterline);
     turned.scale.setScalar(fit.scale);
     turned.position.set(fit.offset[0], fit.offset[1], fit.offset[2]);
 

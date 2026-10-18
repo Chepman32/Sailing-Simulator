@@ -183,7 +183,7 @@ export class Simulator {
       this.islands.setDrawScale(this.quality.current === "low" ? 0.7 : 1);
       this.physics = new VesselPhysics(this.ocean, this.islands);
       // Merchant ships and liners passing at a distance, or lying at anchor.
-      this.ships = new ShipSystem(this.scene, this.underwater, distanceFromWaterline);
+      this.ships = new ShipSystem(this.scene, this.underwater, distanceFromWaterline, Math.random, this.quality.current !== "low");
       this.ships.prebuild();
       this.physics.hullClearance = this.ships.hullClearance;
       this.ocean.setShips(this.ships.ships);
