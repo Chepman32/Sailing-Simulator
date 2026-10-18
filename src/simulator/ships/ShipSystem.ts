@@ -3,6 +3,7 @@ import { injectAfter, patchMaterialShader } from "../core/ShaderPatch";
 import type { OceanSample } from "../environment/OceanMath";
 import type { UnderwaterLight } from "../environment/UnderwaterLight";
 import { buildShipGeometry } from "./ShipGeometry";
+import { ShipModels } from "./ShipModels";
 import {
   createShip,
   MAX_SHIPS,
@@ -34,6 +35,9 @@ export type ShipSoundSource = {
 type ShipVisual = {
   root: THREE.Group;
   hull: THREE.Mesh;
+  /** The imported model drawn instead of the procedural hull, once loaded. */
+  model: THREE.Group | null;
+  modelKey: string;
   beacons: THREE.Points;
   material: THREE.MeshStandardMaterial;
   beaconMaterial: THREE.ShaderMaterial;
@@ -62,6 +66,23 @@ const YACHT_OUTLINE: readonly [number, number][] = [
 ];
 
 /**
+ * A ship is a landmark: the sea haze (tuned for the water and the islands)
+ * would melt a vessel three kilometres off into the horizon, so it veils her
+ * at about half strength and her silhouette stays readable.
+ */
+function applyShipHaze(material: THREE.Material): void {
+  patchMaterialShader(material, "ship-haze-v1", (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <fog_fragment>",
+      `#ifdef USE_FOG
+        float shipFog = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth * 0.28 );
+        gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, shipFog );
+      #endif`,
+    );
+  });
+}
+
+/**
  * Owns the ships near the yacht: plans their passages, steps them, draws
  * them (one mesh per ship plus, at night, its points of light), feeds their
  * wakes to the ocean, keeps the yacht out of their hulls and reports their
@@ -84,6 +105,7 @@ export class ShipSystem {
   private time = 0;
   private yachtHeading = 0;
   private readonly retry: number[] = Array.from({ length: MAX_SHIPS }, () => 0);
+  private readonly models: ShipModels;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -95,6 +117,12 @@ export class ShipSystem {
     this.group.name = "DistantShips";
     scene.add(this.group);
     this.world = { shoreDistance, windFrom: 0, time: 0 };
+    // Imported models load in the background; procedural ships stand in.
+    this.models = new ShipModels((material) => {
+      this.underwater.apply(material);
+      applyShipHaze(material);
+    });
+    void this.models.load();
     const kinds = [...SHIP_KINDS].sort(() => this.random() - 0.5);
     for (let slot = 0; slot < MAX_SHIPS; slot += 1) {
       const ship = createShip(kinds[slot % kinds.length]!, this.random);
@@ -210,6 +238,7 @@ export class ShipSystem {
       if (!ship.active) return;
       const key = this.geometryKey(ship);
       if (visual.key !== key) this.assignGeometry(visual, ship);
+      this.assignModel(visual, ship);
       const forwardX = Math.sin(ship.heading);
       const forwardZ = Math.cos(ship.heading);
       const reach = ship.halfLength * 0.7;
@@ -252,6 +281,7 @@ export class ShipSystem {
   }
 
   dispose(): void {
+    this.models.dispose();
     this.scene.remove(this.group);
     this.visuals.forEach((visual) => {
       visual.material.dispose();
@@ -309,6 +339,27 @@ export class ShipSystem {
     return geometry;
   }
 
+  /**
+   * Puts the type's imported model on the ship once it has loaded (the
+   * procedural hull hides; its points of light stay), or the procedural hull
+   * back if the type has none.
+   */
+  private assignModel(visual: ShipVisual, ship: Ship): void {
+    const variants = this.models.variants(ship.kind);
+    const key = variants > 0 ? `${ship.kind}:${ship.scheme % variants}` : "";
+    if (visual.modelKey === key && (visual.model !== null || key === "")) return;
+    const model = key ? this.models.instance(ship.kind, ship.scheme % variants) : null;
+    if (key && !model) {
+      visual.hull.visible = true;
+      return;
+    }
+    visual.model?.removeFromParent();
+    visual.model = model;
+    visual.modelKey = key;
+    if (model) visual.root.add(model);
+    visual.hull.visible = model === null;
+  }
+
   private assignGeometry(visual: ShipVisual, ship: Ship): void {
     const geometry = this.geometry(ship.kind, ship.scheme);
     visual.hull.geometry = geometry.hull;
@@ -343,18 +394,7 @@ export class ShipSystem {
     });
     // Below the waterline the hull is veiled by the sea like everything else.
     this.underwater.apply(material);
-    // A ship is a landmark: the sea haze (tuned for the water and the islands)
-    // would melt a vessel three kilometres off into the horizon, so it veils
-    // her at about half strength and her silhouette stays readable.
-    patchMaterialShader(material, "ship-haze-v1", (shader) => {
-      shader.fragmentShader = shader.fragmentShader.replace(
-        "#include <fog_fragment>",
-        `#ifdef USE_FOG
-          float shipFog = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth * 0.28 );
-          gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, shipFog );
-        #endif`,
-      );
-    });
+    applyShipHaze(material);
     const placeholder = new THREE.BufferGeometry();
     const hull = new THREE.Mesh(placeholder, material);
     hull.castShadow = false;
@@ -402,7 +442,7 @@ export class ShipSystem {
     root.add(hull, beacons);
     root.visible = false;
     this.group.add(root);
-    const visual: ShipVisual = { root, hull, beacons, material, beaconMaterial, anchored, key: "", heave: 0, pitch: 0, roll: 0 };
+    const visual: ShipVisual = { root, hull, model: null, modelKey: "", beacons, material, beaconMaterial, anchored, key: "", heave: 0, pitch: 0, roll: 0 };
     this.assignGeometry(visual, ship);
     placeholder.dispose();
     return visual;

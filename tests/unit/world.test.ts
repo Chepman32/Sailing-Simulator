@@ -369,3 +369,38 @@ test("loop subdivision rounds a skinned mesh, keeps its colours and normalised w
   for (let vertex = 0; vertex < resultColour.count; vertex += 1) values.add(Math.round(resultColour.getX(vertex) * 10));
   assert.deepEqual([...values].sort(), [10, 2], "every child triangle keeps its parent's flat colour");
 });
+
+test("imported ship models are turned bow to +Z, scaled to the type and floated at their draught, sea plane removed", async () => {
+  const M = await import("../../src/simulator/ships/ShipModelMath");
+  const { ShipModels } = await import("../../src/simulator/ships/ShipModels");
+  // Bow axes map onto +Z under three.js's rotation about +Y.
+  for (const bow of ["+x", "-x", "+z", "-z"] as const) {
+    const axis = { "+x": new THREE.Vector3(1, 0, 0), "-x": new THREE.Vector3(-1, 0, 0), "+z": new THREE.Vector3(0, 0, 1), "-z": new THREE.Vector3(0, 0, -1) }[bow];
+    axis.applyAxisAngle(new THREE.Vector3(0, 1, 0), M.bowYaw(bow));
+    assert.ok(axis.distanceTo(new THREE.Vector3(0, 0, 1)) < 1e-9, bow);
+  }
+  // A 40-unit hull along +X, keel at y = 2, on a 200-unit sea plane.
+  const scene = new THREE.Group();
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(40, 6, 6), new THREE.MeshStandardMaterial());
+  hull.position.set(5, 5, 0);
+  hull.name = "Hull";
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(30, 1, 5), new THREE.MeshStandardMaterial());
+  deck.position.set(5, 8.5, 0);
+  const sea = new THREE.Mesh(new THREE.PlaneGeometry(200, 200).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial());
+  sea.name = "Object_12";
+  scene.add(hull, deck, sea);
+  const models = new ShipModels(() => {});
+  const sources = { container: [], tanker: [], cruise: [], bulk: [], carrier: [], lng: [], ferry: [], cargo: [{ url: "cargo.glb", bow: "+x" as const, credit: "test" }] };
+  await models.load({ loadAsync: async () => ({ scene }) as never }, sources);
+  assert.equal(models.variants("cargo"), 1);
+  const ship = models.instance("cargo", 0)!;
+  ship.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(ship);
+  const spec = SHIP_SPECS.cargo;
+  assert.ok(Math.abs(bounds.max.z - bounds.min.z - spec.length) < 1e-6, "as long as the type");
+  assert.ok(Math.abs(bounds.min.y + spec.draft) < 1e-6, "keel at the draught");
+  assert.ok(Math.abs(bounds.max.x - bounds.min.x - (6 * spec.length) / 40) < 1e-6, "the sea plane is gone");
+  assert.ok(Math.abs(bounds.min.z + bounds.max.z) < 1e-6 && Math.abs(bounds.min.x + bounds.max.x) < 1e-6, "centred");
+  assert.equal(models.instance("container", 0), null, "a type without a model keeps the procedural ship");
+  models.dispose();
+});

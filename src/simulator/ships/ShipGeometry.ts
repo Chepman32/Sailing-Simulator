@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { hullHalfWidth, SHIP_SPECS, type ShipKind } from "./ShipMath";
+import { hullHalfWidth, SHIP_SPECS, SHIP_STYLE, type ShipKind, type ShipStyle } from "./ShipMath";
 
 /**
  * Procedural ships: a lofted steel hull with a raked stem, flared bow, sheer
@@ -488,7 +488,7 @@ function funnel(builder: ShipBuilder, z: number, base: number, height: number, r
  * stern, a pale rubbing strake under the deck edge, and the line of the
  * bulwark rail.
  */
-function hullFittings(builder: ShipBuilder, hull: HullOptions, kind: ShipKind): void {
+function hullFittings(builder: ShipBuilder, hull: HullOptions, kind: ShipStyle): void {
   const { halfLength, halfBeam, draft } = hull;
   const white = linear(0xe9e9e4);
   const anchor = linear(0x2a2a2a);
@@ -528,7 +528,7 @@ function hullFittings(builder: ShipBuilder, hull: HullOptions, kind: ShipKind): 
   }
 }
 
-const PAINTS: Record<ShipKind, HullPaint[]> = {
+const PAINTS: Record<ShipStyle, HullPaint[]> = {
   container: [
     { bottom: linear(0x7a2a22), bootTop: linear(0x1d1d1d), topside: linear(0x1f3550), deck: linear(0x55595c) },
     { bottom: linear(0x7a2a22), bootTop: linear(0x1d1d1d), topside: linear(0x2b2d30), deck: linear(0x55595c) },
@@ -570,26 +570,27 @@ export function buildShipGeometry(
   seed = scheme * 17.3 + 4.1,
 ): { hull: THREE.BufferGeometry; beacons: THREE.BufferGeometry } {
   const spec = SHIP_SPECS[kind];
+  const style = SHIP_STYLE[kind];
   const halfLength = spec.length / 2;
   const halfBeam = spec.beam / 2;
-  const paint = PAINTS[kind][scheme % 3]!;
+  const paint = PAINTS[style][scheme % 3]!;
   const builder = new ShipBuilder();
   const hull: HullOptions = {
     halfLength,
     halfBeam,
     draft: spec.draft,
     freeboard: spec.freeboard,
-    sheer: kind === "carrier" ? 1 : 3.2,
-    rake: kind === "cruise" ? 9 : kind === "carrier" ? 5 : 7,
-    flare: kind === "carrier" ? 0.02 : 0.08,
+    sheer: style === "carrier" ? 1 : 3.2,
+    rake: style === "cruise" ? 9 : style === "carrier" ? 5 : 7,
+    flare: style === "carrier" ? 0.02 : 0.08,
     paint,
   };
   buildHull(builder, hull);
   const deck = spec.freeboard;
   const sternLight = (y: number): void => builder.lamp(0, y, -halfLength + 0.5, MASTHEAD, 1, 0.6);
-  hullFittings(builder, hull, kind);
+  hullFittings(builder, hull, style);
 
-  switch (kind) {
+  switch (style) {
     case "container": {
       // Accommodation and bridge well aft, funnel behind them.
       const houseZ = -halfLength * 0.66;

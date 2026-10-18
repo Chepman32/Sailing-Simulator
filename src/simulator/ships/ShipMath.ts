@@ -17,7 +17,23 @@ import { clamp, smoothstep } from "../math";
  * same constants as {@link sampleShipWake}.
  */
 
-export type ShipKind = "container" | "tanker" | "cruise" | "bulk" | "carrier";
+export type ShipKind = "container" | "tanker" | "cruise" | "bulk" | "carrier" | "lng" | "ferry" | "cargo";
+
+/** The procedural designs; every kind is drawn as one of them until its 3D model has loaded. */
+export type ShipStyle = "container" | "tanker" | "cruise" | "bulk" | "carrier";
+
+export const SHIP_STYLE: Record<ShipKind, ShipStyle> = {
+  container: "container",
+  tanker: "tanker",
+  cruise: "cruise",
+  bulk: "bulk",
+  carrier: "carrier",
+  // An LNG carrier is drawn as a tanker, a cruise ferry as a small liner and
+  // a general cargo ship as a small bulk carrier, at their own dimensions.
+  lng: "tanker",
+  ferry: "cruise",
+  cargo: "bulk",
+};
 
 export type ShipSpec = {
   /** Length overall and beam, metres. */
@@ -36,6 +52,9 @@ export const SHIP_SPECS: Record<ShipKind, ShipSpec> = {
   cruise: { length: 330, beam: 40, draft: 9, freeboard: 12, cruiseSpeed: 8.6 },
   bulk: { length: 262, beam: 42, draft: 14, freeboard: 11, cruiseSpeed: 6.8 },
   carrier: { length: 300, beam: 42, draft: 11, freeboard: 30, cruiseSpeed: 8 },
+  lng: { length: 290, beam: 46, draft: 11.5, freeboard: 18, cruiseSpeed: 9.2 },
+  ferry: { length: 201, beam: 32, draft: 6.8, freeboard: 12, cruiseSpeed: 10.5 },
+  cargo: { length: 150, beam: 23, draft: 8.5, freeboard: 7.5, cruiseSpeed: 7.2 },
 };
 
 export const SHIP_KINDS = Object.keys(SHIP_SPECS) as ShipKind[];
