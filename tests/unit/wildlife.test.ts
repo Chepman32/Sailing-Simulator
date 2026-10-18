@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { distanceFromWaterline, ISLAND_DEFINITIONS, waterDepthAt } from "../../src/simulator/environment/IslandMath";
+import { distanceFromWaterline, START_ISLANDS, waterDepthAt } from "../../src/simulator/environment/IslandMath";
 import { OCEAN_WAVES, sampleOcean, seaFactors, surfaceBasePoint } from "../../src/simulator/environment/OceanMath";
 import { surfaceImpactLife, surfaceImpactShape } from "../../src/simulator/environment/SurfaceImpacts";
 import { calculateSplashProfile } from "../../src/simulator/vessel/WakeSystem";
@@ -579,7 +579,7 @@ test("behaviour holds from 20 to 120 frames per second", () => {
 
 /** A yacht skirting island 0 close inshore, so escort slots fall on the reef. */
 function skirtIsland(vessel: VesselState, time: number, offshore: number, speed: number): void {
-  const island = ISLAND_DEFINITIONS[0];
+  const island = START_ISLANDS[0];
   const radiusX = island.beachRadius + offshore;
   const radiusZ = island.beachRadius * island.scaleZ + offshore;
   const perimeter = Math.PI * (radiusX + radiusZ);
@@ -603,7 +603,7 @@ test("dolphins swim around islands and their reefs, never over the beach", () =>
     const pod = createDolphinPod(4, vessel, world, random);
     // Start the pod in open water on the seaward side.
     pod.agents.forEach((agent) => {
-      const island = ISLAND_DEFINITIONS[0];
+      const island = START_ISLANDS[0];
       const dx = agent.motion.x - island.centerX;
       const dz = agent.motion.z - island.centerZ;
       const length = Math.hypot(dx, dz);
@@ -636,7 +636,7 @@ test("dolphins swim around islands and their reefs, never over the beach", () =>
 });
 
 test("sharks and whales keep to deep water off the islands", () => {
-  const island = ISLAND_DEFINITIONS[1];
+  const island = START_ISLANDS[1];
   for (const seed of [4, 21]) {
     const random = seeded(seed);
     const { world, clock } = liveWorld();
@@ -666,7 +666,7 @@ test("sharks and whales keep to deep water off the islands", () => {
 
 // --- Distant breaches ----------------------------------------------------------
 
-test("a distant whale breaches rarely, far from the yacht, on a ballistic arc", async () => {
+test("a distant whale breaches regularly, far from the yacht, on a ballistic arc", async () => {
   const breach = await import("../../src/simulator/wildlife/WhaleBreach");
   const random = seeded(77);
   const { world, clock } = liveWorld();
@@ -704,8 +704,8 @@ test("a distant whale breaches rarely, far from the yacht, on a ballistic arc", 
       assert.ok(Number.isFinite(state.x + state.y + state.z + state.pitch + state.roll));
     }
   }
-  // Forty minutes: a handful of breaches, never a constant show.
-  assert.ok(starts >= 4 && starts <= 16, `${starts} breaches in forty minutes`);
+  // Forty minutes: a breach every minute or two, never a constant show.
+  assert.ok(starts >= 12 && starts <= 30, `${starts} breaches in forty minutes`);
   assert.ok(fastest < 16, `the body moved ${fastest.toFixed(1)} m/s: no jumps`);
   assert.ok(apexes.length >= 4);
   assert.ok(Math.max(...apexes) - Math.min(...apexes) > 1, "breaches differ in height");

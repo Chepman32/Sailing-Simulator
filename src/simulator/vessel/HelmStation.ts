@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { islandEdgeNoise, ISLAND_DEFINITIONS, WATERLINE_RADIAL } from "../environment/IslandMath";
+import { islandEdgeNoise, islandsWithin, WATERLINE_RADIAL, type IslandDefinition } from "../environment/IslandMath";
 import {
   chartProject,
   chartRange,
@@ -143,7 +143,7 @@ export class HelmStation {
   private readonly texture: THREE.CanvasTexture | null;
   private readonly geometries: THREE.BufferGeometry[] = [];
   private readonly materials: THREE.Material[] = [];
-  private readonly coastlines: Float32Array[];
+  private readonly coastlines = new Map<number, Float32Array>();
   private traffic: readonly HelmTraffic[] = [];
   private displayClock = DISPLAY_INTERVAL;
   private range: number = 600;
@@ -163,18 +163,6 @@ export class HelmStation {
       this.texture.colorSpace = THREE.SRGBColorSpace;
       this.texture.anisotropy = 4;
     }
-    // Coast outlines once, in world metres (the chart rotates them each draw).
-    this.coastlines = ISLAND_DEFINITIONS.map((island, index) => {
-      const points = new Float32Array(56 * 2);
-      for (let step = 0; step < 56; step += 1) {
-        const angle = (step / 56) * Math.PI * 2;
-        const radius = island.beachRadius * islandEdgeNoise(angle, index) * WATERLINE_RADIAL;
-        points[step * 2] = island.centerX + Math.cos(angle) * radius;
-        points[step * 2 + 1] = island.centerZ + Math.sin(angle) * radius * island.scaleZ;
-      }
-      return points;
-    });
-
     const composite = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.48, metalness: 0.05 });
     const stainless = new THREE.MeshStandardMaterial({
       vertexColors: true,
@@ -396,6 +384,24 @@ export class HelmStation {
     this.texture.needsUpdate = true;
   }
 
+  /** An island's coast outline in world metres (the chart rotates it each draw), made once. */
+  private coastline(island: IslandDefinition): Float32Array {
+    let points = this.coastlines.get(island.id);
+    if (!points) {
+      points = new Float32Array(56 * 2);
+      for (let step = 0; step < 56; step += 1) {
+        const angle = (step / 56) * Math.PI * 2;
+        const radius = island.beachRadius * islandEdgeNoise(angle, island) * WATERLINE_RADIAL;
+        points[step * 2] = island.centerX + Math.cos(angle) * radius;
+        points[step * 2 + 1] = island.centerZ + Math.sin(angle) * radius * island.scaleZ;
+      }
+      // The world has no edge, so the outlines are kept only for the nearby islands.
+      if (this.coastlines.size > 160) this.coastlines.clear();
+      this.coastlines.set(island.id, points);
+    }
+    return points;
+  }
+
   dispose(): void {
     this.group.removeFromParent();
     this.geometries.forEach((geometry) => geometry.dispose());
@@ -428,9 +434,8 @@ export class HelmStation {
 
     // Shelf first (a ring 60 m out), then the land on it.
     const visible = this.range * 2.2;
-    this.coastlines.forEach((outline, index) => {
-      const island = ISLAND_DEFINITIONS[index]!;
-      if (Math.hypot(island.centerX - data.x, island.centerZ - data.z) - island.beachRadius * 1.6 > visible) return;
+    for (const island of islandsWithin(data.x, data.z, visible)) {
+      const outline = this.coastline(island);
       for (const [fill, grow] of [
         [shelf, 60],
         [land, 0],
@@ -456,7 +461,7 @@ export class HelmStation {
           context.stroke();
         }
       }
-    });
+    }
 
     // Range rings.
     context.strokeStyle = night ? "rgba(140,180,200,0.35)" : "rgba(36,57,74,0.35)";

@@ -39,8 +39,8 @@ export type EnvironmentPalette = {
   rainLight: Rgb;
 };
 
-const DAY_ZENITH: Rgb = [0.03, 0.19, 0.62];
-const DAY_HORIZON: Rgb = [0.3, 0.55, 0.86];
+const DAY_ZENITH: Rgb = [0.018, 0.15, 0.66];
+const DAY_HORIZON: Rgb = [0.24, 0.5, 0.9];
 const NIGHT_ZENITH: Rgb = [0.006, 0.018, 0.056];
 const NIGHT_HORIZON: Rgb = [0.03, 0.072, 0.15];
 const DUSK_HORIZON: Rgb = [0.95, 0.42, 0.17];

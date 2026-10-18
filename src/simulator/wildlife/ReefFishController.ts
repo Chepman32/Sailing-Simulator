@@ -3,7 +3,7 @@ import { SimplifyModifier } from "three/addons/modifiers/SimplifyModifier.js";
 import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import type { AssetManager } from "../core/AssetManager";
 import { injectAfter, patchMaterialShader } from "../core/ShaderPatch";
-import { ISLAND_DEFINITIONS, islandEdgeNoise, waterDepthAt, WATERLINE_RADIAL } from "../environment/IslandMath";
+import { islandEdgeNoise, islandsAround, waterDepthAt, WATERLINE_RADIAL, type IslandDefinition } from "../environment/IslandMath";
 import type { OceanSystem } from "../environment/OceanSystem";
 import type { UnderwaterLight } from "../environment/UnderwaterLight";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
@@ -160,14 +160,15 @@ export class ReefFishController {
 
     this.schools.forEach((school, schoolIndex) => {
       const island = this.nearestIsland(physics.position);
+      if (!island) return;
       this.reefHome(island, physics.position, school.species, schoolIndex, school.home);
       const cameraDistance = Math.hypot(camera.position.x - school.home.x, camera.position.z - school.home.z);
       school.active = cameraDistance < FISH_ACTIVE_DISTANCE;
       school.mesh.visible = school.active;
       if (!school.active) return;
-      if (school.island !== island || this.schoolDistance(school) > RELOCATE_DISTANCE) {
+      if (school.island !== island.id || this.schoolDistance(school) > RELOCATE_DISTANCE) {
         this.spawn(school);
-        school.island = island;
+        school.island = island.id;
       }
       this.world.homeX = school.home.x;
       this.world.homeY = school.home.y;
@@ -211,34 +212,33 @@ export class ReefFishController {
     }
   }
 
-  private nearestIsland(position: THREE.Vector3): number {
-    let best = 0;
+  private nearestIsland(position: THREE.Vector3): IslandDefinition | null {
+    let best: IslandDefinition | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
-    ISLAND_DEFINITIONS.forEach((island, index) => {
+    for (const island of islandsAround(position.x, position.z)) {
       const distance = Math.hypot(position.x - island.centerX, (position.z - island.centerZ) / island.scaleZ) -
         island.beachRadius;
       if (distance < bestDistance) {
         bestDistance = distance;
-        best = index;
+        best = island;
       }
-    });
+    }
     return best;
   }
 
   /** A patch of reef on the shelf facing the yacht, spread by species. */
   private reefHome(
-    islandIndex: number,
+    island: IslandDefinition,
     yacht: THREE.Vector3,
     species: FishSpecies,
     schoolIndex: number,
     target: THREE.Vector3,
   ): void {
-    const island = ISLAND_DEFINITIONS[islandIndex];
     const facing = Math.atan2((yacht.z - island.centerZ) / island.scaleZ, yacht.x - island.centerX);
     // Snap the bearing so the reef patch does not slide as the yacht moves.
     const bearing = Math.round(facing / 0.35) * 0.35 + (schoolIndex - 1.5) * 0.16;
     const radius =
-      island.beachRadius * islandEdgeNoise(bearing, islandIndex) * WATERLINE_RADIAL + species.shoreDistance;
+      island.beachRadius * islandEdgeNoise(bearing, island) * WATERLINE_RADIAL + species.shoreDistance;
     target.set(
       island.centerX + Math.cos(bearing) * radius,
       0,

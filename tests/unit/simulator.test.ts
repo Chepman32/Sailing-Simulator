@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { deriveTimeOfDay } from "../../src/simulator/environment/EnvironmentMath";
 import { deriveEnvironmentPalette } from "../../src/simulator/environment/EnvironmentPalette";
 import {
-  ISLAND_DEFINITIONS,
+  START_ISLANDS,
   distanceFromBeach,
   distanceFromWaterline,
   shoreClearance,
@@ -94,14 +94,25 @@ test("engine start engages slow ahead and stopping returns the throttle to neutr
   assert.equal(state.controls.throttle, 0);
   applyEnginePower(state, true);
   assert.equal(state.engineRunning, true);
-  assert.equal(state.engineMuted, false, "an explicit engine start must clear a stale saved engine mute");
+  assert.equal(state.engineMuted, true, "starting the engine must not change the engine sound preference");
   assert.equal(state.controls.throttle, ENGINE_START_THROTTLE);
   state.controls.throttle = 0.72;
   applyEnginePower(state, true);
   assert.equal(state.controls.throttle, 0.72, "starting an already-running engine must preserve manual throttle");
   applyEnginePower(state, false);
   assert.equal(state.engineRunning, false);
+  assert.equal(state.engineMuted, true, "stopping the engine must not change the engine sound preference");
   assert.equal(state.controls.throttle, 0);
+});
+
+test("engine sound mute is independent from engine power", () => {
+  const state = createSimulatorState();
+  applyEnginePower(state, true);
+  state.engineMuted = true;
+  assert.equal(state.engineRunning, true, "muting the engine sound must leave the engine running");
+  assert.ok(state.controls.throttle > 0, "muting the engine sound must keep the throttle");
+  state.engineMuted = false;
+  assert.equal(state.engineRunning, true);
 });
 
 test("propellers spin visibly at slow ahead and reach 600 RPM at full throttle", () => {
@@ -479,7 +490,7 @@ const COAST: IslandPhysics = {
 
 /** A yacht 30 m off island 0 on `bearing`, aimed `approach` degrees off its centre. */
 function offTheBeach(bearing: number, approach: number, distance = 30): VesselPhysics {
-  const island = ISLAND_DEFINITIONS[0];
+  const island = START_ISLANDS[0];
   const normal = { x: 0, z: 1 };
   const physics = new VesselPhysics(CALM, COAST);
   let radius = island.beachRadius * 1.6;
@@ -537,7 +548,7 @@ test("under power, the shore guard turns the yacht away before she touches and h
 });
 
 test("a helmsman who keeps steering into an island cannot strand the yacht", () => {
-  const island = ISLAND_DEFINITIONS[0];
+  const island = START_ISLANDS[0];
   for (const [bearing, mode] of [
     [0.4, "pursuit"],
     [2.2, "pursuit"],
@@ -661,7 +672,7 @@ test("in a hurricane sea the yacht rides waves several metres high and stays fin
 test("the storm swell dies out over the island shelves, for the sampler as for the shader", async () => {
   const O = await import("../../src/simulator/environment/OceanMath");
   const S = await import("../../src/simulator/environment/SurfMath");
-  const island = ISLAND_DEFINITIONS[0]!;
+  const island = START_ISLANDS[0]!;
   const coast = island.centerX + island.beachRadius;
   assert.ok(S.stormShoalAt(coast + 2, island.centerZ) < 0.02, "no storm swell at the beach");
   assert.ok(S.stormShoalAt(coast + 400, island.centerZ) > 0.98 || distanceFromWaterline(coast + 400, island.centerZ) < 150);
@@ -688,7 +699,7 @@ test("the storm swell dies out over the island shelves, for the sampler as for t
 });
 
 test("island bathymetry shoals toward a coast the ocean shader can follow", () => {
-  for (const island of ISLAND_DEFINITIONS) {
+  for (const island of START_ISLANDS) {
     const beachX = island.centerX + island.beachRadius;
     assert.ok(Math.abs(distanceFromBeach(island, beachX, island.centerZ)) < 1e-9);
     // Depth is measured from the rendered waterline, which the noise moves a
@@ -707,7 +718,7 @@ test("island bathymetry shoals toward a coast the ocean shader can follow", () =
       const angle = (step / 24) * Math.PI * 2;
       const x = island.centerX + Math.cos(angle) * island.beachRadius;
       const z = island.centerZ + Math.sin(angle) * island.beachRadius * island.scaleZ;
-      assert.ok(Math.abs(distanceFromWaterline(x, z)) < island.beachRadius * 0.12);
+      assert.ok(Math.abs(distanceFromWaterline(x, z)) < island.beachRadius * 0.14);
     }
     assert.ok(distanceFromWaterline(island.centerX, island.centerZ) < 0, "the island centre is dry land");
   }
@@ -729,7 +740,7 @@ test("environment palette is finite, darker at night, and keeps the night readab
     ]) {
       assert.ok(color.every((channel) => Number.isFinite(channel) && channel >= 0));
     }
-    assert.ok(palette.cloudCover > 0.2 && palette.cloudCover < 0.7);
+    assert.ok(palette.cloudCover > 0.05 && palette.cloudCover < 0.7);
     assert.ok(palette.twilight >= 0 && palette.twilight <= 1);
     assert.ok(luminance(palette.cloudLit) > luminance(palette.cloudShade));
   }

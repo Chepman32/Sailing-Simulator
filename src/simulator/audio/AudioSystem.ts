@@ -421,40 +421,102 @@ export class AudioSystem {
     panner.connect(this.environmentBus);
     const air = context.createBiquadFilter();
     air.type = "lowpass";
-    air.frequency.value = 500 + 3000 * Math.exp(-distance / 500);
+    air.frequency.value = 450 + 3400 * Math.exp(-distance / 600);
     air.Q.value = 0.5;
     air.connect(panner);
+    // The open sea gives a big whistle a long, soft tail: one slow echo off the
+    // water and the haze, darker with every repeat.
+    const echo = context.createDelay(1.5);
+    echo.delayTime.value = 0.42;
+    const echoDamp = context.createBiquadFilter();
+    echoDamp.type = "lowpass";
+    echoDamp.frequency.value = 700;
+    const echoGain = context.createGain();
+    echoGain.gain.value = 0.34;
     const envelope = context.createGain();
     envelope.gain.value = 0.0001;
     envelope.connect(air);
-    // Two reeds a little apart in pitch, the larger the ship the lower.
-    const fundamental = clamp(118 - (length - 180) * 0.25, 70, 130);
-    const tones = [fundamental, fundamental * 1.26].map((frequency) => {
+    envelope.connect(echo);
+    echo.connect(echoDamp).connect(echoGain).connect(air);
+    echoGain.connect(echo);
+    // A ship's whistle is a stack of air horns tuned to a chord (a fundamental,
+    // its fifth and its octave), each a tube whose resonance lifts the partials
+    // around 400–600 Hz. The larger the ship, the lower the chord.
+    const fundamental = clamp(92 - (length - 180) * 0.2, 55, 108);
+    const chord: [number, number, number][] = [
+      [fundamental, 1, -0.6],
+      [fundamental * 1.498, 0.8, 0.5],
+      [fundamental * 2, 0.55, -0.3],
+      [fundamental * 2.003, 0.35, 0.9],
+    ];
+    const blasts: [number, number][] = signal === "prolonged" ? [[0, 5.2]] : [0, 1, 2, 3, 4].map((index) => [index * 1.7, 0.95]);
+    let end = 0;
+    for (const [offset, duration] of blasts) end = Math.max(end, offset + duration);
+    const tones = chord.map(([frequency, weight, detune]) => {
+      const harmonics = Math.min(40, Math.floor(7000 / frequency));
+      const real = new Float32Array(harmonics + 1);
+      const imaginary = new Float32Array(harmonics + 1);
+      for (let n = 1; n <= harmonics; n += 1) {
+        const partial = n * frequency;
+        const resonance = 1 + 2.4 * Math.exp(-(((partial - 520) / 280) ** 2));
+        imaginary[n] = (resonance / Math.pow(n, 0.85)) * (n % 2 === 0 ? 0.8 : 1);
+      }
       const tone = context.createOscillator();
-      tone.type = "sawtooth";
-      tone.frequency.value = frequency;
-      const formant = context.createBiquadFilter();
-      formant.type = "bandpass";
-      formant.frequency.value = frequency * 4;
-      formant.Q.value = 0.9;
-      tone.connect(formant).connect(envelope);
+      tone.setPeriodicWave(context.createPeriodicWave(real, imaginary));
+      tone.detune.value = detune * 4;
+      const gain = context.createGain();
+      gain.gain.value = weight * 0.34;
+      tone.connect(gain).connect(envelope);
+      for (const [offset, duration] of blasts) {
+        const t0 = start + offset;
+        // Air fills the horn: the pitch starts flat and settles in as the tube sounds.
+        tone.frequency.setValueAtTime(frequency * 0.9, t0);
+        tone.frequency.exponentialRampToValueAtTime(frequency, t0 + 0.22);
+        tone.frequency.setValueAtTime(frequency, t0 + duration - 0.1);
+        tone.frequency.exponentialRampToValueAtTime(frequency * 0.94, t0 + duration + 0.45);
+      }
       return tone;
     });
-    const blasts: [number, number][] = signal === "prolonged" ? [[0, 4.8]] : [0, 1, 2, 3, 4].map((index) => [index * 1.6, 0.85]);
-    let end = 0;
     for (const [offset, duration] of blasts) {
       const t0 = start + offset;
       envelope.gain.setValueAtTime(0.0001, t0);
-      envelope.gain.exponentialRampToValueAtTime(level, t0 + 0.12);
-      envelope.gain.setValueAtTime(level, t0 + duration - 0.15);
-      envelope.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
-      end = Math.max(end, offset + duration);
+      envelope.gain.exponentialRampToValueAtTime(level * 0.55, t0 + 0.14);
+      envelope.gain.exponentialRampToValueAtTime(level, t0 + 0.42);
+      envelope.gain.setValueAtTime(level, t0 + duration - 0.1);
+      envelope.gain.exponentialRampToValueAtTime(0.0001, t0 + duration + 0.45);
     }
+    // The rush of air as the valve opens, at the start of each blast.
+    const breath = context.createBufferSource();
+    breath.buffer = this.createNoiseBuffer(0.4);
+    const breathFilter = context.createBiquadFilter();
+    breathFilter.type = "bandpass";
+    breathFilter.frequency.value = 900;
+    breathFilter.Q.value = 0.6;
+    const breathGain = context.createGain();
+    breathGain.gain.value = 0.0001;
+    breath.connect(breathFilter).connect(breathGain).connect(air);
+    for (const [offset] of blasts) {
+      const t0 = start + offset;
+      breathGain.gain.setValueAtTime(0.0001, t0);
+      breathGain.gain.exponentialRampToValueAtTime(level * 0.16, t0 + 0.05);
+      breathGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.38);
+    }
+    breath.start(start);
+    breath.stop(start + 0.4);
+    // Each blast's breath needs its own noise: replay the same buffer.
+    for (const [offset] of blasts.slice(1)) {
+      const again = context.createBufferSource();
+      again.buffer = breath.buffer;
+      again.connect(breathFilter);
+      again.start(start + offset);
+      again.stop(start + offset + 0.4);
+    }
+    end += 0.5;
     tones.forEach((tone) => {
       tone.start(start);
-      tone.stop(start + end + 0.1);
+      tone.stop(start + end + 2.2);
     });
-    window.setTimeout(() => panner.disconnect(), (distance / SPEED_OF_SOUND + end + 0.6) * 1000);
+    window.setTimeout(() => panner.disconnect(), (distance / SPEED_OF_SOUND + end + 4.5) * 1000);
   }
 
   /**

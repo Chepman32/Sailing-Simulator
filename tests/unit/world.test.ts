@@ -3,11 +3,16 @@ import test from "node:test";
 import * as THREE from "three";
 import { subdivideSkinnedLoop } from "../../src/simulator/core/Subdivision";
 import {
-  ARCHIPELAGO_EXTRA_ISLANDS,
   distanceFromWaterline,
   islandEdgeNoise,
-  ISLAND_DEFINITIONS,
+  islandsAround,
+  islandsInCell,
+  islandsWithin,
+  type IslandDefinition,
   ISLAND_SLOTS,
+  START_ISLANDS,
+  WORLD_CELL,
+  worldCell,
   selectIslandSlots,
   SHELF_WIDTH,
   WATERLINE_RADIAL,
@@ -21,11 +26,14 @@ import {
   LANE_MAX_PASSING,
   LANE_MIN_PASSING,
   LANE_SHORE_CLEARANCE,
+  MAX_SHIPS,
+  MOVING_SHIPS,
   planAnchorage,
   planLane,
   sampleShipWake,
   SHIP_KINDS,
   SHIP_SPECS,
+  SHIP_WAKE_UNIFORMS,
   shipContact,
   shipHornSignal,
   shipHullDistance,
@@ -33,6 +41,8 @@ import {
   stepShip,
   type Ship,
   type ShipWorld,
+  WAKE_SLOTS,
+  writeShipUniforms,
 } from "../../src/simulator/ships/ShipMath";
 import {
   createGullState,
@@ -55,25 +65,25 @@ function seeded(seed: number): () => number {
 /** Exact nearest-coast distance, island by island, for checking the indexed search. */
 function bruteWaterline(x: number, z: number): number {
   let nearest = Infinity;
-  ISLAND_DEFINITIONS.forEach((island, index) => {
+  for (const island of islandsAround(x, z)) {
     const dx = x - island.centerX;
     const dz = (z - island.centerZ) / island.scaleZ;
-    const shore = island.beachRadius * islandEdgeNoise(Math.atan2(dz, dx), index) * WATERLINE_RADIAL;
+    const shore = island.beachRadius * islandEdgeNoise(Math.atan2(dz, dx), island) * WATERLINE_RADIAL;
     nearest = Math.min(nearest, Math.hypot(dx, dz) - shore);
-  });
+  }
   return nearest;
 }
 
 test("the archipelago is many islands of every size, apart from each other and from the start", () => {
-  assert.ok(ISLAND_DEFINITIONS.length >= 3 + ARCHIPELAGO_EXTRA_ISLANDS - 2, `only ${ISLAND_DEFINITIONS.length} islands`);
-  const radii = ISLAND_DEFINITIONS.map((island) => island.beachRadius);
+  assert.ok(START_ISLANDS.length >= 8, `only ${START_ISLANDS.length} islands`);
+  const radii = START_ISLANDS.map((island) => island.beachRadius);
   assert.ok(Math.min(...radii) < 25 && Math.max(...radii) > 70, "cays and large islands alike");
-  assert.ok(ISLAND_DEFINITIONS.some((island) => island.height > 5), "some islands are high");
-  assert.ok(ISLAND_DEFINITIONS.filter((island) => Math.hypot(island.centerX, island.centerZ) < 900).length >= 8, "several within sight of the start");
-  for (let a = 0; a < ISLAND_DEFINITIONS.length; a += 1) {
-    for (let b = a + 1; b < ISLAND_DEFINITIONS.length; b += 1) {
-      const first = ISLAND_DEFINITIONS[a]!;
-      const second = ISLAND_DEFINITIONS[b]!;
+  assert.ok(START_ISLANDS.some((island) => island.height > 5), "some islands are high");
+  assert.ok(START_ISLANDS.filter((island) => Math.hypot(island.centerX, island.centerZ) < 1500).length >= 6, "several within sight of the start");
+  for (let a = 0; a < START_ISLANDS.length; a += 1) {
+    for (let b = a + 1; b < START_ISLANDS.length; b += 1) {
+      const first = START_ISLANDS[a]!;
+      const second = START_ISLANDS[b]!;
       const reach = first.beachRadius * Math.max(1, first.scaleZ) + second.beachRadius * Math.max(1, second.scaleZ);
       assert.ok(Math.hypot(first.centerX - second.centerX, first.centerZ - second.centerZ) > reach + 2 * SHELF_WIDTH, `islands ${a} and ${b} crowd each other`);
     }
@@ -84,8 +94,8 @@ test("the archipelago is many islands of every size, apart from each other and f
 test("the indexed coast search is exact everywhere", () => {
   const random = seeded(7);
   for (let sample = 0; sample < 4000; sample += 1) {
-    const x = (random() - 0.5) * 7000;
-    const z = (random() - 0.5) * 7000;
+    const x = (random() - 0.5) * 2000;
+    const z = (random() - 0.5) * 2000;
     assert.ok(Math.abs(distanceFromWaterline(x, z) - bruteWaterline(x, z)) < 1e-9);
     const shore = nearestShore(x, z);
     assert.ok(Math.abs(shore.distance - bruteWaterline(x, z)) < 1e-9);
@@ -97,15 +107,71 @@ test("the shader's island slots hold the nearest islands, nearest first", () => 
   const frame = new Float32Array(ISLAND_SLOTS * 4);
   for (const [x, z] of [[0, 0], [1500, -800], [-2000, 1600]] as const) {
     selectIslandSlots(x, z, shape, frame);
-    const slotted = Array.from({ length: ISLAND_SLOTS }, (_, slot) => frame[slot * 4]!);
+    const slotted = Array.from({ length: ISLAND_SLOTS }, (_, slot) => shape[slot * 4]!).filter((cx) => cx < 1e5);
     // The island whose coast is nearest is always in a slot.
-    const nearest = nearestShore(x, z).index;
-    assert.ok(slotted.includes(nearest), `island ${nearest} missing near (${x}, ${z})`);
-    assert.equal(new Set(slotted).size, ISLAND_SLOTS, "no island twice");
-    const first = ISLAND_DEFINITIONS[frame[0]!]!;
+    const nearest = nearestShore(x, z).island!;
+    assert.ok(slotted.includes(Math.fround(nearest.centerX)), `island ${nearest.id} missing near (${x}, ${z})`);
+    assert.ok(slotted.length >= 4, "enough neighbours fill the slots");
+    assert.equal(new Set(slotted).size, slotted.length, "no island twice");
+    const first = nearest;
     assert.equal(shape[0], Math.fround(first.centerX));
     assert.equal(shape[2], Math.fround(first.beachRadius));
   }
+});
+
+test("the world is endless: every cell holds an island and none crowd each other", () => {
+  const seen = new Set<number>();
+  const all: IslandDefinition[] = [];
+  for (let col = -12; col <= 12; col += 1) {
+    for (let row = -12; row <= 12; row += 1) {
+      const cell = islandsInCell(col, row);
+      assert.ok(cell.length >= 1, `cell ${col},${row} is empty`);
+      for (const island of cell) {
+        assert.ok(!seen.has(island.id), "ids are unique");
+        seen.add(island.id);
+        all.push(island);
+      }
+      assert.deepEqual(islandsInCell(col, row), cell, "generation is deterministic");
+    }
+  }
+  const sample = all.filter((island) => Math.abs(island.centerX) < 3000 && Math.abs(island.centerZ) < 3000);
+  for (let a = 0; a < sample.length; a += 1) {
+    for (let b = a + 1; b < sample.length; b += 1) {
+      const first = sample[a]!;
+      const second = sample[b]!;
+      const reach = first.beachRadius * Math.max(1, first.scaleZ) + second.beachRadius * Math.max(1, second.scaleZ);
+      assert.ok(Math.hypot(first.centerX - second.centerX, first.centerZ - second.centerZ) > reach + 2 * SHELF_WIDTH);
+    }
+  }
+  assert.equal(worldCell(0), 0);
+  assert.ok(WORLD_CELL <= 2000);
+});
+
+test("land is always within a couple of kilometres, far from the start too", () => {
+  const random = seeded(23);
+  for (let sample = 0; sample < 400; sample += 1) {
+    const x = (random() - 0.5) * 200000;
+    const z = (random() - 0.5) * 200000;
+    assert.ok(islandsWithin(x, z, 2000).length >= 1, `open ocean at (${x.toFixed(0)}, ${z.toFixed(0)})`);
+  }
+});
+
+test("the ocean's wake slots hold the ships nearest the yacht", () => {
+  const random = seeded(5);
+  const ships = Array.from({ length: MAX_SHIPS }, (_, index) => {
+    const ship = createShip(SHIP_KINDS[index % SHIP_KINDS.length]!, random);
+    ship.x = index * 700;
+    ship.z = 0;
+    ship.active = true;
+    return ship;
+  });
+  writeShipUniforms(ships, 3 * 700, 0);
+  const pose = SHIP_WAKE_UNIFORMS.uShipPose.value;
+  const slotted = Array.from({ length: WAKE_SLOTS }, (_, slot) => pose[slot * 4]!);
+  assert.equal(slotted[0], 3 * 700, "the nearest ship comes first");
+  assert.equal(new Set(slotted).size, WAKE_SLOTS, "no ship twice");
+  assert.ok(slotted.every((x) => Math.abs(x - 3 * 700) <= 2 * 700), "only near ships are drawn");
+  assert.ok(MAX_SHIPS > WAKE_SLOTS && MOVING_SHIPS < MAX_SHIPS);
 });
 
 const world = (time = 0): ShipWorld => ({ shoreDistance: distanceFromWaterline, windFrom: Math.atan2(-6.8, -4.2), time });

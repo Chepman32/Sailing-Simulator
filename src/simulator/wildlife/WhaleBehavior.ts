@@ -111,7 +111,7 @@ export const WHALE_LIMITS: Swimmer3DLimits = {
 };
 
 /** Minimum time between two lobtailing displays, seconds. */
-export const WHALE_SLAP_COOLDOWN = 50;
+export const WHALE_SLAP_COOLDOWN = 30;
 
 type TailJoint = { angle: number; rate: number };
 

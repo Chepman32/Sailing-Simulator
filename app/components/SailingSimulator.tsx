@@ -449,7 +449,7 @@ export function SailingSimulator() {
     const activeThrottle = running && Math.abs(displayedThrottle) <= 0.08 ? 0.12 : displayedThrottle;
     showNotice(
       running
-        ? `${messages.engine}: ${messages.on} · ${throttleLabel(activeThrottle, messages)} · ${messages.engineSound}: ${messages.on}`
+        ? `${messages.engine}: ${messages.on} · ${throttleLabel(activeThrottle, messages)}`
         : `${messages.engine}: ${messages.off} · ${messages.throttle}: ${messages.neutral}`,
     );
     navigator.vibrate?.(running ? 24 : 14);
@@ -732,16 +732,6 @@ export function SailingSimulator() {
                 <button
                   type="button"
                   className="quiet-button icon-control"
-                  aria-label={`${messages.engine}: ${engineInput ? messages.stop : messages.start}`}
-                  title={`${messages.engine}: ${engineInput ? messages.stop : messages.start}`}
-                  aria-pressed={engineInput}
-                  disabled={!loading.ready}
-                  onPointerDown={() => simulatorRef.current?.resumeAudioFromGesture()}
-                  onClick={() => setEngineRunning(!engineInput)}
-                ><ControlIcon name="power" /></button>
-                <button
-                  type="button"
-                  className="quiet-button icon-control"
                   aria-label={snapshot.soundEnabled ? (snapshot.audioReady ? `${messages.sound}: ${messages.on}` : messages.tapSound) : `${messages.sound}: ${messages.off}`}
                   title={snapshot.soundEnabled ? (snapshot.audioReady ? `${messages.sound}: ${messages.on}` : messages.tapSound) : `${messages.sound}: ${messages.off}`}
                   aria-pressed={snapshot.soundEnabled && snapshot.audioReady}
@@ -758,6 +748,7 @@ export function SailingSimulator() {
                   title={`${messages.engineSound}: ${snapshot.engineMuted ? messages.off : messages.on}`}
                   aria-pressed={!snapshot.engineMuted}
                   onClick={() => {
+                    // Sound only: this never starts, stops or throttles the engine.
                     simulatorRef.current?.setEngineMuted(!snapshot.engineMuted);
                     showNotice(`${messages.engineSound}: ${snapshot.engineMuted ? messages.on : messages.off}`);
                   }}

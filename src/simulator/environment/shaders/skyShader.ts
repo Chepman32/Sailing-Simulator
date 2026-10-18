@@ -119,7 +119,9 @@ export const SKY_FUNCTIONS = /* glsl */ `
 
     float shape = detail > 0.5 ? skyFbm5(uv) : skyFbm3(uv);
     float threshold = 1.0 - uCloudCover;
-    float density = smoothstep(threshold - 0.02, threshold + 0.14, shape);
+    // A clear sky holds a few small, crisp cumulus; a heavy one a soft blanket.
+    float edge = mix(0.045, 0.14, smoothstep(0.1, 0.5, uCloudCover));
+    float density = smoothstep(threshold - 0.02, threshold + edge, shape);
     if (density <= 0.001) return vec4(0.0);
 
     // Self-shadowing: compare against the density one step toward the light.
@@ -214,6 +216,50 @@ const CELESTIAL_FUNCTIONS = /* glsl */ `
     return value;
   }
 
+  // Soft ellipse of the given centre, radii and tilt, 1 inside and 0 outside,
+  // its edge roughened so a sea has a coast and not a contour.
+  float moonBlob(vec2 p, vec2 centre, vec2 radii, float tilt, float rough) {
+    vec2 d = p - centre;
+    float c = cos(tilt);
+    float s = sin(tilt);
+    d = vec2(c * d.x + s * d.y, -s * d.x + c * d.y) / radii;
+    float r = length(d) * (1.0 + (skyNoise(p * 9.0 + centre * 31.0) - 0.5) * rough);
+    return 1.0 - smoothstep(0.8, 1.0, r);
+  }
+
+  // The dark seas where the real ones lie on the face seen from Earth, so the
+  // moon reads at once as the moon: Imbrium, Serenitatis, Tranquillitatis,
+  // Crisium, Fecunditatis, Nectaris, Procellarum, Nubium, Humorum, Vaporum.
+  float moonSeas(vec2 p) {
+    // Warp the plane so every coast is ragged.
+    p += (vec2(skyNoise(p * 4.0 + 2.1), skyNoise(p * 4.0 - 6.3)) - 0.5) * 0.11;
+    float sea = 0.0;
+    sea = max(sea, moonBlob(p, vec2(-0.30, 0.40), vec2(0.30, 0.25), 0.2, 0.35));
+    sea = max(sea, moonBlob(p, vec2(0.10, 0.45), vec2(0.17, 0.16), 0.0, 0.3));
+    sea = max(sea, moonBlob(p, vec2(0.30, 0.20), vec2(0.25, 0.16), -0.5, 0.35));
+    sea = max(sea, moonBlob(p, vec2(0.02, 0.22), vec2(0.13, 0.09), 0.3, 0.3));
+    sea = max(sea, moonBlob(p, vec2(0.70, 0.32), vec2(0.12, 0.08), 0.9, 0.2));
+    sea = max(sea, moonBlob(p, vec2(0.60, -0.08), vec2(0.16, 0.12), -0.7, 0.35));
+    sea = max(sea, moonBlob(p, vec2(0.40, -0.12), vec2(0.09, 0.08), 0.0, 0.2));
+    sea = max(sea, moonBlob(p, vec2(-0.66, 0.08), vec2(0.19, 0.36), 0.25, 0.45));
+    sea = max(sea, moonBlob(p, vec2(-0.52, 0.30), vec2(0.2, 0.14), 0.4, 0.35));
+    sea = max(sea, moonBlob(p, vec2(-0.45, -0.12), vec2(0.18, 0.13), 0.3, 0.35));
+    sea = max(sea, moonBlob(p, vec2(-0.22, -0.36), vec2(0.18, 0.13), 0.0, 0.35));
+    sea = max(sea, moonBlob(p, vec2(-0.52, -0.40), vec2(0.11, 0.1), 0.0, 0.3));
+    sea = max(sea, moonBlob(p, vec2(-0.10, 0.76), vec2(0.36, 0.05), 0.1, 0.3) * 0.75);
+    return sea;
+  }
+
+  // A bright young crater with the rays thrown out of it.
+  float moonRayCrater(vec2 p, vec2 centre, float radius, float rayLength) {
+    vec2 d = p - centre;
+    float r = length(d);
+    float angle = atan(d.y, d.x);
+    float rays = pow(max(skyNoise(vec2(angle * 4.0, 3.7)), 0.0), 2.0) * exp(-r / rayLength);
+    float bowl = 1.0 - smoothstep(radius * 0.6, radius * 1.4, r);
+    return rays * 0.5 * smoothstep(radius * 0.8, radius * 2.0, r) + bowl * 0.4;
+  }
+
   vec3 skyCelestial(vec3 direction) {
     vec3 light = vec3(0.0);
     // Pixel size in radians, for edges that stay crisp but never alias.
@@ -236,16 +282,27 @@ const CELESTIAL_FUNCTIONS = /* glsl */ `
     }
 
     if (dot(uMoonDisc, uMoonDisc) > 0.0 && dot(direction, uMoonDirection) > 0.0) {
-      vec2 local = bodyFrame(direction, uMoonDirection) / MOON_RADIUS;
+      // Seen from the ground, the face is not mirrored: east is to the right.
+      vec2 local = bodyFrame(direction, uMoonDirection) / MOON_RADIUS * vec2(-1.0, 1.0);
       float radial = length(local);
       float edge = 1.0 - smoothstep(1.0 - pixel / MOON_RADIUS, 1.0 + pixel / MOON_RADIUS, radial);
       if (edge > 0.0) {
-        // Maria: broad dark seas in the bright highlands; craters of three
-        // sizes over both, the large ones sparse; fine mottling; a soft limb.
-        float seas = smoothstep(0.36, 0.5, skyFbm3(local * 1.5 + vec2(3.1, 7.7)));
-        float surface = moonCraters(local, 2.3, 0.4) * 1.2 + moonCraters(local, 5.2, 0.45) * 0.8 + moonCraters(local, 12.0, 0.45) * 0.4;
-        float mottling = (skyFbm3(local * 11.0 + 5.2) - 0.5) * 0.12;
-        float albedo = clamp(0.92 - seas * 0.42 + surface * (1.0 - seas * 0.4) + mottling, 0.25, 1.15);
+        // The familiar face: dark seas in bright highlands, a few large
+        // craters with rays, many small ones, fine mottling, a soft limb.
+        float seas = moonSeas(local);
+        float surface = moonCraters(local, 3.4, 0.34) * 0.55 + moonCraters(local, 8.0, 0.4) * 0.4 + moonCraters(local, 19.0, 0.4) * 0.22;
+        // Fewer craters on the smooth seas; the highlands are saturated with them.
+        surface *= 1.0 - seas * 0.7;
+        float bright = moonRayCrater(local, vec2(-0.14, -0.66), 0.055, 0.6)
+          + moonRayCrater(local, vec2(-0.42, 0.14), 0.035, 0.22)
+          + moonRayCrater(local, vec2(-0.78, 0.26), 0.03, 0.12)
+          + moonRayCrater(local, vec2(0.20, 0.52), 0.025, 0.1);
+        float mottling = (skyFbm3(local * 7.0 + 5.2) - 0.5) * 0.2 + (skyFbm3(local * 21.0) - 0.5) * 0.08;
+        float seaTone = 0.5 + (skyFbm3(local * 4.0 + 8.0) - 0.5) * 0.25;
+        float albedo = mix(0.7 + mottling * 1.3, seaTone * 0.5, seas);
+        albedo = clamp(albedo + surface + bright * (1.0 - seas * 0.5), 0.2, 1.12);
+        // Limb: the edge is darker and slightly redder.
+        albedo *= mix(1.0, 0.82, smoothstep(0.8, 1.0, radial));
         float mu = sqrt(max(0.0, 1.0 - radial * radial));
         light += uMoonDisc * albedo * (0.8 + 0.2 * mu) * edge;
       }

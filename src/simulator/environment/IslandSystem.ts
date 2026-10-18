@@ -12,30 +12,28 @@ import {
   type IslandSurfaceUniforms,
 } from "./IslandSurface";
 import {
-  ISLAND_DEFINITIONS,
   islandEdgeNoise,
+  islandsAround,
+  islandsWithin,
   selectIslandSlots,
   shoreClearance,
   terrainNoise,
   waterDepthAt,
+  type IslandDefinition,
 } from "./IslandMath";
 import { ISLAND_SLOT_UNIFORMS } from "./SurfMath";
 
-type IslandObstacle = {
-  center: THREE.Vector2;
-  beachRadius: number;
-  scaleZ: number;
-  height: number;
-};
-
 type PalmWindUniform = { value: number };
 
-const ISLANDS: readonly IslandObstacle[] = ISLAND_DEFINITIONS.map((island) => ({
-  center: new THREE.Vector2(island.centerX, island.centerZ),
-  beachRadius: island.beachRadius,
-  scaleZ: island.scaleZ,
-  height: island.height,
-}));
+/** What one streamed-in island owns: its terrain, its grove and the trunks that darken the sand. */
+type IslandVisual = {
+  definition: IslandDefinition;
+  group: THREE.Group;
+  holder: THREE.Group;
+  lod: THREE.LOD;
+  batches: THREE.Mesh[];
+  trunks: THREE.Vector4[];
+};
 
 export const MAX_VISIBLE_TERRAIN_RADIUS_SCALE = 1.06;
 
@@ -51,8 +49,14 @@ export const GROVE_DRAW_DISTANCE = 1300;
 const MIRROR_DISTANCE = 650;
 /** Beyond this the island terrain is drawn from its coarse mesh. */
 const TERRAIN_LOD_DISTANCE = 380;
-/** Groves are merged per square of this side, so a cluster off screen is culled as a whole. */
-const GROVE_CELL = 1500;
+/** Islands whose beach lies within this distance of the yacht are built, so they are ready long before they show. */
+export const ISLAND_BUILD_RADIUS = ISLAND_DRAW_DISTANCE + 450;
+/** Built islands farther than this from the yacht are released. */
+export const ISLAND_RELEASE_RADIUS = ISLAND_BUILD_RADIUS + 500;
+/** The wanted set of islands is recomputed after the yacht has moved this far, metres. */
+const STREAM_STEP = 90;
+/** Islands built per frame while sailing (all of them while loading). */
+const BUILDS_PER_FRAME = 1;
 /** Palms stay inside this fraction of the beach radius, clear of the swash. */
 const PALM_MAX_RADIAL = 0.66;
 const GOLDEN_ANGLE = 2.399963229728653;
@@ -67,20 +71,23 @@ export class IslandSystem {
   private readonly surface: IslandSurfaceUniforms = createIslandSurfaceUniforms();
   private readonly palmShadows: PalmShadowMap;
   /** Every trunk's foot (x, y, z, radius); the nearest fill the contact-shading slots. */
-  private readonly trunks: THREE.Vector4[] = [];
-  private readonly terrains: THREE.Mesh[] = [];
-  private readonly terrainLods: THREE.LOD[] = [];
+  private trunks: THREE.Vector4[] = [];
+  /** The islands built so far, by id: the world is streamed in around the yacht. */
+  private readonly built = new Map<number, IslandVisual>();
+  private readonly pending: IslandDefinition[] = [];
+  private streamX = Number.NaN;
+  private streamZ = Number.NaN;
   /** Fraction of the full draw distances (shorter on the low preset). */
   private drawScale = 1;
   /** Islands and groves too far to show in the water's mirror (see `update`). */
   readonly farFromMirror: THREE.Object3D[] = [];
-  private readonly groves: THREE.Mesh[] = [];
+  private groves: THREE.Mesh[] = [];
   private readonly terrainMaterial: THREE.MeshStandardMaterial;
   private seabed!: THREE.Mesh;
 
   constructor(
     private readonly scene: THREE.Scene,
-    assets: AssetManager,
+    private readonly assets: AssetManager,
     private readonly underwater: UnderwaterLight,
     private readonly sky: Record<string, THREE.IUniform>,
     shadowMapSize: number,
@@ -102,11 +109,65 @@ export class IslandSystem {
     this.underwater.apply(this.terrainMaterial);
     // Sand grain, wet sand, the swash and the palms' shadows.
     applyIslandSurface(this.terrainMaterial, this.surface, this.sky);
-    const palmParts: THREE.Mesh[] = [];
-    ISLANDS.forEach((island, index) => this.createIsland(island, index, assets, palmParts));
-    this.mergeGroves(palmParts);
     this.palmShadows = new PalmShadowMap(scene, this.surface, shadowMapSize);
+    // Everything around the start is built before the first frame.
+    this.stream(0, 0, Number.POSITIVE_INFINITY);
     selectIslandSlots(0, 0, ISLAND_SLOT_UNIFORMS.uIslandShape.value, ISLAND_SLOT_UNIFORMS.uIslandFrame.value);
+  }
+
+  /**
+   * Keeps the islands around (focusX, focusZ) built and releases the ones the
+   * yacht has left far behind. The world has no edge: islands come from the
+   * deterministic generator in `IslandMath`, a few per frame at most.
+   */
+  private stream(focusX: number, focusZ: number, budget: number): void {
+    if (!(Math.hypot(focusX - this.streamX, focusZ - this.streamZ) < STREAM_STEP)) {
+      this.streamX = focusX;
+      this.streamZ = focusZ;
+      this.pending.length = 0;
+      for (const definition of islandsWithin(focusX, focusZ, ISLAND_BUILD_RADIUS)) {
+        if (!this.built.has(definition.id)) this.pending.push(definition);
+      }
+      // Nearest last, so `pop` builds the one the yacht reaches first.
+      this.pending.reverse();
+      let released = false;
+      for (const [id, visual] of this.built) {
+        const island = visual.definition;
+        const gap = Math.hypot(focusX - island.centerX, (focusZ - island.centerZ) / island.scaleZ) * Math.min(1, island.scaleZ) - island.beachRadius;
+        if (gap > ISLAND_RELEASE_RADIUS) {
+          this.releaseIsland(visual);
+          this.built.delete(id);
+          released = true;
+        }
+      }
+      if (released) this.collect();
+    }
+    let built = 0;
+    while (built < budget && this.pending.length > 0) {
+      const definition = this.pending.pop()!;
+      if (this.built.has(definition.id)) continue;
+      this.built.set(definition.id, this.buildIsland(definition));
+      built += 1;
+    }
+    if (built > 0) this.collect();
+  }
+
+  /** Rebuilds the flat lists the per-frame code walks, and asks for the palm shadows to be drawn again. */
+  private collect(): void {
+    const groves: THREE.Mesh[] = [];
+    const trunks: THREE.Vector4[] = [];
+    this.built.forEach((visual) => {
+      groves.push(...visual.batches);
+      trunks.push(...visual.trunks);
+    });
+    this.groves = groves;
+    this.trunks = trunks;
+    this.palmShadows?.invalidate();
+  }
+
+  /** How many islands are built at the moment (for tests and diagnostics). */
+  get builtCount(): number {
+    return this.built.size;
   }
 
   /**
@@ -124,12 +185,13 @@ export class IslandSystem {
     // Islands far off are left out of the water's mirror, where they would
     // be a sliver at the horizon fade.
     this.farFromMirror.length = 0;
-    for (const lod of this.terrainLods) {
+    this.stream(focusX, focusZ, BUILDS_PER_FRAME);
+    this.built.forEach(({ lod }) => {
       const island = lod.parent!;
       const gap = Math.hypot(island.position.x - focusX, island.position.z - focusZ) - lod.userData.radius;
       lod.visible = gap < ISLAND_DRAW_DISTANCE * this.drawScale;
       if (lod.visible && gap > MIRROR_DISTANCE) this.farFromMirror.push(lod);
-    }
+    });
     for (const mesh of this.groves) {
       const sphere = mesh.geometry.boundingSphere;
       if (!sphere) continue;
@@ -170,9 +232,9 @@ export class IslandSystem {
 
   avoidanceForce(position: THREE.Vector3, velocity: THREE.Vector3, target: THREE.Vector3): THREE.Vector3 {
     target.set(0, 0, 0);
-    for (const island of ISLANDS) {
-      const dx = position.x - island.center.x;
-      const dz = (position.z - island.center.y) / island.scaleZ;
+    for (const island of islandsAround(position.x, position.z)) {
+      const dx = position.x - island.centerX;
+      const dz = (position.z - island.centerZ) / island.scaleZ;
       const distance = Math.hypot(dx, dz) || 0.001;
       const clearance = distance - island.beachRadius;
       const approach = velocity.x * (-dx / distance) + velocity.z * (-dz / distance);
@@ -211,9 +273,9 @@ export class IslandSystem {
   nearestShoreDirection(position: THREE.Vector3, target: THREE.Vector3): THREE.Vector3 {
     let nearestDistance = Number.POSITIVE_INFINITY;
     target.set(0, 0, 1);
-    for (const island of ISLANDS) {
-      const dx = position.x - island.center.x;
-      const dz = (position.z - island.center.y) / island.scaleZ;
+    for (const island of islandsAround(position.x, position.z)) {
+      const dx = position.x - island.centerX;
+      const dz = (position.z - island.centerZ) / island.scaleZ;
       const distance = Math.hypot(dx, dz);
       const clearance = distance - island.beachRadius;
       if (clearance < nearestDistance) {
@@ -256,17 +318,18 @@ export class IslandSystem {
     this.seabed = seabed;
   }
 
-  private createIsland(island: IslandObstacle, index: number, assets: AssetManager, palmParts: THREE.Mesh[]): void {
+  /** Builds one island: its two terrain levels, its palms (merged into a few meshes) and its trunks. */
+  private buildIsland(island: IslandDefinition): IslandVisual {
     const islandGroup = new THREE.Group();
-    islandGroup.position.set(island.center.x, 0, island.center.y);
-    islandGroup.name = `TropicalIsland_${index + 1}`;
+    islandGroup.position.set(island.centerX, 0, island.centerZ);
+    islandGroup.name = `TropicalIsland_${island.id}`;
 
     // Two levels of detail: the full terrain near, a third of the vertices
     // beyond a few hundred metres, where a ring of the coast is a pixel.
     const lod = new THREE.LOD();
     lod.name = "IslandTerrainLOD";
     for (const [detail, distance] of [[1, 0], [0.34, TERRAIN_LOD_DISTANCE]] as const) {
-      const terrain = new THREE.Mesh(this.createIslandTerrain(island, index, detail), this.terrainMaterial);
+      const terrain = new THREE.Mesh(this.createIslandTerrain(island, detail), this.terrainMaterial);
       terrain.receiveShadow = true;
       terrain.castShadow = false;
       terrain.name = "IrregularIslandTerrain";
@@ -275,14 +338,36 @@ export class IslandSystem {
       // as a large ring (or as a dark, flat animal) through clear tropical water.
       terrain.renderOrder = 1;
       lod.addLevel(terrain, distance);
-      this.terrains.push(terrain);
     }
     lod.userData.radius = island.beachRadius * Math.max(1, island.scaleZ) * MAX_VISIBLE_TERRAIN_RADIUS_SCALE;
     islandGroup.add(lod);
-    this.terrainLods.push(lod);
 
-    this.plantPalms(island, index, assets, islandGroup, palmParts);
+    const palmParts: THREE.Mesh[] = [];
+    const trunks: THREE.Vector4[] = [];
+    this.plantPalms(island, islandGroup, palmParts, trunks);
     this.group.add(islandGroup);
+
+    const holder = new THREE.Group();
+    holder.name = `PalmGrove_${island.id}`;
+    this.group.add(holder);
+    const batches = this.mergeGrove(islandGroup, holder, palmParts, island.id);
+    return { definition: island, group: islandGroup, holder, lod, batches, trunks };
+  }
+
+  /**
+   * Frees an island the yacht has left far behind. The terrain and the merged
+   * grove batches own their geometry; a palm left unmerged is a clone sharing
+   * the loaded asset's geometry, and the materials are shared by every island.
+   */
+  private releaseIsland(visual: IslandVisual): void {
+    visual.group.removeFromParent();
+    visual.holder.removeFromParent();
+    visual.lod.levels.forEach(({ object }) => {
+      if (object instanceof THREE.Mesh) object.geometry.dispose();
+    });
+    visual.batches.forEach((batch) => batch.geometry.dispose());
+    visual.batches.length = 0;
+    visual.trunks.length = 0;
   }
 
   /**
@@ -291,21 +376,21 @@ export class IslandSystem {
    * stands on the island instead of trailing out to sea.
    */
   private plantPalms(
-    island: IslandObstacle,
-    index: number,
-    assets: AssetManager,
+    island: IslandDefinition,
     islandGroup: THREE.Group,
     palmParts: THREE.Mesh[],
+    trunks: THREE.Vector4[],
   ): void {
-    const source = assets.palms();
+    const source = this.assets.palms();
     source.updateMatrixWorld(true);
     const container = source.getObjectByName("RootNode") ?? source;
     const variants = container.children.filter((child) => child.children.length > 0 || child instanceof THREE.Mesh);
     if (variants.length === 0) return;
 
+    const seed = island.seed;
     const count = palmsForIsland(island.beachRadius);
     for (let palmIndex = 0; palmIndex < count; palmIndex += 1) {
-      const tree = variants[(palmIndex + index) % variants.length].clone(true);
+      const tree = variants[(palmIndex + seed) % variants.length].clone(true);
       // Remove the tree's slot in the source row, keep its upright rotation.
       tree.position.set(0, 0, 0);
       tree.updateMatrixWorld(true);
@@ -315,24 +400,24 @@ export class IslandSystem {
 
       const spread = (palmIndex + 0.5) / count;
       const radial = 0.1 + Math.sqrt(spread) * (PALM_MAX_RADIAL - 0.1);
-      const angle = palmIndex * GOLDEN_ANGLE + index * 1.3;
-      const radius = island.beachRadius * radial * islandEdgeNoise(angle, index);
-      const size = 0.78 + terrainNoise(palmIndex * 3.7 + index * 11.1, palmIndex * 1.9) * 0.5;
+      const angle = palmIndex * GOLDEN_ANGLE + seed * 1.3;
+      const radius = island.beachRadius * radial * islandEdgeNoise(angle, island);
+      const size = 0.78 + terrainNoise(palmIndex * 3.7 + seed * 11.1, palmIndex * 1.9) * 0.5;
 
       const palm = new THREE.Group();
-      palm.name = `GLB_Palm_${index + 1}_${palmIndex + 1}`;
+      palm.name = `GLB_Palm_${island.id}_${palmIndex + 1}`;
       palm.add(tree);
-      palm.scale.setScalar(((11 + (index % 3) * 1.2) * size) / height);
-      palm.rotation.y = palmIndex * 1.94 + index;
+      palm.scale.setScalar(((11 + (seed % 3) * 1.2) * size) / height);
+      palm.rotation.y = palmIndex * 1.94 + seed;
       palm.position.set(
         Math.cos(angle) * radius,
         // Roots sit slightly below the surface so no trunk floats on a dune.
-        this.terrainSurfaceHeight(island, index, radial, angle) - 0.35,
+        this.terrainSurfaceHeight(island, radial, angle) - 0.35,
         Math.sin(angle) * radius * island.scaleZ,
       );
       // Each trunk darkens the sand around its foot (contact shading).
-      this.trunks.push(
-        new THREE.Vector4(island.center.x + palm.position.x, palm.position.y, island.center.y + palm.position.z, 1.1 * size),
+      trunks.push(
+        new THREE.Vector4(island.centerX + palm.position.x, palm.position.y, island.centerZ + palm.position.z, 1.1 * size),
       );
       tree.traverse((object) => {
         if (!(object instanceof THREE.Mesh)) return;
@@ -349,48 +434,30 @@ export class IslandSystem {
 
   /**
    * The groves never move and their wind is computed in world space, so the
-   * trees of each part of the archipelago merge into one mesh per material: a
-   * handful of draw calls for every palm in view instead of one per trunk and
-   * per crown, and a cluster off screen or in the haze is skipped whole.
+   * trees of an island merge into one mesh per material: a handful of draw
+   * calls for every palm in view instead of one per trunk and per crown, and a
+   * grove off screen or in the haze is skipped whole.
    */
-  private mergeGroves(parts: THREE.Mesh[]): void {
-    this.group.updateMatrixWorld(true);
-    const cells = new Map<string, THREE.Mesh[]>();
-    const position = new THREE.Vector3();
-    for (const part of parts) {
-      part.getWorldPosition(position);
-      const key = `${Math.floor(position.x / GROVE_CELL)}:${Math.floor(position.z / GROVE_CELL)}`;
-      const cell = cells.get(key);
-      if (cell) cell.push(part);
-      else cells.set(key, [part]);
-    }
-    cells.forEach((members, key) => {
-      const holder = new THREE.Group();
-      holder.name = `PalmGroves_${key}`;
-      this.group.add(holder);
-      const result = batchStaticMeshes(
-        holder,
-        members,
-        (mesh) => `${(mesh.material as THREE.Material).uuid}|${mesh.castShadow}|${mesh.receiveShadow}`,
-        `PalmGrove_${key}`,
-      );
-      // The groves are what the palm shadow map draws.
-      result.batches.forEach((batch) => {
-        batch.layers.enable(PALM_SHADOW_LAYER);
-        this.groves.push(batch);
-      });
-      members.filter((part) => part.parent).forEach((part) => part.layers.enable(PALM_SHADOW_LAYER));
-    });
+  private mergeGrove(islandGroup: THREE.Group, holder: THREE.Group, parts: THREE.Mesh[], id: number): THREE.Mesh[] {
+    islandGroup.updateMatrixWorld(true);
+    const result = batchStaticMeshes(
+      holder,
+      parts,
+      (mesh) => `${(mesh.material as THREE.Material).uuid}|${mesh.castShadow}|${mesh.receiveShadow}`,
+      `PalmGrove_${id}`,
+    );
+    // The groves are what the palm shadow map draws.
+    result.batches.forEach((batch) => batch.layers.enable(PALM_SHADOW_LAYER));
+    parts.filter((part) => part.parent).forEach((part) => part.layers.enable(PALM_SHADOW_LAYER));
     // Drop the now-empty tree nodes so they are not traversed every frame.
-    this.group.children.forEach((islandGroup) => {
-      [...islandGroup.children].forEach((child) => {
-        let hasMesh = false;
-        child.traverse((object) => {
-          hasMesh ||= object instanceof THREE.Mesh;
-        });
-        if (!hasMesh) child.removeFromParent();
+    [...islandGroup.children].forEach((child) => {
+      let hasMesh = false;
+      child.traverse((object) => {
+        hasMesh ||= object instanceof THREE.Mesh;
       });
+      if (!hasMesh) child.removeFromParent();
     });
+    return result.batches;
   }
 
   /** One wind-animated material per source material, shared by every palm. */
@@ -438,19 +505,19 @@ export class IslandSystem {
     return material;
   }
 
-  private createIslandTerrain(island: IslandObstacle, index: number, detail = 1): THREE.BufferGeometry {
+  private createIslandTerrain(island: IslandDefinition, detail = 1): THREE.BufferGeometry {
     // Detail follows size: a cay needs far fewer vertices than a high island.
     const segments = Math.max(32, Math.round(THREE.MathUtils.clamp(island.beachRadius * 2.6, 96, 220) * detail));
     const rings = Math.max(12, Math.round(THREE.MathUtils.clamp(20 + island.beachRadius * 0.3, 30, 52) * detail));
     const outerRadius = MAX_VISIBLE_TERRAIN_RADIUS_SCALE;
-    const positions: number[] = [0, this.islandTerrainHeight(0, 0, index, island.height), 0];
+    const positions: number[] = [0, this.islandTerrainHeight(0, 0, island.seed, island.height), 0];
     const colors: number[] = [];
     // 1 on sand, 0 under vegetation: the sand shading applies only where it is sand.
     const sandMask: number[] = [0];
     // High islands carry darker forest and bare rock toward the summit.
     const highland = smoothstep(3, 10, island.height);
     const indices: number[] = [];
-    const green = new THREE.Color(index % 3 === 1 ? 0x3d8448 : 0x3a8a4c);
+    const green = new THREE.Color(island.seed % 3 === 1 ? 0x3d8448 : 0x3a8a4c);
     const dryGrass = new THREE.Color(0x7d9a4e);
     const shade = new THREE.Color(0x2a6a3c);
     const sand = new THREE.Color(0xd9c08a);
@@ -465,14 +532,14 @@ export class IslandSystem {
       const radial = outerRadius * Math.pow(ring / rings, 0.72);
       for (let segment = 0; segment < segments; segment += 1) {
         const angle = segment / segments * Math.PI * 2;
-        const edgeNoise = islandEdgeNoise(angle, index);
+        const edgeNoise = islandEdgeNoise(angle, island);
         const radius = island.beachRadius * radial * edgeNoise;
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius * island.scaleZ;
         // Low-frequency patches break up the vegetation line and the dunes.
-        const patch = terrainNoise(x * 0.11 + index * 17.3, z * 0.11 - index * 9.1);
-        const fine = terrainNoise(x * 0.37 - index * 4.2, z * 0.37 + index * 13.7);
-        const y = this.terrainSurfaceHeight(island, index, radial, angle);
+        const patch = terrainNoise(x * 0.11 + island.seed * 17.3, z * 0.11 - island.seed * 9.1);
+        const fine = terrainNoise(x * 0.37 - island.seed * 4.2, z * 0.37 + island.seed * 13.7);
+        const y = this.terrainSurfaceHeight(island, radial, angle);
         positions.push(x, y, z);
 
         const color = new THREE.Color();
@@ -532,14 +599,14 @@ export class IslandSystem {
   }
 
   /** Height of the rendered terrain at a polar position, dunes and hummocks included. */
-  private terrainSurfaceHeight(island: IslandObstacle, index: number, radial: number, angle: number): number {
-    const radius = island.beachRadius * radial * islandEdgeNoise(angle, index);
+  private terrainSurfaceHeight(island: IslandDefinition, radial: number, angle: number): number {
+    const radius = island.beachRadius * radial * islandEdgeNoise(angle, island);
     const x = Math.cos(angle) * radius;
     const z = Math.sin(angle) * radius * island.scaleZ;
-    const patch = terrainNoise(x * 0.11 + index * 17.3, z * 0.11 - index * 9.1);
+    const patch = terrainNoise(x * 0.11 + island.seed * 17.3, z * 0.11 - island.seed * 9.1);
     const highland = smoothstep(3, 10, island.height);
     return (
-      this.islandTerrainHeight(radial, angle, index, island.height) +
+      this.islandTerrainHeight(radial, angle, island.seed, island.height) +
       (patch - 0.5) * (0.5 + highland * 1.6) * (1 - smoothstep(0.7, 0.95, radial))
     );
   }

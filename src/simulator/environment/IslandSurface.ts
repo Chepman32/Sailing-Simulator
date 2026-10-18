@@ -219,6 +219,8 @@ export class PalmShadowMap {
   private readonly bias = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
   private readonly clearColor = new THREE.Color();
   private readonly halfExtent: number;
+  /** The groves changed (an island was streamed in or out): draw the map again. */
+  private dirty = true;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -243,6 +245,11 @@ export class PalmShadowMap {
     uniforms.uPalmShadowMap.value = this.target.texture;
   }
 
+  /** Asks for a redraw on the next update, because the groves have changed. */
+  invalidate(): void {
+    this.dirty = true;
+  }
+
   /**
    * Redraws the map if the light has moved or the yacht has sailed into
    * another part of the archipelago; `strength` fades the shadows (night,
@@ -253,8 +260,9 @@ export class PalmShadowMap {
     this.uniforms.uPalmShadowStrength.value = strength;
     const centreX = Math.round(focusX / PALM_SHADOW_STEP) * PALM_SHADOW_STEP;
     const centreZ = Math.round(focusZ / PALM_SHADOW_STEP) * PALM_SHADOW_STEP;
-    const moved = centreX !== this.centre.x || centreZ !== this.centre.z;
+    const moved = centreX !== this.centre.x || centreZ !== this.centre.z || this.dirty;
     if (strength <= 0.001 || (!moved && lightDirection.angleTo(this.lastDirection) < 0.004)) return false;
+    this.dirty = false;
     this.centre.set(centreX, 0, centreZ);
     this.lastDirection.copy(lightDirection);
     this.camera.position.copy(this.centre).addScaledVector(lightDirection, 300);

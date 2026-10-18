@@ -14,7 +14,7 @@ The experience should communicate the following at a glance:
 - engine, throttle, rudder, sails, current heading, and apparent wind are distinct concepts;
 - the two hulls create two wakes, while the engine creates a separate propeller wash;
 - day and night are coherent environment states rather than unrelated color filters;
-- islands are tropical land masses with shallow water and collision boundaries, not circular platforms, scattered as an archipelago of dozens of cays and islands of every size over several kilometres;
+- islands are tropical land masses with shallow water and collision boundaries, not circular platforms, an endless world with at least one cay or island in every 1.2 km cell, so land lies every one to two kilometres in any direction;
 - large ships (container ships, tankers, bulk carriers, car carriers, cruise liners) pass in the distance or lie at anchor; they can be reached, their wakes rock the yacht, and they are heard and seen at night;
 - wildlife uses authored, licensed, rigged 3D models and moves forward with inertia;
 - whales stay hidden at depth most of the time; a surfacing is a rare event in which only the back, the blowhole and, when lobtailing, the peduncle and flukes clear the water; a full breach happens only far from the yacht, rarely, by a separate distant whale;
@@ -102,7 +102,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/EnvironmentPalette.ts` | Pure scene-linear colour palette for day, dusk, and night |
 | `src/simulator/environment/WindMath.ts` | Pure, deterministic true-wind gusts and shifts |
 | `src/simulator/environment/EnvironmentSystem.ts` | Sky dome, image-based lighting capture, fog, exposure, sun, moon, stars, directional light |
-| `src/simulator/environment/IslandMath.ts` | Pure, seeded archipelago generator, bathymetry, coastline noise, terrain noise, exact indexed nearest-coast search, shader island slots |
+| `src/simulator/environment/IslandMath.ts` | Pure, seeded, endless (per-cell) island generator, bathymetry, coastline noise, terrain noise, exact nearest-coast search over the 3×3 cells, shader island slots |
 | `src/simulator/environment/IslandSystem.ts` | Terrain (two LODs per island), palms merged per cluster, seabed following the yacht, draw distances, collision, shore direction |
 | `src/simulator/environment/IslandSurface.ts` | Sand shading (grain, ripples, wet sand), swash on the beach, palm shadow map and trunk contact shading |
 | `src/simulator/environment/SurfMath.ts` | Pure surf model (breaking crest, bore, swash, drying sand) and its GLSL twin, shared by ocean and sand; the island slot uniforms the shaders read |
@@ -188,7 +188,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `tests/unit/i18n.test.ts` | Language coverage, aliases, fallback, and preference semantics |
 | `tests/unit/rendering.test.ts` | Static batching, shell detection, shared skeletons, exact skinned merging, distant fish meshes |
 | `tests/unit/helm.test.ts` | Chart plotter orientation against the rendered view, range steps, needles, compass, lever |
-| `tests/unit/world.test.ts` | Archipelago, exact indexed coast search, shader slots, ship lanes, steering, contact, Kelvin wake, horns, gull flight, loop subdivision |
+| `tests/unit/world.test.ts` | Endless islands (every cell inhabited, no overlaps, land within 2 km), exact coast search, shader slots, ship lanes, steering, contact, Kelvin wake, horns, gull flight, loop subdivision |
 | `tests/unit/rig-and-reef.test.ts` | Boom and gybe, underwater absorption, wet band, foil sections, reef-fish schooling |
 | `tests/unit/shipguard.test.ts` | Hull clearance to the nearest ship; the yacht turns away from and leaves a ship's side by herself |
 | `tests/unit/postprocessing.test.ts` | Bloom bright-pass and finish guarded against NaN and half-float overflow |
@@ -418,9 +418,9 @@ A wildlife splash position must be an actual world-space water-contact position,
 
 ## 13. Islands and bathymetry
 
-`IslandMath.generateArchipelago` scatters the islands deterministically (seeded): the three home islands near the start, then about thirty more within `ARCHIPELAGO_RADIUS` (2.6 km) — mostly cays and islets, some wooded islands, one in eight a large high island with ridged hills, forest and bare rock — never closer to each other than their shelves plus a channel, never near the start. Each definition provides center, beach radius, elliptical Z scale, summit height and a two-lobed coastline bulge.
+The world is cut into `WORLD_CELL` (1.2 km) cells. `IslandMath.islandsInCell(column, row)` generates each cell deterministically from a hash of its coordinates: one primary island and, at random, one or two more — mostly cays and islets, some wooded islands, one in eight a large high island with ridged hills, forest and bare rock. Centres stay `cellMargin(reach)` from the cell edge, so islands of different cells never come closer than their shelves plus a channel; cell (0, 0) holds the three fixed home islands and keeps the start clear. Each definition provides a unique `id`, a `seed` (0…95) that replaces the old array index in the coastline noise and in the shaders' phases, centre, beach radius, elliptical Z scale, summit height and a two-lobed coastline bulge. `START_ISLANDS` is the stable list near the start used by tests. Caches are bounded and regenerate identically.
 
-Coast queries (`distanceFromWaterline`, `nearestShore`) use a grid index: every 200 m cell lists the islands that can be nearest to some point in it (exact lower and upper bounds), so the answer is exact and a query measures only a few islands. `IslandSystem.depthAt()` derives a shallow-water profile near each beach and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint, and direction back toward open water.
+Coast queries (`distanceFromWaterline`, `nearestShore`) measure only the islands of the 3×3 cells around the point (`islandsAround`), so the answer is exact and a query touches a handful of islands. `IslandSystem` streams visuals: islands within `ISLAND_BUILD_RADIUS` are built (one per frame, nearest first), those beyond `ISLAND_RELEASE_RADIUS` are disposed; palms are merged per island and the palm shadow map is invalidated when the set changes. `IslandSystem.depthAt()` derives a shallow-water profile near each beach and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint, and direction back toward open water.
 
 Island definitions, bathymetry, coastline noise, and terrain noise live in the pure module `IslandMath.ts`. The ocean shader compiles the same definitions, so shore wash and shallow-water colour follow the rendered coast.
 
@@ -542,6 +542,8 @@ Each dolphin runs:
 
 `cruise → accelerate → approach_surface → leap → airborne → reentry → dive → recover → cruise`
 
+The pod holds 4, 6 or 8 dolphins on the low, medium and high presets (`dolphinCount`), and reef fish density is 0.55, 0.9 and 1.4.
+
 Leaps are speed gated twice. A dolphin only commits to one (`canCommitToLeap`) in a playful pod (yacht at least `DOLPHIN_PLAY_VESSEL_SPEED`, about 3.5 kn), after its cooldown, already swimming at `DOLPHIN_LEAP_ENTRY_SPEED` or more, over deep water and clear of the hulls. It then accelerates at depth and only leaves the water if it has actually reached `DOLPHIN_LEAP_MIN_SPEED`; otherwise it levels off. A calm pod never leaps. The run-up depth (`leapRunDepth`) is what lets the body rotate to its exit angle before the rostrum breaks the surface. From that moment the motion is ballistic, the body axis lies along the velocity and arches with the path's curvature, the strokes stop, and the dolphin re-enters head first carrying its momentum into a dive that the water slows. Variants: low porpoising arcs, high arcs, paired leaps started a fraction of a second apart, and rare spinner leaps that complete one or two rolls before re-entry.
 
 The rig is rooted at the tail and its authored clip only flaps the pectoral fins, so the dorsoventral body wave is procedural (frequency from speed, larger toward the flukes) and the model is shifted to keep the mid-body on the path. The model is scaled by its length to a 2.7 m bottlenose.
@@ -574,7 +576,7 @@ The slap fires once per downstroke when a tracked fluke point crosses down throu
 
 ### Distant breaches
 
-`WhaleBreach` runs a second, separate whale that is only ever seen breaching: rarely (`BREACH_MIN_INTERVAL`–`BREACH_MAX_INTERVAL`, the first a few minutes in), `BREACH_MIN_DISTANCE`–`BREACH_MAX_DISTANCE` from the yacht, ahead or off her bow, over deep water, running across the line of sight. It accelerates up from twelve metres, leaves the water on the arc its plan needs (full breach onto its back, flank breach, or chin breach), flies ballistically while its body lags the path and rolls, and crashes down; the water stops it within a body length and it dives out of sight. `WhaleBreachController` draws it with its own rig and throws spray where body points actually cross the surface: a sheet of water on the way out, the largest splash, mist and ring waves on the way down, and churned water afterwards. The whale near the yacht still never lifts its body out.
+`WhaleBreach` runs a second, separate whale that is only ever seen breaching: often (`BREACH_MIN_INTERVAL`–`BREACH_MAX_INTERVAL`, 45–110 s, the first within about 40 s), `BREACH_MIN_DISTANCE`–`BREACH_MAX_DISTANCE` from the yacht, ahead or off her bow, over deep water, running across the line of sight. It accelerates up from twelve metres, leaves the water on the arc its plan needs (full breach onto its back, flank breach, or chin breach), flies ballistically while its body lags the path and rolls, and crashes down; the water stops it within a body length and it dives out of sight. `WhaleBreachController` draws it with its own rig and throws spray where body points actually cross the surface: a sheet of water on the way out, the largest splash, mist and ring waves on the way down, and churned water afterwards. The whale near the yacht still never lifts its body out.
 
 ### Gulls
 
@@ -584,7 +586,7 @@ The slap fires once per downstroke when a tracked fluke point crosses down throu
 
 ## 15a. Ships
 
-`ShipSystem` keeps four ships near the yacht: three under way and one at anchor (`MOVING_SHIPS`, `MAX_SHIPS`). Types (`SHIP_SPECS`): a 334 m container ship, a 310 m tanker, a 262 m bulk carrier, a 300 m car carrier and a 330 m cruise liner, each in one of three paint schemes; a tanker or bulk carrier is laden or in ballast (riding up to five metres high, red antifouling showing).
+`ShipSystem` keeps nine ships near the yacht, five under way and four at anchor (`MOVING_SHIPS`, `MAX_SHIPS`), so a large ship lies every one to two kilometres wherever she sails; the ocean shader draws the wakes of the four nearest (`WAKE_SLOTS`, `writeShipUniforms`). Types (`SHIP_SPECS`): a 334 m container ship, a 310 m tanker, a 262 m bulk carrier, a 300 m car carrier and a 330 m cruise liner, each in one of three paint schemes; a tanker or bulk carrier is laden or in ballast (riding up to five metres high, red antifouling showing).
 
 - **Lanes** (`planLane`): a straight course whose closest approach to the yacht lies 300–800 m off, clear of every coast by `LANE_SHORE_CLEARANCE` over the passage. A new ship appears 1.5–1.95 km up her lane, in the haze; at the start the first ship already crosses ahead of the yacht and the others are within sight. A ship far astern and moving away (`RECYCLE_DISTANCE`) is replaced; a slot that finds no clear lane retries a few seconds later.
 - **Anchorage** (`planAnchorage`): open water well off the islands, head to wind, swinging slowly; moved ahead of the yacht once she is more than `ANCHOR_RECYCLE_DISTANCE` away. It is the ship the yacht can always reach.
@@ -593,7 +595,7 @@ The slap fires once per downstroke when a tracked fluke point crosses down throu
 - **Wake**: a Kelvin pattern (divergent waves on the 19.47° arms, transverse waves following at the ship's speed with wavenumber g/V²), white water along the arms and a turbulent foam centreline that lasts `WAKE_FOAM_SECONDS`, a smooth slick that lasts `WAKE_SLICK_SECONDS`, a bow wave and a lapping line along the hull (see §9).
 - **Visual** (`ShipGeometry`): one geometry per type and scheme with vertex colours, one shared-program material per ship (one draw call); the lofted hull has a raked stem, flared bow, sheer, flat bottom and bilge, transom; hawse pipes and anchors, draught marks, rubbing strake; container stacks, a tanker's pipe deck, catwalk and manifold crane, hatch covers and cranes, a liner's ten terraced decks of balconies and lifeboats, a car carrier's slab sides. Below the waterline the hull is veiled by `UnderwaterLight`. The ships ride the swell (heave, pitch, roll from four samples, heavily damped).
 - **Night**: windows and deck lights glow (an emissive `shipLight` attribute, channel 0); masthead, side and stern lights burn under way (channel 1), anchor lights at anchor (channel 2). A `THREE.Points` layer keeps the lamps and lit windows a few pixels wide at any range, dimmed by the haze.
-- **Sound** (`AudioSystem.updateShips`, `shipHorn`): the two nearest ships each have a voice — a low throb with the beat of a slow two-stroke diesel, losing its highs with distance, and the rush of the bow wave when close. A ship sounds five short blasts when the yacht stands into her path within 650 m ahead, and now and then one prolonged blast; the sound arrives as late as it takes to cross the water.
+- **Sound** (`AudioSystem.updateShips`, `shipHorn`): the two nearest ships each have a voice — a low throb with the beat of a slow two-stroke diesel, losing its highs with distance, and the rush of the bow wave when close. A ship sounds five short blasts when the yacht stands into her path within 650 m ahead, and now and then one prolonged blast; the sound arrives as late as it takes to cross the water. The whistle is synthesised as a stack of air horns tuned to a chord (fundamental, fifth, octave plus a detuned octave for beating) from band-shaped `PeriodicWave`s with a 400–600 Hz tube resonance, a slow swell, flat-to-true pitch glide, an air-valve breath at each onset, a long falling pitch on release and a darkening slow echo off the sea; the larger the ship the lower the chord. No recordings are used.
 
 ## 16. Audio system
 

@@ -1,12 +1,11 @@
 import { clamp, smoothstep } from "../math";
 import {
-  ALL_ISLANDS,
-  ISLAND_DEFINITIONS,
   ISLAND_SLOTS,
-  islandCandidates,
   islandEdgeNoise,
+  islandsAround,
   MAX_EDGE_NOISE,
   WATERLINE_RADIAL,
+  type IslandDefinition,
 } from "./IslandMath";
 
 /**
@@ -151,22 +150,22 @@ export function sampleSurf(
 }
 
 /** Nearest island, its angle around the centre, and the distance from its rendered waterline. */
-export function nearestShore(x: number, z: number): { index: number; angle: number; distance: number } {
-  return nearestShoreAmong(x, z, islandCandidates(x, z) ?? ALL_ISLANDS);
-}
-
-function nearestShoreAmong(x: number, z: number, indices: readonly number[]): { index: number; angle: number; distance: number } {
-  let best = { index: 0, angle: 0, distance: Number.POSITIVE_INFINITY };
-  indices.forEach((index) => {
-    const island = ISLAND_DEFINITIONS[index]!;
+export function nearestShore(x: number, z: number): { island: IslandDefinition | null; seed: number; angle: number; distance: number } {
+  let best: { island: IslandDefinition | null; seed: number; angle: number; distance: number } = {
+    island: null,
+    seed: 0,
+    angle: 0,
+    distance: Number.POSITIVE_INFINITY,
+  };
+  for (const island of islandsAround(x, z)) {
     const dx = x - island.centerX;
     const dz = (z - island.centerZ) / island.scaleZ;
     const centre = Math.hypot(dx, dz);
-    if (centre - island.beachRadius * MAX_EDGE_NOISE * WATERLINE_RADIAL >= best.distance) return;
+    if (centre - island.beachRadius * MAX_EDGE_NOISE * WATERLINE_RADIAL >= best.distance) continue;
     const angle = Math.atan2(dz, dx);
-    const distance = centre - island.beachRadius * islandEdgeNoise(angle, index) * WATERLINE_RADIAL;
-    if (distance < best.distance) best = { index, angle, distance };
-  });
+    const distance = centre - island.beachRadius * islandEdgeNoise(angle, island) * WATERLINE_RADIAL;
+    if (distance < best.distance) best = { island, seed: island.seed, angle, distance };
+  }
   return best;
 }
 
@@ -181,8 +180,7 @@ export const SHOAL_FAR = 110;
 
 export function stormShoalAt(x: number, z: number): number {
   let nearest = Number.POSITIVE_INFINITY;
-  for (const index of islandCandidates(x, z) ?? ALL_ISLANDS) {
-    const island = ISLAND_DEFINITIONS[index]!;
+  for (const island of islandsAround(x, z)) {
     const distance =
       Math.hypot(x - island.centerX, (z - island.centerZ) / island.scaleZ) - island.beachRadius * WATERLINE_RADIAL;
     if (distance < nearest) nearest = distance;
@@ -195,7 +193,7 @@ const glslNumber = (value: number): string => (Number.isInteger(value) ? `${valu
 /**
  * The islands the shaders evaluate (see `selectIslandSlots`), shared by
  * reference between every material that includes {@link SURF_GLSL}:
- * (centre x, centre z, beach radius, scale z) and (index, lobe, 0, 0).
+ * (centre x, centre z, beach radius, scale z) and (seed, lobe, 0, 0).
  */
 export type IslandSlotUniforms = {
   uIslandShape: { value: Float32Array };
@@ -218,7 +216,7 @@ export const ISLAND_SLOT_UNIFORMS: IslandSlotUniforms = createIslandSlotUniforms
 
 /**
  * GLSL twin. `shoreInfo` returns (distance from the rendered waterline, angle
- * around the island, island index); `surfSample` returns
+ * around the island, island seed); `surfSample` returns
  * (foam, sheet depth, wetness, crest slope) and writes the swash edge.
  */
 export const SURF_GLSL = /* glsl */ `

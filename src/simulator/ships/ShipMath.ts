@@ -40,10 +40,16 @@ export const SHIP_SPECS: Record<ShipKind, ShipSpec> = {
 
 export const SHIP_KINDS = Object.keys(SHIP_SPECS) as ShipKind[];
 
-/** Ships near the yacht at once: the slots of the ocean shader's wake. */
-export const MAX_SHIPS = 4;
+/**
+ * Ships around the yacht at once. With the recycling radii below this keeps
+ * a large ship, under way or at anchor, about every one to two kilometres
+ * wherever the yacht sails.
+ */
+export const MAX_SHIPS = 9;
 /** Of those, how many are under way; the rest lie at anchor. */
-export const MOVING_SHIPS = 3;
+export const MOVING_SHIPS = 5;
+/** Ships whose wakes the ocean shader draws: the nearest few to the yacht. */
+export const WAKE_SLOTS = 4;
 
 /** Closest approach of a planned lane to the yacht, metres. */
 export const LANE_MIN_PASSING = 300;
@@ -578,8 +584,8 @@ const glsl = (value: number): string => (Number.isInteger(value) ? `${value}.0` 
 export const SHIP_WAKE_GLSL = /* glsl */ `
   #ifndef SHIP_WAKE_GLSL
   #define SHIP_WAKE_GLSL
-  uniform vec4 uShipPose[${MAX_SHIPS}];
-  uniform vec4 uShipShape[${MAX_SHIPS}];
+  uniform vec4 uShipPose[${WAKE_SLOTS}];
+  uniform vec4 uShipShape[${WAKE_SLOTS}];
 
   float shipHalfWidth(float halfLength, float halfBeam, float along) {
     float t = along / halfLength;
@@ -649,7 +655,7 @@ export const SHIP_WAKE_GLSL = /* glsl */ `
 
   vec2 shipWakes(vec2 position, inout float height, inout vec2 slope) {
     vec2 result = vec2(0.0);
-    for (int slot = 0; slot < ${MAX_SHIPS}; slot++) {
+    for (int slot = 0; slot < ${WAKE_SLOTS}; slot++) {
       result = max(result, shipWake(uShipPose[slot], uShipShape[slot], position, height, slope));
     }
     return result;
@@ -662,26 +668,35 @@ export const SHIP_WAKE_GLSL = /* glsl */ `
  * (x, z, sin heading, cos heading) and (speed, half length, half beam, active).
  */
 export const SHIP_WAKE_UNIFORMS = {
-  uShipPose: { value: new Float32Array(MAX_SHIPS * 4) },
-  uShipShape: { value: new Float32Array(MAX_SHIPS * 4) },
+  uShipPose: { value: new Float32Array(WAKE_SLOTS * 4) },
+  uShipShape: { value: new Float32Array(WAKE_SLOTS * 4) },
 };
 
-/** Copies the ships' state into {@link SHIP_WAKE_UNIFORMS}. */
-export function writeShipUniforms(ships: readonly Ship[]): void {
+const wakeOrder: Ship[] = [];
+
+/**
+ * Copies the ships nearest (x, z) into {@link SHIP_WAKE_UNIFORMS}, nearest
+ * first; the farther ones are too distant for their wakes to reach the yacht.
+ */
+export function writeShipUniforms(ships: readonly Ship[], x = 0, z = 0): void {
   const pose = SHIP_WAKE_UNIFORMS.uShipPose.value;
   const shape = SHIP_WAKE_UNIFORMS.uShipShape.value;
-  for (let slot = 0; slot < MAX_SHIPS; slot += 1) {
-    const ship = ships[slot];
-    const active = ship?.active ?? false;
-    pose[slot * 4] = active ? ship!.x : 0;
-    pose[slot * 4 + 1] = active ? ship!.z : 0;
-    pose[slot * 4 + 2] = active ? Math.sin(ship!.heading) : 0;
-    pose[slot * 4 + 3] = active ? Math.cos(ship!.heading) : 1;
-    shape[slot * 4] = active ? ship!.speed : 0;
-    shape[slot * 4 + 1] = active ? ship!.halfLength : 1;
-    shape[slot * 4 + 2] = active ? ship!.halfBeam : 1;
-    shape[slot * 4 + 3] = active ? 1 : 0;
+  wakeOrder.length = 0;
+  for (const ship of ships) if (ship.active) wakeOrder.push(ship);
+  const distance = (ship: Ship): number => Math.hypot(ship.x - x, ship.z - z) - ship.halfLength;
+  wakeOrder.sort((a, b) => distance(a) - distance(b));
+  for (let slot = 0; slot < WAKE_SLOTS; slot += 1) {
+    const ship = wakeOrder[slot];
+    pose[slot * 4] = ship ? ship.x : 0;
+    pose[slot * 4 + 1] = ship ? ship.z : 0;
+    pose[slot * 4 + 2] = ship ? Math.sin(ship.heading) : 0;
+    pose[slot * 4 + 3] = ship ? Math.cos(ship.heading) : 1;
+    shape[slot * 4] = ship ? ship.speed : 0;
+    shape[slot * 4 + 1] = ship ? ship.halfLength : 1;
+    shape[slot * 4 + 2] = ship ? ship.halfBeam : 1;
+    shape[slot * 4 + 3] = ship ? 1 : 0;
   }
+  wakeOrder.length = 0;
 }
 
 /** Sum of every ship's wake at (x, z). */

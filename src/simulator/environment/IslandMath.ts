@@ -4,8 +4,19 @@ import { clamp } from "../math";
  * Pure island geometry shared by collision, bathymetry, terrain meshing and
  * the ocean shader. Keeping it free of rendering imports lets the same
  * definitions be unit-tested and compiled into GLSL constants.
+ *
+ * The world has no edge. It is cut into square cells of {@link WORLD_CELL}
+ * metres; every cell holds at least one island (its "primary") and now and
+ * then a cay or two more, all placed deterministically from the cell's
+ * coordinates. An island never reaches the edge of its cell (see
+ * {@link cellMargin}), so islands of neighbouring cells can never touch and
+ * a query only has to look at the nine cells around a point.
  */
 export type IslandDefinition = {
+  /** Unique and stable for a given place in the world; the key of every per-island cache. */
+  id: number;
+  /** Small number that seeds this island's coastline and surf phases (kept small for GLSL). */
+  seed: number;
   centerX: number;
   centerZ: number;
   beachRadius: number;
@@ -26,7 +37,14 @@ export const SHELF_SLOPE = 0.46;
 /** Terrain radius (as a fraction of the beach radius) where sand meets still water. */
 export const WATERLINE_RADIAL = 0.975;
 
-/** A small, fast, deterministic generator (mulberry32) for the archipelago. */
+/** Side of one world cell, metres: there is an island in every one, so one lies every 1–2 km. */
+export const WORLD_CELL = 1200;
+/** Open water kept between two islands' shelves, metres. */
+const ISLAND_CHANNEL = 70;
+/** Largest island seed (exclusive). */
+const SEED_RANGE = 96;
+
+/** A small, fast, deterministic generator (mulberry32). */
 function seededRandom(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
@@ -38,58 +56,165 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-/** The three islands closest to the start; the rest of the archipelago is generated around them. */
-const HOME_ISLANDS: readonly IslandDefinition[] = [
+function hashCell(column: number, row: number): number {
+  // Two avalanche rounds, so neighbouring and mirrored cells share no stream.
+  let h = Math.imul((column | 0) ^ 0x5a11ab1e, 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 15), 0xc2b2ae35);
+  h = Math.imul((h ^ (h >>> 13)) + (row | 0) * 0x27d4eb2d, 0x165667b1);
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return (h ^ (h >>> 16)) >>> 0;
+}
+
+/** The three islands closest to the start (cell 0, 0); the rest of that cell is generated around them. */
+const HOME_ISLANDS: readonly Omit<IslandDefinition, "id" | "seed">[] = [
   { centerX: -115, centerZ: -65, beachRadius: 54, scaleZ: 0.72, height: 1.78, lobe: 0 },
   { centerX: 138, centerZ: -28, beachRadius: 46, scaleZ: 0.82, height: 1.96, lobe: 0 },
   { centerX: 25, centerZ: 175, beachRadius: 36, scaleZ: 0.68, height: 2.14, lobe: 0 },
 ];
 
-/** How far out the archipelago reaches from the start, metres. */
+/** How far out the starting archipelago is listed (see {@link START_ISLANDS}), metres. */
 export const ARCHIPELAGO_RADIUS = 2600;
-/** Generated islands, beyond the three home islands. */
-export const ARCHIPELAGO_EXTRA_ISLANDS = 32;
-/** Open water kept between two islands' shelves, metres. */
-const ISLAND_CHANNEL = 70;
+
+/** Index of the world cell containing the coordinate `v`. Cell (0, 0) is centred on the start. */
+export function worldCell(v: number): number {
+  return Math.floor((v + WORLD_CELL / 2) / WORLD_CELL);
+}
+
+/** How far from the edge of its cell an island's centre must stay so no two islands of different cells conflict. */
+function cellMargin(reach: number): number {
+  return reach + SHELF_WIDTH + ISLAND_CHANNEL / 2;
+}
+
+const reachOf = (island: Pick<IslandDefinition, "beachRadius" | "scaleZ">): number =>
+  island.beachRadius * Math.max(1, island.scaleZ);
+
+function cellKey(column: number, row: number): number {
+  return (column + 8192) * 16384 + (row + 8192);
+}
+
+function islandId(column: number, row: number, slot: number): number {
+  return cellKey(column, row) * 8 + slot;
+}
 
 /**
- * Scatters islands of every size over the sea around the start: mostly cays
- * and small islets, some wooded islands, a few large high ones. Placement is
- * deterministic, so physics, the ocean shader and the terrain all see the
- * same archipelago on every load. Islands never crowd the start or each
- * other: a channel of deep water always separates two shelves.
+ * Generates the islands of one cell: a primary island of any size (mostly
+ * cays and islets, some wooded islands, one in eight a large high island)
+ * and, at random, one or two more. Placement is deterministic, so physics,
+ * the ocean shader and the terrain all see the same world on every load.
  */
-function generateArchipelago(): IslandDefinition[] {
-  const random = seededRandom(0x5a11ab1e);
-  const islands: IslandDefinition[] = HOME_ISLANDS.map((island) => ({ ...island }));
+function generateCell(column: number, row: number): IslandDefinition[] {
+  const random = seededRandom(hashCell(column, row));
+  const centerX = column * WORLD_CELL;
+  const centerZ = row * WORLD_CELL;
+  const islands: IslandDefinition[] = [];
+  const start = column === 0 && row === 0;
+  if (start) {
+    HOME_ISLANDS.forEach((home, slot) => {
+      islands.push({ ...home, id: islandId(column, row, slot), seed: slot });
+    });
+  }
+  const roll = random();
+  const extras = roll < 0.42 ? 0 : roll < 0.78 ? 1 : 2;
+  const wanted = (start ? HOME_ISLANDS.length : 1) + extras;
   let attempts = 0;
-  while (islands.length < HOME_ISLANDS.length + ARCHIPELAGO_EXTRA_ISLANDS && attempts < 6000) {
+  while (islands.length < wanted && attempts < 80) {
     attempts += 1;
     const size = random();
     // Mostly small; one in eight is a large, high island.
     const beachRadius = size < 0.55 ? 16 + random() * 22 : size < 0.875 ? 38 + random() * 30 : 72 + random() * 46;
     const scaleZ = 0.55 + random() * 0.95;
-    const angle = random() * Math.PI * 2;
-    const distance = 280 + Math.pow(random(), 0.85) * (ARCHIPELAGO_RADIUS - 280);
-    const centerX = Math.cos(angle) * distance;
-    const centerZ = Math.sin(angle) * distance;
     const reach = beachRadius * Math.max(1, scaleZ);
-    const clear = islands.every((other) => {
-      const otherReach = other.beachRadius * Math.max(1, other.scaleZ);
-      return (
-        Math.hypot(centerX - other.centerX, centerZ - other.centerZ) >
-        reach + otherReach + 2 * SHELF_WIDTH + ISLAND_CHANNEL
-      );
-    });
-    if (!clear || Math.hypot(centerX, centerZ) < reach + SHELF_WIDTH + 160) continue;
+    const margin = cellMargin(reach);
+    const x = centerX - WORLD_CELL / 2 + margin + random() * (WORLD_CELL - 2 * margin);
+    const z = centerZ - WORLD_CELL / 2 + margin + random() * (WORLD_CELL - 2 * margin);
     const height =
       beachRadius < 38 ? 1.5 + random() * 0.9 : beachRadius < 70 ? 2.4 + random() * 2.4 : 5 + random() * 8;
-    islands.push({ centerX, centerZ, beachRadius, scaleZ, height, lobe: random() * 0.04 });
+    const lobe = random() * 0.04;
+    const seed = Math.floor(random() * SEED_RANGE);
+    const clear = islands.every((other) => {
+      return Math.hypot(x - other.centerX, z - other.centerZ) > reach + reachOf(other) + 2 * SHELF_WIDTH + ISLAND_CHANNEL;
+    });
+    // The start itself is open water, as it always was.
+    if (!clear || (start && Math.hypot(x, z) < reach + SHELF_WIDTH + 160)) continue;
+    islands.push({ id: islandId(column, row, islands.length), seed, centerX: x, centerZ: z, beachRadius, scaleZ, height, lobe });
   }
   return islands;
 }
 
-export const ISLAND_DEFINITIONS: readonly IslandDefinition[] = generateArchipelago();
+const CELL_CACHE_LIMIT = 4096;
+const cellCache = new Map<number, readonly IslandDefinition[]>();
+const aroundCache = new Map<number, readonly IslandDefinition[]>();
+
+/** The islands of one world cell. */
+export function islandsInCell(column: number, row: number): readonly IslandDefinition[] {
+  const key = cellKey(column, row);
+  let cell = cellCache.get(key);
+  if (!cell) {
+    if (cellCache.size >= CELL_CACHE_LIMIT) {
+      // Cells regenerate identically, so the oldest half can simply go.
+      let drop = CELL_CACHE_LIMIT / 2;
+      for (const old of cellCache.keys()) {
+        cellCache.delete(old);
+        if (--drop <= 0) break;
+      }
+    }
+    cell = generateCell(column, row);
+    cellCache.set(key, cell);
+  }
+  return cell;
+}
+
+/** The islands of the nine cells around the one containing (x, z): every island that can be nearest to the point. */
+export function islandsAround(x: number, z: number): readonly IslandDefinition[] {
+  const column = worldCell(x);
+  const row = worldCell(z);
+  const key = cellKey(column, row);
+  let around = aroundCache.get(key);
+  if (!around) {
+    if (aroundCache.size >= CELL_CACHE_LIMIT) {
+      let drop = CELL_CACHE_LIMIT / 2;
+      for (const old of aroundCache.keys()) {
+        aroundCache.delete(old);
+        if (--drop <= 0) break;
+      }
+    }
+    const list: IslandDefinition[] = [];
+    for (let dz = -1; dz <= 1; dz += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) list.push(...islandsInCell(column + dx, row + dz));
+    }
+    around = list;
+    aroundCache.set(key, around);
+  }
+  return around;
+}
+
+/** Every island whose beach lies within `radius` metres of (x, z), nearest first. */
+export function islandsWithin(x: number, z: number, radius: number): IslandDefinition[] {
+  const cells = Math.ceil((radius + WORLD_CELL / 2) / WORLD_CELL);
+  const column = worldCell(x);
+  const row = worldCell(z);
+  const found: { island: IslandDefinition; gap: number }[] = [];
+  for (let dz = -cells; dz <= cells; dz += 1) {
+    for (let dx = -cells; dx <= cells; dx += 1) {
+      for (const island of islandsInCell(column + dx, row + dz)) {
+        const gap = Math.hypot(x - island.centerX, (z - island.centerZ) / island.scaleZ) * Math.min(1, island.scaleZ) - island.beachRadius;
+        if (gap <= radius) found.push({ island, gap });
+      }
+    }
+  }
+  return found.sort((a, b) => a.gap - b.gap).map((entry) => entry.island);
+}
+
+/**
+ * The archipelago around the start, the home islands first: what a sailor
+ * sees in the first minutes, and a stable set for tests.
+ */
+export const START_ISLANDS: readonly IslandDefinition[] = (() => {
+  const homes = islandsInCell(0, 0).slice(0, HOME_ISLANDS.length);
+  const rest = islandsWithin(0, 0, ARCHIPELAGO_RADIUS).filter((island) => !homes.includes(island));
+  return [...homes, ...rest];
+})();
 
 /**
  * Islands the shaders evaluate at any moment: the nearest few to the yacht.
@@ -100,23 +225,25 @@ export const ISLAND_SLOTS = 8;
 /**
  * Fills the shader slots with the islands nearest (x, z), nearest first.
  * `shape` receives (centre x, centre z, beach radius, scale z) and `frame`
- * (island index, lobe, 0, 0) per slot; unused slots hold an island far away.
+ * (island seed, lobe, 0, 0) per slot; unused slots hold an island far away.
  */
 export function selectIslandSlots(x: number, z: number, shape: Float32Array, frame: Float32Array): void {
-  const order = ISLAND_DEFINITIONS.map((island, index) => ({
-    index,
-    distance:
-      Math.hypot(x - island.centerX, (z - island.centerZ) / island.scaleZ) * Math.min(1, island.scaleZ) -
-      island.beachRadius,
-  })).sort((a, b) => a.distance - b.distance);
+  const order = islandsAround(x, z)
+    .map((island) => ({
+      island,
+      distance:
+        Math.hypot(x - island.centerX, (z - island.centerZ) / island.scaleZ) * Math.min(1, island.scaleZ) -
+        island.beachRadius,
+    }))
+    .sort((a, b) => a.distance - b.distance);
   for (let slot = 0; slot < ISLAND_SLOTS; slot += 1) {
     const entry = order[slot];
-    const island = entry ? ISLAND_DEFINITIONS[entry.index] : undefined;
+    const island = entry?.island;
     shape[slot * 4] = island ? island.centerX : 1.0e6;
     shape[slot * 4 + 1] = island ? island.centerZ : 1.0e6;
     shape[slot * 4 + 2] = island ? island.beachRadius : 1;
     shape[slot * 4 + 3] = island ? island.scaleZ : 1;
-    frame[slot * 4] = entry ? entry.index : 0;
+    frame[slot * 4] = island ? island.seed : 0;
     frame[slot * 4 + 1] = island ? island.lobe : 0;
     frame[slot * 4 + 2] = 0;
     frame[slot * 4 + 3] = 0;
@@ -127,14 +254,14 @@ export function selectIslandSlots(x: number, z: number, shape: Float32Array, fra
 export const MAX_EDGE_NOISE = 1.073 + 0.04;
 
 /** Irregular coastline: radial scale of the terrain at a polar angle. */
-export function islandEdgeNoise(angle: number, index: number): number {
-  const lobe = ISLAND_DEFINITIONS[index]?.lobe ?? 0;
+export function islandEdgeNoise(angle: number, island: Pick<IslandDefinition, "seed" | "lobe">): number {
+  const seed = island.seed;
   return (
     1 +
-    Math.sin(angle * 2 + index * 2.3) * lobe +
-    Math.sin(angle * 3 + index * 1.7) * 0.038 +
-    Math.sin(angle * 7 - index * 0.9) * 0.023 +
-    Math.cos(angle * 11 + index * 0.6) * 0.012
+    Math.sin(angle * 2 + seed * 2.3) * island.lobe +
+    Math.sin(angle * 3 + seed * 1.7) * 0.038 +
+    Math.sin(angle * 7 - seed * 0.9) * 0.023 +
+    Math.cos(angle * 11 + seed * 0.6) * 0.012
   );
 }
 
@@ -157,80 +284,28 @@ export function waterDepthAt(x: number, z: number): number {
   return clamp(depth, 0.35, 24);
 }
 
-export const ALL_ISLANDS: readonly number[] = ISLAND_DEFINITIONS.map((_, index) => index);
-const CANDIDATE_CELL = 200;
-const CANDIDATE_HALF_EXTENT = ARCHIPELAGO_RADIUS + 600;
-const CANDIDATE_CELLS = Math.ceil((CANDIDATE_HALF_EXTENT * 2) / CANDIDATE_CELL);
-
-/**
- * For each grid cell, the islands that can be the nearest for some point in
- * it: those whose exact lower bound of the waterline distance over the cell
- * does not exceed the smallest upper bound of any island. A query measures
- * only those, and the answer is exactly the nearest coast.
- */
-const CANDIDATE_GRID: readonly (readonly number[])[] = (() => {
-  const grid: number[][] = [];
-  const outer = MAX_EDGE_NOISE * WATERLINE_RADIAL;
-  const inner = (2 - MAX_EDGE_NOISE) * WATERLINE_RADIAL;
-  for (let row = 0; row < CANDIDATE_CELLS; row += 1) {
-    for (let column = 0; column < CANDIDATE_CELLS; column += 1) {
-      const minX = -CANDIDATE_HALF_EXTENT + column * CANDIDATE_CELL;
-      const minZ = -CANDIDATE_HALF_EXTENT + row * CANDIDATE_CELL;
-      const maxX = minX + CANDIDATE_CELL;
-      const maxZ = minZ + CANDIDATE_CELL;
-      const bounds = ISLAND_DEFINITIONS.map((island) => {
-        // Nearest and farthest points of the cell from the centre, in the
-        // island's stretched frame (distance to a point is convex, so the
-        // farthest is a corner).
-        const dx = Math.max(minX - island.centerX, 0, island.centerX - maxX);
-        const dz = Math.max(minZ - island.centerZ, 0, island.centerZ - maxZ) / island.scaleZ;
-        const farX = Math.max(Math.abs(minX - island.centerX), Math.abs(maxX - island.centerX));
-        const farZ = Math.max(Math.abs(minZ - island.centerZ), Math.abs(maxZ - island.centerZ)) / island.scaleZ;
-        return {
-          lower: Math.hypot(dx, dz) - island.beachRadius * outer,
-          upper: Math.hypot(farX, farZ) - island.beachRadius * inner,
-        };
-      });
-      const ceiling = Math.min(...bounds.map((bound) => bound.upper));
-      const list: number[] = [];
-      bounds.forEach((bound, index) => {
-        if (bound.lower <= ceiling) list.push(index);
-      });
-      grid.push(list);
-    }
-  }
-  return grid;
-})();
-
-/** Islands worth measuring near (x, z), or null outside the indexed area. */
-export function islandCandidates(x: number, z: number): readonly number[] | null {
-  const column = Math.floor((x + CANDIDATE_HALF_EXTENT) / CANDIDATE_CELL);
-  const row = Math.floor((z + CANDIDATE_HALF_EXTENT) / CANDIDATE_CELL);
-  if (column < 0 || row < 0 || column >= CANDIDATE_CELLS || row >= CANDIDATE_CELLS) return null;
-  return CANDIDATE_GRID[row * CANDIDATE_CELLS + column]!;
-}
-
 /**
  * Distance in metres from the visible, irregular waterline of the nearest
  * island (negative on the beach). The ocean shader evaluates the same
  * expression so shore foam and shallow-water colour hug the rendered coast.
+ * Exact wherever an island is within about a kilometre; farther out it is the
+ * distance to the nearest island of the nine cells around the point.
  */
 export function distanceFromWaterline(x: number, z: number): number {
-  return waterlineDistanceAmong(x, z, islandCandidates(x, z) ?? ALL_ISLANDS);
+  return waterlineDistanceAmong(x, z, islandsAround(x, z));
 }
 
-function waterlineDistanceAmong(x: number, z: number, indices: readonly number[]): number {
+function waterlineDistanceAmong(x: number, z: number, islands: readonly IslandDefinition[]): number {
   let nearest = Number.POSITIVE_INFINITY;
-  for (let item = 0; item < indices.length; item += 1) {
-    const index = indices[item]!;
-    const island = ISLAND_DEFINITIONS[index]!;
+  for (let index = 0; index < islands.length; index += 1) {
+    const island = islands[index]!;
     const dx = x - island.centerX;
     const dz = (z - island.centerZ) / island.scaleZ;
     const centre = Math.hypot(dx, dz);
     // The coast never reaches beyond MAX_EDGE_NOISE of the radius, so an
     // island that cannot beat the nearest found so far is skipped exactly.
     if (centre - island.beachRadius * MAX_EDGE_NOISE * WATERLINE_RADIAL >= nearest) continue;
-    const shore = island.beachRadius * islandEdgeNoise(Math.atan2(dz, dx), index) * WATERLINE_RADIAL;
+    const shore = island.beachRadius * islandEdgeNoise(Math.atan2(dz, dx), island) * WATERLINE_RADIAL;
     nearest = Math.min(nearest, centre - shore);
   }
   return nearest;

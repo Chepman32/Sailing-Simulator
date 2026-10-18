@@ -45,10 +45,9 @@ export function applyEnginePower(state: SimulatorState, running: boolean): void 
   if (!running) {
     state.controls.throttle = 0;
   } else {
-    // Starting the engine is an explicit request for an audible engine. A mute
-    // value saved by an earlier session must not silently survive this action;
-    // the user can mute the running engine again from the sound control.
-    state.engineMuted = false;
+    // Engine power and engine sound are independent controls: starting or
+    // stopping the engine never touches the mute preference, and the sound
+    // button never starts or stops the engine.
     if (Math.abs(state.controls.throttle) <= 0.08) {
       state.controls.throttle = ENGINE_START_THROTTLE;
     }

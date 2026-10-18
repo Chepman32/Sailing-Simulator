@@ -48,7 +48,7 @@ export type WeatherSample = {
   haze: number;
 };
 
-export const FAIR_CLOUD_COVER = 0.25;
+export const FAIR_CLOUD_COVER = 0.12;
 export const OVERCAST_CLOUD_COVER = 0.68;
 
 export const WEATHER_PRESETS: Readonly<Record<WeatherKind, Readonly<WeatherSample>>> = {

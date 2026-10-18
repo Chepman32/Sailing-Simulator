@@ -140,7 +140,7 @@ export class ShipSystem {
         });
       }
     });
-    writeShipUniforms(this.ships);
+    writeShipUniforms(this.ships, yacht.x, yacht.z);
   }
 
   /**
