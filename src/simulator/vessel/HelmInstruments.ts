@@ -74,9 +74,20 @@ export function compassCardAngle(heading: number): number {
   return angle < 0 ? angle + Math.PI * 2 : angle;
 }
 
+/**
+ * Compass bearing in degrees (0…360, clockwise from north = +Z) for a
+ * simulation heading. The heading grows toward +X, which is to port (see
+ * `chartProject`), so a compass bearing is its negative: turning to
+ * starboard makes the number grow, as on any compass.
+ */
+export function compassBearing(heading: number): number {
+  const degrees = ((-heading * 180) / Math.PI) % 360;
+  return degrees < 0 ? degrees + 360 : degrees;
+}
+
 /** Heading in whole degrees, 000–359, as the displays print it. */
 export function formatBearing(heading: number): string {
-  let degrees = Math.round(((heading * 180) / Math.PI) % 360);
+  let degrees = Math.round(compassBearing(heading));
   if (degrees < 0) degrees += 360;
   if (degrees === 360) degrees = 0;
   return String(degrees).padStart(3, "0");

@@ -29,8 +29,10 @@ import type { PlanarBody, ShoreSampler } from "./ShoreContact";
 /** Room the hull edge keeps from the rendered waterline. */
 export const GUARD_MARGIN = 3.2;
 /** Fixed look-ahead and look-ahead per m/s of speed, metres. */
-export const GUARD_BASE_LOOKAHEAD = 20;
-export const GUARD_LOOKAHEAD_PER_SPEED = 7;
+export const GUARD_BASE_LOOKAHEAD = 15;
+export const GUARD_LOOKAHEAD_PER_SPEED = 5.5;
+/** Helm (|rudder|) above which the player counts as steering for himself. */
+export const ACTIVE_HELM = 0.3;
 /** Seconds the guard holds the helm at least, once engaged. */
 const MINIMUM_ENGAGEMENT = 1.6;
 /** Distance off the coast (hull centre) before the helm is handed back. */
@@ -195,8 +197,19 @@ export function updateShoreGuard(
     return output;
   }
 
+  // A helmsman already turning away from the coast keeps the helm: the guard
+  // only steps in when his own turn will not clear it, or it is too close
+  // to leave to him. (Taking the wheel from someone who is already avoiding
+  // the beach made the rudder feel dead.)
+  const playerSide = Math.abs(controls.rudder) >= ACTIVE_HELM ? Math.sign(controls.rudder) : 0;
+  const playerClears =
+    playerSide !== 0 &&
+    hullFreeRun(shore, body.position.x, body.position.z, body.heading + playerSide * 0.7, lookAhead) >= lookAhead * 0.8 &&
+    ahead > lookAhead * 0.35;
+
   if (!guard.active) {
     if (!(ahead < lookAhead && drivingAhead && (forwardSpeed > 0.1 || ahead < lookAhead * 0.6))) return output;
+    if (playerClears) return output;
     // Engage: turn to whichever side clears with the smaller turn and more room.
     const port = escapeOnSide(shore, body, -1, lookAhead);
     const starboard = escapeOnSide(shore, body, 1, lookAhead);
@@ -239,7 +252,10 @@ export function updateShoreGuard(
   const seawardness = fx * coastNormal.x + fz * coastNormal.z;
   const clear =
     ahead >= lookAhead && Math.abs(error) < 0.22 && offshore >= guard.releaseClearance && seawardness > 0.5;
-  if (clear && guard.engagedTime > MINIMUM_ENGAGEMENT) {
+  // Clear water ahead and the helmsman steering again: hand the helm back
+  // without waiting to be pointed out to sea.
+  const handBack = ahead >= lookAhead && playerSide !== 0 && guard.engagedTime > 0.6;
+  if ((clear && guard.engagedTime > MINIMUM_ENGAGEMENT) || handBack) {
     guard.active = false;
     guard.sinceRelease = 0;
     return output;
@@ -272,6 +288,11 @@ export function updateShoreGuard(
     output.rudder = steer;
     // Under sail: ease the sheets in proportion to the danger.
     output.sailTrim = clamp(controls.sailTrim - guard.urgency * 0.9, 0.2, 1);
+  }
+  // The helmsman turning the same way as the guard, only harder, gets his
+  // way: the wheel never feels dead while he is doing the right thing.
+  if (!guard.backing && playerSide !== 0 && Math.sign(output.rudder) === playerSide && Math.abs(controls.rudder) > Math.abs(output.rudder)) {
+    output.rudder = controls.rudder;
   }
   // A full circle in front of the beach means the turn cannot be made this
   // way: try the other side.

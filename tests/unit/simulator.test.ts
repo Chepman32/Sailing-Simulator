@@ -1060,3 +1060,30 @@ test("the yacht's heave ignores a flicker in the sampled water level instead of 
   }
   assert.ok(worst < 4, `vertical acceleration stays smooth (${worst.toFixed(2)} m/s²)`);
 });
+
+test("a starboard helm turns the yacht to the right of the view, in the player's terms both ways", async () => {
+  const { helmFromRudder, rudderFromHelm } = await import("../../src/simulator/input/InputController");
+  for (const helm of [-1, -0.4, 0, 0.7, 1]) assert.ok(Math.abs(helmFromRudder(rudderFromHelm(helm)) - helm) < 1e-12);
+  const physics = new VesselPhysics(CALM, OPEN_WATER);
+  const controls = { throttle: 0.6, rudder: rudderFromHelm(0.6), sailTrim: 0 };
+  for (let step = 0; step < 8 * 60; step += 1) physics.fixedUpdate(1 / 60, controls, true);
+  // Looking along +Z, world +X lies on the left of the view: starboard is −X.
+  assert.ok(physics.position.x < -3, `turned toward ${physics.position.x.toFixed(1)} m on X`);
+});
+
+test("a helmsman already turning clear of an island keeps the helm", () => {
+  for (const bearing of [0, 1.3, 2.6, 4.2]) {
+    // Aimed past the island's edge, turning further away from it, hard over.
+    const physics = offTheBeach(bearing, 32, 34);
+    const controls = { throttle: 0.8, rudder: 0.9, sailTrim: 0.2 };
+    let engaged = 0;
+    let impacts = 0;
+    for (let step = 0; step < 12 * 60; step += 1) {
+      physics.fixedUpdate(1 / 60, controls, true);
+      if (physics.guard.active) engaged += 1;
+      if (physics.telemetry.shoreImpact > 0) impacts += 1;
+    }
+    assert.equal(impacts, 0, `bearing ${bearing}: struck the shore`);
+    assert.ok(engaged < 30, `bearing ${bearing}: the guard took the helm for ${(engaged / 60).toFixed(1)} s from a helmsman who was already clearing`);
+  }
+});

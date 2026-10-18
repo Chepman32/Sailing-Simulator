@@ -463,9 +463,10 @@ function bridge(builder: ShipBuilder, base: number, z: number, halfBeam: number,
   const y = base + 1.2;
   const x = halfBeam * 0.6;
   builder.quad([-x, y, z + 4.54], [x, y, z + 4.54], [x, y + 1.3, z + 4.54], [-x, y + 1.3, z + 4.54], glass, [0.25, 0.3, 0.32, 0]);
-  // Sidelights on the wing ends: red to port, green to starboard.
-  builder.lamp(-halfBeam - 0.2, base + 3.4, z + 3.2, PORT_LIGHT, 1);
-  builder.lamp(halfBeam + 0.2, base + 3.4, z + 3.2, STARBOARD_LIGHT, 1);
+  // Sidelights on the wing ends: red to port, green to starboard. With the
+  // bow along +Z, local +X is the port side as the view shows it.
+  builder.lamp(halfBeam + 0.2, base + 3.4, z + 3.2, PORT_LIGHT, 1);
+  builder.lamp(-halfBeam - 0.2, base + 3.4, z + 3.2, STARBOARD_LIGHT, 1);
   // Radar mast with the masthead light.
   builder.box(0, base + 3, z - 1, 0.6, 7, 0.6, wall);
   builder.box(0, base + 8.2, z - 1, 5, 0.4, 0.5, [0.2, 0.2, 0.2]);

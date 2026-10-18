@@ -19,9 +19,10 @@ import { RainSystem } from "./environment/RainSystem";
 import { thunderDelay } from "./environment/LightningMath";
 import { autoWeatherKind, isWeatherKind, type WeatherKind, type WeatherMode } from "./environment/WeatherMath";
 import { UnderwaterLight } from "./environment/UnderwaterLight";
-import { InputController } from "./input/InputController";
+import { helmFromRudder, InputController } from "./input/InputController";
 import { TouchControls } from "./input/TouchControls";
-import { smoothstep, wrapDegrees } from "./math";
+import { smoothstep } from "./math";
+import { compassBearing } from "./vessel/HelmInstruments";
 import { applyEnginePower, createSimulatorState, type SimulatorState } from "./state";
 import type {
   CameraMode,
@@ -607,11 +608,12 @@ export class Simulator {
     return {
       speedKnots: telemetry?.speedKnots ?? 0,
       depthMeters: telemetry?.depth ?? 18,
-      headingDegrees: wrapDegrees(THREE.MathUtils.radToDeg(this.physics?.heading ?? 0)),
+      headingDegrees: compassBearing(this.physics?.heading ?? 0),
       heelDegrees: THREE.MathUtils.radToDeg(telemetry?.heel ?? 0),
       apparentWindKnots: (telemetry?.apparentWindSpeed ?? 8) * 1.943844,
       apparentWindAngle: THREE.MathUtils.radToDeg(telemetry?.apparentWindAngle ?? 1),
-      rudderDegrees: this.state.controls.rudder * 35,
+      // The HUD speaks the player's terms: positive is a starboard helm.
+      rudderDegrees: helmFromRudder(this.state.controls.rudder) * 35,
       throttle: this.state.controls.throttle,
       sailTrim: this.state.controls.sailTrim,
       cameraMode: this.state.cameraMode,

@@ -297,10 +297,11 @@ export class HelmStation {
         1 - (CARD.y + (1 - cardUv.getY(index)) * CARD.h) / ATLAS_HEIGHT,
       );
     }
-    // Texture top (N) along +Z, its right (E) along +X: seen from above, as
-    // the whole world is in this renderer, east lies left of north, so the
-    // card is seen from its back (double-sided).
-    cardGeometry.rotateX(Math.PI / 2);
+    // Face up, texture top (N) along +Z and its right (E) along −X: seen from
+    // above with north ahead, world −X is on the right, so east is where it
+    // is on a real compass and the card is read from its front.
+    cardGeometry.rotateX(-Math.PI / 2);
+    cardGeometry.rotateY(Math.PI);
     this.card = new THREE.Mesh(cardGeometry, cardMaterial);
     this.card.name = "HelmCompassCard";
     this.card.position.copy(POD_CENTRE).add(new THREE.Vector3(0, 0.178, 0.02));
@@ -632,7 +633,8 @@ export class HelmStation {
     context.font = "600 46px system-ui, -apple-system, Segoe UI, sans-serif";
     context.fillText((data.apparentWindSpeed * 1.943844).toFixed(1), left + 226, top + 96);
     const degrees = Math.round((Math.abs(data.apparentWindAngle) * 180) / Math.PI);
-    context.fillText(`${degrees}°${data.apparentWindAngle >= 0 ? "S" : "P"}`, left + 226, top + 176);
+    // Positive apparent wind angles come over the +X side, which is port.
+    context.fillText(`${degrees}°${data.apparentWindAngle >= 0 ? "P" : "S"}`, left + 226, top + 176);
   }
 
   private paintCard(): void {

@@ -69,8 +69,9 @@ test("helm instruments: needles, revolutions, compass and lever", () => {
     assert.ok(Math.abs(Math.sin(card + heading)) < 1e-9 && Math.cos(card + heading) > 0);
   }
   assert.equal(formatBearing(0), "000");
-  assert.equal(formatBearing(Math.PI / 2), "090");
-  assert.equal(formatBearing(-Math.PI / 2), "270");
+  // The heading grows toward +X, which is to port: a compass reads 270 there.
+  assert.equal(formatBearing(Math.PI / 2), "270");
+  assert.equal(formatBearing(-Math.PI / 2), "090");
   assert.equal(formatBearing(Math.PI * 2 - 0.001), "000");
   assert.equal(leverAngle(1), LEVER_THROW);
   assert.equal(leverAngle(-3), -LEVER_THROW);

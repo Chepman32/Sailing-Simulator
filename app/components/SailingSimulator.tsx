@@ -691,15 +691,12 @@ export function SailingSimulator() {
 
           {!panelMinimized && (
             <div className="panel-body">
-              {/* Status lines (settings changed, the helm steering clear of an
-                  island, the first-run tip) live in the control panel only:
-                  nothing is laid over the scene itself. */}
-              {(engineNotice || (snapshot.shoreGuardActive && loading.ready && !error) || (showHelp && loading.ready && !error)) && (
+              {/* Status lines (settings changed, the first-run tip) live in the
+                  control panel only: nothing is laid over the scene itself. The
+                  shore guard is announced on the rudder card. */}
+              {(engineNotice || (showHelp && loading.ready && !error)) && (
                 <div className="panel-status">
                   {engineNotice && <div className="engine-notice" role="status" key={noticeKey}>{engineNotice}</div>}
-                  {snapshot.shoreGuardActive && loading.ready && !error && (
-                    <div className="engine-notice shore-guard-notice" role="status">{messages.shoreGuard}</div>
-                  )}
                   {showHelp && loading.ready && !error && (
                     <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
                       {messages.help}
@@ -880,7 +877,13 @@ export function SailingSimulator() {
             </div>
             <div className="control-heading">
               <span>{messages.rudder}</span>
-              <strong>{displayedRudderDegrees < -0.5 ? messages.port : displayedRudderDegrees > 0.5 ? messages.starboard : messages.center} {Math.abs(displayedRudderDegrees).toFixed(0)}°</strong>
+              {/* While the shore guard holds the helm the rudder card says so:
+                  it is why the wheel does not answer for a moment. */}
+              {snapshot.shoreGuardActive && loading.ready ? (
+                <strong className="rudder-guard" role="status">{messages.shoreGuard}</strong>
+              ) : (
+                <strong>{displayedRudderDegrees < -0.5 ? messages.port : displayedRudderDegrees > 0.5 ? messages.starboard : messages.center} {Math.abs(displayedRudderDegrees).toFixed(0)}°</strong>
+              )}
             </div>
             <div className="rudder-track-wrap">
               <span>{messages.port}</span>

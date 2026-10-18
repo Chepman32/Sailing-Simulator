@@ -475,9 +475,11 @@ export class Vessel {
 
   private createNavigationLights(): void {
     const red = new THREE.PointLight(0xff233d, 0, 13, 2);
-    red.position.set(-2.05, 1.75, 0.65);
+    // Red to port, green to starboard. As the view shows her, local +X is
+    // her port side (see the frame note in AGENTS.md), so red goes on +X.
+    red.position.set(2.05, 1.75, 0.65);
     const green = new THREE.PointLight(0x38ffb1, 0, 13, 2);
-    green.position.set(2.05, 1.75, 0.65);
+    green.position.set(-2.05, 1.75, 0.65);
     const stern = new THREE.PointLight(0xd7ecff, 0, 10, 2);
     stern.position.set(0, 1.35, -4.5);
     this.navigationLights.push(red, green, stern);

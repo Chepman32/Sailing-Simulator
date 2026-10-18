@@ -487,11 +487,6 @@ input:focus-visible {
   animation: notice-in 180ms ease-out;
 }
 
-/* The helm is briefly in the guard's hands: warm, so it reads as a warning. */
-.shore-guard-notice {
-  border-color: rgba(255, 196, 102, 0.5);
-  color: #ffe2b0;
-}
 
 @keyframes notice-in {
   from { opacity: 0; transform: translateY(-5px); }
@@ -1620,4 +1615,12 @@ input[type="range"]:disabled {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* The rudder card's own note while the shore guard holds the helm. */
+.rudder-guard {
+  color: #ffe2b0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
