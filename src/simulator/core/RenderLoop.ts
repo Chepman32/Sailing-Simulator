@@ -5,7 +5,7 @@ export type FrameCallbacks = {
   /** `alpha`: how far the clock is from the last fixed step to the next, 0…1. */
   update: (delta: number, elapsed: number, alpha: number) => void;
   render: () => void;
-  onFps?: (fps: number) => void;
+  onFps?: (fps: number, frameCap: number) => void;
   onPauseChange?: (paused: boolean) => void;
 };
 
@@ -77,7 +77,7 @@ export class RenderLoop {
     this.fpsElapsed += delta;
     this.fpsFrames += 1;
     if (this.fpsElapsed >= 0.75) {
-      this.callbacks.onFps?.(this.fpsFrames / this.fpsElapsed);
+      this.callbacks.onFps?.(this.fpsFrames / this.fpsElapsed, document.hasFocus() ? ACTIVE_MAX_FPS : UNFOCUSED_MAX_FPS);
       this.fpsElapsed = 0;
       this.fpsFrames = 0;
     }

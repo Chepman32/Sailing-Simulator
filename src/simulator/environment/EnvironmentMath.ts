@@ -22,10 +22,11 @@ export function deriveTimeOfDay(nightFactor: number, sunArc = 0): TimeOfDayState
   const arc = clamp(sunArc, 0, 1);
   return {
     normalizedTime: 0.5 + night * 0.5,
-    // A late-afternoon sun, 20° up: low enough to stand in the opening view
-    // with a long glitter path below it, high enough to stay clear of the
-    // dusk tint. Going to night it sets through a full sunset.
-    sunElevation: 0.35 + arc * SUN_ARC_HEIGHT - night * 0.62 - night * night * night * 0.2,
+    // An afternoon sun about 29° up: high enough for the deep blue of the
+    // sea seen from above and short shadows on deck, low enough to lay a
+    // glitter path toward the opening view. Going to night it sets through a
+    // full sunset, crossing the horizon about halfway, as before.
+    sunElevation: 0.5 + arc * SUN_ARC_HEIGHT - night * 0.86 - night * night * night * 0.2,
     moonElevation: -0.28 + night * (Math.PI / 6 + 0.28),
     exposure: 1.08 - night * 0.24,
     starVisibility: Math.pow(night, 1.6),

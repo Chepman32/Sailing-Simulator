@@ -136,6 +136,16 @@ export class Simulator {
     try {
       this.quality = new QualityManager(this.renderer, this.state.quality, (preset) => {
         this.state.quality = preset;
+        // three.js bakes shadow support into each program: after shadows are
+        // switched on or off every lit material must be rebuilt, or a session
+        // that dropped to the low preset and climbed back keeps no shadows.
+        if (this.quality.shadowsChanged) {
+          this.scene.traverse((object) => {
+            const material = (object as THREE.Mesh).material;
+            if (!material) return;
+            (Array.isArray(material) ? material : [material]).forEach((entry) => (entry.needsUpdate = true));
+          });
+        }
         this.environment?.setShadowMapSize(this.quality.settings.shadowMapSize);
         this.environment?.setSkyDetail(this.quality.settings.skyDetail);
         this.ocean?.setQuality(this.quality.settings);
@@ -537,9 +547,9 @@ export class Simulator {
     }
   }
 
-  private readonly onFps = (fps: number): void => {
+  private readonly onFps = (fps: number, frameCap = 60): void => {
     this.fps = fps;
-    this.quality.observeFps(fps);
+    this.quality.observeFps(fps, frameCap);
   };
 
   private readonly resize = (): void => {

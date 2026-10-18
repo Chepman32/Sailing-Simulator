@@ -197,8 +197,9 @@ export function createDolphinPod(
   if (world.seabedDepth(vessel.x + forwardZ * side * 10, vessel.z - forwardX * side * 10) < POD_MIN_WATER) side = -side;
   const agents: DolphinAgent[] = [];
   for (let index = 0; index < count; index += 1) {
-    const lateral = side * (9 + index * 2.2);
-    const along = 6 - index * 2.4;
+    const [jitterAlong, jitterLateral] = podJitter(index);
+    const lateral = side * (9 + Math.floor(index / 3) * 3 + jitterLateral * 1.5);
+    const along = 6 - Math.floor(index / 3) * 4.8 + jitterAlong * 1.5;
     const x = vessel.x + forwardX * along + forwardZ * lateral;
     const z = vessel.z + forwardZ * along - forwardX * lateral;
     const y = world.surfaceHeight(x, z) - 1.2;
@@ -407,6 +408,13 @@ function updatePodMode(pod: DolphinPod, world: MarineWorld, vessel: VesselState,
   pod.sideClock -= dt;
 }
 
+/** Fixed, irregular offsets (−1…1) of a dolphin within its knot of the pod. */
+function podJitter(rank: number): [number, number] {
+  const a = Math.sin(rank * 12.9898 + 4.1) * 43758.5453;
+  const b = Math.sin(rank * 78.233 + 1.7) * 43758.5453;
+  return [(a - Math.floor(a)) * 2 - 1, (b - Math.floor(b)) * 2 - 1];
+}
+
 /** Slot of a dolphin around the yacht for the pod's current mode. */
 const POD_MIN_WATER = 5;
 const centreScratch = { x: 0, z: 0 };
@@ -433,18 +441,26 @@ function slotFor(
       depth = 0.65 + rank * 0.08;
       speed = vessel.speed;
       break;
-    case "escort":
-      along = 3 - rank * 2.6 + Math.sin(agent.wander * 0.21) * 2;
-      lateral = pod.side * (6.5 + rank * 1.8 + Math.sin(agent.wander * 0.13) * 1.2);
+    case "escort": {
+      // Dolphins travel in loose knots of two or three, not in a ruled line:
+      // each knot keeps its own station and its members jostle within it.
+      const knot = Math.floor(rank / 3);
+      const [jitterAlong, jitterLateral] = podJitter(rank);
+      along = 3 - knot * 4.8 + jitterAlong * 1.5 + Math.sin(agent.wander * 0.21) * 2;
+      lateral = pod.side * (6.5 + knot * 2.6 + jitterLateral * 1.3 + Math.sin(agent.wander * 0.13) * 1.2);
       depth = 0.7 + agent.depthBias * 0.5;
       speed = vessel.speed;
       break;
-    case "cross":
-      along = 20 + rank * 2.2;
-      lateral = pod.side * (16 + rank * 2);
+    }
+    case "cross": {
+      const knot = Math.floor(rank / 3);
+      const [jitterAlong, jitterLateral] = podJitter(rank);
+      along = 20 + knot * 5 + jitterAlong * 1.8;
+      lateral = pod.side * (16 + knot * 4 + jitterLateral * 1.6);
       depth = 0.8 + agent.depthBias * 0.5;
       speed = Math.max(vessel.speed + 1.6, 3.5);
       break;
+    }
     case "roam": {
       const angle = agent.id * 2.1 + agent.wander * 0.05;
       return {

@@ -290,3 +290,17 @@ test("render budget: the GPU governor lowers the scale under load, restores it w
   assert.equal(governor.observe(Number.NaN, time, 1 / 60), "steady");
   assert.equal(governor.observe(-1, time, 1 / 60), "steady");
 });
+
+test("render budget: the frame-rate fallback ignores start-up stalls and a page paced down while unfocused", async () => {
+  const R = await import("../../src/simulator/core/RenderBudget");
+  const judge = new R.FpsJudge(36);
+  // Shader compilation at start-up: very slow windows that must not count.
+  for (let window = 0; window < R.FPS_WARMUP_WINDOWS; window += 1) assert.equal(judge.observe(8, 60), "ignored");
+  // Another app has the focus: the pacer holds 30 fps on purpose.
+  for (let window = 0; window < 20; window += 1) assert.equal(judge.observe(30, 30), "ignored");
+  assert.equal(judge.observe(24, 60), "slow", "a genuinely slow GPU still counts");
+  assert.equal(judge.observe(60, 60), "fast");
+  assert.equal(judge.observe(45, 60), "neutral");
+  judge.reset();
+  assert.equal(judge.observe(5, 60), "ignored", "a preset change starts a new warm-up");
+});

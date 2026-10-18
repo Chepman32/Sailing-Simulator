@@ -16,8 +16,8 @@
  * Everything here is pure; `GpuTimer` supplies the measurements.
  */
 
-/** GPU time a frame may take, ms: about 40 % of a 60 Hz frame. */
-export const GPU_TARGET_MS = 6.5;
+/** GPU time a frame may take, ms: about half of a 60 Hz frame. */
+export const GPU_TARGET_MS = 8.5;
 /** Lowest render scale the governor uses before handing over to the presets. */
 export const MIN_RENDER_SCALE = 0.7;
 /** Shortest time between two resolution changes, s (targets are reallocated). */
@@ -94,5 +94,42 @@ export class GpuGovernor {
     this.lastChange = -Infinity;
     this.overloadTime = 0;
     this.idleTime = 0;
+  }
+}
+
+/** Frame-rate windows (0.75 s each) ignored after start-up or a preset change, while shaders compile. */
+export const FPS_WARMUP_WINDOWS = 6;
+
+export type FpsReading = "slow" | "fast" | "neutral" | "ignored";
+
+/**
+ * Judges frame-rate windows for the preset fallback (where GPU time cannot be
+ * measured). A window only counts when it says something about the GPU:
+ * - not while the page is paced below 60 fps on purpose (another window has
+ *   the focus, e.g. while the player takes a screenshot): 30 fps there is the
+ *   pacer's choice, not a slow GPU;
+ * - not in the first seconds after start-up or a preset change, when shader
+ *   compilation and uploads stall frames that will never stall again.
+ * Without these, a session dropped from high to low within three seconds of
+ * the player switching to another app, and stayed there.
+ */
+export class FpsJudge {
+  private warmup = FPS_WARMUP_WINDOWS;
+
+  constructor(private readonly slowBelow: number, private readonly fastAbove = 58) {}
+
+  reset(): void {
+    this.warmup = FPS_WARMUP_WINDOWS;
+  }
+
+  observe(fps: number, frameCap: number): FpsReading {
+    if (this.warmup > 0) {
+      this.warmup -= 1;
+      return "ignored";
+    }
+    if (!Number.isFinite(fps) || frameCap < 50) return "ignored";
+    if (fps < this.slowBelow) return "slow";
+    if (fps > this.fastAbove) return "fast";
+    return "neutral";
   }
 }

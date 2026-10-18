@@ -379,6 +379,9 @@ export function SailingSimulator() {
           },
         });
         simulatorRef.current = simulator;
+        // Development builds only: lets visual checks drive the scene from a
+        // headless browser (camera, engine) without clicking through the UI.
+        if (process.env.NODE_ENV !== "production") (window as unknown as { __simulator?: SimulatorInstance }).__simulator = simulator;
         await simulator.init();
       } catch (reason: unknown) {
         if (!disposed) {

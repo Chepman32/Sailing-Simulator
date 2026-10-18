@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { QualityPreset } from "../types";
-import { budgetPixelRatio, type GovernorVerdict } from "./RenderBudget";
+import { budgetPixelRatio, FpsJudge, type GovernorVerdict } from "./RenderBudget";
 
 export type QualitySettings = {
   maxDpr: number;
@@ -89,6 +89,7 @@ export class QualityManager {
   private gpuMeasured = false;
   private fastWindows = 0;
   private readonly coarseDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+  private readonly fpsJudge = new FpsJudge(this.coarseDevice ? 44 : 36);
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -134,12 +135,14 @@ export class QualityManager {
     }
   }
 
-  observeFps(fps: number): void {
-    const slowThreshold = this.coarseDevice ? 44 : 36;
-    if (fps < slowThreshold) {
+  /** @param frameCap the most frames per second the pacer allows right now (30 while unfocused). */
+  observeFps(fps: number, frameCap = 60): void {
+    const reading = this.fpsJudge.observe(fps, frameCap);
+    if (reading === "ignored") return;
+    if (reading === "slow") {
       this.slowWindows += 1;
       this.fastWindows = 0;
-    } else if (fps > 58) {
+    } else if (reading === "fast") {
       this.fastWindows += 1;
       this.slowWindows = 0;
     } else {
@@ -147,7 +150,7 @@ export class QualityManager {
       this.fastWindows = Math.max(0, this.fastWindows - 1);
     }
 
-    if (this.slowWindows >= 2 && this.preset !== "low") {
+    if (this.slowWindows >= 3 && this.preset !== "low") {
       this.apply(this.preset === "high" ? "medium" : "low", true);
       this.slowWindows = 0;
     } else if (this.fastWindows >= 30 && this.preset !== "high" && !this.gpuMeasured) {
@@ -158,9 +161,15 @@ export class QualityManager {
     }
   }
 
+  /** Whether the last preset change switched shadows on or off (materials must recompile). */
+  shadowsChanged = false;
+
   private apply(preset: QualityPreset, notify: boolean): void {
     this.preset = preset;
-    this.renderer.shadowMap.enabled = preset !== "low" && (!this.coarseDevice || preset === "high");
+    this.fpsJudge.reset();
+    const shadows = preset !== "low" && (!this.coarseDevice || preset === "high");
+    this.shadowsChanged = shadows !== this.renderer.shadowMap.enabled;
+    this.renderer.shadowMap.enabled = shadows;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     if (notify) this.onChange?.(preset);
   }

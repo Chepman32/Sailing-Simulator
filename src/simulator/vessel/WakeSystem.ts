@@ -901,7 +901,7 @@ export class WakeSystem {
       // Overlapping stamps are weighted by the track length each stands for,
       // so the wake's density does not depend on how often it was sampled.
       const share = sample.spacing / (TRACK_SIGMA * SQRT_PI);
-      const fresh = Math.exp(-age * (sample.bow ? 1.0 : prop ? 0.7 : 0.5));
+      const fresh = Math.exp(-age * (sample.bow ? 1.0 : prop ? 0.6 : 0.42));
       const lingering = Math.pow(1 - normalized, 1.5);
       const grain = fract(Math.sin(sample.born * 91.7 + sample.position.x * 3.1) * 43758.5453);
       if (sample.bow) {
@@ -925,9 +925,9 @@ export class WakeSystem {
       }
       const behind = this.odometer - sample.odometer;
       const width = (prop ? 1.0 : 0.85) + normalized * (prop ? 2.2 : 1.9) + (prop ? 0 : behind * 0.05);
-      // White water right behind the transoms that collapses within seconds,
-      // then thin streaks of bubbles.
-      const foam = sample.strength * (fresh * 1.5 + lingering * 0.16) * share * (0.6 + grain * 0.8);
+      // White water right behind the transoms that collapses within a few
+      // seconds, then a long lace of bubbles a boat length or two astern.
+      const foam = sample.strength * (fresh * 1.6 + lingering * 0.24) * share * (0.6 + grain * 0.8);
       const slick = sample.strength * lingering * share * (prop ? 1.3 : 1.0);
       if (prop) {
         this.field.push(sample.position.x, sample.position.z, sample.heading, StampKind.PropWash, width, 1.6, foam * 1.1, slick);

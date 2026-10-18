@@ -144,7 +144,7 @@ export class EnvironmentSystem {
     this.hemisphere = new THREE.HemisphereLight(0xffffff, 0xffffff, 1);
     scene.add(this.hemisphere);
     scene.fog = new THREE.FogExp2(0x91cddb, 0.0008);
-    scene.environmentIntensity = 0.85;
+    scene.environmentIntensity = 0.5;
     this.update(0, null, new THREE.Vector3(), 0);
   }
 
@@ -289,7 +289,9 @@ export class EnvironmentSystem {
     this.sunLight.position.copy(focus).addScaledVector(this.celestialLightDirection, 60);
     this.sunLight.target.position.copy(focus);
     setLinearColor(this.sunLight.color, palette.lightColor);
-    this.sunLight.intensity = 1;
+    // Direct sun is several times the sky's light on a clear day; with a
+    // weaker key the sky fill tints every white surface blue and flattens it.
+    this.sunLight.intensity = 1.3;
     // Lightning is a short, bluish-white light from above the clouds.
     if (this.flash > 0.01) {
       this.flashColor.setRGB(0.55 * this.flash, 0.65 * this.flash, 0.95 * this.flash, THREE.LinearSRGBColorSpace);
@@ -302,7 +304,7 @@ export class EnvironmentSystem {
       palette.deepWater[2] * 2 + palette.ambientColor[2] * 0.12,
       THREE.LinearSRGBColorSpace,
     );
-    this.hemisphere.intensity = 0.55 + this.flash * 1.4;
+    this.hemisphere.intensity = 0.3 + this.flash * 1.4;
     // Storm light is dark; a little more exposure keeps the sea readable.
     this.renderer.toneMappingExposure = this.state.exposure * (1 + 0.16 * this.weather.storm);
 

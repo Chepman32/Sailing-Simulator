@@ -170,12 +170,12 @@ export type OceanDetailWave = {
  * ripples are added there as drifting noise.
  */
 export const OCEAN_DETAIL_WAVES: readonly OceanDetailWave[] = [
-  { directionX: 0.72, directionZ: 0.69, slope: 0.046, wavelength: 3.4, speed: 1.02 },
-  { directionX: 0.98, directionZ: -0.18, slope: 0.044, wavelength: 2.3, speed: 0.95 },
-  { directionX: 0.36, directionZ: 0.93, slope: 0.042, wavelength: 1.56, speed: 1.08 },
-  { directionX: 0.9, directionZ: 0.44, slope: 0.041, wavelength: 1.07, speed: 0.98 },
-  { directionX: 0.62, directionZ: -0.78, slope: 0.038, wavelength: 0.73, speed: 1.1 },
-  { directionX: -0.2, directionZ: 0.98, slope: 0.036, wavelength: 0.5, speed: 0.93 },
+  { directionX: 0.72, directionZ: 0.69, slope: 0.078, wavelength: 3.4, speed: 1.02 },
+  { directionX: 0.98, directionZ: -0.18, slope: 0.078, wavelength: 2.3, speed: 0.95 },
+  { directionX: 0.36, directionZ: 0.93, slope: 0.076, wavelength: 1.56, speed: 1.08 },
+  { directionX: 0.9, directionZ: 0.44, slope: 0.074, wavelength: 1.07, speed: 0.98 },
+  { directionX: 0.62, directionZ: -0.78, slope: 0.07, wavelength: 0.73, speed: 1.1 },
+  { directionX: -0.2, directionZ: 0.98, slope: 0.066, wavelength: 0.5, speed: 0.93 },
 ] as const;
 
 /** Largest slope the shared displacement spectrum can produce at any point. */

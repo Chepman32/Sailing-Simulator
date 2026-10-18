@@ -283,19 +283,27 @@ export const oceanFragmentShader = /* glsl */ `
     lostVariance += 0.5 * strength * strength * (1.0 - resolved * resolved);
   }
 
+  // Wind ripples run in crests across the wind: the noise is stretched along
+  // the crest direction (perpendicular to the mean wind) so the glints form
+  // short bright dashes, as on a real breezy sea, not round speckles.
+  const vec2 RIPPLE_ACROSS = vec2(0.851, 0.526);
+  const vec2 RIPPLE_CREST = vec2(-0.526, 0.851);
+  const float RIPPLE_STRETCH = 0.42;
+
   // Capillary ripples: the gradient of drifting value noise. featureSize is
-  // the approximate ripple spacing in metres.
+  // the approximate ripple spacing in metres; stretch < 1 draws crests.
   void rippleLayer(
-    vec2 position, float featureSize, float peakSlope, float footprint, float gust,
+    vec2 position, float featureSize, float peakSlope, float footprint, float gust, float stretch,
     inout vec2 slope, inout float lostVariance
   ) {
     float resolved = 1.0 - smoothstep(featureSize * 0.2, featureSize * 0.6, footprint);
     float strength = peakSlope * gust;
     if (resolved > 0.001) {
       const float STEP = 0.3;
-      float centre = skyNoise(position);
-      vec2 gradient = vec2(skyNoise(position + vec2(STEP, 0.0)) - centre, skyNoise(position + vec2(0.0, STEP)) - centre);
-      slope += gradient * (strength * resolved / STEP);
+      vec2 q = vec2(dot(position, RIPPLE_ACROSS), dot(position, RIPPLE_CREST) * stretch);
+      float centre = skyNoise(q);
+      vec2 gradient = vec2(skyNoise(q + vec2(STEP, 0.0)) - centre, skyNoise(q + vec2(0.0, STEP)) - centre);
+      slope += (RIPPLE_ACROSS * gradient.x + RIPPLE_CREST * gradient.y * stretch) * (strength * resolved / STEP);
     }
     lostVariance += 0.25 * strength * strength * (1.0 - resolved * resolved);
   }
@@ -420,17 +428,21 @@ ${swellCalls}
     if (uDetail > 0.2) {
       float warp = skyNoise(base * 0.085 + vec2(uTime * 0.02, 3.7)) * 5.5;
 ${detailCalls}
-      rippleLayer(base * 2.1 + uTime * vec2(0.52, 0.29), 0.48, 0.085, footprint, gust, slope, lostVariance);
-      if (uDetail > 0.6) {
-        rippleLayer(base * 5.7 - uTime * vec2(0.38, 0.71), 0.18, 0.06, footprint, gust, slope, lostVariance);
+      rippleLayer(base * 2.1 + uTime * vec2(0.52, 0.29), 0.48, 0.23, footprint, gust, RIPPLE_STRETCH, slope, lostVariance);
+      if (uDetail > 0.5) {
+        rippleLayer(base * 5.7 - uTime * vec2(0.38, 0.71), 0.18, 0.16, footprint, gust, RIPPLE_STRETCH, slope, lostVariance);
         // Chop a metre across, from no particular direction, so the swell's
         // straight crest lines never read as ruled bands in the glitter.
-        rippleLayer(base * 0.85 + uTime * vec2(-0.21, 0.33), 1.25, 0.05, footprint, gust, slope, lostVariance);
+        rippleLayer(base * 0.85 + uTime * vec2(-0.21, 0.33), 1.25, 0.12, footprint, gust, 1.0, slope, lostVariance);
       }
     } else {
       lostVariance += 0.006;
     }
     vec2 rippleSlope = slope - swellSlope;
+    // Wind ripples are not sine waves: their crests are sharp and their troughs
+    // broad, so the slope distribution has heavy tails. Steepening the steep
+    // facets gives the crisp bright crest lines a real sea shows from above.
+    rippleSlope *= 1.0 + 2.2 * length(rippleSlope);
     float rippleVariance = lostVariance - swellVariance;
     if (uRain > 0.01) {
       rippleSlope += rainRings(base, footprint);
@@ -532,7 +544,10 @@ ${detailCalls}
     body = mix(body, uSandColor, bottom * 0.62);
     float lightFacing = max(dot(normal, uLightDirection), 0.0);
     vec3 irradiance = uAmbientColor + uLightColor * (0.35 + 0.65 * lightFacing) * 0.2;
-    body *= irradiance;
+    // Deep water sends back only a few percent of the light: from above, the
+    // sky mirrored in the wavelets is several times brighter than the water
+    // body, which is what draws the bright streaks over dark navy.
+    body *= irradiance * 0.55;
     // Bubbles in the wake scatter light back up: a paler, turquoise band.
     float bubbles = wakeSlick * (0.55 + 0.45 * skyNoise(vWorldPosition.xz * 0.35 + 7.3));
     body = mix(body, uScatterColor * irradiance * 0.3 + body * 0.75, bubbles * 0.3);
@@ -664,7 +679,7 @@ ${detailCalls}
     // grazing views and deep water close up.
     // Tropical water is clear: looking down, most of what is seen is what
     // lies beneath (already veiled by the water in its own material).
-    float clarity = mix(0.58, 0.06, smoothstep(0.02, 0.36, fresnel));
+    float clarity = mix(0.3, 0.05, smoothstep(0.02, 0.36, fresnel));
     clarity = mix(clarity, 0.6, bottom * (1.0 - smoothstep(0.02, 0.3, fresnel)));
     float alpha = clamp(1.0 - clarity + foam * 0.5 + hullShadow * 0.12, 0.3, 1.0);
 

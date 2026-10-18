@@ -77,7 +77,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/math.ts` | Allocation-free scalar helpers |
 | `src/simulator/core/RenderLoop.ts` | Visibility-aware requestAnimationFrame loop with 60 Hz fixed-step accumulator |
 | `src/simulator/core/FramePacer.ts` | Pure frame-rate cap (60 fps, 30 fps unfocused) so 120/144 Hz displays do not double the GPU work |
-| `src/simulator/core/RenderBudget.ts` | Pure pixel budget (`budgetPixelRatio`) and GPU-time governor (`GpuGovernor`) that eases the render scale |
+| `src/simulator/core/RenderBudget.ts` | Pure pixel budget (`budgetPixelRatio`), GPU-time governor (`GpuGovernor`) that eases the render scale, and the frame-rate judge (`FpsJudge`) for the preset fallback |
 | `src/simulator/core/GpuTimer.ts` | Asynchronous GPU frame timing through `EXT_disjoint_timer_query_webgl2`, where the browser has it |
 | `src/simulator/core/AssetManager.ts` | Manifest, parallel GLB loading, required/optional behavior, cloning, progress, disposal |
 | `src/simulator/core/QualityManager.ts` | Low/medium/high settings, DPR, shadows, ocean tessellation and shader detail, post-processing switches, adaptive quality |
@@ -316,14 +316,15 @@ Passing ships add their wakes to the same surface (`ShipMath`, uniforms `uShipPo
 `shaders/oceanShader.ts` generates both stages from those tables, so there is exactly one copy of each number. The fragment stage:
 
 - rebuilds the slope of all shared waves analytically per pixel, so normals are crisp regardless of tessellation;
-- adds the detail spectrum and two drifting capillary ripple layers, each faded against the pixel footprint, with the faded energy converted into specular roughness instead of being dropped;
+- adds the detail spectrum and drifting capillary ripple layers, each faded against the pixel footprint, with the faded energy converted into specular roughness instead of being dropped. The ripple noise is stretched along the crest direction (across the mean wind, `RIPPLE_STRETCH`) and the ripple slope is steepened where it is already steep (heavy-tailed, like real wind ripples), so from above the sea shows short, crisp bright dashes of mirrored sky over dark navy rather than round speckles or silky bands;
+- keeps the water body dark (deep water returns only a few percent of the light, so the mirrored sky is several times brighter than the body) and only moderately clear over deep water; the shallows stay clear;
 - reflects the shared analytic sky (and, on high, its clouds) with Schlick Fresnel, and on medium/high a planar mirror of the yacht, islands and birds (`OceanReflection`) distorted by the swell and ripples;
 - draws the sun and moon glitter path with a GGX lobe whose width follows the unresolved wave energy, a broad sheen around it, and HDR sparkles from individual facets that bloom;
 - colours the water body from the island bathymetry: deep blue offshore, turquoise over the shelf, sand showing through at the beach; the shaders evaluate only the eight islands nearest the yacht (`ISLAND_SLOTS`, uniforms `uIslandShape`/`uIslandFrame`, refreshed every frame by `IslandSystem.update`), and only measure the irregular coast within 60 m of it;
 - scatters sunlight forward through wave crests;
 - breaks whitecaps on the steepest crests inside gusts;
 - draws the surf from `SurfMath`: each wave steepens on the shelf (its face tilts the normal along the shore normal), breaks into a bore of white water and runs in; every wave has its own strength and run-up, and the timing drifts along the coast;
-- samples the wake field (`WakeField`): its wave height bends the normal, its aerated band pales the water and damps the ripples, and its foam is broken into lace at pixel scale;
+- samples the wake field (`WakeField`): its wave height bends the normal, its aerated band pales the water and damps the ripples, and its foam is broken into lace at pixel scale; the yacht's white water behind the transoms fades over a few seconds and lingers as a lace of bubbles a boat length or two astern (`WakeSystem`);
 - keeps a local contact shadow under both hulls;
 - is clear looking down (about 58 % see-through at the nadir, closing toward grazing angles), so what swims below shows its own colour, already veiled by `UnderwaterLight`;
 - fades into the sky's own horizon colour between `HORIZON_FADE_START` (640 m) and `HORIZON_FADE_END` (1250 m), so sea and sky meet without a seam and ships a kilometre off still sit on visible water.
@@ -457,11 +458,11 @@ One analytic sky function (`shaders/skyShader.ts`) is evaluated by three consume
 
 The capture is refreshed only when the night factor has moved, at most a few times per second during a day/night transition, and the previous target is disposed.
 
-The sun, moon and stars are drawn by the sky shader itself (`skyCelestial`), under the clouds: clouds drift across them, and every piece of geometry hides them by being drawn later. The solar disc is HDR (it blooms), with limb darkening, and dims near the horizon so it stays red-orange; the moon has craters, maria and a soft limb; stars twinkle on a stereographic grid, sized to a pixel. The lighting capture leaves them out (`uCelestial` 0): the directional light already carries the sun and the moon.
+The sun, moon and stars are drawn by the sky shader itself (`skyCelestial`), under the clouds: clouds drift across them, and every piece of geometry hides them by being drawn later. The solar disc is HDR (it blooms), with limb darkening, and dims near the horizon so it stays red-orange; the moon shows the familiar face — the real maria (Imbrium, Serenitatis, Tranquillitatis, Crisium, Fecunditatis, Nectaris, Procellarum, Nubium, Humorum, Vaporum, Frigoris) where they lie as seen from Earth, Tycho and Copernicus with their rays, craters thinning out over the seas — and a soft, darker limb; stars twinkle on a stereographic grid, sized to a pixel. The lighting capture leaves them out (`uCelestial` 0): the directional light already carries the sun and the moon.
 
-Weather comes from `WeatherMath` (see “Weather, sea state and the day cycle” below): fair-weather cumulus over about a quarter of the sky when clear, thicker and darker as the weather worsens. A day/night change takes `TRANSITION_SECONDS` (11 s) and passes through a full sunset or sunrise.
+Weather comes from `WeatherMath` (see “Weather, sea state and the day cycle” below): a clear blue sky with only a few small, crisp cumulus (about 12 % cover) when clear, thicker and darker as the weather worsens. By day the sun stands about 29° up (`deriveTimeOfDay`, higher at the top of the automatic arc), high enough for the deep blue of the sea seen from above and short shadows on deck. A day/night change takes `TRANSITION_SECONDS` (11 s) and passes through a full sunset or sunrise.
 
-Lighting: one directional light carries the palette's dominant light and casts a tight shadow frustum (about ±17 m) that follows the yacht for crisp self-shadowing; a weak hemisphere light lifts shadowed faces. There is no separate ambient light; ambient comes from the capture.
+Lighting: one directional light carries the palette's dominant light (at 1.3× the palette's irradiance: direct sun is several times the sky's light on a clear day, and a weaker key lets the sky fill tint every white surface blue and flatten it) and casts a tight shadow frustum (about ±17 m) that follows the yacht for crisp self-shadowing; a weak hemisphere light (0.3) and the sky capture (`environmentIntensity` 0.5) fill the shadows. Turning shadows on or off with a preset change rebuilds every lit material (three.js bakes shadow support into the program). There is no separate ambient light; ambient comes from the capture.
 
 ### Under the surface
 
@@ -536,7 +537,7 @@ General motion rules:
 
 ### Dolphins
 
-`DolphinBehavior` runs a pod and its members. The pod roams calmly around a stopped or slow yacht, escorts her abeam, rides the pressure wave just ahead of her bows, or crosses ahead of her and loops back, depending on her speed. Pod members keep loose slots with individual speed, depth and timing, surge ahead and drop back when playful, and rise to breathe with a small chuff of mist.
+`DolphinBehavior` runs a pod and its members. The pod roams calmly around a stopped or slow yacht, escorts her abeam, rides the pressure wave just ahead of her bows, or crosses ahead of her and loops back, depending on her speed. Pod members keep loose slots with individual speed, depth and timing, grouped in knots of two or three (`podJitter`) rather than a ruled echelon, surge ahead and drop back when playful, and rise to breathe with a small chuff of mist.
 
 Each dolphin runs:
 
@@ -729,9 +730,9 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 | Medium | 1.25 | 1.7 MP | 144 | 1024 | 0.70 | 6 / 3 | 60% | 0.55 | 1 | on | 0.20 | 2× |
 | High | 1.5 | 2.6 MP | 224 | 2048 | 0.90 | 6 / 4 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
 
-Ocean detail gates fragment work: above 0.2 the detail spectrum and one ripple layer are shaded; above 0.6 the second ripple layer and cloud reflections are added. Sky detail selects three- or five-octave clouds.
+Ocean detail gates fragment work: above 0.2 the detail spectrum and one ripple layer are shaded; above 0.5 the finer ripple layer and the metre-scale chop are added; above 0.6 cloud reflections. Sky detail selects three- or five-octave clouds.
 
-The drawing buffer never holds more pixels than the preset's budget (`budgetPixelRatio`): a Retina laptop at full screen renders about 2.6 million pixels on high instead of 4–5 million. Where the browser can time GPU work (`GpuTimer`, Chrome and Edge on desktop), `GpuGovernor` eases the render scale (down to `MIN_RENDER_SCALE`) while a frame costs more than `GPU_TARGET_MS` (6.5 ms, about 40 % of a 60 Hz frame) and back up when there is room, at most once every `SCALE_CHANGE_INTERVAL`; a GPU still overloaded at the lowest scale steps the preset down, and only a long idle one steps it up (the frame rate alone no longer raises the preset there, since a GPU can deliver 60 fps working flat out). The canvas itself is not multisampled when the HDR pipeline will draw (it would only add a full-screen resolve every frame), and the context asks for the default power preference, so a laptop with two GPUs can stay on the efficient one.
+The drawing buffer never holds more pixels than the preset's budget (`budgetPixelRatio`): a Retina laptop at full screen renders about 2.6 million pixels on high instead of 4–5 million. Where the browser can time GPU work (`GpuTimer`, Chrome and Edge on desktop), `GpuGovernor` eases the render scale (down to `MIN_RENDER_SCALE`) while a frame costs more than `GPU_TARGET_MS` (8.5 ms, about half a 60 Hz frame) and back up when there is room, at most once every `SCALE_CHANGE_INTERVAL`; a GPU still overloaded at the lowest scale steps the preset down, and only a long idle one steps it up (the frame rate alone no longer raises the preset there, since a GPU can deliver 60 fps working flat out). Without GPU timing the preset falls back on the frame rate (`FpsJudge`): windows during start-up and after a preset change (shader compilation) do not count, nor do windows while the page is paced to 30 fps because another app has the focus; it takes three slow windows in a row to step down. Before this, switching to another app (to take a screenshot, say) dropped a session from high to low within seconds and left it there, aliased and flat. The canvas itself is not multisampled when the HDR pipeline will draw (it would only add a full-screen resolve every frame), and the context asks for the default power preference, so a laptop with two GPUs can stay on the efficient one.
 
 Coarse devices start low. Adaptive quality observes FPS windows, steps down quickly when slow, and requires a long stable period above 58 FPS before stepping up. Coarse devices never automatically step to high.
 
@@ -817,7 +818,7 @@ The Sites checkpoint performs its own production build and rendered smoke verifi
 - Wake: low-speed hull wake, stationary prop wash, monotonic strength, reverse symmetry, sample spacing that keeps the whole wake in the pool, the Kelvin angle; splash kinds scaled by contact energy, a slap far larger and longer-lived than a dolphin entry.
 - Weather and surf: fair most of the time, clear at the start, occasional spells; waves that differ, break, run up and drain, sand that dries; a storm swell several metres high that the yacht rides and that dies out over the shelves.
 - Lightning: none below a downpour, distant flashes only in a downpour, several strikes a minute in a storm; a leader, then return strokes that die within a second; thunder delayed by distance; a channel from cloud base to sea with branches above it, the same for the same seed.
-- Render budget: the pixel budget caps large canvases; the governor lowers the scale under load, restores it, spaces its changes and asks for a preset change only at its limits.
+- Render budget: the pixel budget caps large canvases; the governor lowers the scale under load, restores it, spaces its changes and asks for a preset change only at its limits; the frame-rate fallback ignores start-up stalls and unfocused pacing.
 - Shore guard: under power the yacht turns away before touching and the helm is handed back with speed restored; a helmsman steering into an island never strands her; under sail the sheets are eased.
 - Water contact: the sampler returns the displaced surface, motion fades with depth, ring waves spread and stay gentle, crossings have hysteresis.
 - Islands and animals: dolphins around a coast never cross the beach or enter very shallow water; sharks and whales keep to deep water; a distant breach is rare, far, continuous and varied.
