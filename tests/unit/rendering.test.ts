@@ -339,3 +339,32 @@ test("a camera pose with NaN or runaway numbers is not usable", () => {
   assert.equal(isUsablePose([Infinity, 0, 0]), false);
   assert.equal(isUsablePose([1e9, 0, 0]), false);
 });
+
+import { MAX_DRAFT, sailShape, tessellate } from "../../src/simulator/vessel/SailMath";
+
+test("the sail's belly deepens with wind and trim and vanishes when it luffs", () => {
+  const flat = sailShape(2, 0, 0.2);
+  const full = sailShape(9, 0, 1);
+  const luffing = sailShape(9, 1, 1);
+  assert.ok(Math.abs(full.draft) > Math.abs(flat.draft) * 2);
+  assert.ok(Math.abs(full.draft) <= MAX_DRAFT + 1e-9);
+  assert.equal(Math.abs(luffing.draft), 0);
+  assert.ok(luffing.flutter > full.flutter * 3);
+  assert.ok(luffing.wrinkle > full.wrinkle);
+  assert.ok(sailShape(Number.NaN, 0, 1).draft <= 0);
+});
+
+test("a sail of one triangle is cut into cloth-sized triangles with the same area", () => {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 4, 0, 0, 0, 8, 0], 3));
+  const fine = tessellate(geometry, 1);
+  const position = fine.getAttribute("position");
+  assert.ok(position.count / 3 >= 64);
+  let area = 0;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let t = 0; t < position.count; t += 3) {
+    a.fromBufferAttribute(position, t); b.fromBufferAttribute(position, t + 1); c.fromBufferAttribute(position, t + 2);
+    area += b.sub(a).cross(c.sub(a)).length() / 2;
+  }
+  assert.ok(Math.abs(area - 16) < 1e-4, `area ${area}`);
+});

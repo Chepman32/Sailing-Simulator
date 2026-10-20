@@ -376,7 +376,7 @@ function updatePodMode(pod: DolphinPod, world: MarineWorld, vessel: VesselState,
     const dx = pod.centreX - vessel.x;
     const dz = pod.centreZ - vessel.z;
     const distance = Math.hypot(dx, dz) || 1;
-    const desired = 26 + Math.sin(pod.wander * 0.05) * 8;
+    const desired = 17 + Math.sin(pod.wander * 0.05) * 5;
     const tangentX = (dz / distance) * pod.side;
     const tangentZ = (-dx / distance) * pod.side;
     const radial = (desired - distance) * 0.08;
@@ -466,8 +466,9 @@ function slotFor(
       return {
         x: pod.centreX + Math.cos(angle) * (3 + rank * 1.4),
         z: pod.centreZ + Math.sin(angle) * (3 + rank * 1.4),
-        depth: 0.85 + agent.depthBias * 0.5,
-        speed: 2.2 + agent.speedBias,
+        // Cruising at rest they rise to breathe: backs and fins break the surface in turn.
+        depth: 0.12 + 0.75 * (0.5 + 0.5 * Math.sin(agent.wander * 0.55 + agent.id * 1.9)),
+        speed: 2.8 + agent.speedBias,
       };
     }
   }

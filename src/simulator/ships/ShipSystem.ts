@@ -314,7 +314,7 @@ export class ShipSystem {
     if (slot >= MOVING_SHIPS) {
       // An anchorage anywhere in sight at the start; later, ahead of the yacht.
       const bearing = initial ? this.random() * Math.PI * 2 : this.yachtHeading + (this.random() - 0.5) * 1.6;
-      placed = planAnchorage(ship, this.world, yacht.x, yacht.z, bearing, this.ships, this.random, initial ? 450 : 1400, initial ? 950 : 1900);
+      placed = planAnchorage(ship, this.world, yacht.x, yacht.z, bearing, this.ships, this.random, initial ? 300 : 900, initial ? 800 : 1500);
     } else {
       // At the start the first ship crosses ahead, so one is in view at once.
       placed =

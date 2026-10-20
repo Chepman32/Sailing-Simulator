@@ -71,8 +71,8 @@ export const MOVING_SHIPS = 5;
 export const WAKE_SLOTS = 4;
 
 /** Closest approach of a planned lane to the yacht, metres. */
-export const LANE_MIN_PASSING = 300;
-export const LANE_MAX_PASSING = 800;
+export const LANE_MIN_PASSING = 160;
+export const LANE_MAX_PASSING = 650;
 /** A new ship appears this far up her lane before the closest approach (in the haze). */
 export const SPAWN_MIN_RUN = 1500;
 export const SPAWN_MAX_RUN = 1950;
@@ -277,7 +277,7 @@ export function planLane(
     const forwardZ = Math.cos(heading);
     let side = random() < 0.5 ? 1 : -1;
     if (across !== undefined) side = forwardZ * Math.sin(across) - forwardX * Math.cos(across) >= 0 ? 1 : -1;
-    const passing = across !== undefined ? between(random, 500, 900) : between(random, LANE_MIN_PASSING, LANE_MAX_PASSING);
+    const passing = across !== undefined ? between(random, 300, 700) : between(random, LANE_MIN_PASSING, LANE_MAX_PASSING);
     // Closest point of approach, abeam of the yacht.
     const cpaX = yachtX + forwardZ * passing * side;
     const cpaZ = yachtZ - forwardX * passing * side;
@@ -307,7 +307,8 @@ export function planLane(
     ship.z = startZ;
     ship.heading = heading;
     ship.laneHeading = heading;
-    ship.targetSpeed = spec.cruiseSpeed * between(random, 0.88, 1.06);
+    ship.targetSpeed = spec.cruiseSpeed * between(random, random() < 0.4 ? 0.4 : 0.8, 1.06);
+    // Slow steamers: a yacht under engine can overtake or follow them.
     ship.speed = ship.targetSpeed;
     ship.anchored = false;
     ship.active = true;
@@ -329,8 +330,8 @@ export function planAnchorage(
   bearing: number,
   others: readonly Ship[],
   random: RandomSource,
-  minDistance = 650,
-  maxDistance = 1350,
+  minDistance = 320,
+  maxDistance = 1150,
 ): boolean {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const direction = bearing + between(random, -0.9, 0.9);

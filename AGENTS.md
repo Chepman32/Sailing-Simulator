@@ -17,7 +17,7 @@ The experience should communicate the following at a glance:
 - islands are tropical land masses with shallow water and collision boundaries, not circular platforms, an endless world with at least one cay or island in every 1.2 km cell, so land lies every one to two kilometres in any direction;
 - large ships (container ships, tankers, bulk carriers, car carriers, cruise liners) pass in the distance or lie at anchor; they can be reached, their wakes rock the yacht, and they are heard and seen at night;
 - wildlife uses authored, licensed, rigged 3D models and moves forward with inertia;
-- whales stay hidden at depth most of the time; a surfacing is a rare event in which only the back, the blowhole and, when lobtailing, the peduncle and flukes clear the water; a full breach happens only far from the yacht, rarely, by a separate distant whale;
+- whales stay hidden at depth most of the time; a surfacing is a rare event in which only the back, the blowhole and, when lobtailing, the peduncle and flukes clear the water; a full breach happens only far from the yacht, every half a minute to a minute, by a separate distant whale;
 - dolphins leap only at real speed, in one continuous ballistic arc; sharks are mostly a dark shape below the surface;
 - mobile controls remain readable, reachable, and independent from camera gestures;
 - sound is a layered simulation channel that unlocks from a trusted browser gesture.
@@ -146,6 +146,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | Path | Responsibility |
 | --- | --- |
 | `src/simulator/wildlife/WildlifeSystem.ts` | Owns every animal and the shared `MarineWorld` (rendered surface, bathymetry, yacht, each other) |
+| `RenderHealth.ts` (core) | Pure policy for a silently broken view: flat-frame detection, context restore/reload timing, usable-camera test; `Simulator` probes a pixel column every ~1.5 s and rebuilds the render targets after three flat readings |
+| `SailMath.ts` | Pure sail shape (draft, twist, flutter, wrinkle from wind, luff and trim) and triangle tessellation; the cloth shader in `SailSystem.ts` evaluates the same shape with a finite-difference normal |
 | `WhaleBehavior.ts` | Pure whale state machine, depth keeping, tail-chain springs, lobtail planning, tail forward kinematics |
 | `WhaleController.ts` | Whale rig (`createWhaleRig`): procedural fluke strokes and turn bends, flipper clip, tracked blowhole/back/fluke contact points |
 | `WhaleBreach.ts` | Pure distant breach: rare scheduling, run-up from depth, ballistic flight with roll, splash, dive |

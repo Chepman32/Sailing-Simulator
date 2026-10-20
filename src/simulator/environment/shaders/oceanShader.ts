@@ -578,6 +578,11 @@ ${detailCalls}
     // sky mirrored in the wavelets is several times brighter than the water
     // body, which is what draws the bright streaks over dark navy.
     body *= irradiance * 0.55;
+    // A gale's water is dark grey-green and opaque with churned air; thin
+    // crests let the little light there is through as a bottle green.
+    float gale = smoothstep(0.03, 0.3, uBreaking);
+    float skyLight = dot(uAmbientColor, vec3(0.333));
+    body = mix(body, vec3(0.05, 0.085, 0.08) * (skyLight * 1.8 + 0.02), gale * 0.55);
     // Bubbles in the wake scatter light back up: a paler, turquoise band.
     float bubbles = wakeSlick * (0.55 + 0.45 * skyNoise(vWorldPosition.xz * 0.35 + 7.3));
     body = mix(body, uScatterColor * irradiance * 0.3 + body * 0.75, bubbles * 0.3);
@@ -587,6 +592,7 @@ ${detailCalls}
     float throughWave = pow(max(dot(viewDirection, -normalize(uLightDirection + normal * 0.45)), 0.0), 3.0);
     float scatter = throughWave * smoothstep(-0.15, 0.85, crest) * (1.0 - nDotV * 0.6);
     body += uScatterColor * uLightColor * scatter * 0.085;
+    body += vec3(0.05, 0.13, 0.105) * skyLight * 1.6 * gale * smoothstep(0.3, 0.95, crest) * (0.4 + 0.6 * nDotV);
 
     // Shallow-water caustic shimmer on the sand.
     if (bottom > 0.02) {
@@ -613,7 +619,9 @@ ${detailCalls}
     float sheenAlpha2 = pow(max(roughness * 2.4, 0.16), 4.0);
     float sheenDenominator = nDotH * nDotH * (sheenAlpha2 - 1.0) + 1.0;
     float sheen = sheenAlpha2 / (OCEAN_PI * sheenDenominator * sheenDenominator) * specularFresnel * visibility * nDotL;
-    color += uLightColor * (specular + min(sheen, 5.0) * 0.1);
+    // Under a storm's cloud the sun is only a pale patch: the glitter path fades.
+    float sunVeil = 1.0 - 0.88 * gale;
+    color += uLightColor * (specular + min(sheen, 5.0) * 0.1) * sunVeil;
 
     // Sparkles: single capillary facets tilted just right flash brighter
     // than white, so bloom turns them into points of light.
@@ -626,7 +634,7 @@ ${detailCalls}
       float glint = smoothstep(0.9965, 0.9993, facetAlign) * smoothstep(0.52, 0.72, sparkleA * sparkleB * 1.9);
       // Below a pixel the flashes would only shimmer; let the GGX lobe carry them.
       glint *= (1.0 - smoothstep(0.12, 0.45, footprint)) * smoothstep(0.0, 0.08, nDotL);
-      color += uLightColor * glint * 7.0;
+      color += uLightColor * glint * 7.0 * sunVeil;
     }
 
     // --- Hulls -------------------------------------------------------------
@@ -663,6 +671,18 @@ ${detailCalls}
     streaks = smoothstep(0.3, 0.72, streaks * 0.75 + foamFine * 0.25);
     foam *= mix(1.0, 0.25 + 0.95 * streaks, clamp(uBreaking * 2.2, 0.0, 1.0));
     foam = min(foam * (1.0 + uBreaking * 0.9), 0.92);
+    // Breaking crests leave a net of bubbles down their backs, drawn out
+    // along the wind, and the sea between them stays streaked with old foam.
+    if (gale > 0.01) {
+      float galeLace = foamLace(windFrame * vec2(0.9, 3.4) + vec2(uTime * 0.06, 0.0), 0.34);
+      float galeFine = foamLace(windFrame * vec2(2.3, 8.5) - vec2(uTime * 0.1, 0.0), 0.36);
+      float slopeFoam = smoothstep(0.3, 0.85, breaking + crest * 0.3);
+      // Fine lace fades into a smooth sheet with distance, so it never moirés.
+      float laceFade = 1.0 - smoothstep(60.0, 260.0, distance(vWorldPosition.xz, cameraPosition.xz));
+      float lacework = mix(0.55, max(galeLace * 0.9, galeFine * 0.8), laceFade) * (0.5 + 0.5 * foamTexture);
+      foam = max(foam, min(gale * slopeFoam * lacework * 0.8, 0.85));
+      foam = max(foam, gale * 0.14 * streaks * (0.4 + 0.6 * foamFine));
+    }
 
 
     // Water piling against the hulls: a lapping line at rest, a bow wave and
@@ -714,6 +734,8 @@ ${detailCalls}
 
     vec3 foamColor = (uAmbientColor * 1.15 + uLightColor * (0.2 + 0.8 * nDotL) * 0.3) * vec3(0.94, 0.98, 1.0);
     color = mix(color, foamColor, foam);
+    // Spray torn off the crests hangs as a pale veil over them.
+    color = mix(color, foamColor * 0.92, gale * smoothstep(0.55, 1.0, crest) * 0.3 * (0.6 + 0.4 * foamTexture));
 
     color *= 1.0 - hullShadow * 0.34;
 

@@ -55,7 +55,7 @@ export class Simulator {
   private gpuTimer?: GpuTimer;
   private readonly flatWatch = new FlatFrameWatch();
   private nextProbe = 0;
-  private readonly probe = new Uint8Array(4);
+  private column = new Uint8Array(4);
   private contextLostAt = Number.NaN;
   private restoreRequested = false;
   private recoveryTimer?: number;
@@ -544,11 +544,13 @@ export class Simulator {
     const width = this.renderer.domElement.width;
     const height = this.renderer.domElement.height;
     if (width < 8 || height < 8) return;
+    // One column through the middle of the frame: sky, horizon and sea.
     const samples: PixelSample[] = [];
-    const spots: [number, number][] = [[0.5, 0.12], [0.25, 0.3], [0.75, 0.45], [0.5, 0.65], [0.2, 0.85], [0.8, 0.92]];
-    for (const [u, v] of spots) {
-      gl.readPixels(Math.floor(u * width), Math.floor(v * height), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.probe);
-      samples.push([this.probe[0]!, this.probe[1]!, this.probe[2]!]);
+    const column = this.column.length >= height * 4 ? this.column : (this.column = new Uint8Array(height * 4));
+    gl.readPixels(Math.floor(width / 2), 0, 1, height, gl.RGBA, gl.UNSIGNED_BYTE, column);
+    for (const v of [0.12, 0.3, 0.45, 0.65, 0.85, 0.92]) {
+      const row = Math.floor(v * height) * 4;
+      samples.push([column[row]!, column[row + 1]!, column[row + 2]!]);
     }
     if (this.flatWatch.observe(samples)) {
       console.warn("The frame came out as one flat colour; rebuilding the render targets.");

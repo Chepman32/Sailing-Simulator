@@ -25,8 +25,8 @@ export type BreachVariant = "full" | "side" | "partial";
 
 export const BREACH_GRAVITY = 9.81;
 /** Minimum and maximum seconds between two breaches. */
-export const BREACH_MIN_INTERVAL = 45;
-export const BREACH_MAX_INTERVAL = 110;
+export const BREACH_MIN_INTERVAL = 22;
+export const BREACH_MAX_INTERVAL = 55;
 /** The breach happens this far from the yacht, metres. */
 export const BREACH_MIN_DISTANCE = 75;
 export const BREACH_MAX_DISTANCE = 150;

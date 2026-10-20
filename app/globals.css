@@ -1455,6 +1455,9 @@ input[type="range"]:disabled {
 /* Phone portrait: a bottom dock. The rudder spans the full width; the throttle
    stands above its right end, beside the yacht rather than over it. */
 @media (max-width: 680px) and (orientation: portrait) {
+  /* A floating browser toolbar overlaps the page bottom without reporting a safe area. */
+  .simulator-shell { --edge-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--gap) + 12px); }
+
   .simulator-shell {
     --notice-side: 60px;
     --throttle-length: clamp(112px, calc(100dvh - 540px), 170px);
@@ -1493,10 +1496,14 @@ input[type="range"]:disabled {
     bottom: var(--edge-bottom);
     left: var(--edge-left);
     width: auto;
-    max-height: min(78dvh, 620px);
+    /* The smallest viewport (svh): a browser toolbar that slides over the page
+       must never cover the last row of the panel. */
+    max-height: min(76svh, 620px);
+    padding-bottom: 6px;
+    scroll-padding-bottom: 24px;
   }
 
-  .panel-body { gap: 8px; }
+  .panel-body { gap: 8px; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); }
 }
 
 /* Phone landscape and short windows: rudder bottom-left, throttle bottom-right,
