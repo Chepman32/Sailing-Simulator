@@ -304,3 +304,38 @@ test("render budget: the frame-rate fallback ignores start-up stalls and a page 
   judge.reset();
   assert.equal(judge.observe(5, 60), "ignored", "a preset change starts a new warm-up");
 });
+
+import { contextRecovery, FlatFrameWatch, isFlatFrame, isUsablePose } from "../../src/simulator/core/RenderHealth";
+
+test("a frame of one flat colour is told from a real one", () => {
+  const flat: [number, number, number][] = [[12, 30, 60], [12, 30, 61], [13, 30, 60], [12, 31, 60]];
+  assert.equal(isFlatFrame(flat), true);
+  assert.equal(isFlatFrame([...flat, [90, 140, 200]]), false);
+  assert.equal(isFlatFrame([[0, 0, 0]]), false);
+});
+
+test("the view is rebuilt only after several flat readings in a row", () => {
+  const watch = new FlatFrameWatch();
+  const flat: [number, number, number][] = [[10, 20, 40], [10, 20, 40], [10, 20, 40]];
+  const real: [number, number, number][] = [[10, 20, 40], [120, 160, 220], [10, 20, 40]];
+  assert.equal(watch.observe(flat), false);
+  assert.equal(watch.observe(flat), false);
+  assert.equal(watch.observe(real), false);
+  assert.equal(watch.observe(flat), false);
+  assert.equal(watch.observe(flat), false);
+  assert.equal(watch.observe(flat), true);
+});
+
+test("a lost context is asked to restore, then the page to reload", () => {
+  assert.equal(contextRecovery(0.5, false), "none");
+  assert.equal(contextRecovery(2, false), "restore");
+  assert.equal(contextRecovery(2, true), "none");
+  assert.equal(contextRecovery(9, true), "reload");
+});
+
+test("a camera pose with NaN or runaway numbers is not usable", () => {
+  assert.equal(isUsablePose([0, 7, -16, 50]), true);
+  assert.equal(isUsablePose([0, Number.NaN, 1]), false);
+  assert.equal(isUsablePose([Infinity, 0, 0]), false);
+  assert.equal(isUsablePose([1e9, 0, 0]), false);
+});

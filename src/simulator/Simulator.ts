@@ -4,6 +4,7 @@ import { CameraController } from "./camera/CameraController";
 import { AssetManager } from "./core/AssetManager";
 import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
+import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
 import { GpuTimer } from "./core/GpuTimer";
 import { GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
@@ -52,6 +53,12 @@ export class Simulator {
   private readonly hud: HudController;
   private quality!: QualityManager;
   private gpuTimer?: GpuTimer;
+  private readonly flatWatch = new FlatFrameWatch();
+  private nextProbe = 0;
+  private readonly probe = new Uint8Array(4);
+  private contextLostAt = Number.NaN;
+  private restoreRequested = false;
+  private recoveryTimer?: number;
   private readonly governor = new GpuGovernor();
   private ocean!: OceanSystem;
   private environment!: EnvironmentSystem;
@@ -380,6 +387,7 @@ export class Simulator {
     this.ocean?.dispose(this.scene);
     this.assets.dispose();
     this.renderer.dispose();
+    window.clearInterval(this.recoveryTimer);
     this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
     this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
     this.initialized = false;
@@ -514,7 +522,51 @@ export class Simulator {
     this.renderReflection();
     this.post.render(this.frameDelta, this.elapsed);
     timer?.end();
+    this.watchFrame();
   };
+
+  /**
+   * Every second or so reads a few pixels of the finished frame. Sky above
+   * sea never comes out as one flat colour, so three such readings in a row
+   * mean the view has silently broken (a poisoned buffer, a target the GPU
+   * dropped): the render targets are freed and drawn from scratch.
+   */
+  private watchFrame(): void {
+    if (this.elapsed < this.nextProbe) return;
+    this.nextProbe = this.elapsed + 1.5;
+    const gl = this.renderer.getContext();
+    if (gl.isContextLost()) return;
+    // Underwater the whole view is one tint by design.
+    if (this.camera.camera.position.y < 0.2) {
+      this.flatWatch.reset();
+      return;
+    }
+    const width = this.renderer.domElement.width;
+    const height = this.renderer.domElement.height;
+    if (width < 8 || height < 8) return;
+    const samples: PixelSample[] = [];
+    const spots: [number, number][] = [[0.5, 0.12], [0.25, 0.3], [0.75, 0.45], [0.5, 0.65], [0.2, 0.85], [0.8, 0.92]];
+    for (const [u, v] of spots) {
+      gl.readPixels(Math.floor(u * width), Math.floor(v * height), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.probe);
+      samples.push([this.probe[0]!, this.probe[1]!, this.probe[2]!]);
+    }
+    if (this.flatWatch.observe(samples)) {
+      console.warn("The frame came out as one flat colour; rebuilding the render targets.");
+      this.rebuildView();
+    }
+  }
+
+  /** Frees and redraws everything the GPU holds that is not geometry: targets, captures, shadow maps. */
+  private rebuildView(): void {
+    this.post.rebuild();
+    this.reflection?.dispose();
+    this.reflection?.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
+    this.environment?.invalidateLighting();
+    this.islands?.invalidateShadows();
+    this.governor.reset();
+    this.flatWatch.reset();
+    this.resize();
+  }
 
   /** GPU time of a finished frame: eases the render scale, and the preset if that is not enough. */
   private observeGpu(gpuMs: number): void {
@@ -683,16 +735,45 @@ export class Simulator {
     event.preventDefault();
     this.loop?.stop();
     this.status = "paused";
-    this.options.onError?.("Graphics context was lost. Recovery will be attempted automatically.");
+    this.contextLostAt = performance.now();
+    this.restoreRequested = false;
+    // Some browsers (phones above all) never send "restored" by themselves:
+    // ask for it, and if that fails too, tell the player to reload.
+    window.clearInterval(this.recoveryTimer);
+    this.recoveryTimer = window.setInterval(this.checkRecovery, 500);
+  };
+
+  private readonly checkRecovery = (): void => {
+    if (Number.isNaN(this.contextLostAt)) {
+      window.clearInterval(this.recoveryTimer);
+      return;
+    }
+    const step = contextRecovery((performance.now() - this.contextLostAt) / 1000, this.restoreRequested);
+    if (step === "restore") {
+      this.restoreRequested = true;
+      const loseContext = this.renderer.getContext().getExtension("WEBGL_lose_context");
+      try {
+        loseContext?.restoreContext();
+      } catch {
+        // The context was not lost by that extension; the reload below is the fallback.
+      }
+    } else if (step === "reload") {
+      window.clearInterval(this.recoveryTimer);
+      this.options.onError?.("Graphics context was lost and could not be restored. Reload the page to continue.");
+    }
   };
 
   private readonly onContextRestored = (): void => {
-    // The GPU forgot every texture and target: draw the lighting capture
-    // again, start the render budget afresh and rebuild the buffers.
-    this.environment?.invalidateLighting();
-    this.governor.reset();
-    this.resize();
+    window.clearInterval(this.recoveryTimer);
+    this.contextLostAt = Number.NaN;
+    // The GPU forgot every texture and target. three.js uploads textures and
+    // programs again by itself; what it cannot know is the content of the
+    // render-to-texture buffers and the timer queries.
+    this.gpuTimer?.dispose();
+    this.gpuTimer = new GpuTimer(this.renderer.getContext());
+    this.rebuildView();
     this.status = "running";
+    this.nextProbe = this.elapsed + 3;
     this.loop?.start();
   };
 }

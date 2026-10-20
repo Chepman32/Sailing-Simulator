@@ -165,6 +165,11 @@ export class IslandSystem {
     this.palmShadows?.invalidate();
   }
 
+  /** Draws the palm shadows again (the GPU lost the map). */
+  invalidateShadows(): void {
+    this.palmShadows?.invalidate();
+  }
+
   /** How many islands are built at the moment (for tests and diagnostics). */
   get builtCount(): number {
     return this.built.size;

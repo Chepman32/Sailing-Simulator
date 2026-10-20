@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { OceanSystem } from "../environment/OceanSystem";
 import { clamp, damp } from "../math";
 import type { CameraMode } from "../types";
+import { isUsablePose } from "../core/RenderHealth";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
 
 /** The helmsman's eyes: a point in the yacht's frame, carried exactly with her. */
@@ -58,6 +59,29 @@ export class CameraController {
     this.distance = clamp(this.distance + delta * 0.035, 7, 68);
   }
 
+  /**
+   * The camera eases towards its goal, so one NaN (a zero-length step, a
+   * boat reset mid-frame) would stay in it for good: every frame is then
+   * drawn from nowhere while the HUD carries on. Put it back behind the boat.
+   */
+  private recoverPose(delta: number, focus: THREE.Vector3): void {
+    const camera = this.camera;
+    const ok = isUsablePose([
+      camera.position.x, camera.position.y, camera.position.z,
+      this.smoothedTarget.x, this.smoothedTarget.y, this.smoothedTarget.z,
+      camera.fov, camera.aspect, camera.near, camera.quaternion.x, camera.quaternion.w,
+    ]);
+    if (ok && Number.isFinite(delta)) return;
+    if (!isUsablePose([focus.x, focus.y, focus.z])) return;
+    camera.position.set(focus.x, focus.y + 7, focus.z - 16);
+    this.smoothedTarget.copy(focus);
+    camera.fov = 60;
+    if (!Number.isFinite(camera.aspect) || camera.aspect <= 0) camera.aspect = 1;
+    camera.near = NEAR_PLANE_OUTSIDE;
+    camera.quaternion.identity();
+    camera.updateProjectionMatrix();
+  }
+
   recenter(): void {
     this.yawOffset = 0;
     this.pitch = this.mode === "helm" ? 0.1 : this.mode === "drone" ? 0.58 : this.mode === "orbit" ? 0.24 : 0.1;
@@ -65,6 +89,7 @@ export class CameraController {
 
   update(delta: number, physics: VesselPhysics, helm?: HelmFrame): void {
     const focus = physics.position;
+    this.recoverPose(delta, focus);
     const heading = physics.heading + this.yawOffset;
     const horizontalDirectionX = Math.sin(heading);
     const horizontalDirectionZ = Math.cos(heading);

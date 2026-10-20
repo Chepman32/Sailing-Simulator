@@ -194,6 +194,18 @@ export class PostProcessing {
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
   }
 
+  /**
+   * Frees every GPU target of the pipeline. three.js allocates them again on
+   * the next frame, so a poisoned or forgotten buffer starts from nothing.
+   */
+  rebuild(): void {
+    this.composer.renderTarget1.dispose();
+    this.composer.renderTarget2.dispose();
+    this.bloom.dispose();
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
+    this.composer.setSize(this.width, this.height);
+  }
+
   setSize(width: number, height: number): void {
     this.width = Math.max(1, width);
     this.height = Math.max(1, height);
