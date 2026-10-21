@@ -183,6 +183,19 @@ export function SailingSimulator() {
   });
   const [error, setError] = useState("");
   const [panelMinimized, setPanelMinimized] = useState(true);
+  const panelRef = useRef<HTMLElement>(null);
+  // Any press outside the open control panel closes it (the press still does
+  // what it does: steer, look around, press another control).
+  useEffect(() => {
+    if (panelMinimized) return;
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && panelRef.current?.contains(target)) return;
+      setPanelMinimized(true);
+    };
+    document.addEventListener("pointerdown", closeOutside, true);
+    return () => document.removeEventListener("pointerdown", closeOutside, true);
+  }, [panelMinimized]);
   const [showHelp, setShowHelp] = useState(true);
   const [rudderInput, setRudderInput] = useState(0);
   const [throttleInput, setThrottleInput] = useState(0);
@@ -245,6 +258,7 @@ export function SailingSimulator() {
   const exitPhotoMode = useCallback(() => {
     photoModeRef.current = false;
     setPhotoMode(false);
+    simulatorRef.current?.setPhotoMode(false);
   }, []);
 
   useEffect(() => {
@@ -540,6 +554,14 @@ export function SailingSimulator() {
 
         {/* Transient prompts share one centred column, so they never collide
             with each other or with the controls at any screen size. */}
+        {/* What a control has just done: a short plaque a little below the
+            centre of the screen, over everything, never in the way of a tap. */}
+        {engineNotice && (
+          <div className="action-toast" role="status" aria-live="polite" key={noticeKey}>
+            {engineNotice}
+          </div>
+        )}
+
         <div className="notice-stack">
           <SoundPrompt
             active={loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error}
@@ -619,6 +641,8 @@ export function SailingSimulator() {
             onClick={() => {
               photoModeRef.current = true;
               setPhotoMode(true);
+              // The camera now turns by itself to whales, dolphins, sharks and ships' horns.
+              simulatorRef.current?.setPhotoMode(true);
             }}
           >
             <ControlIcon name="photo" />
@@ -651,6 +675,7 @@ export function SailingSimulator() {
         )}
 
         <section
+          ref={panelRef}
           id="simulator-settings"
           className={`control-panel ${panelMinimized ? "is-minimized" : ""}`}
           aria-label={messages.controls}
@@ -692,12 +717,11 @@ export function SailingSimulator() {
 
           {!panelMinimized && (
             <div className="panel-body">
-              {/* Status lines (settings changed, the first-run tip) live in the
-                  control panel only: nothing is laid over the scene itself. The
-                  shore guard is announced on the rudder card. */}
-              {(engineNotice || (showHelp && loading.ready && !error)) && (
+              {/* The first-run tip lives in the control panel; what a switch has
+                  just done is announced in the middle of the screen (see
+                  .action-toast). The shore guard is announced on the rudder card. */}
+              {showHelp && loading.ready && !error && (
                 <div className="panel-status">
-                  {engineNotice && <div className="engine-notice" role="status" key={noticeKey}>{engineNotice}</div>}
                   {showHelp && loading.ready && !error && (
                     <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
                       {messages.help}

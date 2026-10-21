@@ -79,6 +79,12 @@ export class WhaleBreachController {
     return this.state;
   }
 
+  /** The breach in progress (the run-up, the flight and the splash), or null. */
+  get breaching(): Readonly<{ x: number; y: number; z: number }> | null {
+    const phase = this.state.phase;
+    return phase === "run" || phase === "air" || phase === "splash" ? this.state : null;
+  }
+
   update(delta: number, vessel: VesselState, camera: THREE.Camera): void {
     const rig = this.rig;
     if (!rig || delta <= 0) return;

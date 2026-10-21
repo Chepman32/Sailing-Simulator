@@ -62,7 +62,7 @@ input:focus-visible {
   --top-bar: 70px;
   --notice-side: 290px;
   --throttle-width: 146px;
-  --throttle-length: 228px;
+  --throttle-length: 300px;
   --edge-top: calc(env(safe-area-inset-top, 0px) + var(--gap));
   --edge-right: calc(env(safe-area-inset-right, 0px) + var(--gap));
   --edge-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--gap));
@@ -459,6 +459,42 @@ input:focus-visible {
   backdrop-filter: blur(12px);
   line-height: 1.35;
   text-align: center;
+}
+
+/* What a control has just done: centred, 10 % below the middle of the screen. */
+.action-toast {
+  position: fixed;
+  z-index: 45;
+  top: 60%;
+  left: 50%;
+  max-width: min(420px, calc(100vw - 40px));
+  padding: 10px 18px;
+  border: 1px solid rgba(101, 226, 214, 0.36);
+  border-radius: 18px;
+  color: var(--text);
+  background: rgba(5, 31, 43, 0.86);
+  box-shadow: 0 14px 34px rgba(0, 12, 18, 0.32);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  text-align: center;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: action-toast-life 2400ms ease forwards;
+}
+
+@keyframes action-toast-life {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.94); }
+  8% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  86% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.98); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .action-toast { animation: none; }
 }
 
 .help-toast {
@@ -1234,11 +1270,11 @@ input[type="range"]:disabled {
 /* Short desktop windows with the one-column panel: shorten the throttle so the
    open panel and the engine switch do not overlap. */
 @media (min-width: 901px) and (max-width: 1279px) and (min-height: 561px) and (max-height: 900px) {
-  .simulator-shell { --throttle-length: clamp(116px, calc(100dvh - 652px), 228px); }
+  .simulator-shell { --throttle-length: clamp(170px, calc(100dvh - 560px), 300px); }
 }
 
 @media (min-width: 1280px) and (min-height: 561px) and (max-height: 820px) {
-  .simulator-shell { --throttle-length: clamp(150px, calc(100dvh - 570px), 228px); }
+  .simulator-shell { --throttle-length: clamp(200px, calc(100dvh - 500px), 300px); }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1452,7 +1488,7 @@ input[type="range"]:disabled {
 
   .simulator-shell {
     --notice-side: 60px;
-    --throttle-length: clamp(112px, calc(100dvh - 540px), 170px);
+    --throttle-length: clamp(150px, calc(100dvh - 470px), 250px);
   }
 
   .scene-actions { flex-direction: column; }
@@ -1521,7 +1557,7 @@ input[type="range"]:disabled {
 @media (max-height: 560px) and (orientation: landscape) {
   .simulator-shell {
     --notice-side: 116px;
-    --throttle-length: clamp(88px, calc(100dvh - 276px), 150px);
+    --throttle-length: clamp(110px, calc(100dvh - 240px), 190px);
   }
 
   .wind-instrument { display: grid; min-width: 0; }

@@ -73,6 +73,15 @@ function dieselSpectrum(): { real: Float32Array; imag: Float32Array } {
 }
 const RESUME_RETRY_MS = 850;
 
+/**
+ * Loudness of a ship's horn heard `distance` metres away: a big ship's
+ * whistle carries for kilometres, so it fades slowly (spherical spreading,
+ * softened by the sea surface), louder than the yacht's own noises close by.
+ */
+export function shipHornLevel(distance: number): number {
+  return 0.62 * (800 / (800 + Math.max(0, distance)));
+}
+
 export class AudioSystem {
   private context?: AudioContext;
   private master?: GainNode;
@@ -427,7 +436,7 @@ export class AudioSystem {
     const context = this.context;
     if (!context || context.state !== "running" || !this.environmentBus || !this.enabled) return;
     const distance = Math.hypot(position.x - this.listenerX, position.y - this.listenerY, position.z - this.listenerZ);
-    const level = 0.42 * (600 / (600 + distance));
+    const level = shipHornLevel(distance);
     if (level < 0.02) return;
     const start = context.currentTime + distance / SPEED_OF_SOUND;
     const panner = context.createPanner();

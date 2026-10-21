@@ -6,6 +6,7 @@ import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
 import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
 import { ShipShadows } from "./ships/ShipShadows";
+import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
 import { GpuTimer } from "./core/GpuTimer";
 import { GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
@@ -354,6 +355,31 @@ export class Simulator {
     this.hud.emit(this.snapshot());
   }
 
+  /** Photo mode: the camera turns to whatever is worth a picture by itself. */
+  setPhotoMode(enabled: boolean): void {
+    this.photo.setEnabled(enabled);
+    this.photoInteractions = this.camera?.interactions ?? 0;
+  }
+
+  private readonly photo = new PhotoDirector();
+  private readonly photoSubjects: PhotoSubject[] = [];
+  private readonly photoShotState: PhotoShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 50 };
+  private photoInteractions = 0;
+
+  private directPhoto(delta: number): void {
+    const photo = this.photo;
+    if (!photo.enabled && photo.weight <= 0) return;
+    if (this.camera.interactions !== this.photoInteractions) {
+      this.photoInteractions = this.camera.interactions;
+      photo.userLooked();
+    }
+    const yacht = this.physics.position;
+    for (const subject of this.wildlife.collectPhotoSubjects(this.photoSubjects)) photo.offer(subject, yacht.x, yacht.z);
+    photo.update(delta);
+    if (photo.subject) photoShot(photo.subject, yacht.x, yacht.y, yacht.z, this.photoShotState);
+    this.camera.direct(this.photoShotState, photo.blend);
+  }
+
   /** Resumes sound the player has already started (no-op before that). */
   resumeAudioFromGesture(): void {
     void this.audio?.resumeFromGesture();
@@ -478,6 +504,7 @@ export class Simulator {
     this.wildlife.update(delta, this.physics, this.camera.camera);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics, { root: this.vessel.root, eye: this.vessel.helmEye });
+    this.directPhoto(delta);
     this.environment.setWeatherKind(this.currentWeatherKind());
     this.environmentState = this.environment.update(
       delta,
@@ -514,7 +541,11 @@ export class Simulator {
     this.audio.updateGulls(delta, this.wildlife.gullPositions);
     for (const call of this.wildlife.consumeGullCalls()) this.audio.gullCallAt(call.position, call.variant);
     this.audio.updateShips(this.ships.soundSources);
-    for (const horn of this.ships.consumeHorns()) this.audio.shipHorn(horn.position, horn.signal, horn.length);
+    for (const horn of this.ships.consumeHorns()) {
+      this.audio.shipHorn(horn.position, horn.signal, horn.length);
+      // In photo mode a ship sounding her horn is worth turning round for.
+      this.photo.offer({ kind: "horn", x: horn.position.x, y: 8, z: horn.position.z, size: horn.length * 0.75 }, this.physics.position.x, this.physics.position.z);
+    }
     this.hud.update(delta, () => this.snapshot());
   }
 

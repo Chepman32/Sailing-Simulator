@@ -655,7 +655,9 @@ ${detailCalls}
       hullDistance(vec2(vesselSpace.x + HULL_OFFSET_X, vesselSpace.y - HULL_CENTER_Z)),
       hullDistance(vec2(vesselSpace.x - HULL_OFFSET_X, vesselSpace.y - HULL_CENTER_Z))
     );
-    float hullShadow = 1.0 - smoothstep(-0.3, 0.2, hullGap);
+    // Under the hulls (hidden by them from any normal view): a soft shade
+    // well inside the outline, never a visible edge around it.
+    float hullShadow = (1.0 - smoothstep(-0.9, -0.3, hullGap)) * (1.0 - smoothstep(0.75, 0.95, abs(hullAlong)));
 
     // --- Foam --------------------------------------------------------------
     // Foam is sampled in a wind-aligned frame and stretched along the wind,
@@ -699,11 +701,17 @@ ${detailCalls}
     float bowZone = smoothstep(0.3, 0.95, hullAlong);
     // The bow wave and its foam come from the wake field; this is only the
     // thin line where water meets the hull.
-    float contactWidth = 0.08 + hullSpeed * (0.12 + bowZone * 0.18);
-    float contact = (1.0 - smoothstep(0.0, contactWidth, hullGap)) * step(-0.25, hullGap);
-    float hullFoam = contact * smoothstep(0.3, 0.7, foamTexture + 0.12 + hullSpeed * 0.15)
-      * (0.28 + hullSpeed * (0.25 + bowZone * 0.2));
-    foam = max(foam, min(hullFoam, 0.92));
+    // The analytic waterplane is only an approximation of the model's hulls
+    // (and does not pitch or roll with them), so the line is kept thin,
+    // broken into flecks, and to the forward part of each hull, where the
+    // bow pushes water up; a clean band would show as a hull-shaped outline.
+    float contactWidth = 0.05 + hullSpeed * (0.05 + bowZone * 0.2);
+    float contact = (1.0 - smoothstep(0.0, contactWidth, hullGap)) * step(-0.05, hullGap)
+      * smoothstep(-0.6, 0.1, hullAlong);
+    float fleck = skyNoise(vWorldPosition.xz * 3.1 + vec2(uTime * 0.9, -uTime * 0.7));
+    float hullFoam = contact * smoothstep(0.45, 0.8, fleck * 0.7 + foamTexture * 0.3 + bowZone * 0.25)
+      * (0.18 + hullSpeed * bowZone * 0.4);
+    foam = max(foam, min(hullFoam, 0.8));
 
     // Wake foam: thick foam is solid white, thin foam a lace of bubbles that
     // opens up as it decays. The lace is world-space noise at pixel scale,

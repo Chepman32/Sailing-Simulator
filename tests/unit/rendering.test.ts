@@ -426,3 +426,66 @@ test("a flash lights the ambient, the haze and the rain, and nothing without one
   // The water's own colours are untouched; the light on them changes.
   assert.deepEqual(lit.deepWater, palette.deepWater);
 });
+
+test("a ship's horn is louder than it was, and still fades with distance", async () => {
+  const { shipHornLevel } = await import("../../src/simulator/audio/AudioSystem");
+  const before = (distance: number) => 0.42 * (600 / (600 + distance));
+  for (const distance of [100, 500, 1500]) assert.ok(shipHornLevel(distance) > before(distance) * 1.3);
+  for (let distance = 0; distance < 4000; distance += 250) assert.ok(shipHornLevel(distance + 250) < shipHornLevel(distance));
+  assert.ok(shipHornLevel(3000) < shipHornLevel(200) * 0.4, "a far ship is clearly farther");
+});
+
+import { PHOTO_HOLD, PhotoDirector, photoShot, type PhotoShot } from "../../src/simulator/camera/PhotoDirector";
+
+const subjectKind = (director: PhotoDirector): string | undefined => director.subject?.kind;
+
+test("photo mode turns to an event, prefers the rarer one, lets go, and yields to the player", () => {
+  const director = new PhotoDirector();
+  director.offer({ kind: "dolphins", x: 10, y: 1, z: 10, size: 10 }, 0, 0);
+  assert.equal(director.subject, null, "nothing happens outside photo mode");
+  director.setEnabled(true);
+  director.offer({ kind: "dolphins", x: 10, y: 1, z: 10, size: 10 }, 0, 0);
+  director.update(0.5);
+  assert.equal(subjectKind(director), "dolphins");
+  // A breach outranks the dolphins.
+  director.offer({ kind: "breach", x: 400, y: 5, z: 300, size: 34 }, 0, 0);
+  director.update(0.5);
+  assert.equal(subjectKind(director), "breach");
+  // Too far away: ignored.
+  const far = new PhotoDirector();
+  far.setEnabled(true);
+  far.offer({ kind: "whale", x: 5000, y: 0, z: 0, size: 26 }, 0, 0);
+  assert.equal(far.subject, null);
+  // Held for its time, then back to the yacht.
+  for (let t = 0; t < PHOTO_HOLD.breach + 1; t += 0.1) {
+    director.offer({ kind: "breach", x: 400, y: 5, z: 300, size: 34 }, 0, 0);
+    director.update(0.1);
+  }
+  assert.equal(director.subject, null);
+  for (let t = 0; t < 2; t += 0.1) director.update(0.1);
+  assert.equal(director.weight, 0);
+  // The player looks around: the director keeps quiet.
+  director.userLooked();
+  director.offer({ kind: "whale", x: 100, y: 0, z: 100, size: 26 }, 0, 0);
+  assert.equal(director.subject, null);
+});
+
+test("an event that is over is let go; a horn is held for its full time", () => {
+  const director = new PhotoDirector();
+  director.setEnabled(true);
+  director.offer({ kind: "shark", x: 20, y: 0, z: 0, size: 9 }, 0, 0);
+  for (let t = 0; t < 2; t += 0.1) director.update(0.1);
+  assert.equal(director.subject, null, "the fin went down; the camera should come back");
+  director.offer({ kind: "horn", x: 600, y: 8, z: 0, size: 200 }, 0, 0);
+  for (let t = 0; t < PHOTO_HOLD.horn - 1; t += 0.1) director.update(0.1);
+  assert.equal(subjectKind(director), "horn");
+});
+
+test("a photo shot frames a far subject with a long lens and a near one wide, from behind the yacht", () => {
+  const shot: PhotoShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 0 };
+  photoShot({ kind: "breach", x: 0, y: 4, z: 800, size: 34 }, 0, 0.5, 0, shot);
+  assert.ok(shot.position.z < 0 && shot.position.y > 4, "behind and above the yacht");
+  assert.ok(shot.fov < 12, `a long lens for a far breach (${shot.fov.toFixed(1)}°)`);
+  photoShot({ kind: "dolphins", x: 6, y: 0.5, z: 8, size: 10 }, 0, 0.5, 0, shot);
+  assert.ok(shot.fov > 25, `a wide view for dolphins at the bow (${shot.fov.toFixed(1)}°)`);
+});

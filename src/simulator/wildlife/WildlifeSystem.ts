@@ -12,6 +12,7 @@ import { SharkController } from "./SharkController";
 import type { MarineWorld, VesselState, WaterEffects } from "./WaterContact";
 import { WhaleBreachController } from "./WhaleBreachController";
 import { WhaleController } from "./WhaleController";
+import type { PhotoSubject } from "../camera/PhotoDirector";
 
 export type WildlifeCounts = {
   dolphins: number;
@@ -151,6 +152,41 @@ export class WildlifeSystem {
   /** Where each gull is flying, for their calls. */
   get gullPositions(): readonly THREE.Vector3[] {
     return this.gulls.positions;
+  }
+
+  /**
+   * What is worth a picture right now (photo mode, see `PhotoDirector`): a
+   * breach, a whale at the surface, leaping dolphins, a shark's fin.
+   */
+  collectPhotoSubjects(out: PhotoSubject[]): PhotoSubject[] {
+    out.length = 0;
+    const breach = this.breach.breaching;
+    if (breach) out.push({ kind: "breach", x: breach.x, y: Math.max(0, breach.y), z: breach.z, size: 34 });
+    const whale = this.whales.obstacle();
+    const phase = this.whales.phase;
+    if (whale && (phase === "surface" || phase === "prepare_tail_slap" || phase === "tail_slap")) {
+      out.push({ kind: "whale", x: whale.position.x, y: 0, z: whale.position.z, size: 26 });
+    }
+    for (const controller of this.sharks) {
+      const shark = controller.obstacle();
+      if (shark && controller.state?.phase === "fin_show") {
+        out.push({ kind: "shark", x: shark.position.x, y: 0, z: shark.position.z, size: 9 });
+        break;
+      }
+    }
+    let leaping = 0;
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    for (const agent of this.dolphins.agents) {
+      if (agent.phase !== "leap" && agent.phase !== "airborne" && agent.phase !== "reentry") continue;
+      leaping += 1;
+      x += agent.motion.x;
+      y += agent.motion.y;
+      z += agent.motion.z;
+    }
+    if (leaping > 0) out.push({ kind: "dolphins", x: x / leaping, y: Math.max(0, y / leaping), z: z / leaping, size: 9 + leaping * 1.5 });
+    return out;
   }
 
   /** Current whale phase, for diagnostics. */
