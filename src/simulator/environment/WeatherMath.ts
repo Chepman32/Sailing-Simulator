@@ -52,11 +52,11 @@ export const FAIR_CLOUD_COVER = 0.12;
 export const OVERCAST_CLOUD_COVER = 0.68;
 
 export const WEATHER_PRESETS: Readonly<Record<WeatherKind, Readonly<WeatherSample>>> = {
-  clear: { cloudCover: FAIR_CLOUD_COVER, overcast: 0, rain: 0, wind: 1, waves: 1, storm: 0, breaking: 0, haze: 0 },
-  cloudy: { cloudCover: 0.5, overcast: 0.22, rain: 0, wind: 1.06, waves: 1.12, storm: 0, breaking: 0, haze: 0 },
-  overcast: { cloudCover: 0.74, overcast: 0.65, rain: 0, wind: 1.18, waves: 1.35, storm: 0.03, breaking: 0.02, haze: 0.05 },
-  rain: { cloudCover: 0.82, overcast: 0.8, rain: 0.45, wind: 1.32, waves: 1.75, storm: 0.14, breaking: 0.06, haze: 0.22 },
-  downpour: { cloudCover: 0.9, overcast: 0.92, rain: 0.85, wind: 1.6, waves: 2.4, storm: 0.38, breaking: 0.12, haze: 0.5 },
+  clear: { cloudCover: FAIR_CLOUD_COVER, overcast: 0, rain: 0, wind: 1, waves: 1, storm: 0, breaking: 0.07, haze: 0 },
+  cloudy: { cloudCover: 0.5, overcast: 0.22, rain: 0, wind: 1.06, waves: 1.12, storm: 0, breaking: 0.08, haze: 0 },
+  overcast: { cloudCover: 0.74, overcast: 0.65, rain: 0, wind: 1.18, waves: 1.35, storm: 0.03, breaking: 0.09, haze: 0.05 },
+  rain: { cloudCover: 0.82, overcast: 0.8, rain: 0.45, wind: 1.32, waves: 1.75, storm: 0.14, breaking: 0.1, haze: 0.22 },
+  downpour: { cloudCover: 0.9, overcast: 0.92, rain: 0.85, wind: 1.6, waves: 2.4, storm: 0.38, breaking: 0.14, haze: 0.5 },
   storm: { cloudCover: 0.94, overcast: 1, rain: 0.9, wind: 2.4, waves: 3.3, storm: 0.82, breaking: 0.26, haze: 0.58 },
   hurricane: { cloudCover: 0.97, overcast: 1, rain: 1, wind: 3.3, waves: 4.5, storm: 1, breaking: 0.42, haze: 0.74 },
 };

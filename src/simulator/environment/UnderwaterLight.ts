@@ -66,9 +66,12 @@ export class UnderwaterLight {
   /** In-scattered water colour for the current time of day. */
   setPalette(palette: EnvironmentPalette): void {
     const color = this.uniforms.uUnderwaterColor.value;
-    color.r = palette.deepWater[0] * (palette.ambientColor[0] + 0.25 * palette.lightColor[0]) * 1.4;
-    color.g = palette.deepWater[1] * (palette.ambientColor[1] + 0.25 * palette.lightColor[1]) * 1.4;
-    color.b = palette.deepWater[2] * (palette.ambientColor[2] + 0.25 * palette.lightColor[2]) * 1.4;
+    // The same colour the sea's own body has from above (see the ocean
+    // shader's water body), so looking down through clear water into the
+    // depths gives deep navy, not a lighter blue than the sea around it.
+    color.r = palette.deepWater[0] * (palette.ambientColor[0] + 0.2 * palette.lightColor[0]) * 0.8;
+    color.g = palette.deepWater[1] * (palette.ambientColor[1] + 0.2 * palette.lightColor[1]) * 0.8;
+    color.b = palette.deepWater[2] * (palette.ambientColor[2] + 0.2 * palette.lightColor[2]) * 0.8;
     this.uniforms.uUnderwaterCaustics.value = palette.daylight;
   }
 
@@ -137,6 +140,11 @@ export class UnderwaterLight {
             float caustic = pow(1.0 - abs(causticA - causticB), 6.0);
             float sunlit = exp(-underwaterDepth * 0.28) * uUnderwaterCaustics;
             gl_FragColor.rgb *= 1.0 + caustic * 0.9 * sunlit;
+            // Below the surface a body gets only the light that came down
+            // through the water, while the water around it glows with light
+            // scattered from all of it: a dolphin or a shark reads as a dark
+            // shape against the blue, as in any photograph from above.
+            gl_FragColor.rgb *= mix(1.0, 0.42, smoothstep(0.25, 2.6, underwaterDepth));
             gl_FragColor.rgb = gl_FragColor.rgb * transmittance + uUnderwaterColor * (1.0 - transmittance);
           }
         }`,

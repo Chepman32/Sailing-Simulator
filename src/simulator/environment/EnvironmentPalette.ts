@@ -119,7 +119,7 @@ export function deriveEnvironmentPalette(state: TimeOfDayState, weather: Weather
     (1 - overcast * 0.3) * (1 - storm * 0.62),
   );
   // Under a heavy sky the water turns from blue to slate green.
-  const deepWater = mix([0.004, 0.032, 0.095], [0.007, 0.03, 0.044], clamp(overcast * 0.35 + storm * 0.65, 0, 1));
+  const deepWater = mix([0.0035, 0.026, 0.08], [0.007, 0.03, 0.044], clamp(overcast * 0.35 + storm * 0.65, 0, 1));
 
   return {
     zenith,

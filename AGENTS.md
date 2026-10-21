@@ -998,6 +998,7 @@ Do not commit every exploratory change. The standing project preference is to pu
 - avoid random new targets every frame; gate rare events with conditions, probabilities and cooldowns;
 - keep state transitions finite;
 - derive splash from tracked body points crossing the rendered surface;
+- the fair-weather sea is a fresh breeze, matched against an aerial photograph: four sharp-crested wind-sea layers (`chopLayer`, ridged noise squared, 1–11 m, shading only) make the mosaic of bright and dark facets seen from above, steep chop crests spill into small white horses (`whiteHorse`), a big ship under way carries a band of white water along her side that widens aft and runs into her wake (`ShipMath` contact foam, CPU and GLSL twins), churned water glows turquoise under wakes (`bubbles`), and submerged bodies are darkened with depth so animals read as dark shapes;
 - let the water hide what is submerged; never mask a body with a clipping plane or alpha cut (the sea is clear: looking down, more than half of what is seen comes from below — `clarity` in the ocean shader — and over the shelf the sand shows through almost as if dry);
 - count the new animal's draw calls and bone uploads per frame; merge or share what the source file split;
 - test the relevant pure helpers and asset constraints.

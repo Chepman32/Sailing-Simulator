@@ -583,9 +583,19 @@ export function sampleShipWake(ship: Ship, x: number, z: number, out: ShipWakeSa
   // Water piled against the hull: a lapping line at anchor, a bow wave under way.
   const hull = Math.max(side - hullHalfWidth(halfLength, halfBeam, along), Math.abs(along) - halfLength);
   const bow = smoothstep(0.2 * halfLength, halfLength, along);
-  const contactWidth = 1.5 + speed * 0.6 * (0.4 + bow);
-  const contact = (1 - smoothstep(0, contactWidth, hull)) * (hull > -0.5 ? 1 : 0);
-  out.foam = Math.max(out.foam, contact * (0.25 + strength * (0.3 + 0.6 * bow)));
+  // Past the transom the white water runs on into the wake instead of ending
+  // on the line of the stern.
+  const pastStern = Math.max(0, -along - halfLength);
+  const sideGap = Math.max(along < -halfLength ? side - halfBeam * 0.68 : hull, along - halfLength);
+  const astern = 1 - smoothstep(0, 0.6 * halfLength, pastStern);
+  // Under way the bow wave rolls aft along the side as a band of white water
+  // that widens toward the stern; it thins out into streaks away from the hull.
+  const aft = clamp((halfLength - along) / (2 * halfLength), 0, 1);
+  const contactWidth = 1.5 + speed * (0.7 + 1.5 * aft);
+  const touching = sideGap > -0.5 ? astern : 0;
+  const contact = Math.min(1.6, 1.4 * Math.exp(-Math.max(sideGap, 0) / (contactWidth * 0.95))) * touching;
+  out.foam = Math.max(out.foam, contact * (0.25 + strength * (0.5 + 0.5 * bow)));
+  out.slick = Math.max(out.slick, Math.exp(-Math.max(sideGap, 0) / (contactWidth * 0.55)) * strength * 0.6 * touching);
   return out;
 }
 
@@ -667,9 +677,15 @@ export const SHIP_WAKE_GLSL = /* glsl */ `
     float slick = core * strength * exp(-age / ${glsl(WAKE_SLICK_SECONDS)});
     float hull = max(side - shipHalfWidth(halfLength, halfBeam, along), abs(along) - halfLength);
     float bow = smoothstep(0.2 * halfLength, halfLength, along);
-    float contactWidth = 1.5 + speed * 0.6 * (0.4 + bow);
-    float contact = (1.0 - smoothstep(0.0, contactWidth, hull)) * step(-0.5, hull);
-    foam = max(foam, contact * (0.25 + strength * (0.3 + 0.6 * bow)));
+    float pastStern = max(0.0, -along - halfLength);
+    float sideGap = max(along < -halfLength ? side - halfBeam * 0.68 : hull, along - halfLength);
+    float astern = 1.0 - smoothstep(0.0, 0.6 * halfLength, pastStern);
+    float aft = clamp((halfLength - along) / (2.0 * halfLength), 0.0, 1.0);
+    float contactWidth = 1.5 + speed * (0.7 + 1.5 * aft);
+    float touching = step(-0.5, sideGap) * astern;
+    float contact = min(1.6, 1.4 * exp(-max(sideGap, 0.0) / (contactWidth * 0.95))) * touching;
+    foam = max(foam, contact * (0.25 + strength * (0.5 + 0.5 * bow)));
+    slick = max(slick, exp(-max(sideGap, 0.0) / (contactWidth * 0.55)) * strength * 0.6 * touching);
     return vec2(foam, slick);
   }
 
