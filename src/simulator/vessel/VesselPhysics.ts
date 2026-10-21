@@ -4,7 +4,7 @@ import type { OceanSample } from "../environment/OceanMath";
 import { sampleWind, type WindSample } from "../environment/WindMath";
 import type { SimulatorControls } from "../types";
 import { AIR_DENSITY, createSailState, solveSail, type SailState } from "./SailAerodynamics";
-import { resolveShoreContact } from "./ShoreContact";
+import { resolveShoreContact, SHIP_CONTACT } from "./ShoreContact";
 import { createShoreGuard, updateShipGuard, updateShoreGuard, type ShoreGuardState } from "./ShoreGuard";
 
 export type OceanSampler = {
@@ -34,6 +34,10 @@ export type VesselTelemetry = {
   /** +1 when the wind pushes the sails toward starboard, −1 toward port. */
   leewardSide: number;
   trueWindSpeed: number;
+  /** A gust event under way, 0…1 (sound, sail and water follow it). */
+  gust: number;
+  /** A gust about to arrive, 0…1. */
+  gustApproaching: number;
   /** Sideways slip through the water in m/s; positive toward starboard. */
   leeway: number;
   /** 0 drawing … 1 flogging head to wind. */
@@ -208,6 +212,8 @@ export class VesselPhysics {
     return hull;
   };
   private readonly profileNormal = { x: 0, z: 1 };
+  private readonly hullContact = (x: number, z: number, normal: { x: number; z: number }): number =>
+    this.hullClearance ? this.hullClearance(x, z, normal) : 1e6;
   /** Whether the obstacle nearest the yacht is a ship's hull rather than a coast. */
   private nearestIsShip(): boolean {
     if (!this.hullClearance) return false;
@@ -225,6 +231,8 @@ export class VesselPhysics {
     heel: 0,
     leewardSide: 1,
     trueWindSpeed: 8,
+    gust: 0,
+    gustApproaching: 0,
     leeway: 0,
     sailLuff: 0,
     sheetAngle: 0.6,
@@ -349,6 +357,9 @@ export class VesselPhysics {
     // The hull outline meets the rendered shore: cushion, rebound and a swing
     // of the bow away from the beach. The centre guard below is a last resort.
     this.telemetry.shoreImpact = resolveShoreContact(this, this.islands.shoreClearance, SWAY_MASS, YAW_INERTIA, delta);
+    // A ship's side holds her off on its fenders (see SHIP_CONTACT).
+    // (Splash and sound for a ship come from ShipSystem.resolveContact.)
+    if (this.hullClearance) resolveShoreContact(this, this.hullContact, SWAY_MASS, YAW_INERTIA, delta, SHIP_CONTACT);
     this.yawRate = clamp(this.yawRate, -1.2, 1.2);
     if (this.islands.constrainToWater(this.position, this.velocity)) {
       this.velocity.y = 0;
@@ -371,6 +382,8 @@ export class VesselPhysics {
     this.telemetry.heel = this.roll;
     this.telemetry.leewardSide = leewardSide;
     this.telemetry.trueWindSpeed = this.windSample.speed;
+    this.telemetry.gust = this.windSample.squall ?? 0;
+    this.telemetry.gustApproaching = this.windSample.approaching ?? 0;
     this.telemetry.leeway = lateralSpeed;
     this.telemetry.sailLuff = this.sail.luff;
     this.telemetry.sheetAngle = this.sail.sheetAngle;
@@ -441,6 +454,17 @@ export class VesselPhysics {
     this.forward.set(Math.sin(this.heading), 0, Math.cos(this.heading));
     this.right.set(Math.cos(this.heading), 0, -Math.sin(this.heading));
     this.blended = false;
+  }
+
+  /** Puts her at rest at (x, z) heading `heading` (a tow out of trouble). */
+  relocate(x: number, z: number, heading: number): void {
+    this.reset();
+    this.position.set(x, FLOAT_HEIGHT, z);
+    this.heading = heading;
+    this.forward.set(Math.sin(heading), 0, Math.cos(heading));
+    this.right.set(Math.cos(heading), 0, -Math.sin(heading));
+    // No blend from where she was.
+    this.rememberPose();
   }
 
   reset(): void {

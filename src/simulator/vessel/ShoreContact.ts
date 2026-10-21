@@ -39,6 +39,23 @@ const MAX_TURN_KICK = 1.0;
 
 const normal = { x: 0, z: 1 };
 
+/** How a surface meets the hulls: where contact is, how far out the cushion reaches. */
+export type ContactProfile = { contact: number; cushion: number; restitution: number; friction: number };
+
+export const SHORE_CONTACT: ContactProfile = {
+  contact: SHORE_CONTACT_CLEARANCE,
+  cushion: SHORE_CUSHION,
+  restitution: SHORE_RESTITUTION,
+  friction: SHORE_FRICTION,
+};
+
+/**
+ * A ship's side: steel, straight down, with the crew's fenders between. The
+ * yacht can lie a metre off it; touching, she is held off softly and slides
+ * along rather than bouncing.
+ */
+export const SHIP_CONTACT: ContactProfile = { contact: 0.35, cushion: 1.6, restitution: 0.25, friction: 0.05 };
+
 /**
  * Applies cushion and contact to `body` in place. Returns the impact speed of
  * a contact this step (0 if none), for spray and sound.
@@ -49,6 +66,7 @@ export function resolveShoreContact(
   mass: number,
   inertia: number,
   delta: number,
+  profile: ContactProfile = SHORE_CONTACT,
 ): number {
   const fx = Math.sin(body.heading);
   const fz = Math.cos(body.heading);
@@ -62,12 +80,12 @@ export function resolveShoreContact(
     const offX = rx * side + fx * ahead;
     const offZ = rz * side + fz * ahead;
     const clearance = shore(body.position.x + offX, body.position.z + offZ, normal);
-    if (clearance >= SHORE_CUSHION) continue;
+    if (clearance >= profile.cushion) continue;
     const pointVx = body.velocity.x + body.yawRate * offZ;
     const pointVz = body.velocity.z - body.yawRate * offX;
     const closing = pointVx * normal.x + pointVz * normal.z;
     if (closing >= 0.2) continue;
-    const closeness = Math.min(1, Math.max(0, 1 - (clearance - SHORE_CONTACT_CLEARANCE) / (SHORE_CUSHION - SHORE_CONTACT_CLEARANCE)));
+    const closeness = Math.min(1, Math.max(0, 1 - (clearance - profile.contact) / (profile.cushion - profile.contact)));
     const push = (CUSHION_ACCELERATION * closeness * closeness * delta) / HULL_OUTLINE.length * 4;
     body.velocity.x += normal.x * push;
     body.velocity.z += normal.z * push;
@@ -86,7 +104,7 @@ export function resolveShoreContact(
       const px = rx * side + fx * ahead;
       const pz = rz * side + fz * ahead;
       const clearance = shore(body.position.x + px, body.position.z + pz, normal);
-      const penetration = SHORE_CONTACT_CLEARANCE - clearance;
+      const penetration = profile.contact - clearance;
       if (penetration > deepest) {
         deepest = penetration;
         offX = px;
@@ -102,7 +120,7 @@ export function resolveShoreContact(
     const closing = pointVx * nX + pointVz * nZ;
     const lever = offZ * nX - offX * nZ;
     if (closing < 0) {
-      const impulse = (-(1 + SHORE_RESTITUTION) * closing) / (1 / mass + (lever * lever) / inertia);
+      const impulse = (-(1 + profile.restitution) * closing) / (1 / mass + (lever * lever) / inertia);
       body.velocity.x += (impulse / mass) * nX;
       body.velocity.z += (impulse / mass) * nZ;
       body.yawRate += (impulse * lever) / inertia;
@@ -110,8 +128,8 @@ export function resolveShoreContact(
       const tangentX = -nZ;
       const tangentZ = nX;
       const sliding = body.velocity.x * tangentX + body.velocity.z * tangentZ;
-      body.velocity.x -= tangentX * sliding * SHORE_FRICTION;
-      body.velocity.z -= tangentZ * sliding * SHORE_FRICTION;
+      body.velocity.x -= tangentX * sliding * profile.friction;
+      body.velocity.z -= tangentZ * sliding * profile.friction;
       // Swing the bow toward whichever way along the shore it already favours.
       const alongX = fx * tangentX + fz * tangentZ >= 0 ? tangentX : -tangentX;
       const alongZ = fx * tangentX + fz * tangentZ >= 0 ? tangentZ : -tangentZ;

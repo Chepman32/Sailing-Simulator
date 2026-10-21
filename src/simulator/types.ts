@@ -42,6 +42,27 @@ export type SimulationSnapshot = {
   /** The helm is temporarily steering clear of an island. */
   shoreGuardActive: boolean;
   engineMuted: boolean;
+  autoCenterHelm: boolean;
+  steadyHelmView: boolean;
+  sailColor: string;
+  /** Sail colours found in bottles (white is always there). */
+  unlockedSails: string[];
+  /** Doubloons found in crates. */
+  doubloons: number;
+  /** Flamingos hauled aboard. */
+  flamingos: number;
+  /** Places discovered (see PoiKind). */
+  discoveredPlaces: string[];
+  /** The nearest thing afloat, if one is within sight: kind, metres, bearing off the bow (rad, + to starboard). */
+  nearestLoot: { kind: "bottle" | "crate" | "flamingo"; distance: number; bearing: number } | null;
+  /** A gust under way, 0…1. */
+  gust: number;
+  /** She has been held fast (aground, against a hull or a reef) for a while: offer a tow. */
+  stuck: boolean;
+  /** The radio station playing (or null). */
+  radioStation: string | null;
+  /** The radio is connecting or buffering. */
+  radioBuffering: boolean;
   fps: number;
   status: "loading" | "running" | "paused" | "error";
 };
@@ -52,6 +73,24 @@ export type SimulatorOptions = {
   onError?: (message: string) => void;
   /** Return true when the interface handles the gesture instead of recentering. */
   onSceneDoubleTap?: () => boolean;
+  /** Something the keyboard did by itself that the interface should show (e.g. "engine-on"). */
+  onKeyAction?: (action: string) => void;
+  /** A radio station could not be reached. */
+  onRadioFailed?: (station: string) => void;
+  /** An event in the world worth telling the player (a message in a bottle, a new sail colour). */
+  onDiscovery?: (discovery: Discovery) => void;
+};
+
+export type Discovery = {
+  kind: "bottle" | "crate" | "flamingo" | "poi";
+  /** Key of the message, cargo or place, for the interface's own text. */
+  key: string;
+  /** A sail colour unlocked by it, if any. */
+  sailColor?: string;
+  /** Doubloons found in a crate. */
+  coins?: number;
+  /** The first time this was found (a place, or a flamingo aboard). */
+  first?: boolean;
 };
 
 export type SimulatorControls = {

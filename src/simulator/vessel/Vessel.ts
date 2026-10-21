@@ -157,6 +157,11 @@ export class Vessel {
     this.root.add(this.helm.group);
   }
 
+  /** Dyes the mainsail (sRGB hex). */
+  setSailColor(hex: number): void {
+    this.sailSystem.setColor(hex);
+  }
+
   /** Where the helmsman's eyes are, in vessel space (the helm camera's anchor). */
   get helmEye(): THREE.Vector3 {
     return HELM_EYE;

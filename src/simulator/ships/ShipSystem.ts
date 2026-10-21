@@ -24,6 +24,9 @@ import {
   type ShipWorld,
 } from "./ShipMath";
 
+/** Ships nearer than this answer the yacht's horn, metres. */
+const HAIL_RANGE = 900;
+
 export type ShipHornEvent = { position: THREE.Vector3; signal: Exclude<HornSignal, null>; length: number };
 
 export type ShipSoundSource = {
@@ -100,6 +103,8 @@ export class ShipSystem {
   private readonly normal = { x: 0, z: 0 };
   private readonly world: ShipWorld;
   private readonly horns: ShipHornEvent[] = [];
+  /** A ship answering the yacht's horn: which, and in how many seconds. */
+  private reply: { ship: Ship; delay: number } | null = null;
   private readonly sources: ShipSoundSource[] = [];
   private readonly random: () => number;
   private initialized = false;
@@ -174,6 +179,14 @@ export class ShipSystem {
         });
       }
     });
+    if (this.reply) {
+      this.reply.delay -= delta;
+      if (this.reply.delay <= 0) {
+        const ship = this.reply.ship;
+        this.reply = null;
+        if (ship.active) this.horns.push({ position: new THREE.Vector3(ship.x, 22, ship.z), signal: "prolonged", length: ship.halfLength * 2 });
+      }
+    }
     writeShipUniforms(this.ships, yacht.x, yacht.z);
   }
 
@@ -272,6 +285,27 @@ export class ShipSystem {
   private readonly rootList: THREE.Object3D[] = [];
 
   /** Sound signals given since the last call. */
+  /**
+   * The yacht sounded her horn at (x, z): the nearest ship within hail, if
+   * any, answers with one long blast a moment later (a watchkeeper's
+   * courtesy). Returns whether one will.
+   */
+  answerHorn(x: number, z: number): boolean {
+    let nearest: Ship | null = null;
+    let best = HAIL_RANGE;
+    for (const ship of this.ships) {
+      if (!ship.active) continue;
+      const distance = Math.hypot(ship.x - x, ship.z - z) - ship.halfLength * 0.5;
+      if (distance < best) {
+        best = distance;
+        nearest = ship;
+      }
+    }
+    if (!nearest || this.reply) return false;
+    this.reply = { ship: nearest, delay: 1.6 + best / 700 + this.random() * 0.8 };
+    return true;
+  }
+
   consumeHorns(): ShipHornEvent[] {
     const events = this.horns.splice(0);
     return events;

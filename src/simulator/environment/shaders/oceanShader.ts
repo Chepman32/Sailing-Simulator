@@ -232,6 +232,9 @@ export const oceanFragmentShader = /* glsl */ `
   uniform float uRain;
   uniform float uBreaking;
   uniform float uWindRipple;
+  uniform vec4 uGustPatch;
+  uniform vec4 uFlare;
+  uniform vec3 uFlareColor;
   uniform float uHaze;
   // Wake field (see WakeField): R foam, G aerated slick, B − A height in metres.
   uniform sampler2D uWakeMap;
@@ -459,6 +462,10 @@ export const oceanFragmentShader = /* glsl */ `
     // Wind gusts travel across the water as darker, rougher patches.
     float gustNoise = skyNoise(base * 0.011 + vec2(uTime * 0.035, uTime * 0.021));
     float gust = (0.68 + 0.74 * gustNoise) * uWindRipple;
+    // A gust event darkens and roughens its patch of sea as it sweeps down
+    // on the yacht (a "cat's paw"), before she feels it.
+    float gustPatch = 1.0 - smoothstep(uGustPatch.z * 0.45, uGustPatch.z, distance(vWorldPosition.xz, uGustPatch.xy));
+    gust *= 1.0 + uGustPatch.w * gustPatch * (0.75 + 0.5 * skyNoise(base * 0.05 + uTime * 0.1));
 
     vec2 slope = vec2(0.0);
     float fold = 0.0;
@@ -667,6 +674,33 @@ ${detailCalls}
     float sunVeil = 1.0 - 0.88 * gale;
     color += sunLit * (specular + min(sheen, 5.0) * 0.1) * sunVeil;
 
+    // --- A signal flare overhead -------------------------------------------
+    // A point of light a hundred and more metres up: it lays its own glitter
+    // path over the waves toward the viewer and tints the water under it.
+    // (Inverse square, softened so the water right under it never clips.)
+    vec3 flareLight = vec3(0.0);
+    float flareFacing = 0.0;
+    if (uFlare.w > 0.0) {
+      vec3 toFlare = uFlare.xyz - vWorldPosition;
+      float flareDistance2 = dot(toFlare, toFlare);
+      vec3 flareDirection = toFlare * inversesqrt(max(flareDistance2, 1.0));
+      flareLight = uFlareColor * (uFlare.w * 28100.0 / (flareDistance2 + 2500.0));
+      flareFacing = max(dot(normal, flareDirection), 0.0);
+      vec3 flareHalf = normalize(viewDirection + flareDirection);
+      float flareNH = max(dot(normal, flareHalf), 0.0);
+      float flareAlpha2 = pow(max(roughness * 1.25, 0.05), 4.0);
+      float flareDen = flareNH * flareNH * (flareAlpha2 - 1.0) + 1.0;
+      float flareD = flareAlpha2 / (OCEAN_PI * flareDen * flareDen);
+      float flareF = 0.02 + 0.98 * pow(1.0 - max(dot(viewDirection, flareHalf), 0.0), 5.0);
+      float flareVis = 0.25 / max(mix(flareFacing * nDotV, 1.0, 0.25), 0.05);
+      float flareSheenA2 = pow(max(roughness * 2.6, 0.18), 4.0);
+      float flareSheenDen = flareNH * flareNH * (flareSheenA2 - 1.0) + 1.0;
+      float flareSheen = flareSheenA2 / (OCEAN_PI * flareSheenDen * flareSheenDen) * flareF * flareVis * flareFacing;
+      color += flareLight * (min(flareD * flareF * flareVis * flareFacing, 40.0) + min(flareSheen, 6.0) * 0.12);
+      // The water body and the crests take a little of its colour.
+      color += flareLight * uScatterColor * (0.012 + 0.05 * scatter) * (0.4 + 0.6 * flareFacing);
+    }
+
     // Sparkles: single capillary facets tilted just right flash brighter
     // than white, so bloom turns them into points of light.
     if (uDetail > 0.2) {
@@ -805,6 +839,8 @@ ${detailCalls}
     float foamRelief = skyNoise(vWorldPosition.xz * 1.6 + vec2(uTime * 0.22, -uTime * 0.17)) * 0.6
       + skyNoise(vWorldPosition.xz * 4.3 - vec2(uTime * 0.31, uTime * 0.12)) * 0.4;
     foamColor *= mix(1.0, 0.74 + foamRelief * 0.36, laceResolved);
+    // Foam is the whitest thing on the sea: it glows in the flare's colour.
+    foamColor += flareLight * (0.25 + 0.75 * flareFacing) * 0.42;
     color = mix(color, foamColor, foam);
     // Spray torn off the crests hangs as a pale veil over them.
     color = mix(color, foamColor * 0.92, gale * smoothstep(0.55, 1.0, crest) * 0.3 * (0.6 + 0.4 * foamTexture));

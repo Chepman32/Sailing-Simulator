@@ -78,6 +78,7 @@ float sailCloth(vec3 p) {
 
 export class SailSystem {
   private readonly uniforms: SailUniforms[] = [];
+  private readonly clothMaterials: THREE.MeshStandardMaterial[] = [];
   private readonly shape: SailShape = { draft: 0, twist: 0, flutter: 0, wrinkle: 0 };
 
   constructor(model: THREE.Object3D) {
@@ -192,6 +193,7 @@ export class SailSystem {
           );
         });
         if (material instanceof THREE.MeshStandardMaterial) {
+          this.clothMaterials.push(material);
           material.roughness = 0.82;
           material.metalness = 0;
           material.side = THREE.DoubleSide;
@@ -203,6 +205,18 @@ export class SailSystem {
       });
       object.material = Array.isArray(object.material) ? materials : materials[0];
     });
+  }
+
+  /**
+   * Dyes the cloth (sRGB hex). A dark sail is a little glossier, as tanned
+   * and black laminates are.
+   */
+  setColor(hex: number): void {
+    for (const material of this.clothMaterials) {
+      material.color.setHex(hex);
+      const luminance = material.color.r * 0.2126 + material.color.g * 0.7152 + material.color.b * 0.0722;
+      material.roughness = luminance < 0.08 ? 0.62 : 0.82;
+    }
   }
 
   /**

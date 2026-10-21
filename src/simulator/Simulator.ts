@@ -40,8 +40,24 @@ import { VesselPhysics } from "./vessel/VesselPhysics";
 import { WakeSystem } from "./vessel/WakeSystem";
 import { WildlifeSystem } from "./wildlife/WildlifeSystem";
 import { ShipSystem } from "./ships/ShipSystem";
+import { FlareSystem } from "./effects/FlareSystem";
+import type { FlareColor } from "./effects/FlareMath";
+import { LootSystem, type LootPickup } from "./effects/LootSystem";
+import { BOTTLE_MESSAGES, isSailColor, LOOT_SHORE_CLEARANCE, lootContents, SAIL_COLORS, type SailColor } from "./effects/LootMath";
+import { createFlamingo } from "./effects/LootModels";
+import { NEUTRAL_GRADE, RadioSystem, type RadioStationId } from "./audio/RadioSystem";
+import { VolcanoSystem } from "./effects/VolcanoSystem";
+import { PoiSystem } from "./effects/PoiSystem";
+import { DISCOVERY_RANGE, POI_CLEARANCE } from "./effects/PoiMath";
+import { findOpenWater } from "./vessel/RescueMath";
 
 const STORAGE_KEY = "sailing-simulator-pro-preferences-v2";
+/** Picked-up things remembered across visits (the oldest are forgotten and float again). */
+const MAX_REMEMBERED_LOOT = 400;
+/** Things afloat nearer than this are pointed out in the interface, metres. */
+const NEAREST_LOOT_RANGE = 340;
+/** Held fast this long, she is offered a tow. */
+const STUCK_SECONDS = 6;
 
 function isCoarseInputDevice(): boolean {
   return navigator.maxTouchPoints > 0 || window.matchMedia("(pointer: coarse)").matches;
@@ -85,6 +101,27 @@ export class Simulator {
   private post!: PostProcessing;
   private reflection?: OceanReflection;
   private rain!: RainSystem;
+  private flares!: FlareSystem;
+  private loot!: LootSystem;
+  private radio?: RadioSystem;
+  private volcanoes!: VolcanoSystem;
+  private places!: PoiSystem;
+  private readonly obstacleNormal = { x: 0, z: 1 };
+  private readonly listenerPoint = new THREE.Vector3();
+  /** The image's mood grade as it eases toward the station's. */
+  private readonly grade = {
+    gain: [1, 1, 1] as number[],
+    shadows: [0, 0, 0] as number[],
+    saturation: 1,
+    vignette: 0,
+  };
+  private deckFlamingo?: THREE.Group;
+  private nearestLoot: SimulationSnapshot["nearestLoot"] = null;
+  private readonly seenMessages = new Set<string>();
+  /** Seconds she has made no way while hard by a shore, a hull or a reef. */
+  private stuckTime = 0;
+  private readonly flareLaunchPoint = new THREE.Vector3();
+  private readonly splashPoint = new THREE.Vector3();
   private mirrorHidden: THREE.Object3D[] = [];
   private readonly mirrorList: THREE.Object3D[] = [];
   private audio!: AudioSystem;
@@ -145,6 +182,15 @@ export class Simulator {
     this.audio.setEnabled(this.state.soundEnabled);
     this.audio.setEngineRunning(this.state.engineRunning);
     this.audio.setEngineMuted(this.state.engineMuted);
+    this.radio = new RadioSystem({
+      shanty: (playing) => this.audio.setShanty(playing),
+      tuning: () => this.audio.radioStatic(),
+      changed: () => {
+        if (this.initialized) this.hud.emit(this.snapshot());
+      },
+      failed: (station) => this.options.onRadioFailed?.(station),
+    });
+    this.radio.setMuted(!this.state.soundEnabled);
     canvas.addEventListener("webglcontextlost", this.onContextLost, false);
     canvas.addEventListener("webglcontextrestored", this.onContextRestored, false);
   }
@@ -210,7 +256,24 @@ export class Simulator {
         (material) => this.shipShadows?.patch(material),
       );
       this.ships.prebuild();
-      this.physics.hullClearance = this.ships.hullClearance;
+      // The strange places: volcanoes (islands with fire), the barge, the wreck, the monolith.
+      this.volcanoes = new VolcanoSystem(this.scene, (island, radial, angle) => this.islands.terrainSurfaceHeight(island, radial, angle));
+      this.places = new PoiSystem(
+        this.scene,
+        this.ocean,
+        this.underwater,
+        (x, z) => distanceFromWaterline(x, z) > POI_CLEARANCE,
+        new Set(this.state.discoveredPlaces),
+      );
+      // Ships' sides and the places' footprints are obstacles the guard steers round.
+      this.physics.hullClearance = (x, z, normal) => {
+        const ship = this.ships.hullClearance(x, z, normal);
+        const place = this.places.clearance(x, z, this.obstacleNormal);
+        if (place >= ship) return ship;
+        normal.x = this.obstacleNormal.x;
+        normal.z = this.obstacleNormal.z;
+        return place;
+      };
       this.ocean.setShips(this.ships.ships);
       this.vessel = new Vessel(this.scene, this.assets, this.underwater);
       this.vessel.setChartTraffic(this.ships.ships);
@@ -239,9 +302,20 @@ export class Simulator {
       );
       this.camera = new CameraController(this.canvas.clientWidth / Math.max(1, this.canvas.clientHeight), this.ocean);
       this.camera.setMode(this.state.cameraMode);
+      this.camera.steadyHelm = this.state.steadyHelmView;
       this.post = new PostProcessing(this.renderer, this.scene, this.camera.camera, this.quality.settings);
       this.reflection = new OceanReflection(this.quality.settings.reflectionScale);
       this.rain = new RainSystem(this.scene, this.quality.settings.rainDrops);
+      this.flares = new FlareSystem(this.scene);
+      this.loot = new LootSystem(
+        this.scene,
+        this.ocean,
+        this.underwater,
+        new Set(this.state.collectedLoot),
+        (x, z) => distanceFromWaterline(x, z) > LOOT_SHORE_CLEARANCE && this.places.clearance(x, z, this.obstacleNormal) > 40,
+      );
+      this.applySailColor();
+      this.updateDeckFlamingo();
       this.mirrorHidden = [
         this.ocean.mesh,
         this.wake.object,
@@ -250,7 +324,14 @@ export class Simulator {
         ...this.environment.celestial,
         ...this.vessel.mirrorSkipped,
       ];
-      this.input = new InputController(this.state.controls, () => this.reset());
+      this.input = new InputController(this.state.controls, {
+        engineRunning: () => this.state.engineRunning,
+        startEngine: () => {
+          this.setEngineRunning(true);
+          this.options.onKeyAction?.("engine-on");
+        },
+      });
+      this.input.autoCenter = this.state.autoCenterHelm;
       this.touch = new TouchControls(this.canvas, {
         orbit: (x, y) => this.camera.orbit(x, y),
         zoom: (delta) => this.camera.zoom(delta),
@@ -291,6 +372,27 @@ export class Simulator {
 
   centerRudder(): void {
     this.input?.centerRudder();
+  }
+
+  /** The helm slider or wheel was let go. */
+  releaseRudder(): void {
+    this.input?.releaseRudder();
+  }
+
+  /** At the helm: a steady, level view (default) or the full motion of the boat. */
+  setSteadyHelmView(enabled: boolean): void {
+    this.state.steadyHelmView = enabled;
+    if (this.camera) this.camera.steadyHelm = enabled;
+    this.persistState();
+    this.hud.emit(this.snapshot());
+  }
+
+  /** Whether the helm returns amidships by itself when let go (saved). */
+  setAutoCenterHelm(enabled: boolean): void {
+    this.state.autoCenterHelm = enabled;
+    if (this.input) this.input.autoCenter = enabled;
+    this.persistState();
+    this.hud.emit(this.snapshot());
   }
 
   setThrottle(value: number): void {
@@ -349,10 +451,29 @@ export class Simulator {
 
   setSoundEnabled(enabled: boolean): void {
     this.state.soundEnabled = enabled;
+    this.radio?.setMuted(!enabled);
     this.audio?.setEnabled(enabled);
     if (enabled) void this.audio?.resumeFromGesture();
     this.persistState();
     this.hud.emit(this.snapshot());
+  }
+
+  private lastTrim = Number.NaN;
+  private trimRate = 0;
+  private readonly sailingState = { luff: 0, trimRate: 0, gust: 0, gustApproaching: 0 };
+
+  /** What the sail and the wind are doing, for the yacht's sounds (winches, flogging, gusts). */
+  private sailingSound(delta: number): { luff: number; trimRate: number; gust: number; gustApproaching: number } {
+    const trim = this.physics.guard.output.sailTrim;
+    const rate = Number.isFinite(this.lastTrim) && delta > 0 ? (trim - this.lastTrim) / delta : 0;
+    this.lastTrim = trim;
+    this.trimRate += (rate - this.trimRate) * Math.min(1, delta * 12);
+    const telemetry = this.physics.telemetry;
+    this.sailingState.luff = telemetry.sailLuff;
+    this.sailingState.trimRate = this.trimRate;
+    this.sailingState.gust = telemetry.gust;
+    this.sailingState.gustApproaching = telemetry.gustApproaching;
+    return this.sailingState;
   }
 
   /** Photo mode: the camera turns to whatever is worth a picture by itself. */
@@ -407,9 +528,243 @@ export class Simulator {
     this.hud.emit(this.snapshot());
   }
 
+  /**
+   * Fires a signal flare from the cockpit. False while the gun reloads (a
+   * second or so between shots) or before the scene is up.
+   */
+  launchFlare(color: FlareColor): boolean {
+    if (!this.initialized) return false;
+    const point = this.flareLaunchPoint.copy(this.physics.position).addScaledVector(this.physics.forward, -3.4);
+    point.y += 2.6;
+    const wind = this.physics.wind;
+    if (!this.flares.launch(color, point.x, point.y, point.z, wind.x, wind.z)) return false;
+    this.audio.flareLaunch();
+    return true;
+  }
+
+  /** Hoists a sail colour the player has found (white is always there). */
+  setSailColor(color: string): void {
+    if (!isSailColor(color) || !this.state.unlockedSails.includes(color)) return;
+    this.state.sailColor = color;
+    this.applySailColor();
+    this.persistState();
+    this.hud.emit(this.snapshot());
+  }
+
+  private applySailColor(): void {
+    const color: SailColor = isSailColor(this.state.sailColor) ? this.state.sailColor : "white";
+    this.vessel?.setSailColor(SAIL_COLORS[color]);
+  }
+
+  /** The first flamingo hauled aboard rides on the foredeck from then on. */
+  private updateDeckFlamingo(): void {
+    if (this.state.flamingos <= 0 || this.deckFlamingo || !this.vessel) return;
+    this.deckFlamingo = createFlamingo(this.loot.sharedMaterials, this.loot.sharedGeometries);
+    this.deckFlamingo.position.set(0.15, 0.62, 3.3);
+    this.deckFlamingo.rotation.y = 0.4;
+    this.deckFlamingo.scale.setScalar(0.62);
+    this.vessel.root.add(this.deckFlamingo);
+  }
+
+  /** Something hauled aboard: what was in it, and what it changes. */
+  private takeLoot(pickup: LootPickup): void {
+    const state = this.state;
+    state.collectedLoot.push(pickup.item.key);
+    if (state.collectedLoot.length > MAX_REMEMBERED_LOOT) state.collectedLoot.splice(0, state.collectedLoot.length - MAX_REMEMBERED_LOOT);
+    const contents = lootContents(pickup.item, state.unlockedSails.filter(isSailColor));
+    this.audio.chime();
+    this.splashPoint.set(pickup.x, pickup.y, pickup.z);
+    this.wake.splash(this.splashPoint, 0.6, "slap");
+    if (contents.kind === "bottle" && "sailColor" in contents) {
+      state.unlockedSails = [...state.unlockedSails, contents.sailColor];
+      this.options.onDiscovery?.({ kind: "bottle", key: "sail", sailColor: contents.sailColor });
+    } else if (contents.kind === "bottle") {
+      // A message not read before in this voyage, if there is one.
+      let message: string = contents.message;
+      if (this.seenMessages.has(message)) message = BOTTLE_MESSAGES.find((entry) => !this.seenMessages.has(entry)) ?? message;
+      this.seenMessages.add(message);
+      this.options.onDiscovery?.({ kind: "bottle", key: message });
+    } else if (contents.kind === "crate") {
+      state.doubloons += contents.coins;
+      this.options.onDiscovery?.({ kind: "crate", key: contents.cargo, coins: contents.coins });
+    } else {
+      state.flamingos += 1;
+      this.options.onDiscovery?.({ kind: "flamingo", key: "flamingo", first: state.flamingos === 1 });
+      this.updateDeckFlamingo();
+    }
+    this.persistState();
+    this.hud.emit(this.snapshot());
+  }
+
+  /**
+   * Tunes the radio (null: off). Call inside the player's tap or key press;
+   * it starts the sound too if the player has not yet.
+   */
+  setRadio(station: RadioStationId | null): void {
+    if (!station) {
+      this.radio?.off();
+      return;
+    }
+    if (!this.state.soundEnabled) this.setSoundEnabled(true);
+    if (!this.audio.isArmed) void this.audio.startFromUser();
+    this.radio?.play(station);
+  }
+
+  /** Next or previous station round the dial. */
+  stepRadio(direction: 1 | -1): void {
+    if (!this.state.soundEnabled) this.setSoundEnabled(true);
+    if (!this.audio.isArmed) void this.audio.startFromUser();
+    this.radio?.step(direction);
+  }
+
+  setRadioVolume(volume: number): void {
+    this.radio?.setVolume(volume);
+  }
+
+  get radioVolume(): number {
+    return this.radio?.level ?? 0.7;
+  }
+
+  /** Eases the image toward the playing station's mood. */
+  private easeGrade(delta: number): void {
+    const target = this.radio?.grade ?? NEUTRAL_GRADE;
+    const k = 1 - Math.exp(-delta / 0.6);
+    const grade = this.grade;
+    for (let index = 0; index < 3; index += 1) {
+      grade.gain[index]! += (target.gain[index]! - grade.gain[index]!) * k;
+      grade.shadows[index]! += (target.shadows[index]! - grade.shadows[index]!) * k;
+    }
+    grade.saturation += (target.saturation - grade.saturation) * k;
+    grade.vignette += (target.vignette - grade.vignette) * k;
+    this.post.setGrade(grade.gain, grade.shadows, grade.saturation, grade.vignette);
+  }
+
+  /** Volcanoes and the other places: animation, sound, discoveries, the camera. */
+  private updatePlaces(delta: number): void {
+    const yacht = this.physics.position;
+    const wind = this.physics.wind;
+    const night = this.environmentState.nightFactor;
+    const camera = this.camera.camera;
+    const pixelScale = this.renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+    this.volcanoes.update(this.elapsed, delta, yacht.x, yacht.z, wind.x, wind.z, this.environment.current.palette.ambientColor, night, pixelScale);
+    for (const eruption of this.volcanoes.consumeEruptions()) {
+      // The boom arrives at the speed of sound; the photographer turns to it.
+      const distance = camera.position.distanceTo(this.listenerPoint.set(eruption.x, eruption.y, eruption.z));
+      const listenerYaw = Math.atan2(this.listenerForward.x, this.listenerForward.z);
+      const azimuth = Math.atan2(eruption.x - camera.position.x, eruption.z - camera.position.z);
+      const delay = thunderDelay(distance);
+      if (delay !== null) this.audio.thunder(distance * 0.8, delay, -Math.sin(azimuth - listenerYaw));
+      this.photo.offer({ kind: "eruption", x: eruption.x, y: eruption.y + 60, z: eruption.z, size: 260 }, yacht.x, yacht.z);
+    }
+    const crater = this.volcanoes.nearestCrater;
+    const island = this.volcanoes.nearestIsland;
+    if (crater && island && this.volcanoes.nearestEruption > 0.05) {
+      this.photo.offer({ kind: "eruption", x: crater.x, y: crater.y + 60, z: crater.z, size: 260 }, yacht.x, yacht.z);
+    }
+    if (island && distanceFromWaterline(yacht.x, yacht.z) < DISCOVERY_RANGE.volcano) {
+      const shore = Math.hypot(yacht.x - island.centerX, (yacht.z - island.centerZ) / island.scaleZ) - island.beachRadius;
+      const key = `volcano:${island.id}`;
+      if (shore < DISCOVERY_RANGE.volcano && !this.state.discoveredPlaces.includes(key)) this.discover(key, "volcano");
+    }
+    this.places.update(delta, yacht.x, yacht.z, night, wind.x, wind.z, this.audio.partyBeat);
+    for (const poi of this.places.consumeDiscoveries()) this.discover(`${poi.kind}:${poi.id}`, poi.kind);
+    const barge = this.places.nearest("barge", yacht.x, yacht.z);
+    this.audio.setParty(barge ? camera.position.distanceTo(this.listenerPoint.set(barge.poi.x, 4, barge.poi.z)) : Infinity, this.listenerPoint);
+    const monolith = this.places.nearest("monolith", yacht.x, yacht.z);
+    this.audio.setMonolith(monolith ? camera.position.distanceTo(this.listenerPoint.set(monolith.poi.x, 6, monolith.poi.z)) : Infinity, this.listenerPoint);
+  }
+
+  private watchStuck(delta: number): void {
+    const telemetry = this.physics.telemetry;
+    const yacht = this.physics.position;
+    if (telemetry.speedKnots > 0.9) {
+      this.stuckTime = 0;
+      return;
+    }
+    const hemmed =
+      telemetry.grounding > 0.05 ||
+      this.islands.shoreClearance(yacht.x, yacht.z, this.obstacleNormal) < 6 ||
+      (this.physics.hullClearance?.(yacht.x, yacht.z, this.obstacleNormal) ?? 1e6) < 6;
+    // Only when the player is trying to get somewhere (lying alongside on purpose is not stuck).
+    const controls = this.state.controls;
+    const trying = telemetry.grounding > 0.05 || (this.state.engineRunning ? Math.abs(controls.throttle) > 0.15 : controls.sailTrim > 0.45);
+    const wasStuck = this.stuckTime > STUCK_SECONDS;
+    this.stuckTime = hemmed && trying && telemetry.speedKnots < 0.45 ? this.stuckTime + delta : Math.max(0, this.stuckTime - delta * 2);
+    if (wasStuck !== this.stuckTime > STUCK_SECONDS) this.hud.emit(this.snapshot());
+  }
+
+  private discover(key: string, kind: string): void {
+    if (this.state.discoveredPlaces.includes(key)) return;
+    this.state.discoveredPlaces = [...this.state.discoveredPlaces, key].slice(-64);
+    this.audio.chime();
+    this.options.onDiscovery?.({ kind: "poi", key: kind, first: !this.state.discoveredPlaces.some((entry) => entry !== key && entry.startsWith(`${kind}:`)) });
+    this.persistState();
+    this.hud.emit(this.snapshot());
+  }
+
+  /** Points the camera back at the yacht, behind her (the view a lost player wants). */
+  recenterCamera(): void {
+    this.camera?.recenter();
+  }
+
+  /**
+   * Tows a stuck yacht to the nearest open water, pointing away from what
+   * she was stuck on, at rest. Returns false if she is already clear (or
+   * nothing was found).
+   */
+  rescueBoat(): boolean {
+    if (!this.initialized) return false;
+    const yacht = this.physics.position;
+    const clearance = (x: number, z: number, normal: { x: number; z: number }): number => {
+      const shore = this.islands.shoreClearance(x, z, normal);
+      const hull = this.physics.hullClearance?.(x, z, this.obstacleNormal) ?? 1e6;
+      if (hull < shore) {
+        normal.x = this.obstacleNormal.x;
+        normal.z = this.obstacleNormal.z;
+        return hull;
+      }
+      return shore;
+    };
+    const spot = findOpenWater(yacht.x, yacht.z, clearance);
+    if (!spot) return false;
+    this.physics.relocate(spot.x, spot.z, spot.heading);
+    this.stuckTime = 0;
+    this.wake.reset();
+    this.state.controls.throttle = 0;
+    this.state.controls.rudder = 0;
+    this.camera.recenter();
+    this.camera.snap();
+    this.hud.emit(this.snapshot());
+    return true;
+  }
+
+  /**
+   * Sounds the yacht's air horn or strikes the bell — buttons that exist to
+   * make a sound, so they start the sound if the player has not yet (but
+   * never against a sound switched off). A ship within hail answers the horn.
+   */
+  async playSignal(signal: "horn" | "bell"): Promise<"played" | "muted"> {
+    if (!this.state.soundEnabled) return "muted";
+    if (!this.audio.isReady()) await this.audio.startFromUser();
+    if (signal === "horn") {
+      this.audio.airHorn();
+      if (this.initialized) this.ships.answerHorn(this.physics.position.x, this.physics.position.z);
+    } else {
+      this.audio.bell();
+    }
+    return "played";
+  }
+
+  /** Whether the player has started sound in this page (horn and bell need it). */
+  get soundStarted(): boolean {
+    return Boolean(this.audio?.isArmed);
+  }
+
+  /** Starts the voyage again from the start, as on arrival (what was found stays found). */
   reset(): void {
     if (!this.initialized) return;
     this.physics.reset();
+    this.flares.clear();
     this.wake.reset();
     this.state.controls.throttle = 0;
     this.state.controls.rudder = 0;
@@ -423,6 +778,7 @@ export class Simulator {
     this.resizeObserver?.disconnect();
     this.touch?.dispose();
     this.input?.dispose();
+    this.radio?.dispose();
     this.audio?.dispose();
     this.wildlife?.dispose();
     this.ships?.dispose();
@@ -432,6 +788,10 @@ export class Simulator {
     this.gpuTimer?.dispose();
     setShoalField(null);
     this.rain?.dispose(this.scene);
+    this.flares?.dispose();
+    this.loot?.dispose();
+    this.volcanoes?.dispose();
+    this.places?.dispose();
     this.wake?.dispose();
     this.vessel?.dispose();
     this.islands?.dispose();
@@ -506,6 +866,9 @@ export class Simulator {
     this.camera.update(delta, this.physics, { root: this.vessel.root, eye: this.vessel.helmEye });
     this.directPhoto(delta);
     this.environment.setWeatherKind(this.currentWeatherKind());
+    // The brightest flare in the air lights the scene (see EnvironmentSystem.setFlare).
+    const flare = this.flares.brightest();
+    this.environment.setFlare(flare?.position ?? null, flare?.brightness ?? 0, flare?.rgb ?? [0, 0, 0]);
     this.environmentState = this.environment.update(
       delta,
       this.camera.camera,
@@ -513,7 +876,35 @@ export class Simulator {
       this.elapsed,
     );
     this.applyWeather();
+    // A gust is seen coming across the water from upwind, then is all round her.
+    {
+      const telemetry = this.physics.telemetry;
+      const wind = this.physics.wind;
+      const length = Math.hypot(wind.x, wind.z) || 1;
+      const reach = (1 - telemetry.gustApproaching) * 110 * (telemetry.gust > 0.02 ? 0 : 1);
+      this.ocean.setGustPatch(
+        this.physics.position.x - (wind.x / length) * reach,
+        this.physics.position.z - (wind.z / length) * reach,
+        150,
+        Math.max(telemetry.gust, telemetry.gustApproaching) * 0.7,
+      );
+    }
     this.wake.setEnvironment(this.environment.current.palette);
+    this.easeGrade(delta);
+    {
+      const camera = this.camera.camera;
+      const pixelScale = this.renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+      this.flares.update(delta, this.environment.current.palette.ambientColor, pixelScale);
+    }
+    {
+      const yacht = this.physics.position;
+      this.loot.setNight(this.environmentState.nightFactor);
+      this.loot.update(delta, yacht.x, yacht.z, this.physics.heading, this.physics.wind.x, this.physics.wind.z);
+      for (const pickup of this.loot.consumePickups()) this.takeLoot(pickup);
+      this.nearestLoot = this.loot.nearest(yacht.x, yacht.z, this.physics.heading, NEAREST_LOOT_RANGE);
+    }
+    this.updatePlaces(delta);
+    this.watchStuck(delta);
     // Palm shadows on the sand follow the sun, softer under the moon.
     this.islands.updateShadows(
       this.renderer,
@@ -532,6 +923,7 @@ export class Simulator {
       this.physics.telemetry.engineShaft,
       this.physics.telemetry.apparentWindSpeed,
       this.environment.currentWeather,
+      this.sailingSound(delta),
     );
     // Positional sound: the camera is the listener; the gulls call from where they fly.
     const camera = this.camera.camera;
@@ -742,6 +1134,18 @@ export class Simulator {
       engineRunning: this.state.engineRunning,
       shoreGuardActive: this.physics?.guard.active ?? false,
       engineMuted: this.state.engineMuted,
+      autoCenterHelm: this.state.autoCenterHelm,
+      steadyHelmView: this.state.steadyHelmView,
+      sailColor: this.state.sailColor,
+      unlockedSails: this.state.unlockedSails,
+      doubloons: this.state.doubloons,
+      flamingos: this.state.flamingos,
+      discoveredPlaces: this.state.discoveredPlaces,
+      nearestLoot: this.nearestLoot,
+      gust: telemetry?.gust ?? 0,
+      stuck: this.stuckTime > STUCK_SECONDS,
+      radioStation: this.radio?.station ?? null,
+      radioBuffering: this.radio?.buffering ?? false,
       fps: this.fps,
       status: this.status,
     };
@@ -769,6 +1173,17 @@ export class Simulator {
       }
       if (typeof saved.soundEnabled === "boolean") base.soundEnabled = saved.soundEnabled;
       if (typeof saved.engineMuted === "boolean") base.engineMuted = saved.engineMuted;
+      if (typeof saved.autoCenterHelm === "boolean") base.autoCenterHelm = saved.autoCenterHelm;
+      if (typeof saved.steadyHelmView === "boolean") base.steadyHelmView = saved.steadyHelmView;
+      const strings = (value: unknown, limit: number): string[] =>
+        Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string").slice(-limit) : [];
+      const unlocked = strings(saved.unlockedSails, 16).filter(isSailColor);
+      base.unlockedSails = Array.from(new Set(["white", ...unlocked]));
+      if (isSailColor(saved.sailColor) && base.unlockedSails.includes(saved.sailColor)) base.sailColor = saved.sailColor;
+      if (typeof saved.doubloons === "number" && Number.isFinite(saved.doubloons)) base.doubloons = Math.max(0, Math.floor(saved.doubloons));
+      if (typeof saved.flamingos === "number" && Number.isFinite(saved.flamingos)) base.flamingos = Math.max(0, Math.floor(saved.flamingos));
+      base.discoveredPlaces = strings(saved.discoveredPlaces, 32);
+      base.collectedLoot = strings(saved.collectedLoot, MAX_REMEMBERED_LOOT);
     } catch {
       localStorage.removeItem(STORAGE_KEY);
     }
@@ -787,6 +1202,14 @@ export class Simulator {
         qualityChoice: this.chosenQuality ?? undefined,
         soundEnabled: this.state.soundEnabled,
         engineMuted: this.state.engineMuted,
+        autoCenterHelm: this.state.autoCenterHelm,
+        steadyHelmView: this.state.steadyHelmView,
+        sailColor: this.state.sailColor,
+        unlockedSails: this.state.unlockedSails,
+        doubloons: this.state.doubloons,
+        flamingos: this.state.flamingos,
+        discoveredPlaces: this.state.discoveredPlaces,
+        collectedLoot: this.state.collectedLoot.slice(-MAX_REMEMBERED_LOOT),
       }),
     );
   }

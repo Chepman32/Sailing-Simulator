@@ -49,6 +49,10 @@ export class CameraController {
     if (mode === "drone") this.distance = 42;
   }
 
+  /** At the helm, keep the horizon level and the heave smoothed (a setting, on by default). */
+  steadyHelm = true;
+  private steadyEyeY = Number.NaN;
+
   /** Counts the player's own look-arounds and zooms (photo mode yields to them). */
   interactions = 0;
 
@@ -158,10 +162,19 @@ export class CameraController {
       // lags into the wheel or the pod), while the head keeps most of its
       // own level against her roll and pitch, as a helmsman's does.
       this.camera.position.copy(helm.eye).applyMatrix4(helm.root.matrixWorld);
+      // Steady view (the default): the eyes ride the boat but the head keeps
+      // the horizon level and soaks up the heave, so the deck still moves
+      // under the player without the whole world swinging with it.
+      const steady = this.steadyHelm;
+      if (steady) {
+        const y = this.camera.position.y;
+        this.steadyEyeY = Number.isFinite(this.steadyEyeY) && !this.snapNext ? this.steadyEyeY + (y - this.steadyEyeY) * this.follow(2.2, delta) : y;
+        this.camera.position.y = this.steadyEyeY;
+      }
       this.camera.rotation.set(
-        -this.pitch - physics.pitch * HEAD_PITCH_SHARE,
+        -this.pitch - physics.pitch * (steady ? HEAD_PITCH_SHARE * 0.15 : HEAD_PITCH_SHARE),
         physics.heading + this.yawOffset + Math.PI,
-        physics.roll * HEAD_ROLL_SHARE,
+        physics.roll * (steady ? HEAD_ROLL_SHARE * 0.1 : HEAD_ROLL_SHARE),
         "YXZ",
       );
       this.camera.fov = damp(this.camera.fov, 66, 2.6, delta);

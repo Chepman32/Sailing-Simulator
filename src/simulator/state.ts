@@ -21,6 +21,20 @@ export type SimulatorState = {
   soundEnabled: boolean;
   engineRunning: boolean;
   engineMuted: boolean;
+  /** The helm returns amidships by itself when let go. */
+  autoCenterHelm: boolean;
+  /** At the helm the view keeps the horizon steady instead of rolling with the boat. */
+  steadyHelmView: boolean;
+  /** Colour of the mainsail (see SAIL_COLORS). */
+  sailColor: string;
+  /** Sail colours found in bottles. */
+  unlockedSails: string[];
+  doubloons: number;
+  flamingos: number;
+  /** Places discovered. */
+  discoveredPlaces: string[];
+  /** Keys of the things already picked up (so they stay gone after a reload). */
+  collectedLoot: string[];
 };
 
 export const ENGINE_START_THROTTLE = 0.12;
@@ -37,6 +51,14 @@ export function createSimulatorState(): SimulatorState {
     soundEnabled: true,
     engineRunning: false,
     engineMuted: false,
+    autoCenterHelm: true,
+    steadyHelmView: true,
+    sailColor: "white",
+    unlockedSails: ["white"],
+    doubloons: 0,
+    flamingos: 0,
+    discoveredPlaces: [],
+    collectedLoot: [],
   };
 }
 
@@ -78,6 +100,18 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   engineRunning: false,
   shoreGuardActive: false,
   engineMuted: false,
+  autoCenterHelm: true,
+  steadyHelmView: true,
+  sailColor: "white",
+  unlockedSails: ["white"],
+  doubloons: 0,
+  flamingos: 0,
+  discoveredPlaces: [],
+  nearestLoot: null,
+  gust: 0,
+  stuck: false,
+  radioStation: null,
+  radioBuffering: false,
   fps: 60,
   status: "loading",
 };

@@ -50,6 +50,11 @@ const FinishShader = {
     uGrain: { value: 0.012 },
     uAberration: { value: 0.0035 },
     uSaturation: { value: 1.07 },
+    // The mood of the radio station (see RadioSystem): neutral by default.
+    uGradeGain: { value: new THREE.Vector3(1, 1, 1) },
+    uGradeShadows: { value: new THREE.Vector3(0, 0, 0) },
+    uGradeSaturation: { value: 1 },
+    uGradeVignette: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -65,6 +70,10 @@ const FinishShader = {
     uniform float uGrain;
     uniform float uAberration;
     uniform float uSaturation;
+    uniform vec3 uGradeGain;
+    uniform vec3 uGradeShadows;
+    uniform float uGradeSaturation;
+    uniform float uGradeVignette;
     varying vec2 vUv;
 
     ${SANE_COLOR_GLSL}
@@ -88,8 +97,10 @@ const FinishShader = {
       );
       color = saneColor(color);
       float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
-      color = max(mix(vec3(luminance), color, uSaturation), 0.0);
-      color *= 1.0 - smoothstep(0.1, 0.52, radius2) * uVignette;
+      color = max(mix(vec3(luminance), color, uSaturation * uGradeSaturation), 0.0);
+      // Mood: a tint over the whole image and a lift of the shadows' colour.
+      color = color * uGradeGain + uGradeShadows * (1.0 - smoothstep(0.0, 0.6, luminance));
+      color *= 1.0 - smoothstep(0.1, 0.52, radius2) * (uVignette + uGradeVignette);
       gl_FragColor = vec4(color, 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
@@ -211,6 +222,15 @@ export class PostProcessing {
     this.height = Math.max(1, height);
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
     this.composer.setSize(this.width, this.height);
+  }
+
+  /** The radio's mood grade (already eased by the caller). */
+  setGrade(gain: readonly number[], shadows: readonly number[], saturation: number, vignette: number): void {
+    const uniforms = this.finish.uniforms;
+    (uniforms.uGradeGain!.value as THREE.Vector3).set(gain[0]!, gain[1]!, gain[2]!);
+    (uniforms.uGradeShadows!.value as THREE.Vector3).set(shadows[0]!, shadows[1]!, shadows[2]!);
+    uniforms.uGradeSaturation!.value = saturation;
+    uniforms.uGradeVignette!.value = vignette;
   }
 
   render(delta: number, time: number): void {

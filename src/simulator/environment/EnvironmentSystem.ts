@@ -8,6 +8,7 @@ import { applySkyPalette, setLinearColor, type SkyUniforms } from "./SkyUniforms
 import { skyFragmentShader, skyVertexShader } from "./shaders/skyShader";
 import { createWeather, settleWeather, stepWeather, type WeatherKind, type WeatherSample } from "./WeatherMath";
 import { LightningSystem, type StrikeEvent } from "./LightningSystem";
+import { flareIllumination, flareSceneWeight } from "../effects/FlareMath";
 
 /** Half extent of the sun shadow frustum: just enough to hold the yacht. */
 const SHADOW_EXTENT = 17;
@@ -47,6 +48,14 @@ export class EnvironmentSystem {
   /** The palette without the lightning (for the sky and its captured light). */
   private skyPalette!: EnvironmentPalette;
   private readonly flashDirection = new THREE.Vector3(0, 1, 0);
+  /** The brightest signal flare in the air (see `setFlare`). */
+  private readonly flarePosition = new THREE.Vector3(0, 100, 0);
+  private readonly flareDirection = new THREE.Vector3(0, 1, 0);
+  private readonly flareColor = new THREE.Color();
+  private flareRgb: readonly [number, number, number] = [0, 0, 0];
+  private flareBrightness = 0;
+  /** Flare light falling on the yacht right now, weighed against the sky's. */
+  private flareLight = 0;
   // Image-based lighting: the analytic sky is captured into a prefiltered
   // cube so PBR materials reflect and are lit by the sky that is on screen.
   private readonly pmrem: THREE.PMREMGenerator;
@@ -177,6 +186,17 @@ export class EnvironmentSystem {
     return this.transition > 0.5;
   }
 
+  /**
+   * The brightest signal flare burning (`brightness` 0 for none): its light
+   * swings the key light toward it and tints the sea, the sails and the
+   * foam in its colour — as lightning does, without adding a light.
+   */
+  setFlare(position: THREE.Vector3 | null, brightness: number, rgb: readonly [number, number, number]): void {
+    this.flareBrightness = position ? Math.max(0, brightness) : 0;
+    if (position) this.flarePosition.copy(position);
+    this.flareRgb = rgb;
+  }
+
   /** The weather the sky is easing toward. */
   setWeatherKind(kind: WeatherKind, immediate = false): void {
     this.weatherKind = kind;
@@ -272,12 +292,31 @@ export class EnvironmentSystem {
 
     applySkyPalette(this.skyUniforms, palette, night);
     // Everything else sees the flash: sea, islands, ships, rain and haze.
-    const lit = litByLightning(palette, this.flash);
+    const lit = { ...litByLightning(palette, this.flash) };
     this.skyPalette = palette;
     this.palette = lit;
     // Clouds race across the sky in a gale.
     this.cloudClock += delta * this.weather.wind;
     this.skyUniforms.uCloudTime.value = this.cloudClock;
+    // A flare: the light it throws on the yacht (and on the sea around her).
+    const flareWeight = flareSceneWeight(night) * this.flareBrightness;
+    this.flareLight = flareWeight > 0 ? flareIllumination(1, this.flarePosition.distanceTo(focus)) * flareWeight : 0;
+    if (this.flareLight > 0.002) {
+      const [fr, fg, fb] = this.flareRgb;
+      const tint = this.flareLight;
+      lit.ambientColor = [lit.ambientColor[0] + fr * tint * 0.1, lit.ambientColor[1] + fg * tint * 0.1, lit.ambientColor[2] + fb * tint * 0.1];
+      lit.horizon = [lit.horizon[0] + fr * tint * 0.03, lit.horizon[1] + fg * tint * 0.03, lit.horizon[2] + fb * tint * 0.03];
+      lit.rainLight = [lit.rainLight[0] + fr * tint * 0.5, lit.rainLight[1] + fg * tint * 0.5, lit.rainLight[2] + fb * tint * 0.5];
+    }
+    this.ocean.setFlare(
+      this.flarePosition.x,
+      this.flarePosition.y,
+      this.flarePosition.z,
+      flareWeight * 1.8,
+      this.flareRgb[0],
+      this.flareRgb[1],
+      this.flareRgb[2],
+    );
     this.ocean.setEnvironment(lit);
 
     if (camera) this.sky.position.copy(camera.position);
@@ -303,7 +342,15 @@ export class EnvironmentSystem {
     // (The sun light is reused rather than a light added, so materials keep
     // one directional light and nothing recompiles when a storm begins.)
     const flashShare = clamp(this.flash * 1.6, 0, 1);
-    this.keyDirection.copy(this.celestialLightDirection).lerp(this.flashDirection, flashShare).normalize();
+    this.keyDirection.copy(this.celestialLightDirection).lerp(this.flashDirection, flashShare);
+    // So does a flare, as far as it outshines the moon.
+    const flareKey = this.flareLight * 1.4;
+    if (flareKey > 0.002) {
+      const moonKey = (palette.lightColor[0] + palette.lightColor[1] + palette.lightColor[2]) / 3;
+      this.flareDirection.copy(this.flarePosition).sub(focus).normalize();
+      this.keyDirection.normalize().lerp(this.flareDirection, flareKey / (flareKey + moonKey * 0.8));
+    }
+    this.keyDirection.normalize();
     this.sunLight.position.copy(focus).addScaledVector(this.keyDirection, 60);
     this.sunLight.target.position.copy(focus);
     setLinearColor(this.sunLight.color, palette.lightColor);
@@ -315,6 +362,10 @@ export class EnvironmentSystem {
     if (this.flash > 0.005) {
       this.flashColor.setRGB(LIGHTNING_COLOR[0], LIGHTNING_COLOR[1], LIGHTNING_COLOR[2], THREE.LinearSRGBColorSpace);
       this.sunLight.color.add(this.flashColor.multiplyScalar(this.flash * 1.9));
+    }
+    if (flareKey > 0.002) {
+      this.flareColor.setRGB(this.flareRgb[0], this.flareRgb[1], this.flareRgb[2], THREE.LinearSRGBColorSpace);
+      this.sunLight.color.add(this.flareColor.multiplyScalar(flareKey));
     }
     this.scene.environmentIntensity = 0.5 + this.flash * 1.1;
     setLinearColor(this.hemisphere.color, lit.ambientColor);

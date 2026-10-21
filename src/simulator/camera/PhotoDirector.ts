@@ -4,7 +4,7 @@
  * With the controls hidden the player is watching, so when something worth
  * a picture happens — a whale breaching on the horizon, a whale surfacing or
  * slapping its tail, dolphins leaping, a shark's fin, a ship sounding its
- * horn — the camera turns to it by itself and zooms in, holds the shot for a
+ * horn, a volcano erupting — the camera turns to it by itself and zooms in, holds the shot for a
  * few seconds, and eases back to the yacht. It stands where a photographer
  * on board would: just behind and above the yacht, looking past her at the
  * subject, so a near subject has the yacht in the foreground and a far one
@@ -14,7 +14,7 @@
  * Pure numbers; `CameraController.direct` applies the shot.
  */
 
-export type PhotoSubjectKind = "breach" | "whale" | "horn" | "shark" | "dolphins";
+export type PhotoSubjectKind = "eruption" | "breach" | "whale" | "horn" | "shark" | "dolphins";
 
 export type PhotoSubject = {
   kind: PhotoSubjectKind;
@@ -27,6 +27,7 @@ export type PhotoSubject = {
 
 /** Which subject wins when two happen at once. */
 export const PHOTO_PRIORITY: Record<PhotoSubjectKind, number> = {
+  eruption: 6,
   breach: 5,
   whale: 4,
   horn: 3,
@@ -36,6 +37,7 @@ export const PHOTO_PRIORITY: Record<PhotoSubjectKind, number> = {
 
 /** Longest a subject holds the camera, seconds. */
 export const PHOTO_HOLD: Record<PhotoSubjectKind, number> = {
+  eruption: 10,
   breach: 9,
   whale: 9,
   horn: 6,
@@ -51,6 +53,8 @@ export const PHOTO_COOLDOWN = 3;
 export const PHOTO_USER_PAUSE = 8;
 /** Beyond this the subject is too far to be worth a shot, metres. */
 export const PHOTO_RANGE = 1600;
+/** An eruption is worth a shot from much farther away. */
+export const ERUPTION_PHOTO_RANGE = 2600;
 
 export type PhotoShot = {
   position: { x: number; y: number; z: number };
@@ -95,7 +99,8 @@ export class PhotoDirector {
    */
   offer(subject: PhotoSubject, viewerX: number, viewerZ: number): void {
     if (!this.enabled || this.pause > 0) return;
-    if (Math.hypot(subject.x - viewerX, subject.z - viewerZ) > PHOTO_RANGE) return;
+    const range = subject.kind === "eruption" ? ERUPTION_PHOTO_RANGE : PHOTO_RANGE;
+    if (Math.hypot(subject.x - viewerX, subject.z - viewerZ) > range) return;
     const rank = PHOTO_PRIORITY[subject.kind];
     const current = this.subject;
     if (current && current.kind === subject.kind) {
@@ -126,7 +131,7 @@ export class PhotoDirector {
       this.unseen = this.seenThisFrame ? 0 : this.unseen + dt;
       // Held for its time, or over (no longer offered) for a moment: let go.
       // (A horn is a single event: its shot is held for its full time.)
-      const over = subject.kind !== "horn" && this.unseen > 1.4;
+      const over = subject.kind !== "horn" && subject.kind !== "eruption" && this.unseen > 1.4;
       if (this.held >= PHOTO_HOLD[subject.kind] || over || !this.enabled) {
         this.subject = null;
         this.cooldown = PHOTO_COOLDOWN;

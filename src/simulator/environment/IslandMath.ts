@@ -26,7 +26,53 @@ export type IslandDefinition = {
   height: number;
   /** Two-lobed bulge of the coastline (0 = none), as a fraction of the radius. */
   lobe: number;
+  /** A volcanic island: a smoking cone with a crater, black sand, lava (see VolcanoSystem). */
+  volcano?: boolean;
 };
+
+/**
+ * Cells whose primary island is a volcano: the one east of the start (seen
+ * smoking on the horizon from the first moment), and about one cell in ten
+ * elsewhere.
+ */
+export function isVolcanoCell(column: number, row: number): boolean {
+  if (column === 1 && row === 0) return true;
+  if (Math.abs(column) + Math.abs(row) <= 1) return false;
+  return hashCell(column * 31 + 7, row * 17 - 3) % 1000 < 100;
+}
+
+/** Radial position (fraction of the beach radius) of the crater rim and the foot of the cone. */
+export const VOLCANO_RIM = 0.14;
+export const VOLCANO_FOOT = 0.84;
+/** How deep the crater floor lies below the rim, as a fraction of the height. */
+export const VOLCANO_CRATER_DEPTH = 0.16;
+
+/**
+ * Height of a volcano's cone at `radial` (fraction of the beach radius) and
+ * `angle`, metres: concave slopes rising ever steeper to the rim, gullies
+ * cut down the flanks, a bowl of a crater at the top.
+ */
+export function volcanoHeight(radial: number, angle: number, height: number, seed: number): number {
+  const base = 1.36;
+  const rise = Math.max(0, height - base);
+  if (radial >= VOLCANO_FOOT) return base;
+  if (radial > VOLCANO_RIM) {
+    const t = (VOLCANO_FOOT - radial) / (VOLCANO_FOOT - VOLCANO_RIM);
+    const cone = Math.pow(t, 1.45);
+    // Ridges and erosion gullies running down the flanks, sharper higher up.
+    const gullies =
+      (Math.sin(angle * 7 + seed * 1.7) * 0.45 +
+        Math.sin(angle * 17 - seed + radial * 6) * 0.35 +
+        Math.abs(Math.sin(angle * 31 + seed * 0.3 + radial * 14)) * 0.5 - 0.25) *
+      t * (1 - t) * rise * 0.16;
+    const lip = Math.exp(-Math.pow((radial - VOLCANO_RIM) / 0.03, 2)) * rise * 0.025;
+    return base + rise * cone + gullies + lip;
+  }
+  // Inside the rim: down into the crater.
+  const inside = radial / VOLCANO_RIM;
+  const bowl = 1 - VOLCANO_CRATER_DEPTH * (1 - inside * inside);
+  return base + rise * bowl;
+}
 
 /** Mean open-water depth in metres. */
 export const OPEN_WATER_DEPTH = 17.5;
@@ -116,20 +162,26 @@ function generateCell(column: number, row: number): IslandDefinition[] {
   }
   const roll = random();
   const extras = roll < 0.42 ? 0 : roll < 0.78 ? 1 : 2;
+  let volcano = isVolcanoCell(column, row);
   const wanted = (start ? HOME_ISLANDS.length : 1) + extras;
   let attempts = 0;
   while (islands.length < wanted && attempts < 80) {
     attempts += 1;
     const size = random();
-    // Mostly small; one in eight is a large, high island.
-    const beachRadius = size < 0.55 ? 16 + random() * 22 : size < 0.875 ? 38 + random() * 30 : 72 + random() * 46;
-    const scaleZ = 0.55 + random() * 0.95;
+    // Mostly small; one in eight is a large, high island. A volcano is big and round.
+    let beachRadius = size < 0.55 ? 16 + random() * 22 : size < 0.875 ? 38 + random() * 30 : 72 + random() * 46;
+    let scaleZ = 0.55 + random() * 0.95;
+    if (volcano) {
+      beachRadius = 150 + size * 40;
+      scaleZ = 0.86 + random() * 0.28;
+    }
     const reach = beachRadius * Math.max(1, scaleZ);
     const margin = cellMargin(reach);
     const x = centerX - WORLD_CELL / 2 + margin + random() * (WORLD_CELL - 2 * margin);
     const z = centerZ - WORLD_CELL / 2 + margin + random() * (WORLD_CELL - 2 * margin);
-    const height =
-      beachRadius < 38 ? 1.5 + random() * 0.9 : beachRadius < 70 ? 2.4 + random() * 2.4 : 5 + random() * 8;
+    const height = volcano
+      ? 64 + random() * 22
+      : beachRadius < 38 ? 1.5 + random() * 0.9 : beachRadius < 70 ? 2.4 + random() * 2.4 : 5 + random() * 8;
     const lobe = random() * 0.04;
     const seed = Math.floor(random() * SEED_RANGE);
     const clear = islands.every((other) => {
@@ -137,7 +189,18 @@ function generateCell(column: number, row: number): IslandDefinition[] {
     });
     // The start itself is open water, as it always was.
     if (!clear || (start && Math.hypot(x, z) < reach + SHELF_WIDTH + 160)) continue;
-    islands.push({ id: islandId(column, row, islands.length), seed, centerX: x, centerZ: z, beachRadius, scaleZ, height, lobe });
+    islands.push({
+      id: islandId(column, row, islands.length),
+      seed,
+      centerX: x,
+      centerZ: z,
+      beachRadius,
+      scaleZ,
+      height,
+      lobe,
+      ...(volcano ? { volcano: true } : {}),
+    });
+    volcano = false;
   }
   return islands;
 }

@@ -18,6 +18,9 @@ import {
   selectIslandSlots,
   shoreClearance,
   terrainNoise,
+  VOLCANO_FOOT,
+  VOLCANO_RIM,
+  volcanoHeight,
   waterDepthAt,
   type IslandDefinition,
 } from "./IslandMath";
@@ -393,7 +396,8 @@ export class IslandSystem {
     if (variants.length === 0) return;
 
     const seed = island.seed;
-    const count = palmsForIsland(island.beachRadius);
+    // A volcano has only a fringe of palms between the black beach and the lava slopes.
+    const count = island.volcano ? 9 : palmsForIsland(island.beachRadius);
     for (let palmIndex = 0; palmIndex < count; palmIndex += 1) {
       const tree = variants[(palmIndex + seed) % variants.length].clone(true);
       // Remove the tree's slot in the source row, keep its upright rotation.
@@ -404,7 +408,9 @@ export class IslandSystem {
       tree.position.y = -bounds.min.y;
 
       const spread = (palmIndex + 0.5) / count;
-      const radial = 0.1 + Math.sqrt(spread) * (PALM_MAX_RADIAL - 0.1);
+      const radial = island.volcano
+        ? VOLCANO_FOOT - 0.06 + terrainNoise(palmIndex * 5.1, seed) * 0.05
+        : 0.1 + Math.sqrt(spread) * (PALM_MAX_RADIAL - 0.1);
       const angle = palmIndex * GOLDEN_ANGLE + seed * 1.3;
       const radius = island.beachRadius * radial * islandEdgeNoise(angle, island);
       const size = 0.78 + terrainNoise(palmIndex * 3.7 + seed * 11.1, palmIndex * 1.9) * 0.5;
@@ -513,9 +519,13 @@ export class IslandSystem {
   private createIslandTerrain(island: IslandDefinition, detail = 1): THREE.BufferGeometry {
     // Detail follows size: a cay needs far fewer vertices than a high island.
     const segments = Math.max(32, Math.round(THREE.MathUtils.clamp(island.beachRadius * 2.6, 96, 220) * detail));
-    const rings = Math.max(12, Math.round(THREE.MathUtils.clamp(20 + island.beachRadius * 0.3, 30, 52) * detail));
+    const rings = Math.max(12, Math.round((island.volcano ? 72 : THREE.MathUtils.clamp(20 + island.beachRadius * 0.3, 30, 52)) * detail));
     const outerRadius = MAX_VISIBLE_TERRAIN_RADIUS_SCALE;
-    const positions: number[] = [0, this.islandTerrainHeight(0, 0, island.seed, island.height), 0];
+    const positions: number[] = [
+      0,
+      island.volcano ? this.terrainSurfaceHeight(island, 0, 0) : this.islandTerrainHeight(0, 0, island.seed, island.height),
+      0,
+    ];
     const colors: number[] = [];
     // 1 on sand, 0 under vegetation: the sand shading applies only where it is sand.
     const sandMask: number[] = [0];
@@ -530,11 +540,21 @@ export class IslandSystem {
     const wetSand = new THREE.Color(0xa98d58);
     const forest = new THREE.Color(0x24572f);
     const rock = new THREE.Color(0x6d6a5c);
-    colors.push(green.r, green.g, green.b, 1);
+    // A volcano: black sand, dark lava rock, grey ash high up, a rust-red rim.
+    const volcanic = island.volcano === true;
+    const lavaRock = new THREE.Color(0x3a332f);
+    const oldFlow = new THREE.Color(0x26221f);
+    const ash = new THREE.Color(0x77716a);
+    const rim = new THREE.Color(0x5c3b2b);
+    const blackSand = new THREE.Color(0x45403a);
+    const wetBlackSand = new THREE.Color(0x2b2825);
+    if (volcanic) colors.push(rim.r * 0.6, rim.g * 0.6, rim.b * 0.6, 1);
+    else colors.push(green.r, green.g, green.b, 1);
 
     for (let ring = 1; ring <= rings; ring += 1) {
       // Rings crowd toward the beach, where the surf and the waterline need detail.
-      const radial = outerRadius * Math.pow(ring / rings, 0.72);
+      // (A volcano needs its rings up the cone as much as at the beach.)
+      const radial = outerRadius * Math.pow(ring / rings, island.volcano ? 0.92 : 0.72);
       for (let segment = 0; segment < segments; segment += 1) {
         const angle = segment / segments * Math.PI * 2;
         const edgeNoise = islandEdgeNoise(angle, island);
@@ -548,6 +568,32 @@ export class IslandSystem {
         positions.push(x, y, z);
 
         const color = new THREE.Color();
+        if (volcanic) {
+          const alpha = 1 - smoothstep(0.965, outerRadius, radial);
+          if (radial < VOLCANO_RIM + 0.02) {
+            color.copy(rim).lerp(lavaRock, smoothstep(VOLCANO_RIM * 0.4, VOLCANO_RIM, radial) * 0.4);
+          } else if (radial < VOLCANO_FOOT - 0.1) {
+            // Rock and old flows down the flanks, ash toward the top.
+            const height = (VOLCANO_FOOT - radial) / (VOLCANO_FOOT - VOLCANO_RIM);
+            // Old flows: long dark tongues down the slope; ash streaks between.
+            const flow = smoothstep(0.5, 0.75, terrainNoise(angle * 9 + island.seed, radial * 3));
+            const streak = smoothstep(0.35, 0.9, terrainNoise(angle * 40 + island.seed * 3, radial * 2.5));
+            color.copy(lavaRock).lerp(oldFlow, flow * 0.85).lerp(ash, (smoothstep(0.4, 0.95, height) * 0.6 + streak * 0.25) * (0.6 + 0.4 * fine));
+            color.multiplyScalar(0.82 + fine * 0.3);
+            // Scrub creeps up the lowest slopes in patches.
+            color.lerp(shade, (1 - smoothstep(0.04, 0.22, height)) * smoothstep(0.45, 0.75, patch) * 0.8);
+            color.lerp(rim, smoothstep(0.86, 1, height) * 0.5);
+          } else if (radial < VOLCANO_FOOT + 0.04) {
+            color.copy(shade).multiplyScalar(0.8).lerp(lavaRock, smoothstep(0.5, 0.8, fine) * 0.6).lerp(blackSand, smoothstep(VOLCANO_FOOT - 0.02, VOLCANO_FOOT + 0.04, radial));
+          } else if (radial < 1) {
+            color.copy(blackSand).lerp(wetBlackSand, smoothstep(0.93, 0.985, radial));
+          } else {
+            color.copy(wetBlackSand).lerp(deepSand, smoothstep(1, outerRadius, radial) * 0.4);
+          }
+          sandMask.push(smoothstep(VOLCANO_FOOT - 0.02, VOLCANO_FOOT + 0.06, radial));
+          colors.push(color.r, color.g, color.b, alpha);
+          continue;
+        }
         const vegetationEdge = 0.7 + (patch - 0.5) * 0.16;
         sandMask.push(smoothstep(vegetationEdge - 0.04, vegetationEdge + 0.12, radial));
         if (radial < vegetationEdge - 0.08) {
@@ -604,7 +650,13 @@ export class IslandSystem {
   }
 
   /** Height of the rendered terrain at a polar position, dunes and hummocks included. */
-  private terrainSurfaceHeight(island: IslandDefinition, radial: number, angle: number): number {
+  terrainSurfaceHeight(island: IslandDefinition, radial: number, angle: number): number {
+    if (island.volcano) {
+      if (radial < VOLCANO_FOOT) return volcanoHeight(radial, angle, island.height, island.seed);
+      // The foot of the cone runs down to the beach as on any island.
+      const beach = radial < 0.9 ? 0.68 + ((radial - VOLCANO_FOOT) / (0.9 - VOLCANO_FOOT)) * 0.22 : radial;
+      return this.islandTerrainHeight(beach, angle, island.seed, 1.36);
+    }
     const radius = island.beachRadius * radial * islandEdgeNoise(angle, island);
     const x = Math.cos(angle) * radius;
     const z = Math.sin(angle) * radius * island.scaleZ;

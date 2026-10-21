@@ -1,4 +1,6 @@
 import { clamp } from "../math";
+import { BoatVoices } from "./BoatVoices";
+import { HouseGroove, ShantyBand } from "./MusicSynth";
 
 type WebkitAudioWindow = Window & {
   webkitAudioContext?: typeof AudioContext;
@@ -23,6 +25,17 @@ export type AudioWeather = {
   rain: number;
   /** Sea state scale, 1 = the trade-wind sea. */
   waves: number;
+};
+
+/** What the sails and the wind are doing, for the yacht's own sounds. */
+export type SailingSound = {
+  /** 0 drawing … 1 flogging. */
+  luff: number;
+  /** Sheet trim rate, per second (+ in, − out). */
+  trimRate: number;
+  /** Gust event under way and approaching, 0…1. */
+  gust: number;
+  gustApproaching: number;
 };
 
 /** A ship as a sound source (see `ShipSystem.soundSources`). */
@@ -72,6 +85,8 @@ function dieselSpectrum(): { real: Float32Array; imag: Float32Array } {
   return { real, imag };
 }
 const RESUME_RETRY_MS = 850;
+/** The barge's music is heard within this distance, metres. */
+const PARTY_RANGE = 650;
 
 /**
  * Loudness of a ship's horn heard `distance` metres away: a big ship's
@@ -106,10 +121,19 @@ export class AudioSystem {
   private thunderBuffer?: AudioBuffer;
   private windGain?: GainNode;
   private windFilter?: BiquadFilterNode;
-  private rigGain?: GainNode;
   private gullClock = 4 + Math.random() * 6;
   private engineLoad = 0;
-  private hullGain?: GainNode;
+  private boat?: BoatVoices;
+  /** Music: the radio's shanty band, and the party barge's groove heard over the water. */
+  private musicBus?: GainNode;
+  private shanty?: ShantyBand;
+  private shantyWanted = false;
+  private party?: HouseGroove;
+  private partyFilter?: BiquadFilterNode;
+  private partyGain?: GainNode;
+  private partyPanner?: PannerNode;
+  private partyDistance = Infinity;
+  private readonly partyPosition = { x: 0, y: 0, z: 0 };
   private readonly shipVoices: ShipVoice[] = [];
   private listenerX = 0;
   private listenerY = 0;
@@ -143,6 +167,7 @@ export class AudioSystem {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
+    this.syncShanty();
     this.setBusGain(this.master, enabled ? MASTER_GAIN : 0, 0.08);
     window.clearTimeout(this.muteTimer);
     if (!enabled) {
@@ -170,6 +195,168 @@ export class AudioSystem {
   /** Whether the player has asked for sound in this page. */
   get isArmed(): boolean {
     return this.armed;
+  }
+
+  /** The yacht's air horn. */
+  airHorn(): void {
+    if (this.isReady() && this.enabled) this.boat?.airHorn();
+  }
+
+  /** The ship's bell, two strokes. */
+  bell(): void {
+    if (this.isReady() && this.enabled) this.boat?.bell();
+  }
+
+  /** A flare leaving the launcher. */
+  flareLaunch(): void {
+    if (this.isReady() && this.enabled) this.boat?.flareLaunch();
+  }
+
+  /** The radio's band on board (the shanty station): plays while wanted and sound is on. */
+  setShanty(playing: boolean): void {
+    this.shantyWanted = playing;
+    this.syncShanty();
+  }
+
+  /** Static between two stations. */
+  radioStatic(): void {
+    const context = this.context;
+    if (!this.isReady() || !this.enabled || !context || !this.musicBus) return;
+    const start = context.currentTime + 0.005;
+    const source = context.createBufferSource();
+    source.buffer = this.staticBuffer ??= this.createNoiseBuffer(1.2, "white");
+    const band = context.createBiquadFilter();
+    band.type = "bandpass";
+    band.Q.value = 1.4;
+    band.frequency.setValueAtTime(900, start);
+    band.frequency.exponentialRampToValueAtTime(3200, start + 0.18);
+    band.frequency.exponentialRampToValueAtTime(1500, start + 0.34);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.09, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.38);
+    source.connect(band).connect(gain).connect(this.musicBus);
+    source.start(start, Math.random() * 0.6);
+    source.stop(start + 0.42);
+  }
+
+  /** Beat position of the barge's music (0…4), for its lights; NaN when it is not heard. */
+  get partyBeat(): number {
+    return this.party?.playing ? this.party.beatPhase : Number.NaN;
+  }
+
+  /**
+   * The party barge `distance` metres away at `position`: its music carries
+   * over the water, muffled far off (only the kick and the bass), opening up
+   * and growing louder as the yacht comes closer.
+   */
+  setParty(distance: number, position: { x: number; y: number; z: number }): void {
+    this.partyDistance = distance;
+    this.partyPosition.x = position.x;
+    this.partyPosition.y = position.y;
+    this.partyPosition.z = position.z;
+  }
+
+  private staticBuffer?: AudioBuffer;
+  private hum?: { gain: GainNode; panner: PannerNode; oscillators: OscillatorNode[] };
+  private monolithDistance = Infinity;
+  private readonly monolithPosition = { x: 0, y: 0, z: 0 };
+
+  /** The monolith `distance` metres away: a low hum, felt more than heard, within a couple of hundred metres. */
+  setMonolith(distance: number, position: { x: number; y: number; z: number }): void {
+    this.monolithDistance = distance;
+    this.monolithPosition.x = position.x;
+    this.monolithPosition.y = position.y;
+    this.monolithPosition.z = position.z;
+  }
+
+  private updateHum(): void {
+    const context = this.context;
+    if (!context || !this.musicBus) return;
+    const level = this.enabled ? 0.11 * (1 - clamp((this.monolithDistance - 20) / 220, 0, 1)) : 0;
+    if (level <= 0 && !this.hum) return;
+    if (!this.hum) {
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      const panner = context.createPanner();
+      panner.panningModel = "equalpower";
+      panner.distanceModel = "linear";
+      panner.rolloffFactor = 0;
+      gain.connect(panner).connect(this.musicBus);
+      // Three tones a hair apart: a slow, shifting beat.
+      const oscillators = [55, 82.6, 110.35].map((frequency, index) => {
+        const oscillator = context.createOscillator();
+        oscillator.type = index === 1 ? "triangle" : "sine";
+        oscillator.frequency.value = frequency;
+        const partial = context.createGain();
+        partial.gain.value = [1, 0.35, 0.5][index]!;
+        oscillator.connect(partial).connect(gain);
+        oscillator.start();
+        return oscillator;
+      });
+      this.hum = { gain, panner, oscillators };
+    }
+    const now = context.currentTime;
+    this.hum.gain.gain.setTargetAtTime(level, now, 0.6);
+    const panner = this.hum.panner;
+    if (panner.positionX) {
+      panner.positionX.setTargetAtTime(this.monolithPosition.x, now, 0.1);
+      panner.positionY.setTargetAtTime(this.monolithPosition.y, now, 0.1);
+      panner.positionZ.setTargetAtTime(this.monolithPosition.z, now, 0.1);
+    }
+  }
+
+  private syncShanty(): void {
+    const context = this.context;
+    if (!context || !this.musicBus) return;
+    const play = this.shantyWanted && this.enabled && context.state === "running";
+    if (play) {
+      this.shanty ??= new ShantyBand(context, this.musicBus);
+      this.shanty.start(0.9);
+    } else {
+      this.shanty?.stop();
+    }
+  }
+
+  private updateParty(): void {
+    const context = this.context;
+    if (!context || !this.musicBus) return;
+    const audible = this.partyDistance < PARTY_RANGE && this.enabled;
+    if (!audible) {
+      this.party?.stop();
+      return;
+    }
+    if (!this.party) {
+      this.partyGain = context.createGain();
+      this.partyFilter = context.createBiquadFilter();
+      this.partyFilter.type = "lowpass";
+      this.partyFilter.Q.value = 0.9;
+      this.partyPanner = context.createPanner();
+      this.partyPanner.panningModel = "equalpower";
+      this.partyPanner.distanceModel = "linear";
+      this.partyPanner.rolloffFactor = 0;
+      this.partyFilter.connect(this.partyGain).connect(this.partyPanner).connect(this.musicBus);
+      this.party = new HouseGroove(context, this.partyFilter);
+    }
+    this.party.start(1);
+    const now = context.currentTime;
+    const distance = Math.max(4, this.partyDistance);
+    // Far off only the low end carries; alongside, the whole mix.
+    this.partyFilter!.frequency.setTargetAtTime(clamp(16000 * Math.pow(30 / distance, 1.35), 260, 16000), now, 0.4);
+    this.partyGain!.gain.setTargetAtTime(0.7 * Math.min(1, 26 / distance) * (1 - clamp((distance - PARTY_RANGE * 0.7) / (PARTY_RANGE * 0.3), 0, 1)), now, 0.4);
+    const panner = this.partyPanner!;
+    if (panner.positionX) {
+      panner.positionX.setTargetAtTime(this.partyPosition.x, now, 0.1);
+      panner.positionY.setTargetAtTime(this.partyPosition.y, now, 0.1);
+      panner.positionZ.setTargetAtTime(this.partyPosition.z, now, 0.1);
+    } else {
+      panner.setPosition(this.partyPosition.x, this.partyPosition.y, this.partyPosition.z);
+    }
+  }
+
+  /** Something picked up from the water. */
+  chime(): void {
+    if (this.isReady() && this.enabled) this.boat?.chime();
   }
 
   async resumeFromGesture(): Promise<boolean> {
@@ -240,6 +427,7 @@ export class AudioSystem {
     shaft: number,
     apparentWind: number,
     weather: AudioWeather = { overcast: 0, rain: 0, waves: 1 },
+    sailing: SailingSound = { luff: 0, trimRate: 0, gust: 0, gustApproaching: 0 },
   ): void {
     if (!this.context || this.context.state !== "running") return;
     this.updateElapsed += delta;
@@ -279,14 +467,28 @@ export class AudioSystem {
     const gale = clamp((apparentWind - 16) / 14, 0, 1);
     // The wind is a bed under the water and the boat, not the lead: it sits
     // about 9 dB below where it was (`WIND_LEVEL`).
-    this.windGain?.gain.setTargetAtTime((0.018 + breeze * 0.045 + overcast * 0.02 + gale * 0.1) * WIND_LEVEL, now, 1.4);
+    // A gust is heard coming over the water and swells the wind while it blows.
+    const swell = 1 + sailing.gust * 0.9 + sailing.gustApproaching * 0.45;
+    this.windGain?.gain.setTargetAtTime((0.018 + breeze * 0.045 + overcast * 0.02 + gale * 0.1) * WIND_LEVEL * swell, now, 0.9);
     this.windFilter?.frequency.setTargetAtTime(380 + breeze * 420 + overcast * 120 + gale * 520, now, 1.6);
-    this.rigGain?.gain.setTargetAtTime((Math.max(0, breeze - 0.7) * 0.012 + gale * 0.03) * WIND_LEVEL, now, 2);
     // Rain: a hiss on the sea and a patter on the deck.
     const rain = clamp(weather.rain, 0, 1);
     this.rainHissGain?.gain.setTargetAtTime(Math.pow(rain, 1.2) * 0.1, now, 0.9);
     this.rainPatterGain?.gain.setTargetAtTime(Math.pow(rain, 1.1) * 0.12, now, 0.9);
-    this.hullGain?.gain.setTargetAtTime(clamp(speed / 6, 0, 1) * 0.16, now, 0.25);
+    this.syncShanty();
+    this.updateParty();
+    this.updateHum();
+    // The yacht's own layers: slap at rest, the bow wave's rush, spray at
+    // speed, the rigging, the flogging sail, the winches (see BoatVoices).
+    this.boat?.update(step, {
+      knots: speed * 1.943844,
+      waves: weather.waves,
+      apparentWind: apparentWind * 1.943844,
+      gust: sailing.gust,
+      gustApproaching: sailing.gustApproaching,
+      luff: sailing.luff,
+      trimRate: sailing.trimRate,
+    });
   }
 
   /**
@@ -715,6 +917,8 @@ export class AudioSystem {
     this.engineKnock?.stop();
     this.exhaustPulse?.stop();
     this.shipVoices.forEach((voice) => voice.beatRate.stop());
+    this.shanty?.dispose();
+    this.party?.dispose();
     this.shipVoices.length = 0;
     if (this.context && this.context.state !== "closed") void this.context.close();
   }
@@ -755,6 +959,13 @@ export class AudioSystem {
   private createGraph(): void {
     const AudioContextConstructor = window.AudioContext || (window as WebkitAudioWindow).webkitAudioContext;
     if (!AudioContextConstructor) throw new Error("Web Audio is unavailable in this browser.");
+    // Music voices belong to the old graph, if there was one.
+    this.shanty?.dispose();
+    this.party?.dispose();
+    this.shanty = undefined;
+    this.party = undefined;
+    this.hum?.oscillators.forEach((oscillator) => oscillator.stop());
+    this.hum = undefined;
     try {
       this.context = new AudioContextConstructor({ latencyHint: "interactive" });
     } catch {
@@ -838,40 +1049,13 @@ export class AudioSystem {
     windSoftener.frequency.value = 1400;
     this.windGain = this.context.createGain();
     this.windGain.gain.value = 0.02 * WIND_LEVEL;
-    // Slow gusts swell and ease the wind over several seconds.
-    const gust = this.context.createOscillator();
-    gust.frequency.value = 0.07;
-    const gustDepth = this.context.createGain();
-    gustDepth.gain.value = 0.008 * WIND_LEVEL;
-    gust.connect(gustDepth).connect(this.windGain.gain);
-    gust.start();
+    // Gusts are events (see WindMath.gustEvent): update() swells the wind.
     wind.connect(this.windFilter).connect(windSoftener).connect(this.windGain).connect(this.environmentBus);
     wind.start(0, 0.41);
-    // A faint whistle in the rigging, only in strong wind.
-    const rig = this.context.createBufferSource();
-    rig.buffer = this.createNoiseBuffer(3.3, "white");
-    rig.loop = true;
-    const rigFilter = this.context.createBiquadFilter();
-    rigFilter.type = "bandpass";
-    rigFilter.frequency.value = 980;
-    rigFilter.Q.value = 9;
-    this.rigGain = this.context.createGain();
-    this.rigGain.gain.value = 0;
-    rig.connect(rigFilter).connect(this.rigGain).connect(this.environmentBus);
-    rig.start(0, 0.9);
-
-    const hull = this.context.createBufferSource();
-    hull.buffer = this.createNoiseBuffer(3.7, "pink");
-    hull.loop = true;
-    hull.playbackRate.value = 1.22;
-    const hullFilter = this.context.createBiquadFilter();
-    hullFilter.type = "bandpass";
-    hullFilter.frequency.value = 620;
-    hullFilter.Q.value = 0.9;
-    this.hullGain = this.context.createGain();
-    this.hullGain.gain.value = 0;
-    hull.connect(hullFilter).connect(this.hullGain).connect(this.environmentBus);
-    hull.start(0, 1.13);
+    this.boat = new BoatVoices(this.context, this.environmentBus, (duration, color) => this.createNoiseBuffer(duration, color));
+    this.musicBus = this.context.createGain();
+    this.musicBus.gain.value = 0.8;
+    this.musicBus.connect(this.master);
     this.createShipVoices(this.context, this.environmentBus);
     this.setReady(this.context.state === "running");
   }

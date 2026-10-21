@@ -65,6 +65,9 @@ export class OceanSystem {
       uRain: { value: 0 },
       uBreaking: { value: 0 },
       uWindRipple: { value: 1 },
+      uGustPatch: { value: new THREE.Vector4(0, 0, 1, 0) },
+      uFlare: { value: new THREE.Vector4(0, 100, 0, 0) },
+      uFlareColor: { value: new THREE.Color(0, 0, 0) },
       uHaze: { value: 0 },
       uWakeMap: { value: null },
       uWakeArea: { value: new THREE.Vector3(0, 0, 1) },
@@ -197,6 +200,20 @@ export class OceanSystem {
     // so vertices never slide across the waves they are sampling.
     this.mesh.position.x = Math.round(focus.x / this.cellSize) * this.cellSize;
     this.mesh.position.z = Math.round(focus.z / this.cellSize) * this.cellSize;
+  }
+
+  /** Where a gust is darkening the sea: centre, radius and strength (0 none). */
+  setGustPatch(x: number, z: number, radius: number, strength: number): void {
+    (this.uniforms.uGustPatch.value as THREE.Vector4).set(x, z, Math.max(1, radius), strength);
+  }
+
+  /**
+   * A signal flare overhead: where it burns, how bright (0 none, already
+   * weighed against the light of the sky) and its colour (linear).
+   */
+  setFlare(x: number, y: number, z: number, light: number, r: number, g: number, b: number): void {
+    (this.uniforms.uFlare.value as THREE.Vector4).set(x, y, z, Math.max(0, light));
+    (this.uniforms.uFlareColor.value as THREE.Color).setRGB(r, g, b, THREE.LinearSRGBColorSpace);
   }
 
   /** Water colours and light levels for the current time of day. */
