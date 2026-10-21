@@ -47,6 +47,12 @@ const MAX_RELEASE_CLEARANCE = 34;
 const BACKING_START = 2.5;
 const BACKING_END = 9;
 const SWEEP_STEP = 1.25;
+/**
+ * A manoeuvre that has crept along the beach this long without turning out
+ * to sea is abandoned for the seaward turn (or a back-off): the yacht must
+ * never be held against a coast by her own guard.
+ */
+export const STALL_SECONDS = 5;
 
 /** Leading edges of the hull outline: [starboard, forward] in metres. */
 const BOW_EDGE: readonly (readonly [number, number])[] = [
@@ -73,6 +79,8 @@ export type ShoreGuardState = {
   sinceRelease: number;
   /** Open water the yacht must reach before the helm is handed back, metres. */
   releaseClearance: number;
+  /** Seconds the manoeuvre has made no headway out to sea (see `STALL_SECONDS`). */
+  stallTime: number;
   /** Commands actually given to the physics this step. */
   readonly output: SimulatorControls;
 };
@@ -89,6 +97,7 @@ export function createShoreGuard(): ShoreGuardState {
     backing: false,
     sinceRelease: Number.POSITIVE_INFINITY,
     releaseClearance: RELEASE_CLEARANCE,
+    stallTime: 0,
     output: { throttle: 0, rudder: 0, sailTrim: 1 },
   };
 }
@@ -227,10 +236,36 @@ export function updateShoreGuard(
     guard.engagedTime = 0;
     guard.backing = false;
     guard.turned = 0;
+    guard.stallTime = 0;
     guard.previousHeading = body.heading;
   }
 
   guard.engagedTime += delta;
+  // Which way round is the short way out to sea.
+  const offshoreNow = shore(body.position.x, body.position.z, coastNormal);
+  const seaSide = Math.sign(wrap(Math.atan2(coastNormal.x, coastNormal.z) - body.heading)) || guard.turnSide;
+  // The helmsman turning the short way out to sea is right: the guard turns
+  // with him instead of wrestling the wheel the long way round.
+  if (playerSide !== 0 && playerSide === seaSide && guard.turnSide !== playerSide) {
+    guard.turnSide = playerSide;
+    guard.turned = 0;
+    guard.stallTime = 0;
+    guard.escapeHeading = escapeOnSide(shore, body, playerSide, lookAhead).heading;
+  }
+  // Creeping along the beach without getting out: turn the short way out,
+  // and if that is already the way, back off first to make room.
+  const creeping = forwardSpeed < 1.6 && offshoreNow < guard.releaseClearance && Math.abs(wrap(guard.escapeHeading - body.heading)) > 0.45;
+  guard.stallTime = creeping ? guard.stallTime + delta : Math.max(0, guard.stallTime - delta * 2);
+  if (guard.stallTime > STALL_SECONDS) {
+    guard.stallTime = 0;
+    guard.turned = 0;
+    if (guard.turnSide !== seaSide) {
+      guard.turnSide = seaSide;
+      guard.escapeHeading = escapeOnSide(shore, body, seaSide, lookAhead).heading;
+    } else if (engineRunning) {
+      guard.backing = true;
+    }
+  }
   guard.turned += Math.abs(wrap(body.heading - guard.previousHeading));
   guard.previousHeading = body.heading;
   // Refresh the escape heading, always on the same side.

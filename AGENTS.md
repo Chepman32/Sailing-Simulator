@@ -20,7 +20,7 @@ The experience should communicate the following at a glance:
 - whales stay hidden at depth most of the time; a surfacing is a rare event in which only the back, the blowhole and, when lobtailing, the peduncle and flukes clear the water; a full breach happens only far from the yacht, every half a minute to a minute, by a separate distant whale;
 - dolphins leap only at real speed, in one continuous ballistic arc; sharks are mostly a dark shape below the surface;
 - mobile controls remain readable, reachable, and independent from camera gestures;
-- sound is a layered simulation channel that unlocks from a trusted browser gesture.
+- sound is a layered simulation channel that starts only when the player asks for it (the sound capsule or a sound button, inside that trusted gesture); clicks elsewhere, keys and the engine switch never start it (`AudioSystem.armed`), though once started any gesture may resume a context the browser suspended.
 
 Visual richness must not come at the expense of a stable frame rate. Medium mobile GPUs are an explicit target. Prefer perceptually useful detail over indiscriminate polygon count, texture resolution, draw calls, or particle count.
 
@@ -62,7 +62,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `app/page.tsx` | Top-level route; renders the simulator component |
 | `app/layout.tsx` | Document metadata and root layout |
 | `app/components/SailingSimulator.tsx` | Canvas lifecycle, responsive HUD, controls, settings, sound-unlock affordance, simulator bridge |
-| `app/components/SoundPrompt.tsx` | The “tap for sound” capsule and its dust animation into the corner sound button |
+| `app/components/SoundPrompt.tsx` | The “tap for sound” capsule and its fine-dust dissolve (canvas) into the corner sound button |
+| `app/components/dustMath.ts` | Pure dust model for that dissolve: 1.5 px grains, left-to-right release wave, drift and stream into the button, fade |
 | `app/components/i18n.ts` | Thirty language definitions, system-language resolution, aliases, RTL helpers |
 | `app/globals.css` | Full-screen layout, mobile breakpoints, safe areas, control sizing, UI states |
 | `app/chatgpt-auth.ts` | Sites/ChatGPT runtime integration; do not remove without understanding the host contract |
@@ -123,7 +124,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/vessel/HelmStation.ts` | Starboard aft helm: pedestal, leather-rimmed wheel, instrument pod with chart plotter, speed/depth and wind displays (one canvas atlas), compass, engine lever, guard rail, seat, winch |
 | `src/simulator/vessel/HelmInstruments.ts` | Pure helm numbers: chart projection and range, wind needle, engine revolutions, compass card, lever angle |
 | `src/simulator/vessel/YachtShading.ts` | Antifouling, boot stripe, wet band, non-skid deck, sail seams and translucency |
-| `src/simulator/vessel/ShoreGuard.ts` | Pure collision avoidance near islands and ships' hulls: look-ahead sweep of the hull, temporary helm override, hand-back |
+| `src/simulator/vessel/ShoreGuard.ts` | Pure collision avoidance near islands and ships' hulls: look-ahead sweep of the hull, temporary helm override, hand-back; turns with a helmsman who steers the short way out to sea, and abandons a manoeuvre that has crept along the beach for `STALL_SECONDS` (seaward turn, else back off) so the yacht is never held against a coast |
 | `src/simulator/vessel/ShoreContact.ts` | Pure hull-outline shore cushion and impulse contact (physical backstop behind the guard) |
 | `src/simulator/vessel/VesselPhysics.ts` | Engines, sails, windage, hull and keel hydrodynamics, rudders, seakeeping, grounding |
 | `src/simulator/vessel/SailAerodynamics.ts` | Pure sail lift/drag polar and automatic sheeting |
@@ -327,7 +328,7 @@ Passing ships add their wakes to the same surface (`ShipMath`, uniforms `uShipPo
 - colours the water body from the island bathymetry: deep blue offshore, turquoise over the shelf, sand showing through at the beach; the shaders evaluate only the eight islands nearest the yacht (`ISLAND_SLOTS`, uniforms `uIslandShape`/`uIslandFrame`, refreshed every frame by `IslandSystem.update`), and only measure the irregular coast within 60 m of it;
 - scatters sunlight forward through wave crests;
 - breaks whitecaps on the steepest crests inside gusts;
-- draws the surf from `SurfMath`: each wave steepens on the shelf (its face tilts the normal along the shore normal), breaks into a bore of white water and runs in; every wave has its own strength and run-up, and the timing drifts along the coast. The breaking line is ragged (the shore distance is jittered by noise away from the beach, where the swash must still meet the island's wet sand), and the white water is a cellular lace (`foamLace`, Worley F2 − F1: bubble strands around dark holes), nearly solid in the bore and opening into strands in the foam it leaves behind (`surfTrail`, shading only, no CPU twin), which thins out over the rest of the cycle;
+- draws the surf from `SurfMath`: each wave steepens on the shelf (its face tilts the normal along the shore normal), breaks into a bore of white water and runs in; every wave has its own strength and run-up, and the timing drifts along the coast. The breaking line is ragged (the shore distance is jittered by noise away from the beach, where the swash must still meet the island's wet sand), and the white water is marbled (`foamMarble`: ridges of domain-warped value noise that writhe slowly, never a cell pattern; `foamCover` thresholds it by cover), a solid bore whose edges fray into branching streaks, and streaks then flecks in the foam it leaves behind (`surfTrail`, shading only, no CPU twin), which thins out over the rest of the cycle;
 - samples the wake field (`WakeField`): its wave height bends the normal, its aerated band pales the water and damps the ripples, and its foam is broken into lace at pixel scale; the yacht's white water behind the transoms fades over a few seconds and lingers as a lace of bubbles a boat length or two astern (`WakeSystem`);
 - keeps a local contact shadow under both hulls;
 - is clear looking down (about 58 % see-through at the nadir, closing toward grazing angles), so what swims below shows its own colour, already veiled by `UnderwaterLight`;
@@ -423,7 +424,7 @@ A wildlife splash position must be an actual world-space water-contact position,
 
 ## 13. Islands and bathymetry
 
-The world is cut into `WORLD_CELL` (1.2 km) cells. `IslandMath.islandsInCell(column, row)` generates each cell deterministically from a hash of its coordinates: one primary island and, at random, one or two more — mostly cays and islets, some wooded islands, one in eight a large high island with ridged hills, forest and bare rock. Centres stay `cellMargin(reach)` from the cell edge, so islands of different cells never come closer than their shelves plus a channel; cell (0, 0) holds the three fixed home islands and keeps the start clear. Each definition provides a unique `id`, a `seed` (0…95) that replaces the old array index in the coastline noise and in the shaders' phases, centre, beach radius, elliptical Z scale, summit height and a two-lobed coastline bulge. `START_ISLANDS` is the stable list near the start used by tests. Caches are bounded and regenerate identically.
+The world is cut into `WORLD_CELL` (1.2 km) cells. `IslandMath.islandsInCell(column, row)` generates each cell deterministically from a hash of its coordinates: one primary island and, at random, one or two more — mostly cays and islets, some wooded islands, one in eight a large high island with ridged hills, forest and bare rock. Centres stay `cellMargin(reach)` from the cell edge, so islands of different cells never come closer than their shelves plus a channel; cell (0, 0) holds the three fixed home islands; the yacht starts (and resets) at `VesselPhysics.START_POSITION`, about 250 m off the nearest beach with the home islands ahead, and the camera snaps there (`CameraController.snap`). Each definition provides a unique `id`, a `seed` (0…95) that replaces the old array index in the coastline noise and in the shaders' phases, centre, beach radius, elliptical Z scale, summit height and a two-lobed coastline bulge. `START_ISLANDS` is the stable list near the start used by tests. Caches are bounded and regenerate identically.
 
 Coast queries (`distanceFromWaterline`, `nearestShore`) measure only the islands of the 3×3 cells around the point (`islandsAround`), so the answer is exact and a query touches a handful of islands. `IslandSystem` streams visuals: islands within `ISLAND_BUILD_RADIUS` are built (one per frame, nearest first), those beyond `ISLAND_RELEASE_RADIUS` are disposed; palms are merged per island and the palm shadow map is invalidated when the set changes. `IslandSystem.depthAt()` derives a shallow-water profile near each beach and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint, and direction back toward open water.
 
@@ -628,7 +629,7 @@ Browsers, especially iOS Safari and embedded web views, require a trusted gestur
 - supports `AudioContext` and `webkitAudioContext`;
 - retries construction without options on older WebKit;
 - releases a stuck resume lock after a short timeout;
-- shows a prominent localized “Tap for sound” capsule once the scene is ready while sound is enabled but the context is not running; after `SOUND_PROMPT_SECONDS` (or as soon as sound starts or it is tapped) the capsule crumbles into dust that streams into the permanent mute/unmute button at the start of the scene actions (top left), which glows as it arrives (`SoundPrompt`: fragments of the capsule animated with the Web Animations API; a plain fade with reduced motion);
+- shows a prominent localized “Tap for sound” capsule once the scene is ready while sound is enabled but the context is not running; after `SOUND_PROMPT_SECONDS` (or as soon as sound starts or it is tapped) the capsule dissolves into fine dust, as a deleted message does in a messenger, that streams into the permanent mute/unmute button at the start of the scene actions (top left), which glows as it arrives (`SoundPrompt`: the capsule painted onto a canvas and cut into 1.5 px grains by `dustMath`; a plain fade with reduced motion);
 - the corner button pulses while sound is enabled but still locked; one press unlocks and plays, the next mutes;
 - treats the sound-unlock capsule and the corner button as single touch targets and performs the complete enable/resume path on `pointerdown`, with `click` retained as the keyboard fallback;
 - tracks `statechange`, visibility, page hide/show, and focus;

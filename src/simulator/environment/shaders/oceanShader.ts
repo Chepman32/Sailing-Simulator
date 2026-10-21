@@ -308,26 +308,25 @@ export const oceanFragmentShader = /* glsl */ `
     lostVariance += 0.25 * strength * strength * (1.0 - resolved * resolved);
   }
 
-  // Foam lace: the distance to the nearest cell border of a jittered grid
-  // (Worley F2 − F1). Bubbles gather along the borders of the cells left by
-  // bursting larger bubbles, which is what makes foam a net with dark holes.
-  // Returns 1 on a strand, 0 in a hole; width is the strand half-width in cells.
-  float foamLace(vec2 p, float width) {
-    vec2 cell = floor(p);
-    vec2 local = p - cell;
-    float nearest = 8.0;
-    float second = 8.0;
-    for (int y = -1; y <= 1; y++) {
-      for (int x = -1; x <= 1; x++) {
-        vec2 offset = vec2(float(x), float(y));
-        vec2 id = cell + offset;
-        vec2 point = offset + vec2(skyHash(id), skyHash(id + 19.7)) * 0.9 + 0.05 - local;
-        float d = dot(point, point);
-        if (d < nearest) { second = nearest; nearest = d; }
-        else if (d < second) { second = d; }
-      }
-    }
-    return 1.0 - smoothstep(0.0, width, sqrt(second) - sqrt(nearest));
+  // Marbled foam: the filaments white water is drawn out into as it churns
+  // and drains. Ridges of domain-warped value noise give bubble streaks that
+  // branch, thin and merge organically (never a regular cell pattern), and
+  // the warp drifts with time, so the pattern slowly writhes. 0…1, 1 on a
+  // filament.
+  float foamMarble(vec2 p, float t) {
+    vec2 warp = vec2(skyNoise(p * 0.37 + vec2(t * 0.045, 3.1)), skyNoise(p * 0.37 + vec2(-1.7, t * 0.04))) - 0.5;
+    p += warp * 2.6;
+    float a = 1.0 - abs(skyNoise(p + vec2(t * 0.07, -t * 0.05)) * 2.0 - 1.0);
+    float b = 1.0 - abs(skyNoise(p * 2.3 + vec2(-t * 0.1, t * 0.06) + 5.3) * 2.0 - 1.0);
+    float c = skyNoise(p * 5.1 + vec2(t * 0.13, 1.9));
+    return clamp(a * a * 0.55 + b * b * 0.33 + c * 0.12, 0.0, 1.0);
+  }
+
+  // Foam of a given cover (0 none … 1 solid) on a marbled texture: thick
+  // foam is a sheet, thinning foam breaks into filaments, then into flecks.
+  float foamCover(float cover, float texture, float softness) {
+    float threshold = 1.0 - cover * 1.2;
+    return smoothstep(threshold, threshold + softness, texture);
   }
 
   // Waterplane of one hull: a fine entry at the bow, a transom at the stern.
@@ -674,8 +673,8 @@ ${detailCalls}
     // Breaking crests leave a net of bubbles down their backs, drawn out
     // along the wind, and the sea between them stays streaked with old foam.
     if (gale > 0.01) {
-      float galeLace = foamLace(windFrame * vec2(0.9, 3.4) + vec2(uTime * 0.06, 0.0), 0.34);
-      float galeFine = foamLace(windFrame * vec2(2.3, 8.5) - vec2(uTime * 0.1, 0.0), 0.36);
+      float galeLace = foamMarble(windFrame * vec2(0.45, 1.7) + vec2(uTime * 0.06, 0.0), uTime);
+      float galeFine = foamMarble(windFrame * vec2(1.2, 4.4) - vec2(uTime * 0.1, 0.0), uTime * 1.3);
       float slopeFoam = smoothstep(0.3, 0.85, breaking + crest * 0.3);
       // Fine lace fades into a smooth sheet with distance, so it never moirés.
       float laceFade = 1.0 - smoothstep(60.0, 260.0, distance(vWorldPosition.xz, cameraPosition.xz));
@@ -712,21 +711,21 @@ ${detailCalls}
     lace = mix(0.5, lace, laceResolved);
     float wakeCover = smoothstep(0.22, 1.0, wakeFoam * (0.1 + lace * 1.2) * (0.4 + patches * 1.2));
     foam = max(foam, min(wakeCover, 0.96));
-    // Breakers. Real white water is not a white sheet: it is a network of
-    // bubble strands around dark holes (a cellular lace), dense and nearly
-    // solid in the bore itself, opening up into strands and then scattered
-    // flecks in the foam the wave leaves behind.
+    // Breakers. White water is not a flat sheet: the bore is solid and
+    // bright, its frayed edges and the foam it leaves behind are bubble
+    // streaks that branch and thin as the backwash drains them, and the last
+    // of it is a scatter of flecks. The streaks writhe slowly with the water.
     if (surfFoam + surfTrailFoam > 0.01) {
-      float strands = foamLace(vWorldPosition.xz * 0.95 + vec2(uTime * 0.06, uTime * 0.04), 0.2);
-      float fineStrands = foamLace(mat2(0.6, 0.8, -0.8, 0.6) * vWorldPosition.xz * 2.7 - vec2(uTime * 0.11, 0.0), 0.22);
-      float web = mix(0.5, max(strands, fineStrands * 0.85), laceResolved);
-      float body = surfFoam * (0.55 + patches * 0.6);
-      // The bore: solid where it is thick, strands toward its frayed edges.
-      float bore = smoothstep(0.45, 0.85, body) + smoothstep(0.1, 0.5, body) * web;
-      // Behind it: strands only, thinning out as the trail fades.
-      float trail = smoothstep(0.08, 0.55, surfTrailFoam * (0.4 + patches * 0.9)) * web;
-      trail = max(trail, smoothstep(0.75, 0.98, web) * smoothstep(0.02, 0.2, surfTrailFoam) * 0.6);
-      foam = max(foam, min(max(bore, trail), 0.97));
+      float marble = foamMarble(vWorldPosition.xz * 0.75, uTime);
+      float fineMarble = foamMarble(mat2(0.6, 0.8, -0.8, 0.6) * vWorldPosition.xz * 2.2 + 11.0, uTime * 1.4);
+      float streaky = mix(0.5, marble * 0.62 + fineMarble * 0.38, laceResolved);
+      float body = surfFoam * (0.62 + patches * 0.5);
+      float bore = foamCover(body, streaky, 0.16);
+      float trail = foamCover(surfTrailFoam * (0.45 + patches * 0.7) * 0.85, streaky, 0.12) * 0.9;
+      // Bubbles: the white is never perfectly even.
+      float speck = skyNoise(vWorldPosition.xz * 9.0 + vec2(uTime * 0.3, -uTime * 0.2));
+      float surfWhite = max(bore, trail) * mix(1.0, 0.86 + speck * 0.14, laceResolved);
+      foam = max(foam, min(surfWhite, 0.97));
     }
     // Shallow water over sand is clearer, and churned by the surf.
     float shallowFoam = (1.0 - smoothstep(0.0, 1.2, shore)) * smoothstep(0.45, 0.8, lace) * 0.25;

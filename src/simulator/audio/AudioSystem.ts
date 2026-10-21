@@ -107,6 +107,13 @@ export class AudioSystem {
   private listenerZ = 0;
   private resumePromise?: Promise<boolean>;
   private ready = false;
+  /**
+   * Sound starts only when the player asks for it (the sound prompt or the
+   * sound button). Until then clicks, keys and the engine switch leave the
+   * audio graph alone; afterwards any gesture may resume a context the
+   * browser suspended (a hidden tab, an iOS interruption).
+   */
+  private armed = false;
   private enabled = true;
   private muteTimer: number | undefined;
   private engineRunning = false;
@@ -145,8 +152,19 @@ export class AudioSystem {
     return this.ready && this.context?.state === "running";
   }
 
+  /** The player's own request for sound: arms the graph and starts it inside the gesture. */
+  startFromUser(): Promise<boolean> {
+    this.armed = true;
+    return this.resumeFromGesture();
+  }
+
+  /** Whether the player has asked for sound in this page. */
+  get isArmed(): boolean {
+    return this.armed;
+  }
+
   async resumeFromGesture(): Promise<boolean> {
-    if (!this.enabled || document.hidden) return false;
+    if (!this.armed || !this.enabled || document.hidden) return false;
     if (!this.context || this.context.state === "closed") {
       try {
         this.createGraph();

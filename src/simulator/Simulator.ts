@@ -336,8 +336,14 @@ export class Simulator {
     this.hud.emit(this.snapshot());
   }
 
+  /** Resumes sound the player has already started (no-op before that). */
   resumeAudioFromGesture(): void {
     void this.audio?.resumeFromGesture();
+  }
+
+  /** The player asked for sound: start it inside this gesture. */
+  startAudioFromUser(): void {
+    void this.audio?.startFromUser();
   }
 
   setEngineMuted(muted: boolean): void {
@@ -364,6 +370,7 @@ export class Simulator {
     this.state.controls.throttle = 0;
     this.state.controls.rudder = 0;
     this.camera.recenter();
+    this.camera.snap();
     this.hud.emit(this.snapshot());
   }
 

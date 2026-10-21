@@ -261,7 +261,7 @@ Master → Compressor → destination
 app/
   page.tsx, layout.tsx            маршрут, метаданные, PWA
   components/SailingSimulator.tsx мост к симулятору, HUD, панели, плашки, фото-режим
-  components/SoundPrompt.tsx      капсула «нажмите для звука» и её анимация
+  components/SoundPrompt.tsx      капсула «нажмите для звука» и её рассыпание в мелкую пыль (dustMath.ts)
   components/i18n.ts              30 языков, определение языка системы, RTL
   globals.css                     раскладка, брейкпоинты, safe-area, состояния
 src/simulator/

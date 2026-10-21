@@ -61,3 +61,49 @@ test("a yacht lying against a ship's side gets away", () => {
   for (let step = 0; step < 40 * 60; step += 1) physics.fixedUpdate(1 / 60, controls, true);
   assert.ok(shipHullDistance(ship, physics.position.x, physics.position.z) > 8, "she is off the hull");
 });
+
+import { createShoreGuard, STALL_SECONDS, updateShoreGuard } from "../../src/simulator/vessel/ShoreGuard";
+import { START_POSITION } from "../../src/simulator/vessel/VesselPhysics";
+import { shoreClearance } from "../../src/simulator/environment/IslandMath";
+
+// A straight coast along z: the beach is x < 0, the open sea +x.
+const straightCoast = (x: number, _z: number, normal: { x: number; z: number }): number => {
+  normal.x = 1;
+  normal.z = 0;
+  return x;
+};
+
+test("the shore guard turns the short way out to sea when the helmsman does", () => {
+  const guard = createShoreGuard();
+  // Close in, bow angled at the beach, the guard committed to the long way round.
+  const body = { position: { x: 8, z: 0 }, velocity: { x: -1.2, z: -0.4 }, heading: -1.3, yawRate: 0 };
+  updateShoreGuard(guard, body, { throttle: 1, rudder: 0, sailTrim: 1 }, true, straightCoast, 1 / 60);
+  assert.ok(guard.active, "the guard should take the helm this close");
+  guard.turnSide = -1;
+  // Seaward (+x) is a turn to starboard from here; the helmsman asks for it.
+  updateShoreGuard(guard, body, { throttle: 1, rudder: 1, sailTrim: 1 }, true, straightCoast, 1 / 60);
+  assert.equal(guard.turnSide, 1);
+});
+
+test("a guard manoeuvre that makes no way out to sea gives up the long turn", () => {
+  const guard = createShoreGuard();
+  const body = { position: { x: 8, z: 0 }, velocity: { x: -0.3, z: -0.2 }, heading: -1.3, yawRate: 0 };
+  updateShoreGuard(guard, body, { throttle: 0.4, rudder: 0, sailTrim: 1 }, true, straightCoast, 1 / 60);
+  assert.ok(guard.active);
+  guard.turnSide = -1;
+  // Held in place (as against a beach), the player not steering.
+  for (let step = 0; step < (STALL_SECONDS + 1) * 60; step += 1) {
+    updateShoreGuard(guard, body, { throttle: 0.4, rudder: 0, sailTrim: 1 }, true, straightCoast, 1 / 60);
+    if (!guard.active) break;
+  }
+  assert.ok(guard.turnSide === 1 || guard.backing, "the guard must change its plan, not creep along the beach");
+});
+
+test("the yacht starts in open water with the islands ahead", () => {
+  const normal = { x: 0, z: 1 };
+  assert.ok(shoreClearance(START_POSITION.x, START_POSITION.z, normal) > 200, "too close to a beach at the start");
+  // Heading 0 (+z): an island within sight ahead.
+  let ahead = Infinity;
+  for (let run = 0; run < 900; run += 10) ahead = Math.min(ahead, shoreClearance(START_POSITION.x, START_POSITION.z + run, normal));
+  assert.ok(ahead < 60, "no island ahead of the start");
+});

@@ -163,8 +163,14 @@ export function propellerThrust(shaft: number, forwardSpeed: number): number {
   return direction * bollard * shaft * shaft * (1 - 0.6 * advance);
 }
 
+/**
+ * Where the yacht starts (and returns to on reset): open water south of the
+ * home islands, about 250 m off the nearest beach, with the archipelago ahead.
+ */
+export const START_POSITION = { x: 0, z: -330 } as const;
+
 export class VesselPhysics {
-  readonly position = new THREE.Vector3(0, FLOAT_HEIGHT, 0);
+  readonly position = new THREE.Vector3(START_POSITION.x, FLOAT_HEIGHT, START_POSITION.z);
   readonly velocity = new THREE.Vector3();
   readonly forward = new THREE.Vector3(0, 0, 1);
   readonly right = new THREE.Vector3(1, 0, 0);
@@ -426,7 +432,7 @@ export class VesselPhysics {
 
   reset(): void {
     this.blended = false;
-    this.position.set(0, FLOAT_HEIGHT, 0);
+    this.position.set(START_POSITION.x, FLOAT_HEIGHT, START_POSITION.z);
     this.velocity.set(0, 0, 0);
     this.heading = 0;
     this.yawRate = 0;

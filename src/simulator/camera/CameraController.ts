@@ -82,6 +82,17 @@ export class CameraController {
     camera.updateProjectionMatrix();
   }
 
+  /** Jumps to the boat on the next update instead of easing there (a new start, a reset). */
+  snap(): void {
+    this.snapNext = true;
+  }
+
+  private snapNext = true;
+
+  private follow(rate: number, delta: number): number {
+    return this.snapNext ? 1 : 1 - Math.exp(-rate * delta);
+  }
+
   recenter(): void {
     this.yawOffset = 0;
     this.pitch = this.mode === "helm" ? 0.1 : this.mode === "drone" ? 0.58 : this.mode === "orbit" ? 0.24 : 0.1;
@@ -108,14 +119,15 @@ export class CameraController {
       this.camera.fov = damp(this.camera.fov, 66, 2.6, delta);
       this.camera.near = NEAR_PLANE_CLOSE;
       this.camera.updateProjectionMatrix();
+      this.snapNext = false;
       return;
     }
     if (this.mode === "helm") {
       this.desiredPosition.copy(focus).addScaledVector(physics.forward, -3.1).setY(focus.y + 2.85);
       this.viewDirection.set(horizontalDirectionX, Math.sin(-this.pitch), horizontalDirectionZ).normalize();
       this.lookTarget.copy(this.desiredPosition).addScaledVector(this.viewDirection, 18);
-      this.camera.position.lerp(this.desiredPosition, 1 - Math.exp(-12 * delta));
-      this.smoothedTarget.lerp(this.lookTarget, 1 - Math.exp(-10 * delta));
+      this.camera.position.lerp(this.desiredPosition, this.follow(12, delta));
+      this.smoothedTarget.lerp(this.lookTarget, this.follow(10, delta));
     } else {
       const portraitFraming =
         this.camera.aspect < 0.78 && this.mode !== "drone"
@@ -132,17 +144,18 @@ export class CameraController {
       const waterHeight = this.ocean.sample(this.desiredPosition.x, this.desiredPosition.z).height;
       this.desiredPosition.y = Math.max(this.desiredPosition.y, waterHeight + 0.65);
       const spring = this.mode === "chase" ? 4.8 : 3.1;
-      this.camera.position.lerp(this.desiredPosition, 1 - Math.exp(-spring * delta));
+      this.camera.position.lerp(this.desiredPosition, this.follow(spring, delta));
       this.lookTarget.copy(focus).addScaledVector(physics.forward, Math.min(5, Math.abs(physics.telemetry.forwardSpeed) * 0.7));
       this.lookTarget.y += 1.35;
       this.lookTarget.y += clamp(-this.pitch - 0.02, 0, 0.22) * distance * 0.9;
-      this.smoothedTarget.lerp(this.lookTarget, 1 - Math.exp(-5.5 * delta));
+      this.smoothedTarget.lerp(this.lookTarget, this.follow(5.5, delta));
     }
     this.camera.lookAt(this.smoothedTarget);
     const targetFov = this.mode === "helm" ? 64 : 50 + Math.min(9, Math.abs(physics.telemetry.forwardSpeed) * 1.15);
     this.camera.fov = damp(this.camera.fov, targetFov, 2.6, delta);
     this.camera.near = NEAR_PLANE_OUTSIDE;
     this.camera.updateProjectionMatrix();
+    this.snapNext = false;
   }
 
   resize(width: number, height: number): void {

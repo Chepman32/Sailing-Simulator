@@ -1,27 +1,22 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { createDust, grainLook, stepDust } from "./dustMath";
 
 /**
  * The "tap for sound" prompt, and how it leaves.
  *
  * It appears in the middle of the screen when the scene is ready and sound is
- * on but the browser has not let it play yet. After a short while (or as soon
- * as sound starts or the player taps it) it crumbles like dust: the pill is
- * cut into fragments that peel away from left to right, drift and swirl, and
- * stream into the sound button in the top-left corner, which then pulses.
- * The button stays as the permanent mute/unmute control.
- *
- * The effect is plain DOM: each fragment is a copy of the pill clipped to its
- * own cell, animated with the Web Animations API; nothing is rasterised and
- * nothing is left behind. With reduced motion the pill simply fades.
+ * on but the player has not started it yet. After a short while (or as soon
+ * as sound starts or the player taps it) it dissolves into fine dust, the way
+ * a deleted message does in a messenger: the pill is painted onto a canvas,
+ * cut into grains a pixel or two across (`dustMath`), and a wave releases
+ * them left to right; they lift, drift and stream into the sound button in
+ * the corner, which then pulses. With reduced motion the pill simply fades.
  */
 
-/** Seconds the prompt waits before crumbling into the corner button. */
+/** Seconds the prompt waits before dissolving into the corner button. */
 export const SOUND_PROMPT_SECONDS = 2.6;
-
-const COLUMNS = 24;
-const ROWS = 5;
 
 type Phase = "visible" | "snapping" | "gone";
 
@@ -32,18 +27,81 @@ type Props = {
   targetRef: RefObject<HTMLElement | null>;
   label: string;
   onUnlock: () => void;
-  /** Called when the last fragment has arrived. */
+  /** Called when the last grain has arrived. */
   onArrived: () => void;
 };
+
+type Snapshot = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  /** The pill as pixels, at the device pixel ratio. */
+  picture: HTMLCanvasElement;
+  ratio: number;
+};
+
+/** Paints the pill as it looks on screen (see `.audio-unlock` in globals.css). */
+function paintPill(pill: HTMLElement): Snapshot | null {
+  const rect = pill.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return null;
+  const ratio = Math.min(3, window.devicePixelRatio || 1);
+  const picture = document.createElement("canvas");
+  picture.width = Math.ceil(rect.width * ratio);
+  picture.height = Math.ceil(rect.height * ratio);
+  const context = picture.getContext("2d");
+  if (!context) return null;
+  context.scale(ratio, ratio);
+  const style = getComputedStyle(pill);
+  const radius = Math.min(rect.height / 2, parseFloat(style.borderTopLeftRadius) || rect.height / 2);
+  const gradient = context.createLinearGradient(0, 0, rect.width, rect.height);
+  gradient.addColorStop(0, "#82fff0");
+  gradient.addColorStop(1, "#57d7d0");
+  context.beginPath();
+  context.roundRect(0.5, 0.5, rect.width - 1, rect.height - 1, radius);
+  context.fillStyle = gradient;
+  context.fill();
+  context.strokeStyle = style.borderTopColor;
+  context.lineWidth = 1;
+  context.stroke();
+  const icon = pill.querySelector("span");
+  if (icon) {
+    const box = icon.getBoundingClientRect();
+    const iconStyle = getComputedStyle(icon);
+    const cx = box.left - rect.left + box.width / 2;
+    const cy = box.top - rect.top + box.height / 2;
+    context.beginPath();
+    context.arc(cx, cy, box.width / 2, 0, Math.PI * 2);
+    context.fillStyle = iconStyle.backgroundColor;
+    context.fill();
+    context.font = `${iconStyle.fontWeight} ${iconStyle.fontSize} ${iconStyle.fontFamily}`;
+    context.fillStyle = iconStyle.color;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(icon.textContent ?? "", cx, cy + 1);
+  }
+  const text = pill.querySelector("strong");
+  if (text) {
+    const box = text.getBoundingClientRect();
+    const textStyle = getComputedStyle(text);
+    context.font = `${textStyle.fontWeight} ${textStyle.fontSize} ${textStyle.fontFamily}`;
+    context.fillStyle = textStyle.color;
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    if ("letterSpacing" in context) (context as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = textStyle.letterSpacing;
+    context.fillText(text.textContent ?? "", box.left - rect.left, box.top - rect.top + box.height / 2);
+  }
+  return { left: rect.left, top: rect.top, width: rect.width, height: rect.height, picture, ratio };
+}
 
 export function SoundPrompt({ active, targetRef, label, onUnlock, onArrived }: Props) {
   const [phase, setPhase] = useState<Phase>(active ? "visible" : "gone");
   const pillRef = useRef<HTMLButtonElement>(null);
-  const layerRef = useRef<HTMLDivElement>(null);
-  const [frame, setFrame] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const shown = useRef(false);
 
-  // First offer: show, then crumble after a moment whatever happens.
+  // First offer: show, then dissolve after a moment whatever happens.
   useEffect(() => {
     if (!active || shown.current) return;
     shown.current = true;
@@ -57,119 +115,108 @@ export function SoundPrompt({ active, targetRef, label, onUnlock, onArrived }: P
     if (!active && phase === "visible") setPhase("snapping");
   }, [active, phase]);
 
-  // Measure the pill just before it is replaced by its fragments.
+  // Photograph the pill just before it is replaced by its dust.
   useLayoutEffect(() => {
-    if (phase !== "snapping" || frame) return;
+    if (phase !== "snapping" || snapshot) return;
     const pill = pillRef.current;
-    if (!pill) {
-      setPhase("gone");
-      return;
-    }
-    const rect = pill.getBoundingClientRect();
-    setFrame({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-  }, [phase, frame]);
-
-  // Animate the fragments into the corner button.
-  useLayoutEffect(() => {
-    if (phase !== "snapping" || !frame) return;
-    const layer = layerRef.current;
-    const target = targetRef.current?.getBoundingClientRect();
-    if (!layer) return;
-    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    const targetX = target ? target.left + target.width / 2 : 24;
-    const targetY = target ? target.top + target.height / 2 : 24;
-    const fragments = Array.from(layer.children) as HTMLElement[];
-    const animations: Animation[] = [];
-    const cellWidth = frame.width / COLUMNS;
-    const cellHeight = frame.height / ROWS;
-    fragments.forEach((fragment, index) => {
-      const column = index % COLUMNS;
-      const row = Math.floor(index / COLUMNS);
-      const centreX = frame.left + (column + 0.5) * cellWidth;
-      const centreY = frame.top + (row + 0.5) * cellHeight;
-      const toX = targetX - centreX;
-      const toY = targetY - centreY;
-      if (reduced) {
-        animations.push(fragment.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 260, fill: "forwards" }));
-        return;
-      }
-      // Dust peels away from the right first, as the snap sweeps across,
-      // lifts and scatters, then is drawn in a curve into the button.
-      const sweep = (1 - column / COLUMNS) * 520 + Math.random() * 220 + row * 30;
-      const scatterX = 18 + Math.random() * 46;
-      const scatterY = -16 - Math.random() * 42 + (row - ROWS / 2) * 6;
-      const spin = (Math.random() - 0.5) * 140;
-      const swirlX = toX * 0.45 + (Math.random() - 0.5) * 60;
-      const swirlY = toY * 0.35 - 30 - Math.random() * 40;
-      animations.push(
-        fragment.animate(
-          [
-            { transform: "translate(0px, 0px) rotate(0deg) scale(1)", opacity: 1, filter: "blur(0px)", offset: 0 },
-            {
-              transform: `translate(${scatterX}px, ${scatterY}px) rotate(${spin * 0.4}deg) scale(0.85)`,
-              opacity: 0.9,
-              filter: "blur(0.6px)",
-              offset: 0.3,
-            },
-            {
-              transform: `translate(${swirlX}px, ${swirlY}px) rotate(${spin}deg) scale(0.5)`,
-              opacity: 0.75,
-              filter: "blur(1.2px)",
-              offset: 0.65,
-            },
-            { transform: `translate(${toX}px, ${toY}px) rotate(${spin * 1.4}deg) scale(0.12)`, opacity: 0, filter: "blur(2px)", offset: 1 },
-          ],
-          { duration: 1050 + Math.random() * 300, delay: sweep, easing: "cubic-bezier(0.45, 0.05, 0.35, 1)", fill: "forwards" },
-        ),
-      );
-    });
-    let cancelled = false;
-    void Promise.all(animations.map((animation) => animation.finished.catch(() => undefined))).then(() => {
-      if (cancelled) return;
+    const picture = pill ? paintPill(pill) : null;
+    if (!picture) {
       setPhase("gone");
       onArrived();
+      return;
+    }
+    setSnapshot(picture);
+  }, [phase, snapshot, onArrived]);
+
+  // Release the dust and let it stream into the corner button.
+  useEffect(() => {
+    if (phase !== "snapping" || !snapshot) return;
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    if (!canvas || !context || reduced) {
+      const timer = window.setTimeout(() => {
+        setPhase("gone");
+        onArrived();
+      }, reduced ? 260 : 0);
+      return () => window.clearTimeout(timer);
+    }
+    const ratio = snapshot.ratio;
+    canvas.width = Math.ceil(window.innerWidth * ratio);
+    canvas.height = Math.ceil(window.innerHeight * ratio);
+    const pixels = snapshot.picture.getContext("2d")!.getImageData(0, 0, snapshot.picture.width, snapshot.picture.height);
+    const palette: string[] = [];
+    const paletteIndex = new Map<number, number>();
+    const dust = createDust(snapshot.left, snapshot.top, snapshot.width, snapshot.height, (x, y) => {
+      const px = Math.min(pixels.width - 1, Math.floor(x * ratio));
+      const py = Math.min(pixels.height - 1, Math.floor(y * ratio));
+      const offset = (py * pixels.width + px) * 4;
+      if (pixels.data[offset + 3]! < 90) return -1;
+      // Colours quantised to 5 bits a channel keep the palette small.
+      const key = ((pixels.data[offset]! >> 3) << 10) | ((pixels.data[offset + 1]! >> 3) << 5) | (pixels.data[offset + 2]! >> 3);
+      let index = paletteIndex.get(key);
+      if (index === undefined) {
+        index = palette.length;
+        paletteIndex.set(key, index);
+        palette.push(`rgb(${pixels.data[offset]},${pixels.data[offset + 1]},${pixels.data[offset + 2]})`);
+      }
+      return index;
     });
-    return () => {
-      cancelled = true;
-      animations.forEach((animation) => animation.cancel());
+    // Grains are drawn grouped by colour, so the fill colour changes rarely.
+    const order = Array.from({ length: dust.count }, (_, index) => index).sort((a, b) => dust.colour[a]! - dust.colour[b]!);
+    let frame = 0;
+    let last = performance.now();
+    let time = 0;
+    let finished = false;
+    const draw = (now: number) => {
+      const dt = (now - last) / 1000;
+      last = now;
+      time += dt;
+      const target = targetRef.current?.getBoundingClientRect();
+      const targetX = target ? target.left + target.width / 2 : 24;
+      const targetY = target ? target.top + target.height / 2 : 24;
+      const visible = stepDust(dust, dt, targetX, targetY, time);
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      let colour = -1;
+      for (const index of order) {
+        const age = dust.age[index]!;
+        const life = dust.life[index]!;
+        if (age >= life) continue;
+        const look = grainLook(age, life);
+        if (dust.colour[index] !== colour) {
+          colour = dust.colour[index]!;
+          context.fillStyle = palette[colour]!;
+        }
+        context.globalAlpha = look.alpha;
+        // Grains still in the picture overlap a hair, so it shows no seams before the wave reaches it.
+        const size = age < 0 ? dust.size + 0.6 : dust.size * look.scale;
+        context.fillRect(dust.x[index]!, dust.y[index]!, size, size);
+      }
+      context.globalAlpha = 1;
+      if (visible === 0) {
+        finished = true;
+        setPhase("gone");
+        onArrived();
+        return;
+      }
+      frame = requestAnimationFrame(draw);
     };
-  }, [phase, frame, targetRef, onArrived]);
+    frame = requestAnimationFrame(draw);
+    return () => {
+      cancelAnimationFrame(frame);
+      if (!finished) context.clearRect(0, 0, canvas.width, canvas.height);
+    };
+  }, [phase, snapshot, targetRef, onArrived]);
 
   if (phase === "gone") return null;
 
-  if (phase === "snapping" && frame) {
-    const cells = [];
-    for (let row = 0; row < ROWS; row += 1) {
-      for (let column = 0; column < COLUMNS; column += 1) {
-        const left = (column / COLUMNS) * 100;
-        const right = 100 - ((column + 1) / COLUMNS) * 100;
-        const top = (row / ROWS) * 100;
-        const bottom = 100 - ((row + 1) / ROWS) * 100;
-        cells.push(
-          <div
-            key={`${row}-${column}`}
-            className="audio-unlock audio-unlock-fragment"
-            aria-hidden="true"
-            style={{
-              left: frame.left,
-              top: frame.top,
-              width: frame.width,
-              height: frame.height,
-              // A hair of overlap so the cells read as one pill at the start.
-              clipPath: `inset(${Math.max(0, top - 0.6)}% ${Math.max(0, right - 0.6)}% ${Math.max(0, bottom - 0.6)}% ${Math.max(0, left - 0.6)}%)`,
-            }}
-          >
-            <span>♪</span>
-            <strong>{label}</strong>
-          </div>,
-        );
-      }
-    }
+  if (phase === "snapping" && snapshot) {
     return (
       <>
         {/* Keeps the pill's place, so the prompts below do not jump up under the dust. */}
-        <div aria-hidden="true" style={{ width: frame.width, height: frame.height, pointerEvents: "none" }} />
-        <div ref={layerRef} className="audio-unlock-dust">{cells}</div>
+        <div aria-hidden="true" style={{ width: snapshot.width, height: snapshot.height, pointerEvents: "none" }} />
+        <canvas ref={canvasRef} className="audio-unlock-dust" aria-hidden="true" />
       </>
     );
   }

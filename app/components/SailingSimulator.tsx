@@ -469,11 +469,12 @@ export function SailingSimulator() {
     const simulator = simulatorRef.current;
     if (!simulator) return;
     if (snapshot.soundEnabled && !soundReadyAtPress.current) {
-      simulator.resumeAudioFromGesture();
+      simulator.startAudioFromUser();
       showNotice(`${messages.sound}: ${messages.on}`);
       return;
     }
     simulator.setSoundEnabled(!snapshot.soundEnabled);
+    if (!snapshot.soundEnabled) simulator.startAudioFromUser();
     showNotice(`${messages.sound}: ${snapshot.soundEnabled ? messages.off : messages.on}`);
   };
 
@@ -484,7 +485,7 @@ export function SailingSimulator() {
     // AudioContext state change can remove this button before a later click is
     // dispatched, so click alone is not a reliable first-gesture handler.
     simulator.setSoundEnabled(true);
-    simulator.resumeAudioFromGesture();
+    simulator.startAudioFromUser();
   };
 
   const changeLanguage = (nextLanguage: LanguageCode) => {
@@ -742,7 +743,8 @@ export function SailingSimulator() {
                   aria-pressed={snapshot.soundEnabled && snapshot.audioReady}
                   onPointerDown={() => {
                     soundReadyAtPress.current = snapshot.audioReady;
-                    simulatorRef.current?.resumeAudioFromGesture();
+                    // This is the sound button: the press itself may start sound (iOS needs the pointer gesture).
+                    simulatorRef.current?.startAudioFromUser();
                   }}
                   onClick={toggleSound}
                 ><ControlIcon name={snapshot.soundEnabled && snapshot.audioReady ? "sound-on" : "sound-off"} /></button>
