@@ -128,6 +128,18 @@ export function strikeProximity(distance: number): number {
   return 1 / (1 + kilometres * kilometres * 0.9);
 }
 
+/**
+ * How brightly a strike lights the scene around the yacht, 0…1 of its own
+ * brightness. A bolt lights the whole cloud deck above it, and the deck lights
+ * the sea for kilometres: a strike two kilometres off still floods the scene
+ * almost as if overhead, one ten kilometres off is a flicker on the horizon.
+ */
+export function strikeSceneLight(distance: number): number {
+  const kilometres = Math.max(0, distance) / 1000;
+  const cloudDeck = 0.85 / (1 + (kilometres / 3.6) ** 2);
+  return Math.max(strikeProximity(distance), cloudDeck);
+}
+
 /** Seconds after the flash that the thunder arrives, or null if out of earshot. */
 export function thunderDelay(distance: number): number | null {
   return distance > THUNDER_RANGE ? null : Math.max(0, distance) / THUNDER_SPEED;

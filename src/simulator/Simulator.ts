@@ -5,6 +5,7 @@ import { AssetManager } from "./core/AssetManager";
 import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
 import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
+import { ShipShadows } from "./ships/ShipShadows";
 import { GpuTimer } from "./core/GpuTimer";
 import { GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
@@ -45,6 +46,11 @@ function isCoarseInputDevice(): boolean {
   return navigator.maxTouchPoints > 0 || window.matchMedia("(pointer: coarse)").matches;
 }
 
+/** Edge of the ships' shadow atlas for a preset (0: none). */
+function shipShadowSize(preset: string): number {
+  return preset === "low" ? 0 : 2048;
+}
+
 export class Simulator {
   private readonly scene = new THREE.Scene();
   private readonly renderer: THREE.WebGLRenderer;
@@ -68,6 +74,7 @@ export class Simulator {
   private wake!: WakeSystem;
   private wildlife!: WildlifeSystem;
   private ships!: ShipSystem;
+  private shipShadows?: ShipShadows;
   private readonly shipImpact = new THREE.Vector3();
   private readonly helmPoint = new THREE.Vector3();
   private readonly sampleSurface = (x: number, z: number) => this.ocean.sample(x, z);
@@ -162,6 +169,7 @@ export class Simulator {
         this.islands?.setDrawScale(preset === "low" ? 0.7 : 1);
         this.rain?.setDrops(this.quality.settings.rainDrops);
         this.post?.setQuality(this.quality.settings);
+        this.shipShadows?.setSize(shipShadowSize(preset));
         this.governor.reset();
         this.resize();
         this.reflection?.setScale(this.quality.settings.reflectionScale, this.renderer.domElement.width, this.renderer.domElement.height);
@@ -190,7 +198,16 @@ export class Simulator {
       this.islands.setDrawScale(this.quality.current === "low" ? 0.7 : 1);
       this.physics = new VesselPhysics(this.ocean, this.islands);
       // Merchant ships and liners passing at a distance, or lying at anchor.
-      this.ships = new ShipSystem(this.scene, this.underwater, distanceFromWaterline, Math.random, this.quality.current !== "low");
+      // The nearest ships cast their own sun shadows (a depth atlas; off on the low preset).
+      this.shipShadows = new ShipShadows(this.renderer, this.ocean.shipShadow, shipShadowSize(this.quality.current));
+      this.ships = new ShipSystem(
+        this.scene,
+        this.underwater,
+        distanceFromWaterline,
+        Math.random,
+        this.quality.current !== "low",
+        (material) => this.shipShadows?.patch(material),
+      );
       this.ships.prebuild();
       this.physics.hullClearance = this.ships.hullClearance;
       this.ocean.setShips(this.ships.ships);
@@ -384,6 +401,7 @@ export class Simulator {
     this.ships?.dispose();
     this.post?.dispose();
     this.reflection?.dispose();
+    this.shipShadows?.dispose();
     this.gpuTimer?.dispose();
     setShoalField(null);
     this.rain?.dispose(this.scene);
@@ -526,6 +544,7 @@ export class Simulator {
       if (gpuMs !== null) this.observeGpu(gpuMs);
       timer.begin();
     }
+    this.shipShadows?.render(this.scene, this.ships.ships, this.ships.roots, this.camera.camera.position, this.environment.lightDirection);
     this.renderReflection();
     this.post.render(this.frameDelta, this.elapsed);
     timer?.end();

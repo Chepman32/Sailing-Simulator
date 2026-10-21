@@ -5,6 +5,7 @@ import {
   createBoltShape,
   strikeLight,
   strikeProximity,
+  strikeSceneLight,
   strikesAround,
   type BoltShape,
   type Strike,
@@ -196,7 +197,7 @@ export class LightningSystem {
       }
       const light = strikeLight(strike, time - strike.start);
       const proximity = strikeProximity(strike.distance);
-      scene = Math.max(scene, light.brightness * proximity);
+      scene = Math.max(scene, light.brightness * strikeSceneLight(strike.distance));
       const sky = light.brightness * (0.3 + 0.7 * Math.sqrt(proximity));
       if (sky > best) {
         best = sky;

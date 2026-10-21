@@ -3,6 +3,7 @@ import { OCEAN_DETAIL_WAVES, OCEAN_WAVES, SURFACE_INVERSION_ITERATIONS } from ".
 import { SURFACE_IMPACT_GLSL } from "../SurfaceImpacts";
 import { BREAK_START, SURF_GLSL } from "../SurfMath";
 import { SHIP_WAKE_GLSL } from "../../ships/ShipMath";
+import { SHIP_SHADOW_GLSL } from "../../ships/ShipShadowMath";
 import { SKY_FUNCTIONS, SKY_UNIFORM_DECLARATIONS } from "./skyShader";
 
 /**
@@ -250,6 +251,7 @@ export const oceanFragmentShader = /* glsl */ `
   ${SURFACE_IMPACT_GLSL}
   ${SURF_GLSL}
   ${SHIP_WAKE_GLSL}
+  ${SHIP_SHADOW_GLSL}
 
   // Shared displacement spectrum, evaluated per pixel for a crisp normal.
   void swellWave(
@@ -564,6 +566,10 @@ ${detailCalls}
     }
 
     // --- Water body -------------------------------------------------------
+    // A big ship's shadow on the water takes the direct light off it: no
+    // glitter, a duller body, greyer foam (see ShipShadows).
+    float shipShade = uShipShadowCount > 0 ? shipShadowAt(vWorldPosition) : 1.0;
+    vec3 sunLit = uLightColor * shipShade;
     float shore = shoreHere.x;
     float depth = min(${glsl(OPEN_WATER_DEPTH)}, ${glsl(SHORE_DEPTH)} + max(shore, 0.0) * ${glsl(SHELF_SLOPE)});
     float shallow = exp(-depth * 0.2);
@@ -572,11 +578,14 @@ ${detailCalls}
     vec3 body = mix(uDeepColor, uShallowColor, clamp(shallow + (broad - 0.5) * 0.06, 0.0, 1.0));
     body = mix(body, uSandColor, bottom * 0.62);
     float lightFacing = max(dot(normal, uLightDirection), 0.0);
-    vec3 irradiance = uAmbientColor + uLightColor * (0.35 + 0.65 * lightFacing) * 0.2;
+    vec3 irradiance = uAmbientColor + sunLit * (0.35 + 0.65 * lightFacing) * 0.2;
     // Deep water sends back only a few percent of the light: from above, the
     // sky mirrored in the wavelets is several times brighter than the water
     // body, which is what draws the bright streaks over dark navy.
     body *= irradiance * 0.55;
+    // Most of the light deep water sends back is sunlight scattered inside
+    // it: in a ship's shadow the water is visibly darker, by day.
+    body *= mix(1.0, 0.5 + 0.5 * shipShade, clamp(dot(uLightColor, vec3(0.333)) * 1.2, 0.0, 1.0));
     // A gale's water is dark grey-green and opaque with churned air; thin
     // crests let the little light there is through as a bottle green.
     float gale = smoothstep(0.03, 0.3, uBreaking);
@@ -590,7 +599,7 @@ ${detailCalls}
     float crest = clamp(fold / max(uMaxFold, 1.0e-3), -1.0, 1.0);
     float throughWave = pow(max(dot(viewDirection, -normalize(uLightDirection + normal * 0.45)), 0.0), 3.0);
     float scatter = throughWave * smoothstep(-0.15, 0.85, crest) * (1.0 - nDotV * 0.6);
-    body += uScatterColor * uLightColor * scatter * 0.085;
+    body += uScatterColor * sunLit * scatter * 0.085;
     body += vec3(0.05, 0.13, 0.105) * skyLight * 1.6 * gale * smoothstep(0.3, 0.95, crest) * (0.4 + 0.6 * nDotV);
 
     // Shallow-water caustic shimmer on the sand.
@@ -598,7 +607,7 @@ ${detailCalls}
       float causticA = skyNoise(base * 0.9 + vec2(uTime * 0.31, uTime * 0.17));
       float causticB = skyNoise(base * 1.3 - vec2(uTime * 0.23, uTime * 0.29));
       float caustic = pow(1.0 - abs(causticA - causticB), 8.0);
-      body += uSandColor * uLightColor * caustic * bottom * 0.05;
+      body += uSandColor * sunLit * caustic * bottom * 0.05;
     }
 
     vec3 color = mix(body, reflection, clamp(fresnel, 0.0, 1.0));
@@ -620,7 +629,7 @@ ${detailCalls}
     float sheen = sheenAlpha2 / (OCEAN_PI * sheenDenominator * sheenDenominator) * specularFresnel * visibility * nDotL;
     // Under a storm's cloud the sun is only a pale patch: the glitter path fades.
     float sunVeil = 1.0 - 0.88 * gale;
-    color += uLightColor * (specular + min(sheen, 5.0) * 0.1) * sunVeil;
+    color += sunLit * (specular + min(sheen, 5.0) * 0.1) * sunVeil;
 
     // Sparkles: single capillary facets tilted just right flash brighter
     // than white, so bloom turns them into points of light.
@@ -633,7 +642,7 @@ ${detailCalls}
       float glint = smoothstep(0.9965, 0.9993, facetAlign) * smoothstep(0.52, 0.72, sparkleA * sparkleB * 1.9);
       // Below a pixel the flashes would only shimmer; let the GGX lobe carry them.
       glint *= (1.0 - smoothstep(0.12, 0.45, footprint)) * smoothstep(0.0, 0.08, nDotL);
-      color += uLightColor * glint * 7.0 * sunVeil;
+      color += sunLit * glint * 7.0 * sunVeil;
     }
 
     // --- Hulls -------------------------------------------------------------
@@ -731,7 +740,7 @@ ${detailCalls}
     float shallowFoam = (1.0 - smoothstep(0.0, 1.2, shore)) * smoothstep(0.45, 0.8, lace) * 0.25;
     foam = max(foam, shallowFoam);
 
-    vec3 foamColor = (uAmbientColor * 1.15 + uLightColor * (0.2 + 0.8 * nDotL) * 0.3) * vec3(0.94, 0.98, 1.0);
+    vec3 foamColor = (uAmbientColor * 1.15 + sunLit * (0.2 + 0.8 * nDotL) * 0.3) * vec3(0.94, 0.98, 1.0);
     color = mix(color, foamColor, foam);
     // Spray torn off the crests hangs as a pale veil over them.
     color = mix(color, foamColor * 0.92, gale * smoothstep(0.55, 1.0, crest) * 0.3 * (0.6 + 0.4 * foamTexture));

@@ -368,3 +368,61 @@ test("a sail of one triangle is cut into cloth-sized triangles with the same are
   }
   assert.ok(Math.abs(area - 16) < 1e-4, `area ${area}`);
 });
+
+import { pickShadowShips, SHIP_SHADOW_RANGE, SHIP_SHADOW_SLOTS, shadowAtlasMatrix, shadowSlotOrigin } from "../../src/simulator/ships/ShipShadowMath";
+
+test("the nearest ships in range get the shadow slots, nearest first", () => {
+  const ships = [
+    { active: true, x: 900, z: 0, halfLength: 150 },
+    { active: false, x: 10, z: 0, halfLength: 150 },
+    { active: true, x: 0, z: 300, halfLength: 100 },
+    { active: true, x: SHIP_SHADOW_RANGE + 800, z: 0, halfLength: 150 },
+    { active: true, x: -400, z: -400, halfLength: 160 },
+    { active: true, x: 0, z: -1500, halfLength: 160 },
+    { active: true, x: 1600, z: 0, halfLength: 160 },
+  ];
+  const picked = pickShadowShips(ships, 0, 0);
+  assert.equal(picked.length, SHIP_SHADOW_SLOTS);
+  assert.deepEqual(picked, [2, 4, 0, 5]);
+  assert.ok(!picked.includes(1) && !picked.includes(3));
+});
+
+test("each shadow slot maps its camera's view onto its own quarter of the atlas", () => {
+  for (let slot = 0; slot < SHIP_SHADOW_SLOTS; slot += 1) {
+    const [u, v] = shadowSlotOrigin(slot);
+    const matrix = shadowAtlasMatrix(slot);
+    const low = new THREE.Vector3(-1, -1, -1).applyMatrix4(matrix);
+    const high = new THREE.Vector3(1, 1, 1).applyMatrix4(matrix);
+    assert.ok(Math.abs(low.x - u) < 1e-9 && Math.abs(low.y - v) < 1e-9 && Math.abs(low.z) < 1e-9);
+    assert.ok(Math.abs(high.x - (u + 0.5)) < 1e-9 && Math.abs(high.y - (v + 0.5)) < 1e-9 && Math.abs(high.z - 1) < 1e-9);
+  }
+  const origins = new Set(Array.from({ length: SHIP_SHADOW_SLOTS }, (_, slot) => shadowSlotOrigin(slot).join(",")));
+  assert.equal(origins.size, SHIP_SHADOW_SLOTS, "slots must not overlap");
+});
+
+import { strikeProximity, strikeSceneLight } from "../../src/simulator/environment/LightningMath";
+import { LIGHTNING_COLOR, litByLightning } from "../../src/simulator/environment/EnvironmentPalette";
+
+test("lightning a few kilometres off still floods the scene; on the horizon it only flickers", () => {
+  assert.ok(strikeSceneLight(800) > 0.6);
+  assert.ok(strikeSceneLight(2500) > 0.5, "the lit cloud deck lights the sea for kilometres");
+  assert.ok(strikeSceneLight(2500) > strikeProximity(2500) * 2);
+  assert.ok(strikeSceneLight(12000) < 0.1);
+  for (let d = 0; d < 15000; d += 500) assert.ok(strikeSceneLight(d + 500) <= strikeSceneLight(d) + 1e-12);
+});
+
+test("a flash lights the ambient, the haze and the rain, and nothing without one", async () => {
+  const { deriveEnvironmentPalette } = await import("../../src/simulator/environment/EnvironmentPalette");
+  const { deriveTimeOfDay } = await import("../../src/simulator/environment/EnvironmentMath");
+  const { createWeather } = await import("../../src/simulator/environment/WeatherMath");
+  const palette = deriveEnvironmentPalette(deriveTimeOfDay(1, 0.5), createWeather("storm"));
+  assert.equal(litByLightning(palette, 0), palette);
+  const lit = litByLightning(palette, 1);
+  for (let channel = 0; channel < 3; channel += 1) {
+    assert.ok(lit.ambientColor[channel]! > palette.ambientColor[channel]! + LIGHTNING_COLOR[channel]! * 0.9);
+    assert.ok(lit.horizon[channel]! > palette.horizon[channel]!);
+    assert.ok(lit.rainLight[channel]! > palette.rainLight[channel]!);
+  }
+  // The water's own colours are untouched; the light on them changes.
+  assert.deepEqual(lit.deepWater, palette.deepWater);
+});

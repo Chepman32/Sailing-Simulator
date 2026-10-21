@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { batchStaticMeshes } from "../core/StaticBatching";
+import { SHIP_SHADOW_LAYER } from "./ShipShadows";
 import { SHIP_SPECS, type ShipKind } from "./ShipMath";
 import {
   bowYaw,
@@ -131,7 +132,10 @@ export class ShipModels {
     const { geometries } = batchStaticMeshes(root, kept, (mesh) => (mesh.material as THREE.Material).uuid, `ShipModel_${kind}`);
     geometries.forEach((geometry) => this.geometries.add(geometry));
     root.traverse((object) => {
-      if (object instanceof THREE.Mesh) this.geometries.add(object.geometry);
+      if (!(object instanceof THREE.Mesh)) return;
+      this.geometries.add(object.geometry);
+      // The merged meshes cast the ship's shadow (see ShipShadows).
+      object.layers.enable(SHIP_SHADOW_LAYER);
     });
     // Materials the batching released are no longer referenced.
     this.materials.forEach((material) => {

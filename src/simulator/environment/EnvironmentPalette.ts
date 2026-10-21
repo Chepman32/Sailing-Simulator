@@ -144,3 +144,30 @@ export function deriveEnvironmentPalette(state: TimeOfDayState, weather: Weather
     ],
   };
 }
+
+/** Colour of lightning light: a cold blue-white. */
+export const LIGHTNING_COLOR: Rgb = [0.78, 0.86, 1.0];
+
+/**
+ * The palette while a lightning flash lights the scene (`flash` about 0…1.6):
+ * the light from the cloud deck floods every horizontal surface (ambient),
+ * the haze and the rain, so sea, islands, ships and squalls all leap out of
+ * the dark for an instant. The sky is lit separately (`uFlash`).
+ */
+export function litByLightning(palette: EnvironmentPalette, flash: number): EnvironmentPalette {
+  const light = Math.max(0, flash);
+  if (light <= 0) return palette;
+  const add = (base: Rgb, amount: number): Rgb => [
+    base[0] + LIGHTNING_COLOR[0] * light * amount,
+    base[1] + LIGHTNING_COLOR[1] * light * amount,
+    base[2] + LIGHTNING_COLOR[2] * light * amount,
+  ];
+  return {
+    ...palette,
+    ambientColor: add(palette.ambientColor, 1.25),
+    horizon: add(palette.horizon, 0.45),
+    rainLight: add(palette.rainLight, 1.6),
+    cloudLit: add(palette.cloudLit, 0.5),
+    cloudShade: add(palette.cloudShade, 0.35),
+  };
+}

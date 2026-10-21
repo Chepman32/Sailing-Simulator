@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { LightingMode } from "../types";
 import { clamp } from "../math";
 import { CYCLE_DAY_START, CYCLE_NIGHT_START, dayCycleState, deriveTimeOfDay, type TimeOfDayState } from "./EnvironmentMath";
-import { deriveEnvironmentPalette, type EnvironmentPalette } from "./EnvironmentPalette";
+import { deriveEnvironmentPalette, LIGHTNING_COLOR, litByLightning, type EnvironmentPalette } from "./EnvironmentPalette";
 import type { OceanSystem } from "./OceanSystem";
 import { applySkyPalette, setLinearColor, type SkyUniforms } from "./SkyUniforms";
 import { skyFragmentShader, skyVertexShader } from "./shaders/skyShader";
@@ -43,6 +43,10 @@ export class EnvironmentSystem {
   private readonly lightningSystem: LightningSystem;
   private cloudClock = 0;
   private readonly flashColor = new THREE.Color();
+  private readonly keyDirection = new THREE.Vector3();
+  /** The palette without the lightning (for the sky and its captured light). */
+  private skyPalette!: EnvironmentPalette;
+  private readonly flashDirection = new THREE.Vector3(0, 1, 0);
   // Image-based lighting: the analytic sky is captured into a prefiltered
   // cube so PBR materials reflect and are lit by the sky that is on screen.
   private readonly pmrem: THREE.PMREMGenerator;
@@ -233,10 +237,14 @@ export class EnvironmentSystem {
     }
     if (camera instanceof THREE.PerspectiveCamera) {
       const light = this.lightningSystem.update(time, this.weather.storm, this.weather.haze, camera, this.renderer.domElement.height);
-      this.flash = light.scene;
+      // The eye holds a flash for a moment; a return stroke lasting a few
+      // milliseconds must not fall between two frames and be lost.
+      this.flash = Math.max(light.scene, this.flash * Math.exp(-delta / 0.08));
       this.skyUniforms.uFlash.value = light.sky;
       this.skyUniforms.uFlashFocus.value = light.focus;
       this.skyUniforms.uFlashDirection.value.copy(light.direction);
+      // The bolt lights the cloud deck above it: the light comes from high up.
+      this.flashDirection.set(light.direction.x * 0.6, Math.max(0.75, light.direction.y), light.direction.z * 0.6).normalize();
     }
     this.palette = deriveEnvironmentPalette(this.state, this.weather);
     const night = this.state.nightFactor;
@@ -263,10 +271,14 @@ export class EnvironmentSystem {
     }
 
     applySkyPalette(this.skyUniforms, palette, night);
+    // Everything else sees the flash: sea, islands, ships, rain and haze.
+    const lit = litByLightning(palette, this.flash);
+    this.skyPalette = palette;
+    this.palette = lit;
     // Clouds race across the sky in a gale.
     this.cloudClock += delta * this.weather.wind;
     this.skyUniforms.uCloudTime.value = this.cloudClock;
-    this.ocean.setEnvironment(palette);
+    this.ocean.setEnvironment(lit);
 
     if (camera) this.sky.position.copy(camera.position);
 
@@ -286,29 +298,37 @@ export class EnvironmentSystem {
     this.moonDisc.value.setRGB(1.12 * moonUp, 1.2 * moonUp, 1.34 * moonUp, THREE.LinearSRGBColorSpace);
     this.starLight.value = this.state.starVisibility;
 
-    this.sunLight.position.copy(focus).addScaledVector(this.celestialLightDirection, 60);
+    // A flash outshines the storm-dimmed sun: for that instant the key light
+    // swings toward the strike, high over the clouds, and its shadows with it.
+    // (The sun light is reused rather than a light added, so materials keep
+    // one directional light and nothing recompiles when a storm begins.)
+    const flashShare = clamp(this.flash * 1.6, 0, 1);
+    this.keyDirection.copy(this.celestialLightDirection).lerp(this.flashDirection, flashShare).normalize();
+    this.sunLight.position.copy(focus).addScaledVector(this.keyDirection, 60);
     this.sunLight.target.position.copy(focus);
     setLinearColor(this.sunLight.color, palette.lightColor);
     // Direct sun is several times the sky's light on a clear day; with a
     // weaker key the sky fill tints every white surface blue and flattens it.
     this.sunLight.intensity = 1.3;
-    // Lightning is a short, bluish-white light from above the clouds.
-    if (this.flash > 0.01) {
-      this.flashColor.setRGB(0.55 * this.flash, 0.65 * this.flash, 0.95 * this.flash, THREE.LinearSRGBColorSpace);
-      this.sunLight.color.add(this.flashColor.multiplyScalar(2.2));
+    // Lightning: a cold light from above the clouds, for an instant as
+    // bright as day, and the sky's own light (the environment) flares too.
+    if (this.flash > 0.005) {
+      this.flashColor.setRGB(LIGHTNING_COLOR[0], LIGHTNING_COLOR[1], LIGHTNING_COLOR[2], THREE.LinearSRGBColorSpace);
+      this.sunLight.color.add(this.flashColor.multiplyScalar(this.flash * 1.9));
     }
-    setLinearColor(this.hemisphere.color, palette.ambientColor);
+    this.scene.environmentIntensity = 0.5 + this.flash * 1.1;
+    setLinearColor(this.hemisphere.color, lit.ambientColor);
     this.hemisphere.groundColor.setRGB(
       palette.deepWater[0] * 2 + palette.ambientColor[0] * 0.12,
       palette.deepWater[1] * 2 + palette.ambientColor[1] * 0.12,
       palette.deepWater[2] * 2 + palette.ambientColor[2] * 0.12,
       THREE.LinearSRGBColorSpace,
     );
-    this.hemisphere.intensity = 0.3 + this.flash * 1.4;
+    this.hemisphere.intensity = 0.3 + this.flash * 1.2;
     // Storm light is dark; a little more exposure keeps the sea readable.
     this.renderer.toneMappingExposure = this.state.exposure * (1 + 0.16 * this.weather.storm);
 
-    setLinearColor(this.fogColor, palette.horizon);
+    setLinearColor(this.fogColor, lit.horizon);
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.color.copy(this.fogColor);
       this.scene.fog.density = (0.0008 + night * 0.0001) * (1 + this.weather.haze * 3.4);
@@ -362,7 +382,7 @@ export class EnvironmentSystem {
   }
 
   private captureLighting(night: number): void {
-    const palette = this.palette;
+    const palette = this.skyPalette ?? this.palette;
     this.captureBelowColor.setRGB(
       palette.deepWater[0] * (palette.ambientColor[0] + 0.25 * palette.lightColor[0]) + palette.horizon[0] * 0.08,
       palette.deepWater[1] * (palette.ambientColor[1] + 0.25 * palette.lightColor[1]) + palette.horizon[1] * 0.08,

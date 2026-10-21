@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { SHIP_SHADOW_LAYER } from "./ShipShadows";
 import { injectAfter, patchMaterialShader } from "../core/ShaderPatch";
 import type { OceanSample } from "../environment/OceanMath";
 import type { UnderwaterLight } from "../environment/UnderwaterLight";
@@ -114,6 +115,8 @@ export class ShipSystem {
     random: () => number = Math.random,
     /** Whether to fetch the imported ship models (about 20 MB; off on the low preset). */
     loadModels = true,
+    /** Extra shading for every ship material (the ships' own shadows). */
+    private readonly decorate: (material: THREE.Material) => void = () => undefined,
   ) {
     this.random = random;
     this.group.name = "DistantShips";
@@ -123,6 +126,7 @@ export class ShipSystem {
     this.models = new ShipModels((material) => {
       this.underwater.apply(material);
       applyShipHaze(material);
+      this.decorate(material);
     });
     if (loadModels) void this.models.load();
     const kinds = [...SHIP_KINDS].sort(() => this.random() - 0.5);
@@ -259,6 +263,13 @@ export class ShipSystem {
       visual.beacons.visible = this.night.value > 0.01;
     });
   }
+
+  /** The ships' scene objects, by ship index (for their shadows). */
+  get roots(): readonly THREE.Object3D[] {
+    return this.rootList;
+  }
+
+  private readonly rootList: THREE.Object3D[] = [];
 
   /** Sound signals given since the last call. */
   consumeHorns(): ShipHornEvent[] {
@@ -397,10 +408,12 @@ export class ShipSystem {
     // Below the waterline the hull is veiled by the sea like everything else.
     this.underwater.apply(material);
     applyShipHaze(material);
+    this.decorate(material);
     const placeholder = new THREE.BufferGeometry();
     const hull = new THREE.Mesh(placeholder, material);
     hull.castShadow = false;
     hull.receiveShadow = false;
+    hull.layers.enable(SHIP_SHADOW_LAYER);
     const beaconMaterial = new THREE.ShaderMaterial({
       name: `ShipBeacons_${slot}`,
       uniforms: { uShipNight: night, uShipAnchored: anchored, uPixelRatio: this.pixelRatio },
@@ -444,6 +457,7 @@ export class ShipSystem {
     root.add(hull, beacons);
     root.visible = false;
     this.group.add(root);
+    this.rootList.push(root);
     const visual: ShipVisual = { root, hull, model: null, modelKey: "", beacons, material, beaconMaterial, anchored, key: "", heave: 0, pitch: 0, roll: 0 };
     this.assignGeometry(visual, ship);
     placeholder.dispose();

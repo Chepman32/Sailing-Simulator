@@ -6,6 +6,7 @@ import { maximumOceanFold, OCEAN_WAVES, sampleOcean, seaFactors, setSeaScale, ty
 import { createSkyUniforms, setLinearColor, type SkyUniforms } from "./SkyUniforms";
 import { ISLAND_SLOT_UNIFORMS } from "./SurfMath";
 import { emptyWakeSample, sampleShipWakes, SHIP_WAKE_UNIFORMS, type Ship } from "../ships/ShipMath";
+import { createShipShadowUniforms } from "../ships/ShipShadowMath";
 import { MAX_IMPACT_STRENGTH, MAX_SURFACE_IMPACTS, surfaceImpactLife } from "./SurfaceImpacts";
 import { oceanFragmentShader, oceanVertexShader } from "./shaders/oceanShader";
 import type { WeatherSample } from "./WeatherMath";
@@ -31,9 +32,13 @@ export class OceanSystem {
   private segments: number;
   private cellSize: number;
 
+  /** The big ships' shadows on the water (written by `ShipShadows`). */
+  readonly shipShadow = createShipShadowUniforms();
+
   constructor(scene: THREE.Scene, quality: QualitySettings) {
     this.uniforms = {
       ...this.skyUniforms,
+      ...this.shipShadow,
       // The islands nearest the yacht: shallows, surf and shore colour.
       ...ISLAND_SLOT_UNIFORMS,
       // Passing ships' wakes (see ShipMath).
