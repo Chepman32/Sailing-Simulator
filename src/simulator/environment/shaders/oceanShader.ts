@@ -752,8 +752,10 @@ ${detailCalls}
     // grazing views and deep water close up.
     // Tropical water is clear: looking down, most of what is seen is what
     // lies beneath (already veiled by the water in its own material).
-    float clarity = mix(0.3, 0.05, smoothstep(0.02, 0.36, fresnel));
-    clarity = mix(clarity, 0.6, bottom * (1.0 - smoothstep(0.02, 0.3, fresnel)));
+    // Looking down, more than half of what is seen comes from below; over
+    // the shelf the sand shows through almost as if there were no water.
+    float clarity = mix(0.56, 0.08, smoothstep(0.02, 0.42, fresnel));
+    clarity = mix(clarity, 0.8, bottom * (1.0 - smoothstep(0.02, 0.34, fresnel)));
     float alpha = clamp(1.0 - clarity + foam * 0.5 + hullShadow * 0.12, 0.3, 1.0);
 
     // --- Aerial perspective -------------------------------------------------
@@ -763,7 +765,7 @@ ${detailCalls}
     float haze = 1.0 - exp(-pow(viewDistance * 0.00085 * (1.0 + uHaze * 5.0), 1.6));
     haze = max(haze * 0.9, smoothstep(${glsl(HORIZON_FADE_START)} * hazeReach, ${glsl(HORIZON_FADE_END)} * hazeReach, viewDistance));
     color = mix(color, horizon, haze);
-    alpha = mix(alpha, 1.0, smoothstep(60.0, 260.0, viewDistance));
+    alpha = mix(alpha, 1.0, smoothstep(90.0, 340.0, viewDistance));
 
     gl_FragColor = vec4(max(color, 0.0), alpha);
     #include <tonemapping_fragment>

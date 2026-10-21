@@ -220,6 +220,7 @@ export class Simulator {
         this.assets,
         {
           dolphins: this.quality.settings.dolphinCount,
+          sharks: this.quality.settings.sharkCount,
           gulls: this.quality.settings.wildlifeCount,
           fishDensity: this.quality.settings.fishDensity,
         },

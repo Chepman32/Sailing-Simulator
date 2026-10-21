@@ -43,6 +43,34 @@ const RELEASE_CLEARANCE = 16;
  */
 const REPEAT_WINDOW = 12;
 const MAX_RELEASE_CLEARANCE = 34;
+
+/**
+ * How closely the guard lets the yacht come to a coast. A coast shoals out
+ * ahead of the waterline, so the guard keeps well off it and takes her well
+ * out before handing back. (Near a ship's side `updateShipGuard` is used.)
+ */
+export type GuardProfile = {
+  /** Room the hull edge keeps from the obstacle, m. */
+  margin: number;
+  /** Look-ahead at rest and per m/s of speed, m. */
+  baseLookAhead: number;
+  lookAheadPerSpeed: number;
+  /** Distance off (hull centre) before the helm is handed back, and its cap after repeats. */
+  release: number;
+  maxRelease: number;
+  /** Hand back only when pointing away from the obstacle. */
+  handBackSeaward: boolean;
+};
+
+export const SHORE_PROFILE: GuardProfile = {
+  margin: GUARD_MARGIN,
+  baseLookAhead: GUARD_BASE_LOOKAHEAD,
+  lookAheadPerSpeed: GUARD_LOOKAHEAD_PER_SPEED,
+  release: RELEASE_CLEARANCE,
+  maxRelease: MAX_RELEASE_CLEARANCE,
+  handBackSeaward: true,
+};
+
 /** Room ahead below which the yacht backs off before turning, and the room that ends it. */
 const BACKING_START = 2.5;
 const BACKING_END = 9;
@@ -118,6 +146,7 @@ export function hullFreeRun(
   heading: number,
   distance: number,
   direction = 1,
+  margin = GUARD_MARGIN,
 ): number {
   const fx = Math.sin(heading);
   const fz = Math.cos(heading);
@@ -129,14 +158,14 @@ export function hullFreeRun(
     for (const [side, ahead] of edge) {
       const px = x + rx * side + fx * (ahead + along);
       const pz = z + rz * side + fz * (ahead + along);
-      if (shore(px, pz, scratchNormal) < GUARD_MARGIN) return Math.max(0, travelled - SWEEP_STEP);
+      if (shore(px, pz, scratchNormal) < margin) return Math.max(0, travelled - SWEEP_STEP);
     }
   }
   return distance;
 }
 
-export function guardLookAhead(speed: number): number {
-  return GUARD_BASE_LOOKAHEAD + Math.max(0, speed) * GUARD_LOOKAHEAD_PER_SPEED;
+export function guardLookAhead(speed: number, profile: GuardProfile = SHORE_PROFILE): number {
+  return profile.baseLookAhead + Math.max(0, speed) * profile.lookAheadPerSpeed;
 }
 
 function wrap(angle: number): number {
@@ -152,12 +181,13 @@ function escapeOnSide(
   body: PlanarBody,
   side: number,
   lookAhead: number,
+  margin = GUARD_MARGIN,
 ): { heading: number; run: number; offset: number } {
   let best = { heading: body.heading, run: -1, offset: 0 };
   for (let index = 1; index <= OFFSET_COUNT; index += 1) {
     const offset = index * OFFSET_STEP;
     const heading = wrap(body.heading + side * offset);
-    const run = hullFreeRun(shore, body.position.x, body.position.z, heading, lookAhead);
+    const run = hullFreeRun(shore, body.position.x, body.position.z, heading, lookAhead, 1, margin);
     if (run >= lookAhead) return { heading, run, offset };
     if (run > best.run + 0.5) best = { heading, run, offset };
   }
@@ -175,6 +205,7 @@ export function updateShoreGuard(
   engineRunning: boolean,
   shore: ShoreSampler,
   delta: number,
+  profile: GuardProfile = SHORE_PROFILE,
 ): SimulatorControls {
   const output = guard.output;
   output.throttle = controls.throttle;
@@ -184,13 +215,14 @@ export function updateShoreGuard(
   const fx = Math.sin(body.heading);
   const fz = Math.cos(body.heading);
   const forwardSpeed = body.velocity.x * fx + body.velocity.z * fz;
-  const lookAhead = guardLookAhead(Math.max(forwardSpeed, 0));
+  const lookAhead = guardLookAhead(Math.max(forwardSpeed, 0), profile);
+  const margin = profile.margin;
   // Sweep along the course and along where the present swing will take the
   // bow in a couple of seconds, so a yacht turning in is caught early.
   const swing = clamp(body.yawRate * 2, -0.8, 0.8);
   const ahead = Math.min(
-    hullFreeRun(shore, body.position.x, body.position.z, body.heading, lookAhead),
-    Math.abs(swing) > 0.05 ? hullFreeRun(shore, body.position.x, body.position.z, body.heading + swing, lookAhead) + 2 : lookAhead,
+    hullFreeRun(shore, body.position.x, body.position.z, body.heading, lookAhead, 1, margin),
+    Math.abs(swing) > 0.05 ? hullFreeRun(shore, body.position.x, body.position.z, body.heading + swing, lookAhead, 1, margin) + 2 : lookAhead,
   );
   const drivingAhead = forwardSpeed > 0.25 || (engineRunning && controls.throttle > 0.05) || controls.sailTrim > 0.2;
   guard.urgency = clamp(1 - ahead / lookAhead, 0, 1);
@@ -198,7 +230,7 @@ export function updateShoreGuard(
 
   // Backing toward a beach: stop backing before the transoms reach it.
   if (!guard.active && forwardSpeed < -0.2) {
-    const astern = hullFreeRun(shore, body.position.x, body.position.z, body.heading, 6 + -forwardSpeed * 4, -1);
+    const astern = hullFreeRun(shore, body.position.x, body.position.z, body.heading, 6 + -forwardSpeed * 4, -1, margin);
     if (astern < 6 + -forwardSpeed * 4) {
       output.throttle = Math.max(controls.throttle, engineRunning ? 0.15 : 0);
       output.rudder = controls.rudder * 0.3;
@@ -213,15 +245,15 @@ export function updateShoreGuard(
   const playerSide = Math.abs(controls.rudder) >= ACTIVE_HELM ? Math.sign(controls.rudder) : 0;
   const playerClears =
     playerSide !== 0 &&
-    hullFreeRun(shore, body.position.x, body.position.z, body.heading + playerSide * 0.7, lookAhead) >= lookAhead * 0.8 &&
+    hullFreeRun(shore, body.position.x, body.position.z, body.heading + playerSide * 0.7, lookAhead, 1, margin) >= lookAhead * 0.8 &&
     ahead > lookAhead * 0.35;
 
   if (!guard.active) {
     if (!(ahead < lookAhead && drivingAhead && (forwardSpeed > 0.1 || ahead < lookAhead * 0.6))) return output;
     if (playerClears) return output;
     // Engage: turn to whichever side clears with the smaller turn and more room.
-    const port = escapeOnSide(shore, body, -1, lookAhead);
-    const starboard = escapeOnSide(shore, body, 1, lookAhead);
+    const port = escapeOnSide(shore, body, -1, lookAhead, margin);
+    const starboard = escapeOnSide(shore, body, 1, lookAhead, margin);
     const score = (option: { run: number; offset: number }): number => option.run / lookAhead - option.offset * 0.12;
     // A helmsman already turning one way keeps turning that way when it helps.
     const preference = clamp(controls.rudder * 0.15 + body.yawRate * 0.4, -0.15, 0.15);
@@ -231,8 +263,8 @@ export function updateShoreGuard(
     guard.active = true;
     guard.releaseClearance =
       guard.sinceRelease < REPEAT_WINDOW
-        ? Math.min(MAX_RELEASE_CLEARANCE, guard.releaseClearance + 10)
-        : RELEASE_CLEARANCE;
+        ? Math.min(profile.maxRelease, guard.releaseClearance + profile.release * 0.6)
+        : profile.release;
     guard.engagedTime = 0;
     guard.backing = false;
     guard.turned = 0;
@@ -250,7 +282,7 @@ export function updateShoreGuard(
     guard.turnSide = playerSide;
     guard.turned = 0;
     guard.stallTime = 0;
-    guard.escapeHeading = escapeOnSide(shore, body, playerSide, lookAhead).heading;
+    guard.escapeHeading = escapeOnSide(shore, body, playerSide, lookAhead, margin).heading;
   }
   // Creeping along the beach without getting out: turn the short way out,
   // and if that is already the way, back off first to make room.
@@ -261,7 +293,7 @@ export function updateShoreGuard(
     guard.turned = 0;
     if (guard.turnSide !== seaSide) {
       guard.turnSide = seaSide;
-      guard.escapeHeading = escapeOnSide(shore, body, seaSide, lookAhead).heading;
+      guard.escapeHeading = escapeOnSide(shore, body, seaSide, lookAhead, margin).heading;
     } else if (engineRunning) {
       guard.backing = true;
     }
@@ -269,8 +301,8 @@ export function updateShoreGuard(
   guard.turned += Math.abs(wrap(body.heading - guard.previousHeading));
   guard.previousHeading = body.heading;
   // Refresh the escape heading, always on the same side.
-  const escape = escapeOnSide(shore, body, guard.turnSide, lookAhead);
-  if (escape.run >= lookAhead || escape.run > hullFreeRun(shore, body.position.x, body.position.z, guard.escapeHeading, lookAhead) + 1) {
+  const escape = escapeOnSide(shore, body, guard.turnSide, lookAhead, margin);
+  if (escape.run >= lookAhead || escape.run > hullFreeRun(shore, body.position.x, body.position.z, guard.escapeHeading, lookAhead, 1, margin) + 1) {
     guard.escapeHeading = escape.heading;
   }
   const offshore = shore(body.position.x, body.position.z, coastNormal);
@@ -278,7 +310,7 @@ export function updateShoreGuard(
   if (offshore < guard.releaseClearance && ahead >= lookAhead) {
     const seaward = Math.atan2(coastNormal.x, coastNormal.z);
     const outward = wrap(seaward + clamp(wrap(body.heading - seaward), -0.8, 0.8));
-    if (hullFreeRun(shore, body.position.x, body.position.z, outward, lookAhead) >= lookAhead) guard.escapeHeading = outward;
+    if (hullFreeRun(shore, body.position.x, body.position.z, outward, lookAhead, 1, margin) >= lookAhead) guard.escapeHeading = outward;
   }
   const error = wrap(guard.escapeHeading - body.heading);
 
@@ -286,7 +318,7 @@ export function updateShoreGuard(
   // helmsman turning straight back has room to be caught again in good time.
   const seawardness = fx * coastNormal.x + fz * coastNormal.z;
   const clear =
-    ahead >= lookAhead && Math.abs(error) < 0.22 && offshore >= guard.releaseClearance && seawardness > 0.5;
+    ahead >= lookAhead && Math.abs(error) < 0.22 && offshore >= guard.releaseClearance && (seawardness > 0.5 || !profile.handBackSeaward);
   // Clear water ahead and the helmsman steering again: hand the helm back
   // without waiting to be pointed out to sea.
   const handBack = ahead >= lookAhead && playerSide !== 0 && guard.engagedTime > 0.6;
@@ -305,7 +337,7 @@ export function updateShoreGuard(
     // Very close and still facing the beach: back off first, then turn. The
     // decision is latched so the yacht does not shuffle back and forth.
     if (!guard.backing && ahead < BACKING_START && Math.abs(error) > 0.6) guard.backing = true;
-    if (guard.backing && (ahead >= BACKING_END || Math.abs(error) < 0.45)) guard.backing = false;
+    if (guard.backing && (ahead >= Math.min(BACKING_END, lookAhead) || Math.abs(error) < 0.45)) guard.backing = false;
     if (guard.backing) {
       output.throttle = -0.6;
       output.rudder = forwardSpeed < -0.2 ? -steer : 0;
@@ -316,7 +348,7 @@ export function updateShoreGuard(
       const brake = clamp(0.45 + (safeSpeed - forwardSpeed) * 0.6, -0.7, Math.max(0.45, playerAhead));
       // With room to turn, keep the propellers driving: slowing down would
       // only take the bite out of the rudders.
-      output.throttle = ahead > 6 ? Math.max(brake, Math.min(0.45, Math.max(0.45, playerAhead))) : brake;
+      output.throttle = ahead > profile.margin + 2.8 ? Math.max(brake, Math.min(0.45, Math.max(0.45, playerAhead))) : brake;
       output.rudder = forwardSpeed < -0.3 ? -steer : steer;
     }
   } else {
@@ -336,5 +368,122 @@ export function updateShoreGuard(
     guard.turned = 0;
   }
   guard.urgency = Math.max(guard.urgency, smoothstep(0.1, 1.2, Math.abs(error)) * 0.5);
+  return output;
+}
+
+/** Room the hull edge keeps from a ship's side: a helmsman may lie a couple of metres off. */
+export const SHIP_GUARD_MARGIN = 1.2;
+/** Seconds of closing speed the ship guard looks ahead, beyond the distance to stop. */
+const SHIP_GUARD_HORIZON = 1.6;
+/** Deceleration the yacht can count on to stop her closing speed (astern, or turning), m/s². */
+const SHIP_GUARD_BRAKING = 0.45;
+
+/** Room a yacht closing on a ship's side at `closing` m/s needs to stop short of it, m. */
+export function shipStoppingRoom(closing: number): number {
+  const speed = Math.max(0, closing);
+  return speed * SHIP_GUARD_HORIZON + (speed * speed) / (2 * SHIP_GUARD_BRAKING) + 0.4;
+}
+const SHIP_EDGE: readonly (readonly [number, number])[] = [...BOW_EDGE, ...STERN_EDGE];
+const shipNormal = { x: 0, z: 1 };
+
+/**
+ * The helmsman's reflex beside a ship. A ship's side is a steel wall in deep
+ * water: the yacht may come alongside to a couple of metres, so the guard
+ * does nothing until the hull is about to touch (closing on it within
+ * `SHIP_GUARD_HORIZON` seconds of `SHIP_GUARD_MARGIN`). Then it brings her
+ * parallel to the side, the short way round, backing off first if her bow is
+ * pressed against it, and hands the helm back as soon as she has stopped
+ * closing. It never takes her away from the ship.
+ */
+export function updateShipGuard(
+  guard: ShoreGuardState,
+  body: PlanarBody,
+  controls: SimulatorControls,
+  engineRunning: boolean,
+  hull: ShoreSampler,
+  delta: number,
+): SimulatorControls {
+  const output = guard.output;
+  output.throttle = controls.throttle;
+  output.rudder = controls.rudder;
+  output.sailTrim = controls.sailTrim;
+  if (!guard.active) guard.sinceRelease += delta;
+
+  const fx = Math.sin(body.heading);
+  const fz = Math.cos(body.heading);
+  const rx = fz;
+  const rz = -fx;
+  // The point of the hull outline nearest the side, its normal and how fast it closes.
+  let nearest = Infinity;
+  let nX = 0;
+  let nZ = 1;
+  let closing = 0;
+  for (const [side, ahead] of SHIP_EDGE) {
+    const offX = rx * side + fx * ahead;
+    const offZ = rz * side + fz * ahead;
+    const clearance = hull(body.position.x + offX, body.position.z + offZ, shipNormal);
+    if (clearance >= nearest) continue;
+    nearest = clearance;
+    nX = shipNormal.x;
+    nZ = shipNormal.z;
+    const pointVx = body.velocity.x + body.yawRate * offZ;
+    const pointVz = body.velocity.z - body.yawRate * offX;
+    closing = -(pointVx * nX + pointVz * nZ);
+  }
+  const room = nearest - SHIP_GUARD_MARGIN;
+  guard.urgency = clamp(1 - room / 6, 0, 1) * (closing > 0 ? 1 : 0.3);
+
+  if (!guard.active) {
+    if (!(closing > 0.12 && room < shipStoppingRoom(closing))) return output;
+    guard.active = true;
+    guard.engagedTime = 0;
+    guard.backing = false;
+    guard.turned = 0;
+    guard.stallTime = 0;
+    guard.previousHeading = body.heading;
+  }
+  guard.engagedTime += delta;
+
+  // Parallel to the side, whichever way along it is the smaller turn.
+  const along = Math.atan2(-nZ, nX);
+  const options = [along, wrap(along + Math.PI)];
+  const target = Math.abs(wrap(options[0]! - body.heading)) <= Math.abs(wrap(options[1]! - body.heading)) ? options[0]! : options[1]!;
+  guard.escapeHeading = target;
+  const error = wrap(target - body.heading);
+  const forwardSpeed = body.velocity.x * fx + body.velocity.z * fz;
+  // Bow into the side: back off before turning.
+  const facing = -(fx * nX + fz * nZ);
+  if (engineRunning && !guard.backing && room < 1 && facing > 0.5) guard.backing = true;
+  if (guard.backing && (room > 2.5 || facing < 0.35)) guard.backing = false;
+
+  const steer = clamp(error * 2.4 - body.yawRate * 1.1, -1, 1);
+  if (guard.backing) {
+    output.throttle = -0.6;
+    output.rudder = forwardSpeed < -0.2 ? -steer : 0;
+  } else {
+    output.rudder = forwardSpeed < -0.3 ? -steer : steer;
+    if (engineRunning) {
+      // Closing too fast to turn clear: full astern while the rudders still
+      // bite. Otherwise enough way for the rudders, never driving at the side.
+      const braking = closing > 0.4 && room < shipStoppingRoom(closing) - 0.4;
+      output.throttle = braking ? -0.7 : clamp(controls.throttle, -0.6, room < 1.5 ? 0.3 : 0.6);
+    } else {
+      output.sailTrim = clamp(controls.sailTrim - guard.urgency * 0.9, 0.2, 1);
+    }
+  }
+  // The helmsman turning the same way, only harder, gets his way.
+  const playerSide = Math.abs(controls.rudder) >= ACTIVE_HELM ? Math.sign(controls.rudder) : 0;
+  if (!guard.backing && playerSide !== 0 && Math.sign(output.rudder) === playerSide && Math.abs(controls.rudder) > Math.abs(output.rudder)) {
+    output.rudder = controls.rudder;
+  }
+  // No longer closing on the side (or lying parallel to it): hand back.
+  const settled = closing < 0.05 && (Math.abs(error) < 0.3 || room > 3);
+  if (!guard.backing && guard.engagedTime > 0.4 && settled) {
+    guard.active = false;
+    guard.sinceRelease = 0;
+    output.throttle = controls.throttle;
+    output.rudder = controls.rudder;
+    output.sailTrim = controls.sailTrim;
+  }
   return output;
 }

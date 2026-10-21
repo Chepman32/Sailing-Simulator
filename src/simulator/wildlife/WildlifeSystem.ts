@@ -15,6 +15,8 @@ import { WhaleController } from "./WhaleController";
 
 export type WildlifeCounts = {
   dolphins: number;
+  /** Sharks, each patrolling on its own (default 1). */
+  sharks?: number;
   gulls: number;
   fishDensity: number;
 };
@@ -28,7 +30,7 @@ export class WildlifeSystem {
   private readonly group = new THREE.Group();
   private readonly marineGroup = new THREE.Group();
   private readonly dolphins: DolphinController;
-  private readonly sharks: SharkController;
+  private readonly sharks: SharkController[];
   private readonly whales: WhaleController;
   private readonly breach: WhaleBreachController;
   private readonly fish: ReefFishController;
@@ -59,7 +61,7 @@ export class WildlifeSystem {
       shoreDistance: distanceFromWaterline,
     };
     this.whales = new WhaleController(this.marineGroup, ocean, this.world, assets, effects);
-    this.sharks = new SharkController(this.marineGroup, ocean, this.world, assets, effects);
+    this.sharks = Array.from({ length: Math.max(1, counts.sharks ?? 1) }, () => new SharkController(this.marineGroup, ocean, this.world, assets, effects));
     this.dolphins = new DolphinController(this.marineGroup, ocean, this.world, assets, counts.dolphins, effects);
     // Everything that swims is seen through water; the reef fish apply the
     // same treatment to their own instanced material.
@@ -107,21 +109,26 @@ export class WildlifeSystem {
     const whale = this.whales.obstacle();
     this.sharkObstacles.length = 0;
     if (whale) this.sharkObstacles.push({ x: whale.position.x, z: whale.position.z, radius: whale.radius });
-    this.sharks.update(delta, vessel, this.sharkObstacles, camera);
+    // Each shark gives way to the whale and to the sharks updated before it.
+    for (const shark of this.sharks) {
+      shark.update(delta, vessel, this.sharkObstacles, camera);
+      const body = shark.obstacle();
+      if (body) this.sharkObstacles.push({ x: body.position.x, z: body.position.z, radius: body.radius * 2 });
+    }
 
     this.dolphinObstacles.length = 0;
     if (whale) {
       this.dolphinObstacles.push({ x: whale.position.x, y: whale.position.y, z: whale.position.z, radius: whale.radius });
     }
-    const shark = this.sharks.obstacle();
-    if (shark) {
-      this.dolphinObstacles.push({ x: shark.position.x, y: shark.position.y, z: shark.position.z, radius: shark.radius });
+    for (const controller of this.sharks) {
+      const shark = controller.obstacle();
+      if (shark) this.dolphinObstacles.push({ x: shark.position.x, y: shark.position.y, z: shark.position.z, radius: shark.radius });
     }
     this.dolphins.update(delta, vessel, this.dolphinObstacles, camera);
 
     this.predators.length = 0;
     this.dolphins.collectPositions(this.predators);
-    this.sharks.collectPositions(this.predators);
+    for (const shark of this.sharks) shark.collectPositions(this.predators);
     this.fish.update(delta, physics, camera, this.predators);
 
     // Gull clips are sampled at about 30 Hz; their flight is integrated every frame.
@@ -153,7 +160,7 @@ export class WildlifeSystem {
 
   dispose(): void {
     this.dolphins.dispose();
-    this.sharks.dispose();
+    for (const shark of this.sharks) shark.dispose();
     this.whales.dispose();
     this.breach.dispose();
     this.fish.dispose();

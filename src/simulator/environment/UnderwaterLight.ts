@@ -21,7 +21,7 @@ import { OCEAN_SURFACE_HEIGHT_FAST_GLSL } from "./shaders/oceanShader";
  */
 
 /** Absorption coefficients per metre for red, green and blue. */
-export const UNDERWATER_ABSORPTION: Rgb = [0.42, 0.065, 0.045];
+export const UNDERWATER_ABSORPTION: Rgb = [0.38, 0.05, 0.034];
 /** Depth over which the effect fades in, so the waterline has no hard edge. */
 export const UNDERWATER_FADE_DEPTH = 0.35;
 

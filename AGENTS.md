@@ -124,7 +124,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/vessel/HelmStation.ts` | Starboard aft helm: pedestal, leather-rimmed wheel, instrument pod with chart plotter, speed/depth and wind displays (one canvas atlas), compass, engine lever, guard rail, seat, winch |
 | `src/simulator/vessel/HelmInstruments.ts` | Pure helm numbers: chart projection and range, wind needle, engine revolutions, compass card, lever angle |
 | `src/simulator/vessel/YachtShading.ts` | Antifouling, boot stripe, wet band, non-skid deck, sail seams and translucency |
-| `src/simulator/vessel/ShoreGuard.ts` | Pure collision avoidance near islands and ships' hulls: look-ahead sweep of the hull, temporary helm override, hand-back; turns with a helmsman who steers the short way out to sea, and abandons a manoeuvre that has crept along the beach for `STALL_SECONDS` (seaward turn, else back off) so the yacht is never held against a coast |
+| `src/simulator/vessel/ShoreGuard.ts` | Pure collision avoidance near islands and ships' hulls: look-ahead sweep of the hull, temporary helm override, hand-back; turns with a helmsman who steers the short way out to sea, and abandons a manoeuvre that has crept along the beach for `STALL_SECONDS` (seaward turn, else back off) so the yacht is never held against a coast. Beside a ship (`updateShipGuard`, chosen when a hull is nearer than any coast) it lets her come alongside to a couple of metres (`SHIP_GUARD_MARGIN` 1.2 m off the edge) and steps in only when she would touch within `shipStoppingRoom`: astern if closing fast, bow brought parallel the short way round, helm back as soon as she stops closing — it never takes her away from the ship |
 | `src/simulator/vessel/ShoreContact.ts` | Pure hull-outline shore cushion and impulse contact (physical backstop behind the guard) |
 | `src/simulator/vessel/VesselPhysics.ts` | Engines, sails, windage, hull and keel hydrodynamics, rudders, seakeeping, grounding |
 | `src/simulator/vessel/SailAerodynamics.ts` | Pure sail lift/drag polar and automatic sheeting |
@@ -550,7 +550,7 @@ Each dolphin runs:
 
 `cruise → accelerate → approach_surface → leap → airborne → reentry → dive → recover → cruise`
 
-The pod holds 4, 6 or 8 dolphins on the low, medium and high presets (`dolphinCount`), and reef fish density is 0.55, 0.9 and 1.4.
+The pod holds 6, 9 or 12 dolphins on the low, medium and high presets (`dolphinCount`), 1, 2 or 3 sharks patrol independently (`sharkCount`; each gives way to the whale and to the others), and reef fish density is 0.75, 1.25 and 1.8.
 
 Leaps are speed gated twice. A dolphin only commits to one (`canCommitToLeap`) in a playful pod (yacht at least `DOLPHIN_PLAY_VESSEL_SPEED`, about 3.5 kn), after its cooldown, already swimming at `DOLPHIN_LEAP_ENTRY_SPEED` or more, over deep water and clear of the hulls. It then accelerates at depth and only leaves the water if it has actually reached `DOLPHIN_LEAP_MIN_SPEED`; otherwise it levels off. A calm pod never leaps. The run-up depth (`leapRunDepth`) is what lets the body rotate to its exit angle before the rostrum breaks the surface. From that moment the motion is ballistic, the body axis lies along the velocity and arches with the path's curvature, the strokes stop, and the dolphin re-enters head first carrying its momentum into a dive that the water slows. Variants: low porpoising arcs, high arcs, paired leaps started a fraction of a second apart, and rare spinner leaps that complete one or two rolls before re-entry.
 
@@ -998,7 +998,7 @@ Do not commit every exploratory change. The standing project preference is to pu
 - avoid random new targets every frame; gate rare events with conditions, probabilities and cooldowns;
 - keep state transitions finite;
 - derive splash from tracked body points crossing the rendered surface;
-- let the water hide what is submerged; never mask a body with a clipping plane or alpha cut;
+- let the water hide what is submerged; never mask a body with a clipping plane or alpha cut (the sea is clear: looking down, more than half of what is seen comes from below — `clarity` in the ocean shader — and over the shelf the sand shows through almost as if dry);
 - count the new animal's draw calls and bone uploads per frame; merge or share what the source file split;
 - test the relevant pure helpers and asset constraints.
 

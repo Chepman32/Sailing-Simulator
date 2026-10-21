@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as THREE from "three";
 import { createShip, nearestHullClearance, shipHullDistance, type Ship } from "../../src/simulator/ships/ShipMath";
 import type { OceanSampler } from "../../src/simulator/vessel/VesselPhysics";
 import { VesselPhysics, type IslandPhysics } from "../../src/simulator/vessel/VesselPhysics";
@@ -58,8 +59,39 @@ test("a yacht lying against a ship's side gets away", () => {
   physics.position.set(ship.halfBeam + 2.2, physics.position.y, 40);
   physics.heading = -Math.PI / 2;
   const controls = { throttle: 0.6, rudder: 0, sailTrim: 1 };
-  for (let step = 0; step < 40 * 60; step += 1) physics.fixedUpdate(1 / 60, controls, true);
-  assert.ok(shipHullDistance(ship, physics.position.x, physics.position.z) > 8, "she is off the hull");
+  const start = physics.position.clone();
+  let closest = Infinity;
+  for (let step = 0; step < 40 * 60; step += 1) {
+    physics.fixedUpdate(1 / 60, controls, true);
+    if (step > 60) closest = Math.min(closest, shipHullDistance(ship, physics.position.x, physics.position.z));
+  }
+  // Backed off and brought parallel: she runs along the side instead of being pinned to it.
+  assert.ok(physics.position.distanceTo(start) > 40, `stuck against the hull (moved ${physics.position.distanceTo(start).toFixed(1)} m)`);
+  assert.ok(closest > 0.3, `touched the hull (${closest.toFixed(2)} m)`);
+});
+
+test("the yacht may come alongside a ship to a couple of metres without being turned away", () => {
+  const ship = wall();
+  const physics = new VesselPhysics(CALM, OPEN_WATER);
+  physics.hullClearance = (x, z, normal) => nearestHullClearance([ship], x, z, normal);
+  // 25 m off her side, closing on it at a shallow angle under slow power.
+  physics.position.set(ship.halfBeam + 25, physics.position.y, -80);
+  physics.heading = -0.28;
+  const controls = { throttle: 0.35, rudder: 0, sailTrim: 0.2 };
+  let closest = Infinity;
+  let engagedFarOff = 0;
+  for (let step = 0; step < 60 * 60; step += 1) {
+    // The helmsman holds a course converging on the side, then straightens up alongside.
+    const off = shipHullDistance(ship, physics.position.x, physics.position.z);
+    controls.rudder = off < 5 ? THREE.MathUtils.clamp(-physics.heading * 2, -1, 1) : 0;
+    physics.fixedUpdate(1 / 60, controls, true);
+    const distance = shipHullDistance(ship, physics.position.x, physics.position.z);
+    closest = Math.min(closest, distance);
+    if (physics.guard.active && distance > 8) engagedFarOff += 1;
+  }
+  assert.equal(engagedFarOff, 0, "the guard stepped in while she was still well off the side");
+  assert.ok(closest < 4.5, `could not come alongside (closest ${closest.toFixed(1)} m from the hull)`);
+  assert.ok(closest > 0.3, `touched the hull (${closest.toFixed(2)} m)`);
 });
 
 import { createShoreGuard, STALL_SECONDS, updateShoreGuard } from "../../src/simulator/vessel/ShoreGuard";

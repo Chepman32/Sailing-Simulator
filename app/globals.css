@@ -1488,14 +1488,32 @@ input[type="range"]:disabled {
     bottom: var(--edge-bottom);
     left: var(--edge-left);
     width: auto;
-    /* The smallest viewport (svh): a browser toolbar that slides over the page
-       must never cover the last row of the panel. */
-    max-height: min(76svh, 620px);
-    padding-bottom: 6px;
+    /* Tall enough that every setting fits without scrolling on a phone: from
+       just under the speed / depth / wind row down to the bottom edge. The
+       smallest viewport (svh) keeps a sliding browser toolbar off the last row. */
+    max-height: calc(100svh - var(--edge-top) - var(--edge-bottom) - 62px);
+    padding-bottom: 4px;
     scroll-padding-bottom: 24px;
   }
 
-  .panel-body { gap: 8px; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); }
+  .panel-body { gap: 6px; padding-bottom: 8px; }
+
+  /* A denser panel on a phone, so all of it fits on one screen: 40 px
+     targets (the toolbar's own size) instead of 44, slimmer header and rows. */
+  .control-panel:not(.is-minimized) header { min-height: 46px; padding-block: 4px; }
+  .control-panel:not(.is-minimized) .icon-button { width: 40px; height: 40px; }
+  .control-panel .segmented button,
+  .control-panel .quiet-button,
+  .control-panel .camera-grid button,
+  .control-panel .weather-grid button,
+  .panel-footer select { min-height: 40px; }
+  .panel-section { padding: 6px; }
+  .trim-row { gap: 2px; }
+  .trim-row input[type="range"] { height: 30px; }
+  .panel-footer { gap: 6px; padding: 6px; }
+  .panel-footer label { gap: 3px; }
+  .panel-status .help-toast,
+  .panel-status .engine-notice { min-height: 0; padding: 7px 12px; font-size: 11.5px; }
 }
 
 /* Phone landscape and short windows: rudder bottom-left, throttle bottom-right,

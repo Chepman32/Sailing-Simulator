@@ -5,7 +5,7 @@ import { sampleWind, type WindSample } from "../environment/WindMath";
 import type { SimulatorControls } from "../types";
 import { AIR_DENSITY, createSailState, solveSail, type SailState } from "./SailAerodynamics";
 import { resolveShoreContact } from "./ShoreContact";
-import { createShoreGuard, updateShoreGuard, type ShoreGuardState } from "./ShoreGuard";
+import { createShoreGuard, updateShipGuard, updateShoreGuard, type ShoreGuardState } from "./ShoreGuard";
 
 export type OceanSampler = {
   sample: (x: number, z: number) => OceanSample;
@@ -207,6 +207,15 @@ export class VesselPhysics {
     normal.z = this.hullNormal.z;
     return hull;
   };
+  private readonly profileNormal = { x: 0, z: 1 };
+  /** Whether the obstacle nearest the yacht is a ship's hull rather than a coast. */
+  private nearestIsShip(): boolean {
+    if (!this.hullClearance) return false;
+    const hull = this.hullClearance(this.position.x, this.position.z, this.profileNormal);
+    if (hull > 80) return false;
+    return hull < this.islands.shoreClearance(this.position.x, this.position.z, this.profileNormal);
+  }
+
   telemetry: VesselTelemetry = {
     forwardSpeed: 0,
     speedKnots: 0,
@@ -249,7 +258,11 @@ export class VesselPhysics {
     this.time += delta;
     this.forward.set(Math.sin(this.heading), 0, Math.cos(this.heading));
     this.right.set(Math.cos(this.heading), 0, -Math.sin(this.heading));
-    const controls = updateShoreGuard(this.guard, this, helm, engineRunning, this.guardClearance, delta);
+    // Near a ship's side the guard lets her come within a couple of metres
+    // (`updateShipGuard`); near a coast it keeps well off.
+    const controls = this.nearestIsShip()
+      ? updateShipGuard(this.guard, this, helm, engineRunning, this.guardClearance, delta)
+      : updateShoreGuard(this.guard, this, helm, engineRunning, this.guardClearance, delta);
 
     const forwardSpeed = this.velocity.dot(this.forward);
     const lateralSpeed = this.velocity.dot(this.right);
