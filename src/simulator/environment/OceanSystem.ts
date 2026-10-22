@@ -145,8 +145,13 @@ const fragmentShader = /* glsl */ `
 
     vec3 halfDirection = normalize(viewDirection + normalize(uSunDirection));
     float nDotH = max(dot(normal, halfDirection), 0.0);
-    float broadGlint = pow(nDotH, mix(72.0, 42.0, uNight)) * 0.22;
-    float sharpGlint = pow(nDotH, mix(420.0, 180.0, uNight)) * 1.08;
+    // Restrict sparkle to the sun path: the mirror reflection of the view ray
+    // off a flat sea must point near the sun. Micro-normals alone would scatter
+    // glints over the whole surface and make a high sun read as wet plastic.
+    vec3 flatReflection = reflect(-viewDirection, vec3(0.0, 1.0, 0.0));
+    float sunPath = smoothstep(0.84, 0.995, dot(flatReflection, normalize(uSunDirection)));
+    float broadGlint = pow(nDotH, mix(72.0, 42.0, uNight)) * mix(0.05, 0.22, sunPath);
+    float sharpGlint = pow(nDotH, mix(420.0, 180.0, uNight)) * 1.08 * sunPath * sunPath;
     color += (broadGlint + sharpGlint) * mix(vec3(1.0, 0.88, 0.64), vec3(0.56, 0.72, 1.0), uNight);
 
     // A broken, wave-driven moon path extending from the viewer toward the moon.

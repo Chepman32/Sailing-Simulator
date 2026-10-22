@@ -210,6 +210,8 @@ export class EnvironmentSystem {
     this.sunLight.shadow.camera.near = 1;
     this.sunLight.shadow.camera.far = 260;
     this.sunLight.shadow.bias = -0.00018;
+    // Thin curved sailcloth and glossy hulls self-shadow into bands without it.
+    this.sunLight.shadow.normalBias = 0.035;
     scene.add(this.sunLight, this.sunLight.target);
     this.hemisphere = new THREE.HemisphereLight(0xbfeaff, 0x275960, 1.25);
     this.ambient = new THREE.AmbientLight(0x9bc5da, 0.32);

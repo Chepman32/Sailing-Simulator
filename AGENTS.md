@@ -92,7 +92,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | --- | --- |
 | `src/simulator/vessel/Vessel.ts` | Detailed yacht GLB normalization, materials, transform, nav lights, visual pose |
 | `src/simulator/vessel/VesselPhysics.ts` | Propeller and sail forces, drag, rudder torque, buoyancy, heave, pitch, roll, island collision |
-| `src/simulator/vessel/SailSystem.ts` | Sail material and wind/trim deformation |
+| `src/simulator/vessel/SailSystem.ts` | Procedural mainsail and jib cloth, boom pivot, belly/twist/luffing from apparent wind and trim |
+| `src/simulator/vessel/SailShape.ts` | Pure sheeting angle, fill, camber profile and leech twist rules |
 | `src/simulator/vessel/WakeSystem.ts` | Twin hull tracks, prop wash, bow droplets, wildlife splash rings and foam patches |
 
 ### Wildlife
@@ -304,6 +305,8 @@ Rules for yacht work:
 - do not make the entire sail emissive to fake sunlight;
 - sun core geometry must respect the depth buffer, including when it is behind a sail;
 - deform sails smoothly from wind and trim; do not simply snap a flat triangle between sides;
+- the GLB's flat sail mesh is hidden; `SailSystem` draws the mainsail and jib as cloth grids and swings the GLB boom on a gooseneck pivot;
+- the seated skipper at the port helm leans against heel (`skipperLean`) and keeps hands on the wheel;
 - use the physics root for position, heading, pitch, and roll, with visual-only damping inside `Vessel`;
 - keep propellers/rudders tied to engine/rudder state if the asset exposes suitable nodes;
 - validate close camera framing after any scale, pivot, or bounding-box change.
