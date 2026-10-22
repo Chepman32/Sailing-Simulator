@@ -155,9 +155,9 @@ export class LootSystem {
       if (visual.glow) {
         // The message glows inside: a soft pulse, much brighter at night.
         const pulse = 0.75 + 0.25 * Math.sin(this.clock * 2.4 + item.seed * 17);
-        const level = (0.35 + 0.65 * this.night) * pulse;
+        const level = (0.18 + 0.82 * this.night) * pulse;
         visual.glow.material.opacity = level;
-        visual.glow.scale.setScalar(2.2 + 1.6 * this.night);
+        visual.glow.scale.setScalar(1.5 + 2.3 * this.night);
       }
       if (withinReach(x, z, heading, px, pz)) {
         visual.hauled = 0;

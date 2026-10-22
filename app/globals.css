@@ -1252,13 +1252,29 @@ input[type="range"]:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-areas:
       "status status"
+      "tabs tabs"
       "time camera"
-      "weather trim"
       "weather footer";
     align-items: stretch;
   }
 
+  .panel-body.is-yacht {
+    grid-template-areas:
+      "status status"
+      "tabs tabs"
+      "trim helm"
+      "sails service"
+      "keys keys";
+    align-items: start;
+  }
+
   .panel-body > .panel-status { grid-area: status; }
+  .panel-body > .panel-tabs { grid-area: tabs; }
+  .panel-body > .helm-options { grid-area: helm; }
+  .panel-body > .sail-colours { grid-area: sails; }
+  .panel-body > .service-row { grid-area: service; }
+  .panel-body > .key-help { grid-area: keys; }
+  .key-help ul { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; }
 
   .panel-body > .compact-row { grid-area: time; }
   .panel-body > .panel-camera { grid-area: camera; }
@@ -1676,4 +1692,742 @@ input[type="range"]:disabled {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Voyage: signals, radio, finds, the first-run guide                       */
+/* ------------------------------------------------------------------------ */
+
+.scene-divider {
+  align-self: center;
+  width: 1px;
+  height: 26px;
+  background: rgba(151, 231, 238, 0.28);
+  pointer-events: none;
+}
+
+.scene-actions:has(.scene-pop) { z-index: 42; }
+
+.scene-pop-anchor {
+  position: relative;
+  display: inline-flex;
+  pointer-events: auto;
+}
+
+/* Pop-overs hang below a button in the row, beside it in the portrait column. */
+.scene-pop {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  left: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--glass-strong);
+  box-shadow: 0 16px 38px rgba(0, 12, 18, 0.38);
+  backdrop-filter: blur(15px) saturate(1.15);
+  -webkit-backdrop-filter: blur(15px) saturate(1.15);
+  animation: pop-in 160ms ease;
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+.flare-pop {
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+}
+
+.flare-choice {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+.flare-choice span {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 38%, #fff 0 18%, var(--flare) 46%, transparent 72%);
+  box-shadow: 0 0 16px var(--flare);
+}
+
+.flare-choice.is-red { --flare: #ff3b2f; }
+.flare-choice.pop-bell { display: none; color: var(--text); }
+.flare-choice.pop-bell .control-icon { width: 22px; height: 22px; }
+.flare-choice.is-green { --flare: #3cff72; }
+
+/* Radio */
+.radio-action.is-playing {
+  border-color: color-mix(in srgb, var(--station, var(--accent)) 70%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--station, var(--accent)) 35%, transparent), 0 10px 28px rgba(0, 12, 18, 0.22);
+}
+
+.eq-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 20px;
+  height: 18px;
+}
+
+.eq-bars i {
+  flex: 1;
+  height: 40%;
+  border-radius: 2px;
+  background: var(--station, var(--accent));
+  animation: eq 900ms ease-in-out infinite alternate;
+}
+
+.eq-bars i:nth-child(2) { animation-duration: 640ms; animation-delay: -200ms; }
+.eq-bars i:nth-child(3) { animation-duration: 760ms; animation-delay: -420ms; }
+
+@keyframes eq {
+  from { height: 20%; }
+  to { height: 100%; }
+}
+
+.radio-card {
+  width: min(300px, calc(100vw - 2 * var(--gap) - 64px));
+  padding: 10px;
+  color: var(--text);
+}
+
+.radio-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.radio-now {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+
+.radio-now strong {
+  overflow: hidden;
+  font-size: 13.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radio-now span { color: var(--muted); font-size: 11px; }
+
+.radio-round {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+}
+
+.radio-round .control-icon { width: 17px; height: 17px; }
+.radio-power[aria-pressed="true"] { color: #052c31; background: var(--accent); }
+
+.radio-stations {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.radio-stations button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  text-align: start;
+  cursor: pointer;
+}
+
+.radio-stations button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--station) 60%, transparent);
+  background: color-mix(in srgb, var(--station) 16%, transparent);
+}
+
+.station-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--station);
+  box-shadow: 0 0 10px var(--station);
+}
+
+.station-text { display: grid; flex: 1; min-width: 0; }
+.station-text strong { font-size: 12.5px; }
+.station-text small { overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+
+.station-badge {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.radio-volume {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.radio-volume input { width: 100%; accent-color: var(--accent); }
+
+.radio-credit {
+  margin: 8px 4px 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.radio-credit a { color: var(--accent); }
+
+/* GTA-style: the station sweeps in at the top for a moment. */
+.station-banner {
+  position: fixed;
+  z-index: 44;
+  top: 26%;
+  left: 50%;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 10px 26px;
+  border-radius: 14px;
+  color: #fff;
+  background: linear-gradient(90deg, transparent, rgba(3, 18, 26, 0.72) 18%, rgba(3, 18, 26, 0.72) 82%, transparent);
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: station-in 2800ms ease forwards;
+}
+
+.station-banner strong {
+  color: var(--station);
+  font-size: clamp(20px, 3.4vw, 30px);
+  font-style: italic;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.station-banner span {
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+@keyframes station-in {
+  0% { opacity: 0; transform: translateX(calc(-50% - 40px)); }
+  10% { opacity: 1; transform: translateX(-50%); }
+  82% { opacity: 1; transform: translateX(-50%); }
+  100% { opacity: 0; transform: translateX(calc(-50% + 30px)); }
+}
+
+/* Things afloat, finds, the guide and the tow: cards in the centred column. */
+.loot-chip,
+.stuck-chip,
+.quick-start,
+.discovery-card {
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--glass-strong);
+  box-shadow: 0 12px 30px rgba(0, 12, 18, 0.32);
+}
+
+.loot-chip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 8px;
+  padding: 6px 12px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 750;
+  pointer-events: none !important;
+}
+
+.loot-chip .control-icon { width: 16px; height: 16px; color: #ffd18a; }
+.loot-chip.is-flamingo .control-icon { color: #ff8fc7; }
+.loot-chip.is-crate .control-icon { color: #d9a46b; }
+.loot-arrow { display: inline-block; color: var(--accent); font-size: 14px; transition: transform 300ms ease; }
+.loot-chip small { flex-basis: 100%; color: var(--muted); font-size: 10.5px; font-weight: 650; text-align: center; }
+
+.stuck-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 16px;
+  border-color: rgba(255, 208, 135, 0.55);
+  border-radius: 99px;
+  color: #ffe2b0;
+  font-size: 12.5px;
+  font-weight: 800;
+  cursor: pointer;
+  animation: pop-in 200ms ease;
+}
+
+.stuck-chip .control-icon { width: 18px; height: 18px; }
+
+.quick-start {
+  width: min(360px, 100%);
+  padding: 10px 12px;
+  border-radius: 16px;
+  animation: pop-in 220ms ease;
+}
+
+.quick-start-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.quick-start-head button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.quick-start ol {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quick-start li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.quick-start li.is-current { color: var(--text); font-weight: 800; }
+.quick-start li.is-done { opacity: 0.6; text-decoration: line-through; }
+
+.step-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.quick-start li.is-current .step-mark { border-color: var(--accent); color: #052c31; background: var(--accent); }
+.quick-start li.is-done .step-mark { color: var(--accent); }
+
+/* The control the guide is talking about breathes. */
+.guide-target {
+  animation: guide-pulse 1600ms ease-in-out infinite;
+}
+
+@keyframes guide-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(101, 226, 214, 0.0), 0 10px 28px rgba(0, 12, 18, 0.22); }
+  50% { box-shadow: 0 0 0 5px rgba(101, 226, 214, 0.42), 0 10px 28px rgba(0, 12, 18, 0.22); }
+}
+
+.discovery-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 10px;
+  width: min(380px, 100%);
+  padding: 12px;
+  border-color: rgba(255, 209, 138, 0.42);
+  border-radius: 18px;
+  animation: discovery-in 320ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.discovery-card.is-poi { border-color: rgba(101, 226, 214, 0.55); }
+.discovery-card.is-flamingo { border-color: rgba(255, 143, 199, 0.6); }
+
+@keyframes discovery-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.94); }
+  to { opacity: 1; transform: none; }
+}
+
+.discovery-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: #ffd18a;
+  background: rgba(255, 209, 138, 0.12);
+}
+
+.discovery-card.is-flamingo .discovery-icon { color: #ff8fc7; background: rgba(255, 143, 199, 0.14); }
+.discovery-card.is-poi .discovery-icon { background: rgba(101, 226, 214, 0.12); }
+.discovery-icon .control-icon { width: 22px; height: 22px; }
+.place-icon { font-size: 22px; line-height: 1; }
+
+.discovery-text { min-width: 0; }
+.discovery-text strong { display: block; font-size: 13.5px; line-height: 1.3; }
+.discovery-text p { margin: 4px 0 0; color: #d5ecf0; font-size: 12.5px; line-height: 1.42; }
+
+.discovery-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  margin-top: 8px;
+  padding: 0 12px;
+  border: 1px solid rgba(101, 226, 214, 0.5);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(101, 226, 214, 0.14);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.discovery-answer { color: var(--accent) !important; font-weight: 750; }
+
+.discovery-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.discovery-close .control-icon { width: 16px; height: 16px; }
+
+.gust-flag {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-top: 2px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  color: #052c31;
+  background: var(--warning);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  animation: pop-in 200ms ease;
+}
+
+/* Panel: tabs, helm options, sail colours, logbook, service, keys. */
+.panel-tabs { display: grid !important; grid-template-columns: 1fr 1fr; align-self: start; }
+.panel-tabs button { min-height: 40px; font-size: 12.5px; font-weight: 800; }
+.panel-tabs button[aria-selected="true"],
+.panel-tabs button[aria-selected="true"]:hover { border-color: rgba(101, 226, 214, 0.62); color: #052c31; background: var(--accent); }
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 2px 4px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.swatch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px;
+}
+
+.swatch {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--swatch);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.swatch.is-locked {
+  background: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.06) 0 4px, transparent 4px 8px);
+  cursor: default;
+}
+
+.swatch[aria-pressed="true"],
+.swatch[aria-pressed="true"]:hover {
+  background: var(--swatch) !important;
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 2px rgba(101, 226, 214, 0.35);
+}
+
+.sail-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ccc;
+}
+
+.sail-swatch.is-sunset { background: #f06a3c; }
+.sail-swatch.is-lagoon { background: #2bb7b3; }
+.sail-swatch.is-royal { background: #4f46c8; }
+.sail-swatch.is-gold { background: #e8b23c; }
+.sail-swatch.is-flamingo { background: #f47fb8; }
+.sail-swatch.is-pirate { background: #232328; border: 1px solid #777; }
+
+.logbook {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+  padding: 0 4px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 750;
+}
+
+.service-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.service-grid button,
+.restart-confirm button {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: 6px 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+}
+
+.service-grid .control-icon { width: 18px; height: 18px; }
+.service-grid .quiet-danger { color: #ffcfc9; }
+
+.restart-confirm p { margin: 0 0 8px; font-size: 12.5px; line-height: 1.4; }
+.restart-confirm div { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.restart-confirm button { min-height: 40px; font-size: 12px; }
+.restart-confirm .danger { border-color: rgba(255, 123, 112, 0.6); color: #fff; background: rgba(255, 123, 112, 0.28); }
+
+.key-help ul {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+  list-style: none;
+}
+
+/* Phone portrait: the actions are a column; pop-overs open to its right. */
+@media (max-width: 680px) and (orientation: portrait) {
+  .scene-divider { width: 26px; height: 1px; }
+  .scene-pop { top: 0; left: calc(100% + 8px); }
+  .scene-actions { gap: 7px; }
+  .discovery-card,
+  .quick-start { width: 100%; }
+  .station-banner { top: 22%; }
+}
+
+/* Phone landscape: a single row; keep pop-overs inside the short screen. */
+@media (max-height: 560px) and (orientation: landscape) {
+  .scene-actions { gap: 6px; }
+  .radio-card { max-height: calc(100dvh - var(--edge-top) - var(--top-bar) - 80px); overflow-y: auto; }
+  .radio-stations button { min-height: 38px; padding: 4px 8px; }
+  .discovery-card,
+  .quick-start { width: min(330px, 100%); padding: 8px 10px; }
+  .quick-start ol { margin-top: 4px; gap: 2px; }
+  .station-banner { top: 20%; }
+}
+
+@media (pointer: coarse) {
+  .scene-pop,
+  .loot-chip,
+  .stuck-chip,
+  .quick-start,
+  .discovery-card {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .guide-target { animation: none; box-shadow: 0 0 0 3px rgba(101, 226, 214, 0.5); }
+}
+
+/* Desktop and landscape: the centred column sits below the row of scene
+   actions, so a prompt never covers a button. */
+@media (min-width: 681px), (orientation: landscape) {
+  .notice-stack { top: calc(var(--edge-top) + var(--top-bar) + 64px); }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .notice-stack { top: calc(var(--edge-top) + var(--top-bar) + 72px); max-width: min(360px, calc(100vw - 2 * var(--notice-side))); }
+  /* Only the step at hand on a short screen. */
+  .quick-start li:not(.is-current) { display: none; }
+}
+
+/* Phone portrait: the guide, a find and the tow offer sit above the rudder,
+   left of the throttle, clear of the yacht and of every control. */
+@media (max-width: 680px) and (orientation: portrait) {
+  .quick-start,
+  .discovery-card,
+  .stuck-chip {
+    position: fixed;
+    bottom: calc(var(--edge-bottom) + var(--rudder-dock, 150px));
+    left: var(--edge-left);
+    width: calc(100vw - var(--edge-left) - var(--edge-right) - var(--throttle-width) - 10px);
+  }
+
+  .stuck-chip { justify-content: center; }
+  .quick-start li:not(.is-current) { display: none; }
+  .guide-title { display: none; }
+  .guide-step-long { display: none; }
+  .guide-step-short { display: inline; }
+}
+
+.quick-start-head span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guide-step-short { display: none; }
+
+/* Phone landscape: the centred column keeps to the water between the rudder
+   card and the throttle, so it never lies over a control. */
+@media (max-height: 560px) and (orientation: landscape) {
+  .notice-stack {
+    left: calc(var(--edge-left) + clamp(250px, 42vw, 380px) + 10px);
+    right: calc(var(--edge-right) + var(--throttle-width) + 10px);
+    max-width: none;
+    width: auto;
+    align-items: stretch;
+  }
+
+  .notice-stack > * { align-self: center; }
+  .quick-start,
+  .discovery-card { width: 100%; }
+}
+
+/* Phone portrait: the bell joins the flares in their chooser, so the column of
+   actions stays short; if it is still too tall it wraps into a second column
+   rather than running under the rudder. Cards keep right of the column. */
+@media (max-width: 680px) and (orientation: portrait) {
+  .signal-bell { display: none; }
+  .flare-choice.pop-bell { display: grid; }
+  .flare-pop { flex-direction: column; }
+  .scene-actions {
+    flex-wrap: wrap;
+    align-content: flex-start;
+    max-height: calc(100dvh - var(--edge-top) - var(--top-bar) - 18px - var(--edge-bottom) - 160px);
+  }
+
+  .quick-start,
+  .discovery-card,
+  .stuck-chip {
+    left: calc(var(--edge-left) + 52px);
+    width: calc(100vw - var(--edge-left) - var(--edge-right) - var(--throttle-width) - 62px);
+  }
+
+  .discovery-card { grid-template-columns: 1fr auto; padding: 10px; }
+  .discovery-icon { display: none; }
+  .quick-start { padding: 8px 10px; }
+  .quick-start-head button { padding: 0 8px; }
+}
+
+/* Tablets in portrait: the short wind caption keeps the instruments clear of the heading card. */
+@media (min-width: 681px) and (max-width: 900px) {
+  .wind-label-full { display: none; }
+  .wind-label-short { display: inline; }
+}
+
+/* Very short landscape (568 × 320): the gap between the rudder and the
+   throttle is too narrow for a find's card, so it lies over the top bar for
+   its few seconds (it closes on a tap). */
+@media (max-height: 349px) and (orientation: landscape) {
+  .discovery-card {
+    position: fixed;
+    z-index: 46;
+    top: var(--edge-top);
+    left: var(--edge-left);
+    width: calc(100vw - var(--edge-left) - var(--edge-right) - var(--throttle-width) - 10px);
+    grid-template-columns: 1fr auto;
+  }
+
+  .discovery-icon { display: none; }
 }

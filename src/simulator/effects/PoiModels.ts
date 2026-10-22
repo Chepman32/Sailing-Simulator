@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 /**
  * Procedural models of the strange places: the party barge, the stranded
@@ -326,23 +327,23 @@ export function buildBarge(owned: Owned): BargeParts {
   // The crowd: simple figures that bounce to the beat.
   const skin = standard(owned, { color: 0x8a5a40, roughness: 0.7 });
   const clothes = [0xe0457b, 0x2b2f3a, 0xf2c14e, 0x2bb7b3, 0xf4f1ea, 0x6a4bd6].map((color) => standard(owned, { color, roughness: 0.75 }));
-  const bodyGeometry = new THREE.CapsuleGeometry(0.22, 0.75, 4, 8);
+  // One piece per figure (body and legs merged, in one outfit) and a head:
+  // two draw calls a dancer.
+  const bodyGeometry = new THREE.CapsuleGeometry(0.22, 0.75, 4, 8).translate(0, 1.25, 0);
+  const legLeftGeometry = new THREE.CapsuleGeometry(0.09, 0.6, 3, 6).translate(0.11, 0.45, 0);
+  const legRightGeometry = new THREE.CapsuleGeometry(0.09, 0.6, 3, 6).translate(-0.11, 0.45, 0);
+  const figureGeometry = mergeGeometries([bodyGeometry, legLeftGeometry, legRightGeometry], false)!;
+  [bodyGeometry, legLeftGeometry, legRightGeometry].forEach((geometry) => geometry.dispose());
   const headGeometry = new THREE.SphereGeometry(0.15, 10, 8);
-  const legGeometry = new THREE.CapsuleGeometry(0.09, 0.6, 3, 6);
-  owned.geometries.push(bodyGeometry, headGeometry, legGeometry);
+  owned.geometries.push(figureGeometry, headGeometry);
   const dancers: THREE.Object3D[] = [];
-  const spots: [number, number][] = [[-2.6, -4.5], [-0.8, -6.2], [1.6, -3.4], [2.9, -6.6], [-2.2, 0.4], [0.4, -0.6], [2.4, 1.6], [-0.9, 2.6], [1.1, -8.4], [-3.2, -8]];
+  const spots: [number, number][] = [[-2.6, -4.5], [-0.8, -6.2], [1.6, -3.4], [2.9, -6.6], [-2.2, 0.4], [0.4, -0.6], [2.4, 1.6], [-0.9, 2.6]];
   spots.forEach(([x, z], index) => {
     const dancer = new THREE.Group();
-    const body = new THREE.Mesh(bodyGeometry, clothes[index % clothes.length]!);
-    body.position.y = 1.25;
+    const figure = new THREE.Mesh(figureGeometry, clothes[index % clothes.length]!);
     const head = new THREE.Mesh(headGeometry, skin);
     head.position.y = 1.92;
-    const legLeft = new THREE.Mesh(legGeometry, clothes[(index + 1) % clothes.length]!);
-    legLeft.position.set(0.11, 0.45, 0);
-    const legRight = legLeft.clone();
-    legRight.position.x = -0.11;
-    dancer.add(body, head, legLeft, legRight);
+    dancer.add(figure, head);
     dancer.position.set(x, 1.62, z);
     dancer.rotation.y = index * 2.3;
     dancer.scale.setScalar(0.95 + (index % 3) * 0.06);

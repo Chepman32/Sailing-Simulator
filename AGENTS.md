@@ -65,6 +65,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `app/components/SoundPrompt.tsx` | The “tap for sound” capsule and its fine-dust dissolve (canvas) into the corner sound button |
 | `app/components/dustMath.ts` | Pure dust model for that dissolve: 1.5 px grains, left-to-right release wave, drift and stream into the button, fade |
 | `app/components/i18n.ts` | Thirty language definitions, system-language resolution, aliases, RTL helpers |
+| `app/components/VoyageUI.tsx` | Signal buttons (horn, bell, flare chooser), the radio mini-player and GTA-style station banner, the nearest-loot chip, find/discovery cards, the three-step first-run guide, the tow offer |
+| `app/components/featureMessages.ts` | Words for the voyage features (English and Russian; other languages fall back to English) |
 | `app/globals.css` | Full-screen layout, mobile breakpoints, safe areas, control sizing, UI states |
 | `app/chatgpt-auth.ts` | Sites/ChatGPT runtime integration; do not remove without understanding the host contract |
 
@@ -176,7 +178,15 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/input/InputController.ts` | Keyboard, gamepad, rudder/throttle setters, dead zones; the helm sign convention (`HELM_STARBOARD`: the physics frame has +X on the left of the view, so a starboard helm is a negative `controls.rudder`; `rudderFromHelm`/`helmFromRudder` convert, the HUD speaks the player's terms) and which keys belong to a focused element (`keyBelongsToElement`: only text entry and a slider's own arrows; held keys are dropped on window blur) |
 | `src/simulator/input/TouchControls.ts` | Camera-only pointer orbit, pinch zoom, double-tap recenter |
 | `src/simulator/camera/CameraController.ts` | Chase, helm, orbit, drone framing; damping; FOV; water-floor guard |
-| `src/simulator/audio/AudioSystem.ts` | Web Audio lifecycle, buses, engine synthesis, waves, wind, hull noise, splash cues |
+| `src/simulator/audio/AudioSystem.ts` | Web Audio lifecycle, buses, engine synthesis, waves, wind, splash cues, music bus (shanty band, party barge, monolith hum) |
+| `src/simulator/audio/BoatSoundMath.ts`, `BoatVoices.ts` | Pure levels of the yacht's own sound layers (slap → bow rush → spray above 6 kn, rigging, flogging, winches, gust swell) and the voices that play them; horn, bell, flare launch, pick-up chime |
+| `src/simulator/audio/MusicMath.ts`, `MusicSynth.ts` | Notes of "Drunken Sailor" (traditional, public domain) and jigs composed per seed; the look-ahead sequencer, the shanty band and the barge's house groove |
+| `src/simulator/audio/RadioSystem.ts` | The yacht radio: SomaFM streams through a plain media element with server fallbacks, the band on board, per-station mood grade |
+| `src/simulator/effects/FlareMath.ts`, `FlareSystem.ts` | Parachute flare flight, burn, flicker, smoke and its light (handed to `EnvironmentSystem.setFlare`, no extra light) |
+| `src/simulator/effects/LootMath.ts`, `LootSystem.ts`, `LootModels.ts` | Floating bottles, crates and flamingos on a 260 m hash grid, pick-up alongside, contents (sail colours, messages, cargo and doubloons) |
+| `src/simulator/effects/VolcanoMath.ts`, `VolcanoSystem.ts` | Eruption schedule, plume and bomb kinematics; plume, crater glow, lava tongues and eruptions on volcanic islands |
+| `src/simulator/effects/PoiMath.ts`, `PoiSystem.ts`, `PoiModels.ts`, `PuffPoints.ts` | Party barge, pirate wreck on its reef and monolith: placement, footprints (physics obstacles), procedural models and animation; pooled soft puffs for smoke |
+| `src/simulator/vessel/RescueMath.ts` | `findOpenWater`: where a stuck yacht is towed |
 | `src/simulator/ui/HudController.ts` | Snapshot throttling between simulator and React |
 
 ### Build, hosting, and tests
@@ -197,7 +207,10 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `tests/unit/helm.test.ts` | Chart plotter orientation against the rendered view, range steps, needles, compass, lever |
 | `tests/unit/world.test.ts` | Endless islands (every cell inhabited, no overlaps, land within 2 km), exact coast search, shader slots, ship lanes, steering, contact, Kelvin wake, horns, gull flight, loop subdivision |
 | `tests/unit/rig-and-reef.test.ts` | Boom and gybe, underwater absorption, wet band, foil sections, reef-fish schooling |
-| `tests/unit/shipguard.test.ts` | Hull clearance to the nearest ship; the yacht turns away from and leaves a ship's side by herself |
+| `tests/unit/shipguard.test.ts` | Hull clearance to the nearest ship; the yacht turns away from and leaves a ship's side by herself (fendered contact `SHIP_CONTACT`) |
+| `tests/unit/sailing-sound.test.ts` | Boat sound layers by speed, flogging and winches, a gust as one bounded event |
+| `tests/unit/signals.test.ts` | Flare flight, burn and light; night against day |
+| `tests/unit/places.test.ts` | Loot placement, reach and contents; the volcano east of the start and its eruptions; the places near the start and their footprints; towing to open water; shanty notes and radio stations |
 | `tests/unit/postprocessing.test.ts` | Bloom bright-pass and finish guarded against NaN and half-float overflow |
 | `tests/unit/framepacer.test.ts`, `gestures.test.ts` | Frame cap and resynchronisation; double-tap recognition |
 | `tests/rendered-html.test.mjs` | Built-route smoke test |
@@ -285,6 +298,7 @@ Do not run physics from React renders, HUD timers, GLB animation clip events, or
 - lighting mode;
 - quality preset;
 - master sound preference;
+- helm auto-return, steady helm view, the sail colour and the colours found, doubloons, flamingos, places discovered and the keys of things already picked up (all saved);
 - engine running state for the current session;
 - engine-only mute preference.
 
@@ -426,7 +440,7 @@ A wildlife splash position must be an actual world-space water-contact position,
 
 ## 13. Islands and bathymetry
 
-The world is cut into `WORLD_CELL` (1.2 km) cells. `IslandMath.islandsInCell(column, row)` generates each cell deterministically from a hash of its coordinates: one primary island and, at random, one or two more — mostly cays and islets, some wooded islands, one in eight a large high island with ridged hills, forest and bare rock. Centres stay `cellMargin(reach)` from the cell edge, so islands of different cells never come closer than their shelves plus a channel; cell (0, 0) holds the three fixed home islands; the yacht starts (and resets) at `VesselPhysics.START_POSITION`, about 250 m off the nearest beach with the home islands ahead, and the camera snaps there (`CameraController.snap`). Each definition provides a unique `id`, a `seed` (0…95) that replaces the old array index in the coastline noise and in the shaders' phases, centre, beach radius, elliptical Z scale, summit height and a two-lobed coastline bulge. `START_ISLANDS` is the stable list near the start used by tests. Caches are bounded and regenerate identically.
+The world is cut into `WORLD_CELL` (1.2 km) cells. `IslandMath.islandsInCell(column, row)` generates each cell deterministically from a hash of its coordinates: one primary island and, at random, one or two more — mostly cays and islets, some wooded islands, one in eight a large high island with ridged hills, forest and bare rock. Centres stay `cellMargin(reach)` from the cell edge, so islands of different cells never come closer than their shelves plus a channel; cell (0, 0) holds the three fixed home islands; the yacht starts (and resets) at `VesselPhysics.START_POSITION`, about 250 m off the nearest beach with the home islands ahead, and the camera snaps there (`CameraController.snap`). Each definition provides a unique `id`, a `seed` (0…95) that replaces the old array index in the coastline noise and in the shaders' phases, centre, beach radius, elliptical Z scale, summit height and a two-lobed coastline bulge. `START_ISLANDS` is the stable list near the start used by tests. Caches are bounded and regenerate identically. In volcano cells (`isVolcanoCell`: the cell east of the start, then about one in ten) the primary island is a volcano (`volcano: true`, beach radius 150–190 m, 64–86 m high): `volcanoHeight` gives the concave cone with gullies and a crater, the terrain is black sand, lava rock and ash with only a fringe of palms, and `VolcanoSystem` adds the plume, lava and eruptions. It is an island like any other for collision, bathymetry and surf.
 
 Coast queries (`distanceFromWaterline`, `nearestShore`) measure only the islands of the 3×3 cells around the point (`islandsAround`), so the answer is exact and a query touches a handful of islands. `IslandSystem` streams visuals: islands within `ISLAND_BUILD_RADIUS` are built (one per frame, nearest first), those beyond `ISLAND_RELEASE_RADIUS` are disposed; palms are merged per island and the palm shadow map is invalidated when the set changes. `IslandSystem.depthAt()` derives a shallow-water profile near each beach and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint, and direction back toward open water.
 
@@ -617,7 +631,13 @@ Master → DynamicsCompressor → destination
   WildlifeBus → one-shot splashes (panned to where they happened, darker with distance) + positional gull calls (also when a bird is disturbed on the water or takes off)
   EnvironmentBus → thunder per strike (delayed by distance, panned to the strike, crack when close, low roll when far)
   EnvironmentBus → two ship voices (diesel throb and beat, bow-wave rush, air absorption by distance) + ship horns (delayed by distance / 343 m/s)
+  EnvironmentBus → BoatVoices: hull slap, bow rush, spray, rigging, sail flogging and the crack as it fills, winch ratchet, eased-sheet slip; air horn, bell, flare
+  MusicBus → shanty band (radio), party barge groove (low-passed and quieter with distance), monolith hum; radio static between stations
 ```
+
+The yacht's sound is layered by what she does (`boatSoundLevels`): water slapping the hulls at rest, the bow wave's rush opening with speed, spray only above `SPRAY_START_KNOTS`, the rigging singing when it blows, the sail flogging while it luffs (going about) and cracking full on the new tack, the winches ratcheting while the sheet comes in. A gust (`WindMath.gustEvent`) is one event: heard coming (`GUST_WARNING` s ahead), seen as a darker patch running over the water (`uGustPatch`), then wind, heel and speed rise together.
+
+The air horn and the bell are buttons whose purpose is a sound, so they may start the audio graph inside their own gesture (`Simulator.playSignal`), but never when the player switched sound off (the interface says so instead). A ship within hail answers the horn with one long blast. The radio streams SomaFM (listener-supported, credited in the player with a link) through a visible-in-the-UI plain `<audio>` element — never a hidden YouTube player, which YouTube's terms forbid — tries each server in turn, pauses with a hidden page, and mutes with the master switch; turning the radio on is itself a request for sound.
 
 The master sound setting and audio readiness are different states:
 
@@ -652,7 +672,7 @@ When tuning audio, test on small phone speakers. Important engine fundamentals a
 Four camera modes are supported:
 
 - `chase`: damped third-person follow with speed-sensitive FOV;
-- `helm`: the helmsman's eyes at the starboard helm (`HELM_EYE`), carried exactly with the yacht so nothing lags into the wheel or the pod, while the head keeps most of its level against her roll and pitch (`HEAD_ROLL_SHARE`, `HEAD_PITCH_SHARE`); limited look range, no zoom;
+- `helm`: the helmsman's eyes at the starboard helm (`HELM_EYE`), carried exactly with the yacht so nothing lags into the wheel or the pod, while the head keeps most of its level against her roll and pitch (`HEAD_ROLL_SHARE`, `HEAD_PITCH_SHARE`); limited look range, no zoom. With the steady view (`steadyHelm`, on by default, saved) the eye height is low-passed and only 15 % of the pitch and 10 % of the roll reach the camera: the boat rocks, the player is not made seasick;
 - `orbit`: freer inspection around the yacht;
 - `drone`: elevated long-distance view.
 
@@ -706,6 +726,10 @@ Layout is driven by tokens on `.simulator-shell` (`--gap`, `--top-bar`, `--edge-
 - the apparent-wind card is shown on every phone at least 360 px wide: in portrait it shows the short caption (`messages.wind`) and drops the angle so speed, depth and wind fit beside the controls pill; the scene actions include a one-tap camera cycle (chase → helm → orbit → drone) whose label is the current mode;
 - phone conveniences: the Screen Wake Lock keeps the display on while the page is visible (re-requested on `visibilitychange`, released on unmount, failures ignored); starting or stopping the engine gives a short `navigator.vibrate` tick where supported; `overscroll-behavior: none` and `-webkit-touch-callout: none` stop pull-to-refresh and long-press menus;
 - the app is installable: `public/manifest.webmanifest` (fullscreen, theme `#061923`), `icon-192/512.png`, a maskable icon and `apple-touch-icon.png`, wired through `metadata` in `app/layout.tsx` (`appleWebApp` capable, translucent status bar);
+- the scene actions are sound, camera cycle, photo, radio, then (after a divider) horn, bell and flare gun; reset is not among them: the "Yacht" tab of the panel holds the service commands (recenter camera, tow to open water, restart with a confirmation), and a "Stuck? Tow to open water" chip appears by itself when she has been held fast while the player tries to move (`snapshot.stuck`). Pop-overs (flare colour, radio) hang below their button in the row and beside it in the portrait column, and close on any press elsewhere;
+- the panel has two tabs: "Sea & sky" (time, sound, camera, weather, quality, language) and "Yacht" (sail trim, helm auto-return, steady helm view, sail colours, logbook, service, keyboard list on fine pointers);
+- the first-run guide (three steps, ticked off by doing them, `sailing-onboarding-done` in storage, skippable) and find/discovery cards live in the notice column on desktop and landscape (between the rudder card and the throttle on short screens, below the scene actions) and above the rudder, left of the throttle, on portrait phones; the control the guide talks about pulses; the nearest thing afloat within 340 m is a chip with distance and an arrow;
+- keyboard commands handled by React (never in text fields): `P` photo, `H` horn, `B` bell, `F`/`G` red/green flare, `M`/`Shift+M` radio, `V` camera, `R` recenter, `Esc`; `A`/`D` (auto-return when released, also for a released slider), `W`/`S` (W starts the engine), `Q`/`E` sheet, `C`/`Space` centre belong to `InputController`;
 - photo mode fades the interface out (inert while hidden); one tap or click on the scene (a short press that barely moved, so drags still frame the shot), `Escape` or `Tab` fades it back in; the hint says so for three seconds. In photo mode the camera is a photographer (`PhotoDirector`, applied by `CameraController.direct` after the normal camera, which it never disturbs): a breach (from its run-up), a whale at the surface or slapping its tail, a ship's horn, a shark's fin and leaping dolphins — in that order of priority — make it swing from just behind and above the yacht toward the event and zoom so the subject fills about half the frame, hold for `PHOTO_HOLD` seconds (or until the event is over), then ease back; a drag or zoom by the player wins and keeps it quiet for `PHOTO_USER_PAUSE` seconds.
 
 Verify layout changes at least at 320×568, 375×667, 390×844, 360×740, 568×320, 667×375, 844×390, 932×430, 768×1024, 1024×768, 1280×720, 1366×768 and 1920×1080, with the panel open and closed, in a long language (German or Russian), an RTL language and a non-Latin script (Tamil).
@@ -728,7 +752,7 @@ Startup resolution checks, in order:
 
 Locale tags are lowercased, underscores become hyphens, regional suffixes fall back to their base code, and aliases such as `iw → he`, `in → id`, and `tl → fil` are supported. System `languagechange` events continue to update the app only while no valid manual preference is saved.
 
-Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI message requires adding it to the English shape and all thirty translations; tests enforce structural completeness.
+Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI message requires adding it to the English shape and all thirty translations; tests enforce structural completeness. The voyage features' words (`featureMessages.ts`) are a separate table in English and Russian with English as the fallback; translating them into the other languages is open work.
 
 ## 20. Quality and performance
 
@@ -1040,7 +1064,8 @@ Do not commit every exploratory change. The standing project preference is to pu
 
 The following are known constraints, not invitations to bypass the architecture:
 
-- audio is synthesized rather than based on recorded engine/wave/gull stems (no licensed recordings were reachable from the build environment);
+- audio is synthesized rather than based on recorded engine/wave/gull stems (no licensed recordings were reachable from the build environment); the radio's three internet stations need the network and SomaFM's servers, show no track titles (the stream's metadata is not exposed to the page), and on iOS their volume follows the device buttons only;
+- the volcano's cone is island terrain and casts no sun shadow; lava, the barge's lights and the monolith's glyphs do not light their surroundings (only flares and lightning do);
 - the yacht force model is intentionally lightweight and not a full six-degree-of-freedom naval solver: sails are sheeted automatically, the two engines are not independently controllable, and heave, pitch, and roll are oscillators driven by the water plane rather than integrated hull pressures;
 - ocean reflections combine the analytic sky with a planar mirror of everything above the sea at mean sea level (bent by the ripples, not by the swell's real geometry); there is no refraction or depth-based absorption because the scene depth is not sampled;
 - whitecaps are a function of the instantaneous wave field and leave no persistent foam history;

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { OceanSystem } from "../environment/OceanSystem";
 import type { UnderwaterLight } from "../environment/UnderwaterLight";
 import { smoothstep } from "../math";
+import { batchStaticMeshes } from "../core/StaticBatching";
 import { DISCOVERY_RANGE, nearestPoiClearance, poisAround, type Poi } from "./PoiMath";
 import { buildBarge, buildMonolith, buildWreck, type BargeParts, type MonolithParts, type Owned, type WreckParts } from "./PoiModels";
 
@@ -14,6 +15,10 @@ import { buildBarge, buildMonolith, buildWreck, type BargeParts, type MonolithPa
 /** Places within this distance are built and drawn, metres. */
 const POI_RANGE = 2200;
 const RESCAN_STEP = 100;
+/** Places farther than this are not drawn (the haze has them), metres. */
+const POI_DRAW_DISTANCE = 1700;
+/** Crowd and other small parts are drawn only nearer than this, metres. */
+const DETAIL_DISTANCE = 220;
 
 type Visual = {
   poi: Poi;
@@ -90,6 +95,14 @@ export class PoiSystem {
         this.discovered.add(key);
         this.found.push(poi);
       }
+      // Small parts only near; the whole place is lost in the haze far off.
+      visual.root.visible = distance < POI_DRAW_DISTANCE;
+      if (!visual.root.visible) continue;
+      if (visual.barge) {
+        const near = distance < DETAIL_DISTANCE;
+        for (const dancer of visual.barge.dancers) dancer.visible = near;
+        visual.barge.ball.visible = near;
+      }
       if (visual.barge) this.animateBarge(visual, visual.barge, night, beat, distance);
       if (visual.wreck) this.animateWreck(visual.wreck, night, windX, windZ);
       if (visual.monolith) this.animateMonolith(visual.monolith, night, distance);
@@ -140,6 +153,24 @@ export class PoiSystem {
       if (material instanceof THREE.MeshStandardMaterial) this.underwater.apply(material);
     }
     root.updateMatrixWorld(true);
+    // Everything that never moves is merged into one mesh per material: a
+    // place is a few draw calls, not dozens.
+    const moving = new Set<THREE.Object3D>();
+    const keep = (object: THREE.Object3D | undefined): void => object?.traverse((child) => moving.add(child));
+    visual.barge?.dancers.forEach(keep);
+    keep(visual.barge?.ball);
+    keep(visual.barge?.lasers);
+    visual.wreck?.sails.forEach(keep);
+    keep(visual.wreck?.flag);
+    keep(visual.monolith?.ring);
+    const statics: THREE.Mesh[] = [];
+    root.traverse((object) => {
+      if (object instanceof THREE.Mesh && !moving.has(object) && !(object instanceof THREE.InstancedMesh)) statics.push(object);
+    });
+    // Batches go into the model's own frame (the wreck's hull is heeled inside it).
+    const frame = visual.barge?.group ?? visual.wreck?.group ?? visual.monolith?.group ?? root;
+    const batched = batchStaticMeshes(frame, statics, (mesh) => mesh.material instanceof THREE.Material ? mesh.material.uuid : "", `Place:${poi.kind}`);
+    owned.geometries.push(...batched.geometries);
     this.group.add(root);
     return visual;
   }

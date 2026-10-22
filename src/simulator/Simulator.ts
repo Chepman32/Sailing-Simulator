@@ -49,7 +49,7 @@ import { NEUTRAL_GRADE, RadioSystem, type RadioStationId } from "./audio/RadioSy
 import { VolcanoSystem } from "./effects/VolcanoSystem";
 import { PoiSystem } from "./effects/PoiSystem";
 import { DISCOVERY_RANGE, POI_CLEARANCE } from "./effects/PoiMath";
-import { findOpenWater } from "./vessel/RescueMath";
+import { findOpenWater, RESCUE_CLEARANCE } from "./vessel/RescueMath";
 
 const STORAGE_KEY = "sailing-simulator-pro-preferences-v2";
 /** Picked-up things remembered across visits (the oldest are forgotten and float again). */
@@ -323,6 +323,10 @@ export class Simulator {
         this.rain.object,
         ...this.environment.celestial,
         ...this.vessel.mirrorSkipped,
+        // The places and the things afloat are left out of the planar mirror:
+        // it would draw them all a second time.
+        this.places.group,
+        this.loot.group,
       ];
       this.input = new InputController(this.state.controls, {
         engineRunning: () => this.state.engineRunning,
@@ -725,6 +729,8 @@ export class Simulator {
       }
       return shore;
     };
+    // Already in open water and making way: nothing to tow.
+    if (clearance(yacht.x, yacht.z, this.obstacleNormal) >= RESCUE_CLEARANCE && this.stuckTime <= STUCK_SECONDS) return false;
     const spot = findOpenWater(yacht.x, yacht.z, clearance);
     if (!spot) return false;
     this.physics.relocate(spot.x, spot.z, spot.heading);

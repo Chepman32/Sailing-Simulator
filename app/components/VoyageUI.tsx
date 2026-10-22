@@ -144,7 +144,7 @@ export function SignalButtons({
         <VoyageIcon name="horn" />
         <span className="scene-action-label">{messages.horn}</span>
       </button>
-      <button type="button" className="scene-action signal-action" disabled={disabled} title={`${messages.bell} (B)`} aria-label={messages.bell} onClick={onBell}>
+      <button type="button" className="scene-action signal-action signal-bell" disabled={disabled} title={`${messages.bell} (B)`} aria-label={messages.bell} onClick={onBell}>
         <VoyageIcon name="bell" />
         <span className="scene-action-label">{messages.bell}</span>
       </button>
@@ -167,6 +167,19 @@ export function SignalButtons({
         </button>
         {flareOpen && (
           <div className="scene-pop flare-pop" role="group" aria-label={messages.flare}>
+            {/* On narrow portrait screens the bell lives here, beside the flares. */}
+            <button
+              type="button"
+              className="flare-choice pop-bell"
+              aria-label={messages.bell}
+              title={`${messages.bell} (B)`}
+              onClick={() => {
+                onBell();
+                keepOpen();
+              }}
+            >
+              <VoyageIcon name="bell" />
+            </button>
             {(["red", "green"] as const).map((color) => (
               <button
                 key={color}
@@ -356,7 +369,6 @@ export function DiscoveryCard({
   onHoist: (color: string) => void;
 }) {
   const [answer, setAnswer] = useState(false);
-  useEffect(() => setAnswer(false), [discovery?.id]);
   useEffect(() => {
     if (!discovery) return;
     const riddle = RIDDLES.has(discovery.key);
@@ -438,7 +450,8 @@ export function QuickStart({
   return (
     <div className="quick-start" role="status" aria-live="polite">
       <div className="quick-start-head">
-        <span>{messages.guideTitle} · {fill(messages.guideStep, { n: step })}</span>
+        <span className="guide-step-long"><span className="guide-title">{messages.guideTitle} · </span>{fill(messages.guideStep, { n: step })}</span>
+        <span className="guide-step-short">{step} / 3</span>
         <button type="button" onClick={onSkip}>{messages.guideSkip}</button>
       </div>
       <ol>

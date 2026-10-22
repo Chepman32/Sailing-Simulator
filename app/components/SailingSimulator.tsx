@@ -3,9 +3,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
-import type { CameraMode, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
+import type { CameraMode, Discovery, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
 import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
 import { SoundPrompt } from "./SoundPrompt";
+import { featureText, getFeatureMessages } from "./featureMessages";
+import {
+  DiscoveryCard,
+  LootChip,
+  QuickStart,
+  RadioPlayer,
+  SignalButtons,
+  StationBanner,
+  stationInfo,
+  StuckChip,
+  VoyageIcon,
+  type DiscoveryView,
+} from "./VoyageUI";
 import {
   getMessages,
   isLanguageCode,
@@ -18,6 +31,35 @@ import {
 } from "./i18n";
 
 const ASSET_LOAD_TOTAL = 7;
+/** Set once the first-run guide has been finished or skipped. */
+const GUIDE_STORAGE_KEY = "sailing-onboarding-done";
+const SAIL_SWATCHES: { id: string; color: string }[] = [
+  { id: "white", color: "#dcd8ca" },
+  { id: "sunset", color: "#f06a3c" },
+  { id: "lagoon", color: "#2bb7b3" },
+  { id: "royal", color: "#4f46c8" },
+  { id: "gold", color: "#e8b23c" },
+  { id: "flamingo", color: "#f47fb8" },
+  { id: "pirate", color: "#232328" },
+];
+
+function readGuideDone(): boolean {
+  try {
+    return window.localStorage.getItem(GUIDE_STORAGE_KEY) === "1";
+  } catch {
+    return true;
+  }
+}
+
+/** Typing in a field (or a slider's own arrow keys) is not a command. */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag === "INPUT") return (target as HTMLInputElement).type !== "range";
+  return false;
+}
 
 type ControlIconName =
   | "sun"
@@ -218,6 +260,24 @@ export function SailingSimulator() {
   }, []);
   useEffect(() => () => window.clearTimeout(soundArrivedTimer.current), []);
   const engineNoticeTimer = useRef<number | undefined>(undefined);
+  // Finds and discoveries wait their turn for the card at the top.
+  const [discoveries, setDiscoveries] = useState<DiscoveryView[]>([]);
+  const discoveryId = useRef(0);
+  const [stationBanner, setStationBanner] = useState<{ id: string; key: number } | null>(null);
+  const [radioVolume, setRadioVolume] = useState(0.7);
+  const [panelTab, setPanelTab] = useState<"scene" | "yacht">("scene");
+  const [confirmRestart, setConfirmRestart] = useState(false);
+  // First-run guide: 1–3 while it runs, 0 once done (decided after mount, from storage).
+  const [guideStep, setGuideStep] = useState(0);
+  const [coarsePointer, setCoarsePointer] = useState(false);
+  const finishGuide = useCallback(() => {
+    setGuideStep(0);
+    try {
+      window.localStorage.setItem(GUIDE_STORAGE_KEY, "1");
+    } catch {
+      // The guide simply shows again next time.
+    }
+  }, []);
 
   // Keep the phone awake while the yacht is on screen: a screen that dims in the middle of a passage is the
   // most common complaint of a handheld sim. The lock is released by the browser whenever the page is hidden,
@@ -323,6 +383,10 @@ export function SailingSimulator() {
   }, [photoMode, exitPhotoMode]);
 
   const messages = useMemo(() => getMessages(language), [language]);
+  const voyage = useMemo(() => getFeatureMessages(language), [language]);
+  // Callbacks the simulator holds for its lifetime reach the current render through this.
+  type LatestHandlers = { keyAction: (action: string) => void; discovery: (discovery: Discovery) => void; radioFailed: (station: string) => void };
+  const latest = useRef<LatestHandlers>({ keyAction: () => {}, discovery: () => {}, radioFailed: () => {} });
   const cameraLabels = useMemo<Record<CameraMode, string>>(() => ({
     chase: messages.chase,
     helm: messages.helm,
@@ -376,10 +440,19 @@ export function SailingSimulator() {
         // server bundle never executes browser-only Three.js globals.
         const simulatorModule = await import("@/src/simulator/Simulator");
         if (disposed) return;
+        // Client-only facts, read once the page is in the browser.
+        setCoarsePointer(window.matchMedia("(pointer: coarse)").matches);
+        if (!readGuideDone()) setGuideStep(1);
         simulator = new simulatorModule.Simulator(canvas, {
           onSnapshot: (nextSnapshot) => {
             setSnapshot(nextSnapshot);
             setEngineInput(nextSnapshot.engineRunning);
+            // The first-run guide ticks itself off as the player does each thing.
+            setGuideStep((step) => {
+              if (step === 1 && (nextSnapshot.engineRunning || nextSnapshot.speedKnots > 1.2)) return 2;
+              if (step === 2 && Math.abs(nextSnapshot.rudderDegrees) > 8) return 3;
+              return step;
+            });
           },
           onLoading: setLoading,
           onError: (message) => {
@@ -391,6 +464,9 @@ export function SailingSimulator() {
             exitPhotoMode();
             return true;
           },
+          onKeyAction: (action) => latest.current.keyAction(action),
+          onDiscovery: (discovery) => latest.current.discovery(discovery),
+          onRadioFailed: (station) => latest.current.radioFailed(station),
         });
         simulatorRef.current = simulator;
         // Development builds only: lets visual checks drive the scene from a
@@ -471,6 +547,153 @@ export function SailingSimulator() {
     );
     navigator.vibrate?.(running ? 24 : 14);
   };
+
+  const ready = loading.ready && !error;
+  const stations = stationInfo(voyage);
+
+  const handlers: LatestHandlers = {
+    keyAction: (action) => {
+      if (action === "engine-on") showNotice(voyage.engineOnKey);
+    },
+    discovery: (discovery) => {
+      discoveryId.current += 1;
+      const view = { ...discovery, id: discoveryId.current };
+      setDiscoveries((queue) => [...queue.slice(-3), view]);
+      try { navigator.vibrate?.(discovery.kind === "poi" ? [20, 40, 20] : 16); } catch { /* not available */ }
+    },
+    radioFailed: () => showNotice(voyage.radioFailed),
+  };
+  useEffect(() => {
+    latest.current = handlers;
+  });
+
+  const closeDiscovery = useCallback(() => setDiscoveries((queue) => queue.slice(1)), []);
+
+  /** Horn or bell: they start the sound if needed, but never against the sound switch. */
+  const playSignal = (signal: "horn" | "bell") => {
+    const simulator = simulatorRef.current;
+    if (!simulator || !ready) return;
+    void simulator.playSignal(signal).then((result) => {
+      if (result === "muted") showNotice(voyage.soundOffHint);
+    });
+  };
+  const launchFlare = (color: "red" | "green") => {
+    const simulator = simulatorRef.current;
+    if (!simulator || !ready) return;
+    const fired = simulator.launchFlare(color);
+    showNotice(fired ? `${color === "red" ? voyage.flareRed : voyage.flareGreen} · ${voyage.flareFired}` : voyage.flareReloading);
+    if (fired) {
+      try { navigator.vibrate?.(22); } catch { /* not available */ }
+    }
+  };
+  const tuneRadio = (station: string | null) => {
+    const simulator = simulatorRef.current;
+    if (!simulator || !ready) return;
+    simulator.setRadio(station as Parameters<SimulatorInstance["setRadio"]>[0]);
+    if (station) setStationBanner((banner) => ({ id: station, key: (banner?.key ?? 0) + 1 }));
+    else showNotice(voyage.radioOff);
+  };
+  const stepRadio = (direction: 1 | -1) => {
+    const simulator = simulatorRef.current;
+    if (!simulator || !ready) return;
+    const ids = stations.map((station) => station.id);
+    const index = snapshot.radioStation ? ids.indexOf(snapshot.radioStation) : direction > 0 ? -1 : 0;
+    const next = ids[(index + direction + ids.length) % ids.length]!;
+    tuneRadio(next);
+  };
+  const rescueBoat = () => {
+    const simulator = simulatorRef.current;
+    if (!simulator || !ready) return;
+    showNotice(simulator.rescueBoat() ? voyage.rescueDone : voyage.rescueClear);
+  };
+  const restartVoyage = () => {
+    setConfirmRestart(false);
+    setPanelMinimized(true);
+    resetScene();
+    showNotice(voyage.restarted);
+  };
+  const recenterCamera = () => {
+    simulatorRef.current?.recenterCamera();
+    showNotice(voyage.recenterCamera);
+  };
+  const hoistSail = (color: string) => {
+    simulatorRef.current?.setSailColor(color);
+    showNotice(`${voyage.sailColor}: ${featureText(voyage, `sail_${color}`)}`);
+  };
+  const enterPhotoMode = () => {
+    photoModeRef.current = true;
+    setPhotoMode(true);
+    // The camera now turns by itself to whales, dolphins, sharks, eruptions and ships' horns.
+    simulatorRef.current?.setPhotoMode(true);
+    if (guideStep === 3) finishGuide();
+  };
+
+  const guideWasRunning = useRef(false);
+  useEffect(() => {
+    if (guideStep > 0) guideWasRunning.current = true;
+  }, [guideStep]);
+  useEffect(() => {
+    // Back from the guide's photo mode: one word of encouragement.
+    if (!photoMode && guideStep === 0 && guideWasRunning.current && readGuideDone()) {
+      guideWasRunning.current = false;
+      showNotice(voyage.guideDone);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoMode, guideStep]);
+
+  // Keyboard commands (the helm and the throttle are the simulator's own keys).
+  const keyHandler = useRef<(event: KeyboardEvent) => void>(() => {});
+  const onKey = (event: KeyboardEvent) => {
+    if (!ready || photoMode || event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+    if (isTypingTarget(event.target)) return;
+    switch (event.code) {
+      case "KeyP":
+        enterPhotoMode();
+        break;
+      case "KeyH":
+        playSignal("horn");
+        break;
+      case "KeyB":
+        playSignal("bell");
+        break;
+      case "KeyF":
+        launchFlare("red");
+        break;
+      case "KeyG":
+        launchFlare("green");
+        break;
+      case "KeyM":
+        if (event.shiftKey) stepRadio(-1);
+        else if (snapshot.radioStation && snapshot.radioStation === stations[stations.length - 1]!.id) tuneRadio(null);
+        else stepRadio(1);
+        break;
+      case "KeyV": {
+        const modes = Object.keys(cameraLabels) as CameraMode[];
+        const next = modes[(modes.indexOf(snapshot.cameraMode) + 1) % modes.length]!;
+        setCamera(next);
+        showNotice(`${messages.camera}: ${cameraLabels[next]}`);
+        break;
+      }
+      case "KeyR":
+        recenterCamera();
+        break;
+      case "Escape":
+        if (!panelMinimized) setPanelMinimized(true);
+        else if (discoveries.length > 0) closeDiscovery();
+        return;
+      default:
+        return;
+    }
+    event.preventDefault();
+  };
+  useEffect(() => {
+    keyHandler.current = onKey;
+  });
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => keyHandler.current(event);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const soundLocked = snapshot.soundEnabled && !snapshot.audioReady;
   const soundLabel = snapshot.soundEnabled
@@ -570,7 +793,20 @@ export function SailingSimulator() {
             onUnlock={unlockSound}
             onArrived={onSoundPromptArrived}
           />
+          {ready && !discoveries.length && <QuickStart step={guideStep} touch={coarsePointer} messages={voyage} onSkip={finishGuide} />}
+          {ready && (
+            <DiscoveryCard key={discoveries[0]?.id ?? 0} discovery={discoveries[0] ?? null} messages={voyage} onClose={closeDiscovery} onHoist={(color) => {
+              hoistSail(color);
+              closeDiscovery();
+            }} />
+          )}
+          {ready && snapshot.stuck && <StuckChip messages={voyage} onRescue={rescueBoat} />}
+          {ready && !discoveries.length && guideStep === 0 && <LootChip loot={snapshot.nearestLoot} messages={voyage} />}
         </div>
+
+        {stationBanner && (
+          <StationBanner station={stations.find((station) => station.id === stationBanner.id) ?? null} keyId={stationBanner.key} />
+        )}
 
         <div className="scene-actions">
           {/* Permanent mute/unmute. While the browser still holds sound back it
@@ -622,33 +858,31 @@ export function SailingSimulator() {
             <span className="scene-action-label">{cameraLabels[snapshot.cameraMode]}</span>
           </button>
           <button
-            type="button"
-            className="scene-action"
-            disabled={!loading.ready || Boolean(error)}
-            title={messages.reset}
-            onClick={resetScene}
-          >
-            <ControlIcon name="reset" />
-            <span className="scene-action-label">{messages.reset}</span>
-          </button>
-          <button
             ref={photoButtonRef}
             type="button"
-            className="scene-action"
+            className={`scene-action${guideStep === 3 ? " guide-target" : ""}`}
             disabled={!loading.ready || Boolean(error)}
-            title={`${messages.photoMode}. ${messages.photoModeHint}`}
+            title={`${messages.photoMode} (P). ${messages.photoModeHint}`}
             aria-describedby="photo-mode-hint"
-            onClick={() => {
-              photoModeRef.current = true;
-              setPhotoMode(true);
-              // The camera now turns by itself to whales, dolphins, sharks and ships' horns.
-              simulatorRef.current?.setPhotoMode(true);
-            }}
+            onClick={enterPhotoMode}
           >
             <ControlIcon name="photo" />
             <span className="scene-action-label">{messages.photoMode}</span>
           </button>
           <p id="photo-mode-hint" className="photo-mode-hint">{messages.photoModeHint}</p>
+          <RadioPlayer
+            messages={voyage}
+            snapshot={snapshot}
+            disabled={!ready}
+            volume={radioVolume}
+            onStation={tuneRadio}
+            onStep={stepRadio}
+            onVolume={(volume) => {
+              setRadioVolume(volume);
+              simulatorRef.current?.setRadioVolume(volume);
+            }}
+          />
+          <SignalButtons messages={voyage} disabled={!ready} onHorn={() => playSignal("horn")} onBell={() => playSignal("bell")} onFlare={launchFlare} />
         </div>
 
         <section className="instrument-cluster" aria-label={messages.sailingControls}>
@@ -657,6 +891,7 @@ export function SailingSimulator() {
           <div className="instrument wind-instrument">
             <span><span className="wind-label-full">{messages.apparentWind}</span><span className="wind-label-short">{messages.wind}</span></span><strong>{snapshot.apparentWindKnots.toFixed(1)}</strong>
             <small>kn<span className="wind-angle"> · {Math.abs(snapshot.apparentWindAngle).toFixed(0)}°</span></small>
+            {snapshot.gust > 0.15 && <em className="gust-flag" title={voyage.gust}>{voyage.gust}</em>}
           </div>
         </section>
 
@@ -716,7 +951,7 @@ export function SailingSimulator() {
 
 
           {!panelMinimized && (
-            <div className="panel-body">
+            <div className={`panel-body${panelTab === "yacht" ? " is-yacht" : ""}`}>
               {/* The first-run tip lives in the control panel; what a switch has
                   just done is announced in the middle of the screen (see
                   .action-toast). The shore guard is announced on the rudder card. */}
@@ -729,6 +964,21 @@ export function SailingSimulator() {
                   )}
                 </div>
               )}
+              <div className="panel-tabs segmented" role="tablist" aria-label={messages.controls}>
+                {(["scene", "yacht"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    role="tab"
+                    aria-selected={panelTab === tab}
+                    onClick={() => {
+                      setPanelTab(tab);
+                      setConfirmRestart(false);
+                    }}
+                  >{tab === "scene" ? voyage.tabScene : voyage.tabYacht}</button>
+                ))}
+              </div>
+              {panelTab === "scene" && (<>
               <div className="compact-row">
                 <div className="segmented time-group" role="group" aria-label={`${messages.day} / ${messages.night}`}>
                   {(["day", "night"] as LightingMode[]).map((mode) => (
@@ -851,6 +1101,8 @@ export function SailingSimulator() {
                 </div>
               </div>
 
+              </>)}
+              {panelTab === "yacht" && (<>
               <div className="panel-section trim-row">
                 <label htmlFor="sail-trim">{messages.sailTrim} <strong>{Math.round(snapshot.sailTrim * 100)}%</strong></label>
                 <input
@@ -863,7 +1115,94 @@ export function SailingSimulator() {
                 />
               </div>
 
-              <footer className="panel-footer">
+              <div className="panel-section helm-options" role="group" aria-label={voyage.helmSection}>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={snapshot.autoCenterHelm}
+                    onChange={(event) => {
+                      simulatorRef.current?.setAutoCenterHelm(event.target.checked);
+                      showNotice(`${voyage.autoCenter}: ${event.target.checked ? messages.on : messages.off}`);
+                    }}
+                  />
+                  <span>{voyage.autoCenter}</span>
+                </label>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={snapshot.steadyHelmView}
+                    onChange={(event) => {
+                      simulatorRef.current?.setSteadyHelmView(event.target.checked);
+                      showNotice(`${voyage.steadyView}: ${event.target.checked ? messages.on : messages.off}`);
+                    }}
+                  />
+                  <span>{voyage.steadyView}</span>
+                </label>
+              </div>
+
+              <div className="panel-section sail-colours">
+                <div className="section-label"><span>{voyage.sailColor}</span><strong>{featureText(voyage, `sail_${snapshot.sailColor}`)}</strong></div>
+                <div className="swatch-row">
+                  {SAIL_SWATCHES.map((swatch) => {
+                    const unlocked = snapshot.unlockedSails.includes(swatch.id);
+                    const name = featureText(voyage, `sail_${swatch.id}`);
+                    return (
+                      <button
+                        key={swatch.id}
+                        type="button"
+                        className={`swatch${unlocked ? "" : " is-locked"}`}
+                        aria-pressed={snapshot.sailColor === swatch.id}
+                        aria-label={unlocked ? name : `${name}: ${voyage.sailLocked}`}
+                        title={unlocked ? name : voyage.sailLocked}
+                        disabled={!unlocked}
+                        style={{ "--swatch": swatch.color } as CSSProperties}
+                        onClick={() => hoistSail(swatch.id)}
+                      >{unlocked ? null : "?"}</button>
+                    );
+                  })}
+                </div>
+                <div className="logbook" aria-label={voyage.logbook}>
+                  <span title={voyage.doubloons}>🪙 {snapshot.doubloons}</span>
+                  <span title={voyage.flamingos}>🦩 {snapshot.flamingos}</span>
+                  <span title={voyage.placesFound}>🧭 {new Set(snapshot.discoveredPlaces.map((key) => key.split(":")[0])).size}/4</span>
+                </div>
+              </div>
+
+              <div className="panel-section service-row" role="group" aria-label={voyage.service}>
+                <div className="section-label"><span>{voyage.service}</span></div>
+                {confirmRestart ? (
+                  <div className="restart-confirm" role="alertdialog" aria-label={voyage.restart}>
+                    <p>{voyage.restartConfirm}</p>
+                    <div>
+                      <button type="button" className="danger" onClick={restartVoyage}>{voyage.restartYes}</button>
+                      <button type="button" onClick={() => setConfirmRestart(false)}>{voyage.cancel}</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="service-grid">
+                    <button type="button" onClick={recenterCamera}><VoyageIcon name="recenter" /><span>{voyage.recenterCamera}</span></button>
+                    <button type="button" onClick={rescueBoat}><VoyageIcon name="rescue" /><span>{voyage.rescue}</span></button>
+                    <button type="button" className="quiet-danger" onClick={() => setConfirmRestart(true)}><VoyageIcon name="restart" /><span>{voyage.restart}</span></button>
+                  </div>
+                )}
+              </div>
+
+              {!coarsePointer && (
+                <div className="panel-section key-help">
+                  <div className="section-label"><span>{voyage.keys}</span></div>
+                  <ul>
+                    <li>{voyage.keyHelm}</li>
+                    <li>{voyage.keyThrottle}</li>
+                    <li>{voyage.keySheet}</li>
+                    <li>{voyage.keyCenter}</li>
+                    <li>{voyage.keySignals}</li>
+                    <li>{voyage.keyMore}</li>
+                  </ul>
+                </div>
+              )}
+              </>)}
+
+              {panelTab === "scene" && <footer className="panel-footer">
                 <label>
                   <span>{messages.quality}</span>
                   <select value={snapshot.quality} onChange={(event) => setQuality(event.target.value as QualityPreset)}>
@@ -882,13 +1221,13 @@ export function SailingSimulator() {
                     ))}
                   </select>
                 </label>
-              </footer>
+              </footer>}
             </div>
           )}
         </section>
 
         <div className="primary-controls">
-          <section className="rudder-control" aria-label={messages.rudder}>
+          <section className={`rudder-control${guideStep === 2 ? " guide-target" : ""}`} aria-label={messages.rudder}>
             <div className="helm-wheel" aria-hidden="true">
               <svg viewBox="0 0 100 100">
                 <g transform={`rotate(${wheelRotation} 50 50)`}>
@@ -923,8 +1262,15 @@ export function SailingSimulator() {
                 value={rudderInput}
                 style={{ "--rudder-progress": `${(rudderInput + 100) / 2}%` } as CSSProperties}
                 onPointerDown={() => { rudderDragging.current = true; }}
-                onPointerUp={() => { rudderDragging.current = false; }}
-                onPointerCancel={() => { rudderDragging.current = false; }}
+                onPointerUp={() => {
+                  rudderDragging.current = false;
+                  // Let go of the wheel: it eases back amidships if the player wants that.
+                  simulatorRef.current?.releaseRudder();
+                }}
+                onPointerCancel={() => {
+                  rudderDragging.current = false;
+                  simulatorRef.current?.releaseRudder();
+                }}
                 onBlur={() => { rudderDragging.current = false; }}
                 onChange={(event) => {
                   const value = Number(event.target.value);
@@ -951,7 +1297,7 @@ export function SailingSimulator() {
           <section className={`throttle-control ${engineInput ? "" : "is-off"}`} aria-label={`${messages.engine} · ${messages.throttle}`}>
             <button
               type="button"
-              className="engine-toggle"
+              className={`engine-toggle${guideStep === 1 ? " guide-target" : ""}`}
               role="switch"
               aria-checked={engineInput}
               aria-label={`${messages.engine}: ${engineInput ? messages.on : messages.off}`}
