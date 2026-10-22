@@ -84,7 +84,9 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/OceanSystem.ts` | GPU-displaced ocean, material shading, transparency, sun/moon glints, vessel shadow |
 | `src/simulator/environment/EnvironmentMath.ts` | Pure day/night state derivation |
 | `src/simulator/environment/EnvironmentSystem.ts` | Sky, fog, exposure, sun, moon, stars, ambient/directional lighting |
-| `src/simulator/environment/IslandSystem.ts` | Terrain, palms, seabed, bathymetry, collision, avoidance, shore direction |
+| `src/simulator/environment/IslandSystem.ts` | Terrain, instanced palms and rocks, landmarks, seabed, bathymetry, collision (incl. pier), avoidance, shore direction |
+| `src/simulator/environment/IslandShape.ts` | Pure island definitions, per-style relief (volcanic cone, hills, cay), coastline, plantability, landmark list |
+| `src/simulator/environment/IslandProps.ts` | Lighthouse with night beam, pier, stilt hut, shared boulder geometry |
 
 ### Vessel
 
@@ -339,7 +341,7 @@ A wildlife splash position must be an actual world-space water-contact position,
 
 ## 13. Islands and bathymetry
 
-Three island definitions provide center, beach radius, and elliptical Z scale. `IslandSystem.depthAt()` derives a shallow-water profile near each beach and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint, and direction back toward open water.
+Three island definitions in `IslandShape.ts` provide name, relief style, center, beach radius, and elliptical Z scale: Mount Ember (volcanic cone with crater), Beacon Isle (hills and a lighthouse headland), and Driftwood Cay (low cay with a pier and stilt hut). Palms are the five GLB variants instanced with seeded size, spin and seaward lean. `IslandSystem.depthAt()` derives a shallow-water profile near each beach and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint, and direction back toward open water.
 
 The rendered island uses irregular radial geometry and a short submerged apron. The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
 
@@ -352,7 +354,8 @@ Island constraints:
 - keep beach color warm muted yellow, not pure white or neon yellow;
 - maintain a plausible transition from beach to shallow blue water;
 - if bathymetry changes, update collision and HUD depth behavior together;
-- avoid adding high-detail palm geometry to every distant island without LOD or instancing.
+- avoid adding high-detail palm geometry to every distant island without LOD or instancing;
+- the pier is a collision segment in `constrainToWater`; move it together with its landmark.
 
 ## 14. Unified day and night environment
 

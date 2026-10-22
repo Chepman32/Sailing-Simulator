@@ -271,7 +271,7 @@ export class Simulator {
 
   private readonly update = (delta: number): void => {
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading);
-    this.islands.update(this.elapsed);
+    this.islands.update(this.elapsed, this.environmentState.nightFactor);
     this.vessel.update(this.physics, this.state.controls, this.elapsed, delta, this.environmentState.nightFactor);
     this.wildlife.update(delta, this.physics);
     this.aviation.update(delta, this.physics.position, this.environmentState.nightFactor);
