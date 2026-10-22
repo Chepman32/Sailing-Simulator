@@ -22,7 +22,14 @@ import {
   planAirlinerRoute,
   planLowPass,
   type RandomSource,
+  ORBIT_RADIUS_MIN,
+  crowInstability,
+  lowPassTurnRate,
+  planOrbit,
+  turbulence,
+  waterReflectionDelay,
 } from "../../src/simulator/aviation/AviationMath";
+import { beaconFlash, landingLightGlare, strobeFlash } from "../../src/simulator/aviation/AircraftLights";
 
 function seeded(seed: number): RandomSource {
   let state = seed;
@@ -51,7 +58,7 @@ test("low passes fly beside the yacht, never through it, and enter from far away
     const rightZ = -Math.sin(plan.heading);
     const sideDot = (toFocusX - forwardX * along) * rightX + (toFocusZ - forwardZ * along) * rightZ;
     assert.equal(Math.sign(sideDot), plan.observerSide);
-    assert.ok(plan.altitude > 40 && plan.altitude <= LOW_PASS_ALTITUDE_MAX);
+    assert.ok(plan.altitude > 30 && plan.altitude <= LOW_PASS_ALTITUDE_MAX, "low but clear of masts and gulls");
     assert.ok(plan.speed > 25 && plan.speed < 60);
     assert.ok(Math.abs(plan.duration * plan.speed - LOW_PASS_HALF_LENGTH * 2) < 1e-6);
     assert.ok(Math.abs(coordinatedBank(plan.speed, plan.turnRate)) < 0.1, "gentle passes keep a shallow bank");
@@ -108,4 +115,60 @@ test("aircraft sound follows Doppler, distance and air absorption", () => {
   assert.ok(distanceGain(400, 40) < distanceGain(100, 40));
   assert.ok(airAbsorptionCutoff(1000) < airAbsorptionCutoff(100));
   assert.ok(airAbsorptionCutoff(5000) >= 600);
+});
+
+test("sightseeing orbits circle the yacht in a coordinated bank without overflying it", () => {
+  for (let seed = 1; seed < 40; seed += 1) {
+    const plan = planOrbit(seeded(seed), 50, -80);
+    let x = plan.startX;
+    let z = plan.startZ;
+    let heading = plan.heading;
+    let closest = Number.POSITIVE_INFINITY;
+    let maxBank = 0;
+    const step = 0.05;
+    for (let time = 0; time < plan.duration; time += step) {
+      const rate = lowPassTurnRate(plan, time);
+      heading += rate * step;
+      x += Math.sin(heading) * plan.speed * step;
+      z += Math.cos(heading) * plan.speed * step;
+      closest = Math.min(closest, Math.hypot(x - 50, z + 80));
+      maxBank = Math.max(maxBank, Math.abs(coordinatedBank(plan.speed, rate)));
+    }
+    assert.ok(closest > ORBIT_RADIUS_MIN * 0.85, `orbit came within ${closest.toFixed(1)} m of the yacht`);
+    assert.ok(maxBank > 0.45 && maxBank <= 0.75, `orbit bank ${maxBank} should be a visible but sane turn`);
+    assert.ok(Math.abs(lowPassTurnRate(plan, 0)) < 1e-9, "the orbit starts with wings level");
+    assert.ok(Math.abs(lowPassTurnRate(plan, plan.duration)) < 1e-9, "and ends with wings level");
+  }
+});
+
+test("turbulence stays a gentle, bounded disturbance", () => {
+  for (let time = 0; time < 200; time += 0.37) {
+    const gust = turbulence(time, 3.2);
+    assert.ok(Math.abs(gust.roll) < 0.05 && Math.abs(gust.pitch) < 0.025 && Math.abs(gust.heave) < 1);
+  }
+});
+
+test("exterior lights follow anti-collision timing and the landing light flares head-on", () => {
+  let flashes = 0;
+  let previous = 0;
+  for (let time = 0; time < 1.2; time += 0.005) {
+    const value = strobeFlash(time);
+    if (value > 0.5 && previous <= 0.5) flashes += 1;
+    previous = value;
+  }
+  assert.equal(flashes, 2, "wingtip strobes double-flash once per cycle");
+  assert.ok(strobeFlash(0.6) === 0, "strobes are dark between flashes");
+  assert.ok(beaconFlash(0.26) > 0.9 && beaconFlash(0.8) === 0);
+  assert.equal(landingLightGlare(1), 1);
+  assert.ok(landingLightGlare(0.7) < 0.05, "glare only when the nose points at the viewer");
+  assert.equal(landingLightGlare(-1), 0);
+});
+
+test("sea reflection delay shrinks as the aircraft moves away and contrails pinch with age", () => {
+  const near = waterReflectionDelay(60, 80, 6);
+  const far = waterReflectionDelay(600, 80, 6);
+  assert.ok(near > far && far > 0);
+  assert.ok(near < 0.11, "delay fits the reflection delay line");
+  assert.equal(crowInstability(0), 0);
+  assert.equal(crowInstability(120), 1);
 });

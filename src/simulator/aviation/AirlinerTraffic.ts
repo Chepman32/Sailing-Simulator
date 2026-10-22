@@ -9,37 +9,24 @@ import {
   type AirlinerRoute,
   type RandomSource,
 } from "./AviationMath";
+import { AircraftLights } from "./AircraftLights";
 import { ContrailField } from "./ContrailField";
 
 const MAX_AIRLINERS = 2;
 const CONTRAIL_CAPACITY = 2304;
 const ENGINE_MARKERS = ["EngineExhaustPort", "EngineExhaustStarboard"] as const;
+// Light glows are sized in model units; the visually scaled airliner needs
+// them much larger to read as distant strobes rather than sub-pixel sparks.
+const LIGHT_SCALE = 7;
 
 type Airliner = {
   root: THREE.Group;
   engines: THREE.Vector3[];
-  lights: { port: THREE.Sprite; starboard: THREE.Sprite; beacon: THREE.Sprite };
+  lights: AircraftLights;
   route?: AirlinerRoute;
   elapsed: number;
   trails: number[];
-  strobePhase: number;
 };
-
-function glowTexture(): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 32;
-  canvas.height = 32;
-  const context = canvas.getContext("2d");
-  if (context) {
-    const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
-    gradient.addColorStop(0, "rgba(255,255,255,1)");
-    gradient.addColorStop(0.25, "rgba(255,255,255,.65)");
-    gradient.addColorStop(1, "rgba(255,255,255,0)");
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, 32, 32);
-  }
-  return new THREE.CanvasTexture(canvas);
-}
 
 /**
  * High-altitude airliners and their contrails. Everything lives in a sky
@@ -50,19 +37,24 @@ export class AirlinerTraffic {
   readonly layer = new THREE.Group();
   private readonly contrails: ContrailField;
   private readonly airliners: Airliner[] = [];
-  private readonly lightTexture = glowTexture();
-  private readonly lightMaterials: THREE.SpriteMaterial[] = [];
+  private readonly materials: THREE.MeshStandardMaterial[] = [];
+  private reflection: THREE.Texture | null = null;
   private readonly forward = new THREE.Vector3();
   private readonly engineLocal = new THREE.Vector3();
   private readonly contrailColor = new THREE.Color();
   private readonly dayContrail = new THREE.Color(0xffffff);
   private readonly nightContrail = new THREE.Color(0x9fb4d6);
+  private readonly shadowColor = new THREE.Color();
+  private readonly dayShadow = new THREE.Color(0x9fb3c8);
+  private readonly nightShadow = new THREE.Color(0x3b4c66);
+  private readonly lightDirection = new THREE.Vector3(0.6, 0.7, -0.5);
   private readonly worldScratch = new THREE.Vector3();
   private nextLaunch = 0;
 
   constructor(
     scene: THREE.Scene,
     template: THREE.Group | undefined,
+    private readonly glowTexture: THREE.Texture,
     private readonly random: RandomSource = Math.random,
   ) {
     this.layer.name = "High_Altitude_Traffic_Layer";
@@ -87,11 +79,29 @@ export class AirlinerTraffic {
     this.nextLaunch = 18 + this.random() * 20;
   }
 
-  update(delta: number, focus: THREE.Vector3, nightFactor: number): void {
+  /** Direction toward the sun (or moon at night) that lights the contrails. */
+  setLightDirection(direction: THREE.Vector3): void {
+    this.lightDirection.copy(direction);
+  }
+
+  /** Sky reflections give the distant fuselage its characteristic sun glint. */
+  setReflection(map: THREE.Texture | null): void {
+    if (map === this.reflection) return;
+    const first = this.reflection === null || map === null;
+    this.reflection = map;
+    this.materials.forEach((material) => {
+      material.envMap = map;
+      material.envMapIntensity = 1.2;
+      if (first) material.needsUpdate = true;
+    });
+  }
+
+  update(delta: number, focus: THREE.Vector3, nightFactor: number, camera: THREE.Camera): void {
     this.layer.position.set(focus.x * AIRLINER_LAYER_FOLLOW, 0, focus.z * AIRLINER_LAYER_FOLLOW);
     this.contrails.advance(delta);
     this.contrailColor.copy(this.dayContrail).lerp(this.nightContrail, nightFactor);
-    this.contrails.setAppearance(this.contrailColor, THREE.MathUtils.lerp(1, 0.42, nightFactor));
+    this.shadowColor.copy(this.dayShadow).lerp(this.nightShadow, nightFactor);
+    this.contrails.setAppearance(this.contrailColor, this.shadowColor, THREE.MathUtils.lerp(1, 0.42, nightFactor), this.lightDirection);
 
     this.nextLaunch -= delta;
     if (this.nextLaunch <= 0) {
@@ -100,7 +110,7 @@ export class AirlinerTraffic {
       this.nextLaunch = nextAirlinerDelay(this.random);
     }
     this.airliners.forEach((airliner) => {
-      if (airliner.route) this.fly(airliner, delta, nightFactor);
+      if (airliner.route) this.fly(airliner, delta, nightFactor, camera);
     });
   }
 
@@ -121,10 +131,11 @@ export class AirlinerTraffic {
 
   dispose(): void {
     this.contrails.dispose();
-    this.airliners.forEach((airliner) => airliner.root.removeFromParent());
+    this.airliners.forEach((airliner) => {
+      airliner.lights.dispose();
+      airliner.root.removeFromParent();
+    });
     this.airliners.length = 0;
-    this.lightMaterials.forEach((material) => material.dispose());
-    this.lightTexture.dispose();
     this.layer.removeFromParent();
   }
 
@@ -137,10 +148,12 @@ export class AirlinerTraffic {
     // its apparent size close to cruise traffic.
     model.scale.setScalar(AIRLINER_VISUAL_SCALE);
     model.traverse((object) => {
-      if (object instanceof THREE.Mesh) {
-        object.castShadow = false;
-        object.receiveShadow = false;
-      }
+      if (!(object instanceof THREE.Mesh)) return;
+      object.castShadow = false;
+      object.receiveShadow = false;
+      (Array.isArray(object.material) ? object.material : [object.material]).forEach((material) => {
+        if (material instanceof THREE.MeshStandardMaterial && !this.materials.includes(material)) this.materials.push(material);
+      });
     });
     root.add(model);
     const engines = ENGINE_MARKERS.map((name) => {
@@ -149,33 +162,10 @@ export class AirlinerTraffic {
         AIRLINER_VISUAL_SCALE,
       );
     });
-    const light = (color: number, markerName: string, size: number): THREE.Sprite => {
-      const material = new THREE.SpriteMaterial({
-        map: this.lightTexture,
-        color,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-        fog: false,
-        toneMapped: false,
-      });
-      this.lightMaterials.push(material);
-      const sprite = new THREE.Sprite(material);
-      const marker = model.getObjectByName(markerName);
-      if (marker) sprite.position.copy(marker.position).multiplyScalar(AIRLINER_VISUAL_SCALE);
-      sprite.scale.setScalar(size);
-      root.add(sprite);
-      return sprite;
-    };
-    const lights = {
-      port: light(0xff4b3a, "NavPort", 2.4),
-      starboard: light(0x5dff8a, "NavStarboard", 2.4),
-      beacon: light(0xff2a1a, "Beacon", 2.0),
-    };
+    const lights = new AircraftLights(model, this.glowTexture, LIGHT_SCALE, index * 0.37);
     root.visible = false;
     this.layer.add(root);
-    return { root, engines, lights, elapsed: 0, trails: [], strobePhase: index * 0.37 };
+    return { root, engines, lights, elapsed: 0, trails: [] };
   }
 
   private launch(airliner: Airliner): void {
@@ -193,7 +183,7 @@ export class AirlinerTraffic {
     });
   }
 
-  private fly(airliner: Airliner, delta: number, nightFactor: number): void {
+  private fly(airliner: Airliner, delta: number, nightFactor: number, camera?: THREE.Camera): void {
     const route = airliner.route;
     if (!route) return;
     airliner.elapsed += delta;
@@ -209,14 +199,10 @@ export class AirlinerTraffic {
       if (trail !== undefined) this.contrails.extendTrail(trail, this.engineLocal, this.forward, CONTRAIL_SAMPLE_SPACING);
     });
 
-    // Anti-collision strobes on the wingtips and a red beacon, mostly visible at night.
-    const time = this.contrails.clock + airliner.strobePhase;
-    const strobe = (time % 1.2) < 0.06 || ((time + 0.14) % 1.2) < 0.05 ? 1 : 0;
-    const beacon = Math.max(0, Math.sin(time * Math.PI * 2 * 0.9)) ** 6;
-    const visibility = 0.18 + nightFactor * 0.82;
-    (airliner.lights.port.material as THREE.SpriteMaterial).opacity = (0.35 + strobe * 0.65) * visibility;
-    (airliner.lights.starboard.material as THREE.SpriteMaterial).opacity = (0.35 + strobe * 0.65) * visibility;
-    (airliner.lights.beacon.material as THREE.SpriteMaterial).opacity = beacon * visibility;
+    if (camera) {
+      airliner.root.updateMatrixWorld(true);
+      airliner.lights.update(this.contrails.clock, nightFactor, airliner.root, camera);
+    }
 
     if (airliner.elapsed >= route.duration) {
       airliner.trails.forEach((trail) => this.contrails.endTrail(trail));

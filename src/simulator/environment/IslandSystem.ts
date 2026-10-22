@@ -343,6 +343,13 @@ export class IslandSystem {
         material.color.offsetHSL(0, 0.2, 0.08);
         material.roughness = 0.86;
       }
+      if (material.transparent || /leaves|leaf|frond/i.test(material.name)) {
+        // Fronds are single cards: seen from the beach below they must not be
+        // back-face culled, and alpha testing avoids instanced sort errors.
+        material.transparent = false;
+        material.alphaTest = 0.45;
+        material.side = THREE.DoubleSide;
+      }
       material.onBeforeCompile = (shader: THREE.WebGLProgramParametersWithUniforms) => {
         shader.uniforms.uPalmTime = windUniform;
         shader.vertexShader = shader.vertexShader

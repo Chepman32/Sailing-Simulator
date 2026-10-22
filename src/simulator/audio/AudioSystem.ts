@@ -41,7 +41,9 @@ export class AudioSystem {
   private hullGain?: GainNode;
   private aviationBus?: GainNode;
   private propBlade?: OscillatorNode;
+  private propReflection?: DelayNode;
   private propFiring?: OscillatorNode;
+  private propExhaustGate?: OscillatorNode;
   private propTremolo?: OscillatorNode;
   private propFilter?: BiquadFilterNode;
   private propPanner?: StereoPannerNode;
@@ -188,6 +190,7 @@ export class AudioSystem {
     this.engineLow?.stop();
     this.engineHigh?.stop();
     this.propBlade?.stop();
+    this.propExhaustGate?.stop();
     this.propFiring?.stop();
     this.propTremolo?.stop();
     if (this.context && this.context.state !== "closed") void this.context.close();
@@ -343,7 +346,13 @@ export class AudioSystem {
     this.propLevel.gain.value = 0;
 
     this.propBlade = context.createOscillator();
-    this.propBlade.type = "sawtooth";
+    // Blade-pass harmonic series of a two-blade propeller: strong low
+    // harmonics rolling off slowly, which reads as a "buzz" rather than the
+    // flat edge of a plain sawtooth.
+    const harmonics = [0, 1, 0.78, 0.62, 0.46, 0.36, 0.27, 0.2, 0.16, 0.12, 0.09, 0.07, 0.05];
+    this.propBlade.setPeriodicWave(
+      context.createPeriodicWave(new Float32Array(harmonics.length), new Float32Array(harmonics), { disableNormalization: false }),
+    );
     this.propBlade.frequency.value = PROP_BLADE_PASS_HZ.seaplane;
     const bladeGain = context.createGain();
     bladeGain.gain.value = 0.5;
@@ -355,6 +364,27 @@ export class AudioSystem {
     const firingGain = context.createGain();
     firingGain.gain.value = 0.2;
     this.propFiring.connect(firingGain).connect(this.propFilter);
+
+    // Exhaust crackle: band-limited noise gated at the cylinder firing rate.
+    const crackle = context.createBufferSource();
+    crackle.buffer = this.createNoiseBuffer(2.9, "white");
+    crackle.loop = true;
+    const crackleFilter = context.createBiquadFilter();
+    crackleFilter.type = "bandpass";
+    crackleFilter.frequency.value = 420;
+    crackleFilter.Q.value = 0.9;
+    const crackleGate = context.createGain();
+    crackleGate.gain.value = 0.5;
+    this.propExhaustGate = context.createOscillator();
+    this.propExhaustGate.type = "square";
+    this.propExhaustGate.frequency.value = PROP_BLADE_PASS_HZ.seaplane * PROP_FIRING_RATIO;
+    const gateDepth = context.createGain();
+    gateDepth.gain.value = 0.5;
+    this.propExhaustGate.connect(gateDepth).connect(crackleGate.gain);
+    const crackleGain = context.createGain();
+    crackleGain.gain.value = 0.42;
+    crackle.connect(crackleFilter).connect(crackleGate).connect(crackleGain).connect(this.propFilter);
+    crackle.start(0, 0.3);
 
     const rush = context.createBufferSource();
     rush.buffer = this.createNoiseBuffer(3.3, "pink");
@@ -382,9 +412,18 @@ export class AudioSystem {
       this.propPanner = context.createStereoPanner();
       output = tremoloNode.connect(this.propPanner);
     }
-    output.connect(this.propLevel).connect(bus);
+    // Direct sound plus the copy reflected off the sea, slightly later and
+    // weaker; their sum is the moving comb filter of a real low flyby.
+    output.connect(this.propLevel);
+    this.propReflection = context.createDelay(0.12);
+    this.propReflection.delayTime.value = 0.01;
+    const reflectionGain = context.createGain();
+    reflectionGain.gain.value = 0.55;
+    output.connect(this.propReflection).connect(reflectionGain).connect(this.propLevel);
+    this.propLevel.connect(bus);
     this.propBlade.start();
     this.propFiring.start();
+    this.propExhaustGate.start();
     this.propTremolo.start();
 
     // Distant airliner roar: low brown-noise rumble with a mid band that
@@ -423,6 +462,8 @@ export class AudioSystem {
       const base = PROP_BLADE_PASS_HZ[state.propKind];
       this.propBlade?.frequency.setTargetAtTime(base * doppler, now, 0.08);
       this.propFiring?.frequency.setTargetAtTime(base * PROP_FIRING_RATIO * doppler, now, 0.08);
+      this.propExhaustGate?.frequency.setTargetAtTime(base * PROP_FIRING_RATIO * doppler, now, 0.08);
+      this.propReflection?.delayTime.setTargetAtTime(clamp(state.propReflectionDelay, 0.0005, 0.11), now, 0.05);
       this.propTremolo?.frequency.setTargetAtTime(6.5 * doppler, now, 0.2);
       this.propFilter?.frequency.setTargetAtTime(airAbsorptionCutoff(state.propDistance), now, 0.12);
       this.propPanner?.pan.setTargetAtTime(state.propPan * 0.85, now, 0.1);

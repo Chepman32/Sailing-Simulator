@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import {
+  CONTRAIL_CROW_WAVELENGTH,
   CONTRAIL_FORMATION_TIME,
   CONTRAIL_INITIAL_WIDTH,
   CONTRAIL_SPREAD_RATE,
@@ -27,8 +28,15 @@ const vertexShader = /* glsl */ `
   varying float vOpacity;
   varying float vLife;
   varying float vSeed;
+  varying vec3 vSide;
+  varying vec3 vView;
+  varying float vPinch;
 
-  // Mirrors contrailWidth() and contrailOpacity() in AviationMath.ts.
+  // Mirrors contrailWidth(), contrailOpacity() and crowInstability() in AviationMath.ts.
+  float crowInstability(float age) {
+    return smoothstep(18.0, 55.0, age);
+  }
+
   float contrailWidth(float age) {
     return ${CONTRAIL_INITIAL_WIDTH.toFixed(4)} + ${CONTRAIL_SPREAD_RATE.toFixed(4)} * sqrt(max(age, 0.0));
   }
@@ -57,8 +65,15 @@ const vertexShader = /* glsl */ `
     vec3 worldTangent = normalize(mat3(modelMatrix) * tangent);
     vec3 toCamera = normalize(cameraPosition - world.xyz);
     vec3 side = normalize(cross(worldTangent, toCamera) + vec3(1e-5));
-    float width = contrailWidth(age);
+    float along = mix(trailDistance.x, trailDistance.y, endpoint);
+    // Periodic pinching into puffs: wide where vortices balloon, narrow between.
+    float crow = crowInstability(age);
+    float pinch = 0.5 + 0.5 * cos(along * ${(Math.PI * 2 / CONTRAIL_CROW_WAVELENGTH).toFixed(5)} + lifeSeed.y * 6.2831);
+    float width = contrailWidth(age) * (1.0 + crow * (pinch - 0.35) * 0.7);
     world.xyz += side * corner.y * width * 0.5;
+    vSide = side;
+    vView = toCamera;
+    vPinch = mix(1.0, 0.35 + 0.65 * pinch, crow);
 
     float horizon = smoothstep(0.015, 0.16, -toCamera.y);
     vOpacity = contrailOpacity(age, lifetime) * horizon;
@@ -75,6 +90,11 @@ const fragmentShader = /* glsl */ `
   precision mediump float;
   uniform vec3 uColor;
   uniform float uIntensity;
+  uniform vec3 uSunDirection;
+  uniform vec3 uShadowColor;
+  varying vec3 vSide;
+  varying vec3 vView;
+  varying float vPinch;
   varying float vAcross;
   varying float vAlong;
   varying float vAge;
@@ -104,9 +124,18 @@ const fragmentShader = /* glsl */ `
     // Ageing trails fragment into irregular patches before they disappear.
     float decay = smoothstep(0.15, 0.85, vAge / vLife);
     float breakup = smoothstep(decay * 0.75 - 0.05, decay * 0.75 + 0.22, billows);
-    float alpha = vOpacity * profile * mix(1.0, breakup, decay) * (0.82 + billows * 0.18);
+    float alpha = vOpacity * profile * mix(1.0, breakup, decay) * (0.82 + billows * 0.18) * vPinch;
     if (alpha < 0.004) discard;
-    gl_FragColor = vec4(uColor * uIntensity * (0.94 + billows * 0.08), alpha);
+    // Treat the trail as a soft cylinder: its surface normal turns from the
+    // viewer toward the sides, so the sunward flank is bright and the far
+    // flank and underside fall into bluish self-shadow.
+    vec3 normal = normalize(vSide * across * 0.9 + normalize(vView) * sqrt(max(0.0, 1.0 - across * across)));
+    vec3 sun = normalize(uSunDirection);
+    float lit = 0.58 + 0.42 * max(dot(normal, sun), 0.0);
+    // Forward scattering: looking toward the sun, thin ice edges glow silver.
+    float forward = pow(max(dot(-normalize(vView), sun), 0.0), 8.0) * (1.0 - profile * 0.6);
+    vec3 color = mix(uShadowColor, uColor, lit) + uColor * forward * 0.7;
+    gl_FragColor = vec4(color * uIntensity * (0.94 + billows * 0.08), alpha);
   }
 `;
 
@@ -137,6 +166,8 @@ export class ContrailField {
     uWind: THREE.IUniform<THREE.Vector3>;
     uColor: THREE.IUniform<THREE.Color>;
     uIntensity: THREE.IUniform<number>;
+    uSunDirection: THREE.IUniform<THREE.Vector3>;
+    uShadowColor: THREE.IUniform<THREE.Color>;
   };
   private readonly scratchTangent = new THREE.Vector3();
   private nextSlot = 0;
@@ -174,6 +205,8 @@ export class ContrailField {
       uWind: { value: new THREE.Vector3(0.55, 0, 0.3) },
       uColor: { value: new THREE.Color(0xffffff) },
       uIntensity: { value: 1 },
+      uSunDirection: { value: new THREE.Vector3(0.6, 0.7, -0.5) },
+      uShadowColor: { value: new THREE.Color(0x9fb3c8) },
     };
     const material = new THREE.ShaderMaterial({
       vertexShader,
@@ -202,9 +235,11 @@ export class ContrailField {
     this.uniforms.uTime.value = this.time;
   }
 
-  setAppearance(color: THREE.Color, intensity: number): void {
+  setAppearance(color: THREE.Color, shadow: THREE.Color, intensity: number, sunDirection: THREE.Vector3): void {
     this.uniforms.uColor.value.copy(color);
+    this.uniforms.uShadowColor.value.copy(shadow);
     this.uniforms.uIntensity.value = intensity;
+    this.uniforms.uSunDirection.value.copy(sunDirection);
   }
 
   startTrail(origin: THREE.Vector3, tangent: THREE.Vector3, lifetime: number): number {

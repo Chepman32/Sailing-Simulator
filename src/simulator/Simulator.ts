@@ -283,7 +283,8 @@ export class Simulator {
     this.islands.update(this.elapsed, this.environmentState.nightFactor);
     this.vessel.update(this.physics, this.state.controls, this.elapsed, delta, this.environmentState.nightFactor);
     this.wildlife.update(delta, this.physics);
-    this.aviation.update(delta, this.physics.position, this.environmentState.nightFactor);
+    this.aviation.setSky(this.environment.reflectionMap, this.environment.lightDirection);
+    this.aviation.update(delta, this.physics.position, this.environmentState.nightFactor, this.camera.camera);
     this.exploration?.update(delta, this.physics.position.x, this.physics.position.z);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics);

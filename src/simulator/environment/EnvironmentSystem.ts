@@ -33,6 +33,37 @@ const skyFragmentShader = /* glsl */ `
   }
 `;
 
+// Low-resolution HDR dome used only to build the reflection map for glossy
+// vehicles (aircraft paint and glass): sky gradient, sun or moon, and a dark
+// sea below the horizon so lower surfaces reflect water rather than sky.
+const reflectionFragmentShader = /* glsl */ `
+  uniform vec3 uZenith;
+  uniform vec3 uHorizon;
+  uniform vec3 uSea;
+  uniform vec3 uLightDirection;
+  uniform vec3 uLightColor;
+  uniform float uLightPower;
+  varying vec3 vDirection;
+  void main() {
+    vec3 direction = normalize(vDirection);
+    vec3 sky = mix(uHorizon, uZenith, pow(clamp(direction.y, 0.0, 1.0), 0.55));
+    float seaBlend = smoothstep(0.02, -0.08, direction.y);
+    vec3 sea = mix(uHorizon * 0.55, uSea, smoothstep(0.0, -0.45, direction.y));
+    vec3 color = mix(sky, sea, seaBlend);
+    float alignment = max(dot(direction, normalize(uLightDirection)), 0.0);
+    color += uLightColor * (pow(alignment, 1400.0) * uLightPower + pow(alignment, 24.0) * 0.35 * uLightPower / 40.0);
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
+const reflectionVertexShader = /* glsl */ `
+  varying vec3 vDirection;
+  void main() {
+    vDirection = position;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
 function radialTexture(size = 128): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -92,6 +123,18 @@ export class EnvironmentSystem {
   private readonly nightAmbientColor = new THREE.Color(0x789bc8);
   private readonly glowTexture = radialTexture();
   private readonly starsTexture = starTexture();
+  private readonly pmrem: THREE.PMREMGenerator;
+  private readonly reflectionScene = new THREE.Scene();
+  private readonly reflectionUniforms = {
+    uZenith: { value: new THREE.Color() },
+    uHorizon: { value: new THREE.Color() },
+    uSea: { value: new THREE.Color() },
+    uLightDirection: { value: new THREE.Vector3() },
+    uLightColor: { value: new THREE.Color() },
+    uLightPower: { value: 40 },
+  };
+  private reflectionTarget?: THREE.WebGLRenderTarget;
+  private reflectionNight = Number.NaN;
   private mode: LightingMode = "day";
   private nightFactor = 0;
   private state: TimeOfDayState = deriveTimeOfDay(0);
@@ -217,6 +260,29 @@ export class EnvironmentSystem {
     this.ambient = new THREE.AmbientLight(0x9bc5da, 0.32);
     scene.add(this.hemisphere, this.ambient);
     scene.fog = new THREE.FogExp2(0x91cddb, 0.00115);
+
+    this.pmrem = new THREE.PMREMGenerator(renderer);
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(10, 48, 24),
+      new THREE.ShaderMaterial({
+        uniforms: this.reflectionUniforms,
+        vertexShader: reflectionVertexShader,
+        fragmentShader: reflectionFragmentShader,
+        side: THREE.BackSide,
+        depthWrite: false,
+      }),
+    );
+    this.reflectionScene.add(dome);
+  }
+
+  /** Unit direction toward the dominant sky light (sun by day, moon by night). */
+  get lightDirection(): THREE.Vector3 {
+    return this.celestialLightDirection;
+  }
+
+  /** Prefiltered sky reflection for glossy vehicles; refreshed as day turns to night. */
+  get reflectionMap(): THREE.Texture | null {
+    return this.reflectionTarget?.texture ?? null;
   }
 
   setMode(mode: LightingMode): void {
@@ -280,7 +346,22 @@ export class EnvironmentSystem {
     }
     this.scene.background = this.skyColor;
     this.ocean.setEnvironment(night, this.celestialLightDirection, this.horizonColor);
+    if (!(Math.abs(night - this.reflectionNight) < 0.06)) this.refreshReflection(night);
     return this.state;
+  }
+
+  private refreshReflection(night: number): void {
+    this.reflectionNight = night;
+    const uniforms = this.reflectionUniforms;
+    uniforms.uZenith.value.copy(this.skyColor);
+    uniforms.uHorizon.value.copy(this.horizonColor);
+    uniforms.uSea.value.set(0x0b4f63).lerp(new THREE.Color(0x041726), night);
+    uniforms.uLightDirection.value.copy(this.celestialLightDirection);
+    uniforms.uLightColor.value.set(0xfff1d6).lerp(this.moonlightColor, night);
+    uniforms.uLightPower.value = THREE.MathUtils.lerp(60, 6, night);
+    const previous = this.reflectionTarget;
+    this.reflectionTarget = this.pmrem.fromScene(this.reflectionScene, 0, 0.1, 100);
+    previous?.dispose();
   }
 
   setShadowMapSize(size: number): void {
@@ -315,5 +396,13 @@ export class EnvironmentSystem {
     (this.moonHalo.material as THREE.SpriteMaterial).dispose();
     this.glowTexture.dispose();
     this.starsTexture.dispose();
+    this.reflectionTarget?.dispose();
+    this.pmrem.dispose();
+    this.reflectionScene.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.geometry.dispose();
+        (object.material as THREE.Material).dispose();
+      }
+    });
   }
 }

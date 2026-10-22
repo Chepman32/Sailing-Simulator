@@ -81,18 +81,20 @@ function triangleTotal(json: GlbJson): number {
 }
 
 const AIRCRAFT_ASSETS = [
-  { file: "tourist-seaplane.glb", nodes: ["Propeller", "Floats", "Cabin_Glazing", "NavPort", "NavStarboard"] },
-  { file: "banner-tow-plane.glb", nodes: ["Propeller", "TowHook", "Tires", "Cabin_Glazing"] },
-  { file: "narrowbody-airliner.glb", nodes: ["EngineExhaustPort", "EngineExhaustStarboard", "Engine_Nacelles", "Beacon"] },
+  { file: "tourist-seaplane.glb", nodes: ["Propeller", "Propeller_Blades", "Floats", "Cabin_Glazing", "NavPort", "NavStarboard", "Beacon", "LandingLight", "TailLight"] },
+  { file: "banner-tow-plane.glb", nodes: ["Propeller", "Propeller_Blades", "TowHook", "Tires", "Cabin_Glazing", "LandingLight"] },
+  { file: "narrowbody-airliner.glb", nodes: ["EngineExhaustPort", "EngineExhaustStarboard", "Engine_Nacelles", "Engine_Inlet_Lips", "Beacon", "BeaconLower", "TailLight"] },
 ];
 
 for (const asset of AIRCRAFT_ASSETS) {
   test(`${asset.file} is detailed, licensed, light, and exposes its runtime nodes`, () => {
     const { bytes, json } = readGlbJson(`public/models/${asset.file}`);
     const triangles = triangleTotal(json);
-    assert.ok(triangles >= 8_000 && triangles <= 30_000, `unexpected triangle count: ${triangles}`);
-    assert.ok(bytes < 600_000, `aircraft asset is too heavy for mobile: ${bytes} bytes`);
-    assert.ok((json.materials?.length ?? 0) >= 6, "aircraft need separate paint, livery, glass and metal materials");
+    assert.ok(triangles >= 12_000 && triangles <= 30_000, `unexpected triangle count: ${triangles}`);
+    assert.ok(bytes < 1_200_000, `aircraft asset is too heavy for mobile: ${bytes} bytes`);
+    assert.ok((json.materials?.length ?? 0) >= 6, "aircraft need separate paint, glass and metal materials");
+    // Painted liveries: colour, normal (panel seams) and metallic-roughness maps.
+    assert.ok((json.textures?.length ?? 0) >= 6, "aircraft skins must carry painted PBR texture sets");
     assert.equal(json.asset?.extras?.license, "CC0-1.0");
     assert.match(json.asset?.extras?.source ?? "", /build-aircraft-models\.mjs$/);
     const names = sceneNodeNames(json);

@@ -84,7 +84,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/OceanMath.ts` | CPU companion for shared Gerstner waves |
 | `src/simulator/environment/OceanSystem.ts` | GPU-displaced ocean, material shading, transparency, sun/moon glints, vessel shadow |
 | `src/simulator/environment/EnvironmentMath.ts` | Pure day/night state derivation |
-| `src/simulator/environment/EnvironmentSystem.ts` | Sky, fog, exposure, sun, moon, stars, ambient/directional lighting |
+| `src/simulator/environment/EnvironmentSystem.ts` | Sky, fog, exposure, sun, moon, stars, ambient/directional lighting, PMREM sky reflection map for glossy vehicles |
 | `src/simulator/environment/IslandSystem.ts` | Terrain, instanced palms and rocks, landmarks, seabed, bathymetry, collision (incl. pier), avoidance, shore direction |
 | `src/simulator/environment/IslandShape.ts` | Pure island definitions, per-style relief (volcanic cone, hills, cay), coastline, plantability, landmark list |
 | `src/simulator/environment/IslandProps.ts` | Lighthouse with night beam, pier, stilt hut, shared boulder geometry |
@@ -117,12 +117,13 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 
 | Path | Responsibility |
 | --- | --- |
-| `src/simulator/aviation/AviationSystem.ts` | Owns all aircraft; exposes listener-relative aircraft audio parameters |
+| `src/simulator/aviation/AviationSystem.ts` | Owns all aircraft; receives the sky reflection map and light direction; exposes listener-relative (sound-delayed) audio parameters |
 | `AviationMath.ts` | Pure pass/route planning, coordinated bank, contrail width/opacity, Doppler, distance gain, air absorption |
-| `LowPassAircraft.ts` | Periodic daytime low pass by the tourist floatplane or banner-tow plane |
+| `LowPassAircraft.ts` | Daytime sightseeing orbits and low passes: rolled coordinated turns, turbulence, propeller motion disc |
+| `AircraftLights.ts` | Navigation lights, double-flash strobes, beacons and view-dependent landing-light glare |
 | `BannerTow.ts` | Towed advertising banner: path-following tow, bridle, flutter shader, canvas-painted advert |
 | `AirlinerTraffic.ts` | High-altitude airliners in a parallax-compressed sky layer, strobes and beacon |
-| `ContrailField.ts` | One bounded instanced pool of camera-facing contrail segments aged on the GPU |
+| `ContrailField.ts` | One bounded instanced pool of camera-facing contrail segments aged, sun-lit and pinched (Crow instability) on the GPU |
 
 ### Input, camera, audio, and HUD
 
@@ -436,7 +437,8 @@ Master → DynamicsCompressor → destination
   EngineBus → low/high engine oscillators + start cue
   EnvironmentBus → wave noise + wind noise + hull-water noise
   WildlifeBus → one-shot splash noise
-  AviationBus → propeller voice (Doppler, air-absorption low-pass, stereo pan) + distant jet roar
+  AviationBus → propeller voice (harmonic blade pass, firing-rate exhaust crackle, Doppler, air absorption, stereo pan,
+                sea-reflection comb delay, propagation-delayed position) + distant jet roar
 ```
 
 The master sound setting and audio readiness are different states:
@@ -568,9 +570,9 @@ The authoritative license text is `public/models/README.md`. Keep it synchronize
 | `whale` | `blue-whale-rigged-pbr-v2.glb` | 1,422,856 | 38,784 triangles, rigged PBR | No | Submerged blue whale tail slap |
 | `fishSchool` | `tropical-fish-school.glb` | 3,277,364 | 8,932 triangles, four species | No | Animated local fish school |
 | `seagull` | `seagull-animated.glb` | 133,248 | 1,174 triangles, authored clips | No | Aerial flock |
-| `seaplane` | `tourist-seaplane.glb` | 302,540 | 14,440 triangles, 9 materials | No | Low-pass sightseeing floatplane |
-| `bannerPlane` | `banner-tow-plane.glb` | 269,348 | 12,688 triangles, 9 materials | No | Low-pass banner tow |
-| `airliner` | `narrowbody-airliner.glb` | 242,988 | 11,536 triangles, 7 materials | No | High-altitude contrail traffic |
+| `seaplane` | `tourist-seaplane.glb` | 667,828 | 18,400 triangles, painted PBR livery | No | Sightseeing floatplane: orbits and low passes |
+| `bannerPlane` | `banner-tow-plane.glb` | 577,628 | 15,528 triangles, painted PBR livery | No | Low-pass banner tow |
+| `airliner` | `narrowbody-airliner.glb` | 856,748 | 17,320 triangles, painted PBR livery | No | High-altitude contrail traffic |
 
 Unused legacy files currently retained for provenance or possible comparison:
 
@@ -786,7 +788,8 @@ Do not commit every exploratory change. The standing project preference is to pu
 - keep low passes beside, never over, the yacht and fade them at the haze limit;
 - keep contrail shape rules in `AviationMath` and mirror them in the `ContrailField` GLSL;
 - keep contrail segments in the single bounded pool; never allocate a mesh per trail;
-- rebuild aircraft GLBs with `scripts/models/build-aircraft-models.mjs`, not by hand.
+- rebuild aircraft GLBs with `scripts/models/build-aircraft-models.mjs` (needs Playwright + Chromium; set `PLAYWRIGHT_MODULE` if it is installed elsewhere), not by hand;
+- aircraft look identical at every quality preset: do not gate their textures, lights or reflections on quality.
 
 ### Changing audio
 
