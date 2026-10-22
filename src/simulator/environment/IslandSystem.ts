@@ -90,7 +90,7 @@ export class IslandSystem {
   update(time: number, nightFactor = 0): void {
     this.palmWindUniform.value = time;
     const night = smoothstep(0.25, 0.8, nightFactor);
-    this.propMaterials.beam.opacity = night * 0.22;
+    this.propMaterials.beam.opacity = night * 0.3;
     this.propMaterials.lamp.color.setRGB(0.55 + night * 0.45, 0.5 + night * 0.44, 0.38 + night * 0.38);
     this.lighthouses.forEach((lighthouse) => {
       lighthouse.beam.visible = night > 0.02;

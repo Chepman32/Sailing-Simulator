@@ -29,6 +29,7 @@ export function createPropMaterials(): PropMaterials {
     beam: new THREE.MeshBasicMaterial({
       name: "Lantern_Beam",
       color: 0xfff1c2,
+      vertexColors: true,
       transparent: true,
       opacity: 0,
       blending: THREE.AdditiveBlending,
@@ -95,9 +96,19 @@ export function createLighthouse(materials: PropMaterials): Lighthouse {
   beam.name = "Lighthouse_Beam";
   beam.position.y = towerHeight + 0.85;
   [0, Math.PI].forEach((yaw) => {
-    const cone = new THREE.Mesh(new THREE.ConeGeometry(3.2, 46, 16, 1, true), materials.beam);
+    const geometry = new THREE.ConeGeometry(3.2, 46, 16, 8, true);
     // ConeGeometry points +Y; lay it along +Z with the apex at the lamp.
-    cone.geometry.translate(0, -23, 0);
+    geometry.translate(0, -23, 0);
+    // Additive light fades to black (invisible) toward the far end, so the
+    // beam dissolves into the night instead of ending in a hard rim.
+    const position = geometry.getAttribute("position");
+    const colors = new Float32Array(position.count * 3);
+    for (let index = 0; index < position.count; index += 1) {
+      const fade = Math.pow(1 - Math.min(1, -position.getY(index) / 46), 1.6);
+      colors.set([fade, fade, fade], index * 3);
+    }
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    const cone = new THREE.Mesh(geometry, materials.beam);
     cone.rotation.set(-Math.PI / 2, 0, 0);
     const holder = new THREE.Group();
     holder.rotation.y = yaw;
