@@ -63,5 +63,10 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   engineRunning: false,
   engineMuted: false,
   fps: 60,
+  positionX: 0,
+  positionZ: 0,
+  discoveredLandmarks: [],
+  explorationRevision: 0,
+  exploredFraction: 0,
   status: "loading",
 };

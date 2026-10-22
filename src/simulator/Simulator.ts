@@ -10,6 +10,7 @@ import type { TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
 import { OceanSystem } from "./environment/OceanSystem";
 import { InputController } from "./input/InputController";
+import { Exploration } from "./navigation/Exploration";
 import { TouchControls } from "./input/TouchControls";
 import { wrapDegrees } from "./math";
 import { applyEnginePower, createSimulatorState, type SimulatorState } from "./state";
@@ -47,6 +48,7 @@ export class Simulator {
   private wake!: WakeSystem;
   private wildlife!: WildlifeSystem;
   private aviation!: AviationSystem;
+  private exploration?: Exploration;
   private camera!: CameraController;
   private input!: InputController;
   private touch!: TouchControls;
@@ -116,6 +118,7 @@ export class Simulator {
       this.environment.setMode(this.state.lightingMode);
       this.environment.setShadowMapSize(this.quality.settings.shadowMapSize);
       this.islands = new IslandSystem(this.scene, this.assets);
+      this.exploration = new Exploration();
       this.physics = new VesselPhysics(this.ocean, this.islands);
       this.vessel = new Vessel(this.scene, this.assets);
       this.wake = new WakeSystem(this.scene, this.ocean, this.quality.settings);
@@ -229,6 +232,11 @@ export class Simulator {
     this.hud.emit(this.snapshot());
   }
 
+  /** Fog-of-war grid for the chart (1 = explored). Read-only for callers. */
+  getExplorationFog(): Uint8Array | undefined {
+    return this.exploration?.fog;
+  }
+
   reset(): void {
     if (!this.initialized) return;
     this.physics.reset();
@@ -242,6 +250,7 @@ export class Simulator {
 
   dispose(): void {
     this.loop?.dispose();
+    this.exploration?.save();
     this.resizeObserver?.disconnect();
     this.touch?.dispose();
     this.input?.dispose();
@@ -275,6 +284,7 @@ export class Simulator {
     this.vessel.update(this.physics, this.state.controls, this.elapsed, delta, this.environmentState.nightFactor);
     this.wildlife.update(delta, this.physics);
     this.aviation.update(delta, this.physics.position, this.environmentState.nightFactor);
+    this.exploration?.update(delta, this.physics.position.x, this.physics.position.z);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics);
     this.environmentState = this.environment.update(delta, this.camera.camera, this.physics.position);
@@ -325,6 +335,11 @@ export class Simulator {
       engineRunning: this.state.engineRunning,
       engineMuted: this.state.engineMuted,
       fps: this.fps,
+      positionX: this.physics?.position.x ?? 0,
+      positionZ: this.physics?.position.z ?? 0,
+      discoveredLandmarks: this.exploration?.discoveredLandmarks ?? [],
+      explorationRevision: this.exploration?.revision ?? 0,
+      exploredFraction: this.exploration?.exploredFraction ?? 0,
       status: this.status,
     };
   }

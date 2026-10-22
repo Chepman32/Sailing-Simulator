@@ -61,6 +61,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `app/layout.tsx` | Document metadata and root layout |
 | `app/components/SailingSimulator.tsx` | Canvas lifecycle, responsive HUD, controls, settings, sound-unlock affordance, simulator bridge |
 | `app/components/i18n.ts` | Thirty language definitions, system-language resolution, aliases, RTL helpers |
+| `app/components/NauticalChart.tsx` | Minimap and full-screen chart (M key / minimap tap) drawn from the exploration fog and landmarks |
 | `app/globals.css` | Full-screen layout, mobile breakpoints, safe areas, control sizing, UI states |
 | `app/chatgpt-auth.ts` | Sites/ChatGPT runtime integration; do not remove without understanding the host contract |
 
@@ -129,6 +130,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | --- | --- |
 | `src/simulator/input/InputController.ts` | Keyboard, gamepad, rudder/throttle setters, dead zones |
 | `src/simulator/input/TouchControls.ts` | Camera-only pointer orbit, pinch zoom, double-tap recenter |
+| `src/simulator/input/TiltSteering.ts` | Pure tilt-to-rudder (any screen orientation) and swipe-to-rudder mapping |
+| `src/simulator/navigation/Exploration.ts` | Fog-of-war grid, landmark discovery, persistence under `sailing-simulator-exploration-v1` |
 | `src/simulator/camera/CameraController.ts` | Chase, helm, orbit, drone framing; damping; FOV; water-floor guard |
 | `src/simulator/audio/AudioSystem.ts` | Web Audio lifecycle, buses, engine synthesis, waves, wind, hull noise, splash cues |
 | `src/simulator/ui/HudController.ts` | Snapshot throttling between simulator and React |
@@ -233,7 +236,7 @@ Do not run physics from React renders, HUD timers, GLB animation clip events, or
 - engine running state for the current session;
 - engine-only mute preference.
 
-The persistence key is `sailing-simulator-pro-preferences-v2`. Persisted fields are lighting, camera, quality, master sound, and engine mute. Engine running and active throttle deliberately do not persist across a page load.
+The persistence key is `sailing-simulator-pro-preferences-v2`. Chart exploration (fog grid and discovered landmarks) persists separately under `sailing-simulator-exploration-v1`; the chart reads the fog through `Simulator.getExplorationFog()` only while drawing. Persisted fields are lighting, camera, quality, master sound, and engine mute. Engine running and active throttle deliberately do not persist across a page load.
 
 An explicit engine start clears a stale persisted engine-mute value, selects slow ahead when the throttle is near neutral, and persists the corrected mute preference. The user may mute the running engine again afterward. This prevents an old hidden setting from making the primary engine switch appear broken.
 
@@ -477,7 +480,7 @@ Canvas gestures are camera-only:
 - double tap: recenter;
 - wheel: zoom on desktop.
 
-Rudder and throttle inputs are React controls outside the canvas. Their events must not leak into camera orbit. Maintain large touch targets and `touch-action` rules when modifying CSS.
+Rudder and throttle inputs are React controls outside the canvas. Their events must not leak into camera orbit. Swipe steering happens on the rudder card's swipe pad, never on the canvas; optional tilt steering uses `deviceorientation` after an explicit (iOS-permissioned) toggle. Maintain large touch targets and `touch-action` rules when modifying CSS.
 
 The camera may not pass below the sampled water surface. Portrait devices receive increased follow distance so the yacht remains framed. Camera motion is damped; avoid hard teleports after ordinary mode input.
 
@@ -488,7 +491,8 @@ The main settings panel is minimized by default on all devices, especially phone
 - a visible rudder wheel indicator;
 - a horizontal rudder range input and explicit center button;
 - a large engine on/off switch;
-- a continuous vertical throttle range from reverse through neutral to forward.
+- a continuous throttle range from reverse through neutral to forward (vertical on desktop and phone landscape, a horizontal row on phone portrait);
+- a minimap that opens the full chart (also on the M key; Esc closes it).
 
 UI requirements:
 
@@ -498,9 +502,10 @@ UI requirements:
 - honor `env(safe-area-inset-*)` on iOS;
 - avoid 8 px body text or clipped labels;
 - keep the engine switch large enough to fill its card rather than resembling a tiny status dot;
-- keep the rotated vertical throttle centered inside its fixed slot at every breakpoint; do not rely on the range input's overflowing layout box for placement;
-- keep the rudder range explicitly styled as a large touch control: a thick visible track, a roughly 50 px thumb, and full-width track placement with its port/starboard labels above it on narrow screens;
-- give the rudder track its own full-width row; do not constrain it to the narrow middle column between the wheel and centering button. On phone portrait, place the throttle above the rudder so the latter can span the control bar;
+- keep the rotated vertical throttle centered inside its fixed slot wherever it is vertical; do not rely on the range input's overflowing layout box for placement;
+- on phones, collapse the throttle card to just the engine switch while the engine is off, and show the rudder as one swipe row (wheel, angle, tilt toggle, center) with the range input visually hidden but focusable;
+- suggest landscape with a dismissible hint on portrait phones; never force orientation;
+- keep the desktop rudder range explicitly styled as a large touch control: a thick visible track, a roughly 50 px thumb, and its own full-width row below the wheel and centering button. On phone portrait, place the throttle above the rudder so both can span the control bar;
 - show visible feedback when engine state changes;
 - keep control panel and primary controls usable in portrait and landscape;
 - prevent the settings drawer from permanently covering the yacht;
@@ -848,7 +853,7 @@ Never knowingly ship any of these regressions:
 - a whale fully breaches, becomes a flat dark blob, or splashes without its fluke contacting water;
 - procedural primitive animals replace failed GLBs;
 - mobile settings open over the scene by default;
-- engine switch, rudder, wheel indicator, or throttle disappears at a phone breakpoint;
+- engine switch, rudder, or wheel indicator disappears at a phone breakpoint, or the throttle is hidden while the engine runs;
 - a manually selected language is overwritten by system auto-detection;
 - a new translated string exists in only some languages;
 - low FPS causes unlimited fixed-step catch-up or unbounded allocations;

@@ -86,6 +86,7 @@ const ENGLISH_MESSAGES = {
   slowAstern: "Slow astern",
   neutral: "Neutral",
   help: "Swipe the sea to look · pinch to zoom · use rudder and throttle independently",
+  map: "Map", openMap: "Open map", closeMap: "Close map", explored: "Explored", uncharted: "Uncharted", lighthouse: "Lighthouse", pier: "Pier", beachHut: "Beach hut", crater: "Volcano crater", swipeToSteer: "Swipe to steer", tiltSteering: "Tilt steering", rotateHint: "Rotate for a wider view", dismiss: "Dismiss",
 };
 
 export type Messages = { [Key in keyof typeof ENGLISH_MESSAGES]: string };
@@ -99,6 +100,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "帆调整", quality: "画质", low: "低", medium: "中", high: "高", reset: "重置场景", photoMode: "拍照模式", photoModeHint: "退出拍照：Esc / 双击海面", language: "语言", rudder: "船舵", port: "左舷", starboard: "右舷", center: "居中", centerRudder: "舵回中",
     engine: "发动机", on: "开", off: "关", throttle: "油门", forward: "前进", reverse: "后退", fullAhead: "全速前进", halfAhead: "半速前进", slowAhead: "慢速前进", fullAstern: "全速后退", halfAstern: "半速后退", slowAstern: "慢速后退", neutral: "空挡",
     help: "滑动海面查看 · 双指缩放 · 船舵与油门可独立控制",
+    map: "地图", openMap: "打开地图", closeMap: "关闭地图", explored: "已探索", uncharted: "未探索", lighthouse: "灯塔", pier: "码头", beachHut: "海滩小屋", crater: "火山口", swipeToSteer: "滑动转舵", tiltSteering: "倾斜转舵", rotateHint: "横屏视野更宽", dismiss: "关闭",
   },
   hi: {
     loadingTitle: "उष्णकटिबंधीय समुद्र तैयार हो रहा है", loading: "लोड हो रहा है", rendererNotice: "रेंडरर सूचना", sceneInterrupted: "दृश्य रुक गया", reload: "सिम्युलेटर फिर लोड करें",
@@ -107,6 +109,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "पाल ट्रिम", quality: "गुणवत्ता", low: "कम", medium: "मध्यम", high: "उच्च", reset: "दृश्य रीसेट", photoMode: "फ़ोटो मोड", photoModeHint: "फ़ोटो मोड से बाहर: Esc / दो बार टैप", language: "भाषा", rudder: "पतवार", port: "बायाँ", starboard: "दायाँ", center: "मध्य", centerRudder: "पतवार मध्य करें",
     engine: "इंजन", on: "चालू", off: "बंद", throttle: "थ्रॉटल", forward: "आगे", reverse: "पीछे", fullAhead: "पूरी गति आगे", halfAhead: "आधी गति आगे", slowAhead: "धीरे आगे", fullAstern: "पूरी गति पीछे", halfAstern: "आधी गति पीछे", slowAstern: "धीरे पीछे", neutral: "न्यूट्रल",
     help: "देखने के लिए समुद्र पर स्वाइप करें · ज़ूम के लिए पिंच करें · पतवार और थ्रॉटल अलग चलाएँ",
+    map: "नक्शा", openMap: "नक्शा खोलें", closeMap: "नक्शा बंद करें", explored: "खोजा गया", uncharted: "अनखोजा", lighthouse: "लाइटहाउस", pier: "घाट", beachHut: "समुद्र तट झोपड़ी", crater: "ज्वालामुखी का मुख", swipeToSteer: "पतवार के लिए स्वाइप करें", tiltSteering: "झुकाकर पतवार", rotateHint: "चौड़े दृश्य के लिए फ़ोन घुमाएँ", dismiss: "बंद करें",
   },
   es: {
     loadingTitle: "Preparando el mar tropical", loading: "Cargando", rendererNotice: "Aviso del renderizador", sceneInterrupted: "Escena interrumpida", reload: "Recargar simulador",
@@ -115,6 +118,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Ajuste de vela", quality: "Calidad", low: "Baja", medium: "Media", high: "Alta", reset: "Reiniciar escena", photoMode: "Modo foto", photoModeHint: "Salir del modo foto: Esc / doble toque", language: "Idioma", rudder: "Timón", port: "Babor", starboard: "Estribor", center: "Centro", centerRudder: "Centrar timón",
     engine: "Motor", on: "Encendido", off: "Apagado", throttle: "Acelerador", forward: "Avante", reverse: "Atrás", fullAhead: "Toda avante", halfAhead: "Media avante", slowAhead: "Lenta avante", fullAstern: "Toda atrás", halfAstern: "Media atrás", slowAstern: "Lenta atrás", neutral: "Neutro",
     help: "Desliza sobre el mar para mirar · pellizca para ampliar · usa timón y acelerador por separado",
+    map: "Mapa", openMap: "Abrir mapa", closeMap: "Cerrar mapa", explored: "Explorado", uncharted: "Sin explorar", lighthouse: "Faro", pier: "Muelle", beachHut: "Cabaña de playa", crater: "Cráter del volcán", swipeToSteer: "Desliza para girar", tiltSteering: "Timón por inclinación", rotateHint: "Gira el móvil para ver más", dismiss: "Cerrar",
   },
   fr: {
     loadingTitle: "Préparation de la mer tropicale", loading: "Chargement", rendererNotice: "Avis du moteur graphique", sceneInterrupted: "Scène interrompue", reload: "Recharger le simulateur",
@@ -123,6 +127,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Réglage des voiles", quality: "Qualité", low: "Basse", medium: "Moyenne", high: "Haute", reset: "Réinitialiser la scène", photoMode: "Mode photo", photoModeHint: "Quitter le mode photo : Échap / double appui", language: "Langue", rudder: "Gouvernail", port: "Bâbord", starboard: "Tribord", center: "Centre", centerRudder: "Centrer le gouvernail",
     engine: "Moteur", on: "Marche", off: "Arrêt", throttle: "Manette", forward: "Avant", reverse: "Arrière", fullAhead: "Toute avant", halfAhead: "Demi avant", slowAhead: "Lente avant", fullAstern: "Toute arrière", halfAstern: "Demi arrière", slowAstern: "Lente arrière", neutral: "Neutre",
     help: "Glissez sur la mer pour regarder · pincez pour zoomer · pilotez gouvernail et manette séparément",
+    map: "Carte", openMap: "Ouvrir la carte", closeMap: "Fermer la carte", explored: "Exploré", uncharted: "Inexploré", lighthouse: "Phare", pier: "Ponton", beachHut: "Cabane de plage", crater: "Cratère du volcan", swipeToSteer: "Glissez pour barrer", tiltSteering: "Barre par inclinaison", rotateHint: "Tournez l’appareil pour élargir la vue", dismiss: "Fermer",
   },
   ar: {
     loadingTitle: "جارٍ تجهيز البحر الاستوائي", loading: "جارٍ التحميل", rendererNotice: "تنبيه العرض", sceneInterrupted: "توقف المشهد", reload: "إعادة تحميل المحاكي",
@@ -131,6 +136,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "ضبط الشراع", quality: "الجودة", low: "منخفضة", medium: "متوسطة", high: "عالية", reset: "إعادة ضبط المشهد", photoMode: "وضع التصوير", photoModeHint: "الخروج من التصوير: Esc / نقرتان", language: "اللغة", rudder: "الدفة", port: "الميسرة", starboard: "الميمنة", center: "الوسط", centerRudder: "توسيط الدفة",
     engine: "المحرك", on: "تشغيل", off: "إيقاف", throttle: "الخانق", forward: "أمام", reverse: "خلف", fullAhead: "أقصى سرعة أمام", halfAhead: "نصف سرعة أمام", slowAhead: "ببطء أمام", fullAstern: "أقصى سرعة خلف", halfAstern: "نصف سرعة خلف", slowAstern: "ببطء خلف", neutral: "محايد",
     help: "اسحب فوق البحر للنظر · قرّب بإصبعين · استخدم الدفة والخانق بشكل مستقل",
+    map: "الخريطة", openMap: "فتح الخريطة", closeMap: "إغلاق الخريطة", explored: "مستكشف", uncharted: "غير مستكشف", lighthouse: "منارة", pier: "رصيف", beachHut: "كوخ الشاطئ", crater: "فوهة البركان", swipeToSteer: "اسحب للتوجيه", tiltSteering: "التوجيه بالإمالة", rotateHint: "أدر الهاتف لرؤية أوسع", dismiss: "إغلاق",
   },
   bn: {
     loadingTitle: "ক্রান্তীয় সমুদ্র প্রস্তুত হচ্ছে", loading: "লোড হচ্ছে", rendererNotice: "রেন্ডারার বার্তা", sceneInterrupted: "দৃশ্য থেমে গেছে", reload: "সিমুলেটর রিলোড করুন",
@@ -139,6 +145,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "পাল ট্রিম", quality: "মান", low: "কম", medium: "মাঝারি", high: "উচ্চ", reset: "দৃশ্য রিসেট", photoMode: "ফটো মোড", photoModeHint: "ফটো মোড থেকে বের হন: Esc / দুবার ট্যাপ", language: "ভাষা", rudder: "হাল", port: "বাম", starboard: "ডান", center: "মাঝে", centerRudder: "হাল মাঝখানে",
     engine: "ইঞ্জিন", on: "চালু", off: "বন্ধ", throttle: "থ্রটল", forward: "সামনে", reverse: "পেছনে", fullAhead: "পুরো সামনে", halfAhead: "অর্ধেক সামনে", slowAhead: "ধীরে সামনে", fullAstern: "পুরো পেছনে", halfAstern: "অর্ধেক পেছনে", slowAstern: "ধীরে পেছনে", neutral: "নিরপেক্ষ",
     help: "দেখতে সমুদ্রে সোয়াইপ করুন · জুম করতে পিঞ্চ করুন · হাল ও থ্রটল আলাদাভাবে চালান",
+    map: "মানচিত্র", openMap: "মানচিত্র খুলুন", closeMap: "মানচিত্র বন্ধ করুন", explored: "অন্বেষিত", uncharted: "অনাবিষ্কৃত", lighthouse: "বাতিঘর", pier: "জেটি", beachHut: "সৈকত কুটির", crater: "আগ্নেয়গিরির জ্বালামুখ", swipeToSteer: "হাল ঘোরাতে সোয়াইপ করুন", tiltSteering: "কাত করে হাল", rotateHint: "প্রশস্ত দৃশ্যের জন্য ফোন ঘোরান", dismiss: "বন্ধ করুন",
   },
   pt: {
     loadingTitle: "Preparando o mar tropical", loading: "Carregando", rendererNotice: "Aviso do renderizador", sceneInterrupted: "Cena interrompida", reload: "Recarregar simulador",
@@ -147,6 +154,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Ajuste da vela", quality: "Qualidade", low: "Baixa", medium: "Média", high: "Alta", reset: "Reiniciar cena", photoMode: "Modo foto", photoModeHint: "Sair do modo foto: Esc / toque duplo", language: "Idioma", rudder: "Leme", port: "Bombordo", starboard: "Estibordo", center: "Centro", centerRudder: "Centralizar leme",
     engine: "Motor", on: "Ligado", off: "Desligado", throttle: "Acelerador", forward: "Avante", reverse: "Ré", fullAhead: "Toda avante", halfAhead: "Meia avante", slowAhead: "Devagar avante", fullAstern: "Toda ré", halfAstern: "Meia ré", slowAstern: "Devagar ré", neutral: "Neutro",
     help: "Deslize no mar para olhar · belisque para ampliar · use leme e acelerador separadamente",
+    map: "Mapa", openMap: "Abrir mapa", closeMap: "Fechar mapa", explored: "Explorado", uncharted: "Inexplorado", lighthouse: "Farol", pier: "Píer", beachHut: "Cabana de praia", crater: "Cratera do vulcão", swipeToSteer: "Deslize para governar", tiltSteering: "Leme por inclinação", rotateHint: "Gire o celular para ver mais", dismiss: "Fechar",
   },
   ru: {
     loadingTitle: "Подготовка тропического моря", loading: "Загрузка", rendererNotice: "Сообщение рендера", sceneInterrupted: "Сцена прервана", reload: "Перезагрузить симулятор",
@@ -155,6 +163,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Настройка паруса", quality: "Качество", low: "Низкое", medium: "Среднее", high: "Высокое", reset: "Сброс сцены", photoMode: "Фоторежим", photoModeHint: "Выход из фоторежима: Esc / двойное касание", language: "Язык", rudder: "Руль", port: "Левый борт", starboard: "Правый борт", center: "Центр", centerRudder: "Выровнять руль",
     engine: "Двигатель", on: "Вкл", off: "Выкл", throttle: "Газ", forward: "Вперёд", reverse: "Назад", fullAhead: "Полный вперёд", halfAhead: "Средний вперёд", slowAhead: "Малый вперёд", fullAstern: "Полный назад", halfAstern: "Средний назад", slowAstern: "Малый назад", neutral: "Нейтраль",
     help: "Свайп по морю — обзор · щипок — масштаб · руль и газ работают независимо",
+    map: "Карта", openMap: "Открыть карту", closeMap: "Закрыть карту", explored: "Исследовано", uncharted: "Не исследовано", lighthouse: "Маяк", pier: "Пирс", beachHut: "Пляжная хижина", crater: "Кратер вулкана", swipeToSteer: "Свайп для руля", tiltSteering: "Руль наклоном", rotateHint: "Поверните телефон для широкого обзора", dismiss: "Закрыть",
   },
   ur: {
     loadingTitle: "استوائی سمندر تیار ہو رہا ہے", loading: "لوڈ ہو رہا ہے", rendererNotice: "رینڈرر اطلاع", sceneInterrupted: "منظر رک گیا", reload: "سمولیٹر دوبارہ لوڈ کریں",
@@ -163,6 +172,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "بادبان ٹرم", quality: "معیار", low: "کم", medium: "درمیانہ", high: "اعلیٰ", reset: "منظر ری سیٹ", photoMode: "فوٹو موڈ", photoModeHint: "فوٹو موڈ سے نکلیں: Esc / دو بار ٹیپ", language: "زبان", rudder: "پتوار", port: "بایاں", starboard: "دایاں", center: "مرکز", centerRudder: "پتوار مرکز کریں",
     engine: "انجن", on: "چالو", off: "بند", throttle: "تھروٹل", forward: "آگے", reverse: "پیچھے", fullAhead: "پوری رفتار آگے", halfAhead: "آدھی رفتار آگے", slowAhead: "آہستہ آگے", fullAstern: "پوری رفتار پیچھے", halfAstern: "آدھی رفتار پیچھے", slowAstern: "آہستہ پیچھے", neutral: "نیوٹرل",
     help: "دیکھنے کے لیے سمندر پر سوائپ کریں · زوم کے لیے پنچ کریں · پتوار اور تھروٹل الگ چلائیں",
+    map: "نقشہ", openMap: "نقشہ کھولیں", closeMap: "نقشہ بند کریں", explored: "دریافت شدہ", uncharted: "غیر دریافت شدہ", lighthouse: "لائٹ ہاؤس", pier: "گھاٹ", beachHut: "ساحلی جھونپڑی", crater: "آتش فشاں کا دہانہ", swipeToSteer: "سکان کے لیے سوائپ کریں", tiltSteering: "جھکا کر سکان", rotateHint: "وسیع منظر کے لیے فون گھمائیں", dismiss: "بند کریں",
   },
   id: {
     loadingTitle: "Menyiapkan laut tropis", loading: "Memuat", rendererNotice: "Pemberitahuan renderer", sceneInterrupted: "Adegan terhenti", reload: "Muat ulang simulator",
@@ -171,6 +181,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Trim layar", quality: "Kualitas", low: "Rendah", medium: "Sedang", high: "Tinggi", reset: "Atur ulang adegan", photoMode: "Mode foto", photoModeHint: "Keluar mode foto: Esc / ketuk dua kali", language: "Bahasa", rudder: "Kemudi", port: "Kiri", starboard: "Kanan", center: "Tengah", centerRudder: "Tengahkan kemudi",
     engine: "Mesin", on: "Nyala", off: "Mati", throttle: "Gas", forward: "Maju", reverse: "Mundur", fullAhead: "Maju penuh", halfAhead: "Maju setengah", slowAhead: "Maju pelan", fullAstern: "Mundur penuh", halfAstern: "Mundur setengah", slowAstern: "Mundur pelan", neutral: "Netral",
     help: "Geser laut untuk melihat · cubit untuk zoom · gunakan kemudi dan gas secara terpisah",
+    map: "Peta", openMap: "Buka peta", closeMap: "Tutup peta", explored: "Dijelajahi", uncharted: "Belum dijelajahi", lighthouse: "Mercusuar", pier: "Dermaga", beachHut: "Pondok pantai", crater: "Kawah gunung api", swipeToSteer: "Geser untuk mengemudi", tiltSteering: "Kemudi miring", rotateHint: "Putar ponsel untuk tampilan lebih luas", dismiss: "Tutup",
   },
   de: {
     loadingTitle: "Das tropische Meer wird vorbereitet", loading: "Laden", rendererNotice: "Renderer-Hinweis", sceneInterrupted: "Szene unterbrochen", reload: "Simulator neu laden",
@@ -179,6 +190,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Segeltrimm", quality: "Qualität", low: "Niedrig", medium: "Mittel", high: "Hoch", reset: "Szene zurücksetzen", photoMode: "Fotomodus", photoModeHint: "Fotomodus beenden: Esc / Doppeltippen", language: "Sprache", rudder: "Ruder", port: "Backbord", starboard: "Steuerbord", center: "Mitte", centerRudder: "Ruder zentrieren",
     engine: "Motor", on: "Ein", off: "Aus", throttle: "Gashebel", forward: "Voraus", reverse: "Zurück", fullAhead: "Volle Kraft voraus", halfAhead: "Halbe Kraft voraus", slowAhead: "Langsam voraus", fullAstern: "Volle Kraft zurück", halfAstern: "Halbe Kraft zurück", slowAstern: "Langsam zurück", neutral: "Neutral",
     help: "Zum Umschauen über das Meer wischen · zum Zoomen aufziehen · Ruder und Gas getrennt bedienen",
+    map: "Karte", openMap: "Karte öffnen", closeMap: "Karte schließen", explored: "Erkundet", uncharted: "Unerforscht", lighthouse: "Leuchtturm", pier: "Steg", beachHut: "Strandhütte", crater: "Vulkankrater", swipeToSteer: "Wischen zum Steuern", tiltSteering: "Neigungssteuerung", rotateHint: "Für mehr Sicht drehen", dismiss: "Schließen",
   },
   ja: {
     loadingTitle: "南国の海を準備中", loading: "読み込み中", rendererNotice: "描画のお知らせ", sceneInterrupted: "シーンが中断されました", reload: "シミュレーターを再読み込み",
@@ -187,6 +199,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "セール調整", quality: "画質", low: "低", medium: "中", high: "高", reset: "シーンをリセット", photoMode: "フォトモード", photoModeHint: "フォトモード終了：Esc / ダブルタップ", language: "言語", rudder: "舵", port: "左舷", starboard: "右舷", center: "中央", centerRudder: "舵を中央へ",
     engine: "エンジン", on: "オン", off: "オフ", throttle: "スロットル", forward: "前進", reverse: "後進", fullAhead: "全速前進", halfAhead: "半速前進", slowAhead: "微速前進", fullAstern: "全速後進", halfAstern: "半速後進", slowAstern: "微速後進", neutral: "ニュートラル",
     help: "海面をスワイプして見回す · ピンチでズーム · 舵とスロットルは個別に操作",
+    map: "地図", openMap: "地図を開く", closeMap: "地図を閉じる", explored: "探索済み", uncharted: "未踏", lighthouse: "灯台", pier: "桟橋", beachHut: "ビーチ小屋", crater: "火口", swipeToSteer: "スワイプで操舵", tiltSteering: "傾きで操舵", rotateHint: "横向きで広く見る", dismiss: "閉じる",
   },
   sw: {
     loadingTitle: "Kuandaa bahari ya kitropiki", loading: "Inapakia", rendererNotice: "Taarifa ya uonyeshaji", sceneInterrupted: "Mandhari imesimama", reload: "Pakia kiigaji upya",
@@ -195,6 +208,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Mpangilio wa tanga", quality: "Ubora", low: "Chini", medium: "Kati", high: "Juu", reset: "Anza mandhari upya", photoMode: "Hali ya picha", photoModeHint: "Toka hali ya picha: Esc / gusa mara mbili", language: "Lugha", rudder: "Usukani", port: "Kushoto", starboard: "Kulia", center: "Katikati", centerRudder: "Weka usukani kati",
     engine: "Injini", on: "Imewashwa", off: "Imezimwa", throttle: "Kasi", forward: "Mbele", reverse: "Nyuma", fullAhead: "Mbele kabisa", halfAhead: "Nusu mbele", slowAhead: "Polepole mbele", fullAstern: "Nyuma kabisa", halfAstern: "Nusu nyuma", slowAstern: "Polepole nyuma", neutral: "Huru",
     help: "Telezesha baharini kutazama · bana kukuza · tumia usukani na kasi kando",
+    map: "Ramani", openMap: "Fungua ramani", closeMap: "Funga ramani", explored: "Imechunguzwa", uncharted: "Haijachunguzwa", lighthouse: "Mnara wa taa", pier: "Gati", beachHut: "Kibanda cha ufukweni", crater: "Kasoko ya volkano", swipeToSteer: "Telezesha kuongoza", tiltSteering: "Uongozaji kwa kuinamisha", rotateHint: "Zungusha simu kwa mwonekano mpana", dismiss: "Funga",
   },
   mr: {
     loadingTitle: "उष्णकटिबंधीय समुद्र तयार होत आहे", loading: "लोड होत आहे", rendererNotice: "रेंडरर सूचना", sceneInterrupted: "दृश्य थांबले", reload: "सिम्युलेटर पुन्हा लोड करा",
@@ -203,6 +217,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "शिड समायोजन", quality: "गुणवत्ता", low: "कमी", medium: "मध्यम", high: "उच्च", reset: "दृश्य रीसेट", photoMode: "फोटो मोड", photoModeHint: "फोटो मोडमधून बाहेर: Esc / दोनदा टॅप", language: "भाषा", rudder: "सुकाणू", port: "डावा", starboard: "उजवा", center: "मध्य", centerRudder: "सुकाणू मध्य करा",
     engine: "इंजिन", on: "चालू", off: "बंद", throttle: "थ्रॉटल", forward: "पुढे", reverse: "मागे", fullAhead: "पूर्ण पुढे", halfAhead: "अर्धे पुढे", slowAhead: "हळू पुढे", fullAstern: "पूर्ण मागे", halfAstern: "अर्धे मागे", slowAstern: "हळू मागे", neutral: "न्यूट्रल",
     help: "पाहण्यासाठी समुद्रावर स्वाइप करा · झूमसाठी पिंच करा · सुकाणू व थ्रॉटल स्वतंत्र वापरा",
+    map: "नकाशा", openMap: "नकाशा उघडा", closeMap: "नकाशा बंद करा", explored: "शोधलेले", uncharted: "न शोधलेले", lighthouse: "दीपगृह", pier: "धक्का", beachHut: "किनाऱ्यावरील झोपडी", crater: "ज्वालामुखीचे विवर", swipeToSteer: "सुकाणूसाठी स्वाइप करा", tiltSteering: "झुकवून सुकाणू", rotateHint: "रुंद दृश्यासाठी फोन फिरवा", dismiss: "बंद करा",
   },
   te: {
     loadingTitle: "ఉష్ణమండల సముద్రం సిద్ధమవుతోంది", loading: "లోడ్ అవుతోంది", rendererNotice: "రెండరర్ సమాచారం", sceneInterrupted: "దృశ్యం ఆగింది", reload: "సిమ్యులేటర్‌ను మళ్లీ లోడ్ చేయండి",
@@ -211,6 +226,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "తెర సర్దుబాటు", quality: "నాణ్యత", low: "తక్కువ", medium: "మధ్య", high: "అధిక", reset: "దృశ్యాన్ని రీసెట్ చేయి", photoMode: "ఫోటో మోడ్", photoModeHint: "ఫోటో మోడ్ నుండి నిష్క్రమణ: Esc / రెండుసార్లు తట్టండి", language: "భాష", rudder: "చుక్కాని", port: "ఎడమ", starboard: "కుడి", center: "మధ్య", centerRudder: "చుక్కాని మధ్యకు",
     engine: "ఇంజిన్", on: "ఆన్", off: "ఆఫ్", throttle: "థ్రాటిల్", forward: "ముందు", reverse: "వెనుక", fullAhead: "పూర్తి వేగం ముందు", halfAhead: "సగం వేగం ముందు", slowAhead: "నెమ్మదిగా ముందు", fullAstern: "పూర్తి వేగం వెనుక", halfAstern: "సగం వేగం వెనుక", slowAstern: "నెమ్మదిగా వెనుక", neutral: "న్యూట్రల్",
     help: "చూడటానికి సముద్రంపై స్వైప్ చేయండి · జూమ్‌కు పించ్ చేయండి · చుక్కాని, థ్రాటిల్ విడిగా వాడండి",
+    map: "మ్యాప్", openMap: "మ్యాప్ తెరువు", closeMap: "మ్యాప్ మూసివేయి", explored: "అన్వేషించినవి", uncharted: "అన్వేషించనివి", lighthouse: "లైట్‌హౌస్", pier: "జెట్టీ", beachHut: "బీచ్ గుడిసె", crater: "అగ్నిపర్వత బిలం", swipeToSteer: "చుక్కాని కోసం స్వైప్ చేయండి", tiltSteering: "వంచి చుక్కాని", rotateHint: "విస్తృత వీక్షణకు ఫోన్ తిప్పండి", dismiss: "మూసివేయి",
   },
   tr: {
     loadingTitle: "Tropik deniz hazırlanıyor", loading: "Yükleniyor", rendererNotice: "Görüntüleyici bildirimi", sceneInterrupted: "Sahne kesintiye uğradı", reload: "Simülatörü yeniden yükle",
@@ -219,6 +235,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Yelken ayarı", quality: "Kalite", low: "Düşük", medium: "Orta", high: "Yüksek", reset: "Sahneyi sıfırla", photoMode: "Fotoğraf modu", photoModeHint: "Fotoğraf modundan çık: Esc / çift dokun", language: "Dil", rudder: "Dümen", port: "İskele", starboard: "Sancak", center: "Orta", centerRudder: "Dümeni ortala",
     engine: "Motor", on: "Açık", off: "Kapalı", throttle: "Gaz", forward: "İleri", reverse: "Geri", fullAhead: "Tam yol ileri", halfAhead: "Yarım yol ileri", slowAhead: "Yavaş ileri", fullAstern: "Tam yol geri", halfAstern: "Yarım yol geri", slowAstern: "Yavaş geri", neutral: "Boş",
     help: "Bakmak için denizde kaydır · yakınlaştırmak için sıkıştır · dümen ve gazı ayrı kullan",
+    map: "Harita", openMap: "Haritayı aç", closeMap: "Haritayı kapat", explored: "Keşfedildi", uncharted: "Keşfedilmedi", lighthouse: "Deniz feneri", pier: "İskele", beachHut: "Plaj kulübesi", crater: "Volkan krateri", swipeToSteer: "Dümen için kaydırın", tiltSteering: "Eğerek dümen", rotateHint: "Geniş görüş için telefonu çevirin", dismiss: "Kapat",
   },
   ta: {
     loadingTitle: "வெப்பமண்டலக் கடல் தயாராகிறது", loading: "ஏற்றுகிறது", rendererNotice: "காட்சி அறிவிப்பு", sceneInterrupted: "காட்சி தடைப்பட்டது", reload: "சிமுலேட்டரை மீண்டும் ஏற்றவும்",
@@ -227,6 +244,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "பாய் அமைப்பு", quality: "தரம்", low: "குறைவு", medium: "நடுத்தரம்", high: "உயர்", reset: "காட்சியை மீட்டமை", photoMode: "புகைப்பட முறை", photoModeHint: "புகைப்பட முறையிலிருந்து வெளியேற: Esc / இருமுறை தட்டவும்", language: "மொழி", rudder: "சுக்கான்", port: "இடது", starboard: "வலது", center: "நடு", centerRudder: "சுக்கானை நடுவாக்கு",
     engine: "இயந்திரம்", on: "இயக்கம்", off: "நிறுத்தம்", throttle: "வேகக் கட்டுப்பாடு", forward: "முன்", reverse: "பின்", fullAhead: "முழு வேகம் முன்", halfAhead: "பாதி வேகம் முன்", slowAhead: "மெதுவாக முன்", fullAstern: "முழு வேகம் பின்", halfAstern: "பாதி வேகம் பின்", slowAstern: "மெதுவாக பின்", neutral: "நடுநிலை",
     help: "பார்க்க கடலில் ஸ்வைப் செய் · பெரிதாக்க கிள்ளு · சுக்கான் மற்றும் வேகத்தை தனித்தனியாக பயன்படுத்து",
+    map: "வரைபடம்", openMap: "வரைபடத்தைத் திற", closeMap: "வரைபடத்தை மூடு", explored: "ஆராயப்பட்டது", uncharted: "ஆராயப்படாதது", lighthouse: "கலங்கரை விளக்கம்", pier: "படகுத்துறை", beachHut: "கடற்கரை குடில்", crater: "எரிமலை வாய்", swipeToSteer: "சுக்கானுக்கு ஸ்வைப் செய்க", tiltSteering: "சாய்த்து சுக்கான்", rotateHint: "அகன்ற பார்வைக்கு போனைச் சுழற்றுக", dismiss: "மூடு",
   },
   vi: {
     loadingTitle: "Đang chuẩn bị biển nhiệt đới", loading: "Đang tải", rendererNotice: "Thông báo hiển thị", sceneInterrupted: "Cảnh bị gián đoạn", reload: "Tải lại trình mô phỏng",
@@ -235,6 +253,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Chỉnh buồm", quality: "Chất lượng", low: "Thấp", medium: "Vừa", high: "Cao", reset: "Đặt lại cảnh", photoMode: "Chế độ ảnh", photoModeHint: "Thoát chế độ ảnh: Esc / chạm hai lần", language: "Ngôn ngữ", rudder: "Bánh lái", port: "Mạn trái", starboard: "Mạn phải", center: "Giữa", centerRudder: "Đưa lái về giữa",
     engine: "Động cơ", on: "Bật", off: "Tắt", throttle: "Ga", forward: "Tiến", reverse: "Lùi", fullAhead: "Hết tốc tiến", halfAhead: "Nửa tốc tiến", slowAhead: "Chậm tiến", fullAstern: "Hết tốc lùi", halfAstern: "Nửa tốc lùi", slowAstern: "Chậm lùi", neutral: "Số không",
     help: "Vuốt trên biển để nhìn · chụm để thu phóng · dùng bánh lái và ga độc lập",
+    map: "Bản đồ", openMap: "Mở bản đồ", closeMap: "Đóng bản đồ", explored: "Đã khám phá", uncharted: "Chưa khám phá", lighthouse: "Hải đăng", pier: "Cầu tàu", beachHut: "Chòi bãi biển", crater: "Miệng núi lửa", swipeToSteer: "Vuốt để bẻ lái", tiltSteering: "Lái bằng nghiêng", rotateHint: "Xoay ngang để xem rộng hơn", dismiss: "Đóng",
   },
   ko: {
     loadingTitle: "열대 바다 준비 중", loading: "불러오는 중", rendererNotice: "렌더러 알림", sceneInterrupted: "장면이 중단되었습니다", reload: "시뮬레이터 다시 불러오기",
@@ -243,6 +262,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "돛 조정", quality: "품질", low: "낮음", medium: "중간", high: "높음", reset: "장면 초기화", photoMode: "사진 모드", photoModeHint: "사진 모드 종료: Esc / 두 번 탭", language: "언어", rudder: "방향타", port: "좌현", starboard: "우현", center: "중앙", centerRudder: "방향타 중앙",
     engine: "엔진", on: "켜짐", off: "꺼짐", throttle: "스로틀", forward: "전진", reverse: "후진", fullAhead: "전속 전진", halfAhead: "반속 전진", slowAhead: "저속 전진", fullAstern: "전속 후진", halfAstern: "반속 후진", slowAstern: "저속 후진", neutral: "중립",
     help: "바다를 스와이프해 둘러보기 · 핀치로 확대 · 방향타와 스로틀을 따로 조작",
+    map: "지도", openMap: "지도 열기", closeMap: "지도 닫기", explored: "탐험함", uncharted: "미탐험", lighthouse: "등대", pier: "부두", beachHut: "해변 오두막", crater: "분화구", swipeToSteer: "스와이프로 조타", tiltSteering: "기울여 조타", rotateHint: "가로로 돌려 넓게 보기", dismiss: "닫기",
   },
   it: {
     loadingTitle: "Preparazione del mare tropicale", loading: "Caricamento", rendererNotice: "Avviso del renderer", sceneInterrupted: "Scena interrotta", reload: "Ricarica simulatore",
@@ -251,6 +271,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Regolazione vela", quality: "Qualità", low: "Bassa", medium: "Media", high: "Alta", reset: "Reimposta scena", photoMode: "Modalità foto", photoModeHint: "Esci dalla modalità foto: Esc / doppio tocco", language: "Lingua", rudder: "Timone", port: "Babordo", starboard: "Tribordo", center: "Centro", centerRudder: "Centra timone",
     engine: "Motore", on: "Acceso", off: "Spento", throttle: "Acceleratore", forward: "Avanti", reverse: "Indietro", fullAhead: "Tutta avanti", halfAhead: "Mezza avanti", slowAhead: "Lenta avanti", fullAstern: "Tutta indietro", halfAstern: "Mezza indietro", slowAstern: "Lenta indietro", neutral: "Folle",
     help: "Scorri sul mare per guardare · pizzica per zoomare · usa timone e acceleratore separatamente",
+    map: "Mappa", openMap: "Apri mappa", closeMap: "Chiudi mappa", explored: "Esplorato", uncharted: "Inesplorato", lighthouse: "Faro", pier: "Pontile", beachHut: "Capanna sulla spiaggia", crater: "Cratere del vulcano", swipeToSteer: "Scorri per governare", tiltSteering: "Timone a inclinazione", rotateHint: "Ruota il telefono per una vista più ampia", dismiss: "Chiudi",
   },
   fa: {
     loadingTitle: "در حال آماده‌سازی دریای گرمسیری", loading: "در حال بارگذاری", rendererNotice: "اعلان نمایش", sceneInterrupted: "صحنه متوقف شد", reload: "بارگذاری دوباره شبیه‌ساز",
@@ -259,6 +280,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "تنظیم بادبان", quality: "کیفیت", low: "کم", medium: "متوسط", high: "زیاد", reset: "بازنشانی صحنه", photoMode: "حالت عکس", photoModeHint: "خروج از حالت عکس: Esc / دو بار ضربه", language: "زبان", rudder: "سکان", port: "چپ", starboard: "راست", center: "مرکز", centerRudder: "سکان به مرکز",
     engine: "موتور", on: "روشن", off: "خاموش", throttle: "گاز", forward: "جلو", reverse: "عقب", fullAhead: "تمام‌سر جلو", halfAhead: "نیم‌سر جلو", slowAhead: "آهسته جلو", fullAstern: "تمام‌سر عقب", halfAstern: "نیم‌سر عقب", slowAstern: "آهسته عقب", neutral: "خلاص",
     help: "برای نگاه روی دریا بکشید · برای بزرگ‌نمایی دو انگشت · سکان و گاز را جدا کنترل کنید",
+    map: "نقشه", openMap: "باز کردن نقشه", closeMap: "بستن نقشه", explored: "کاوش‌شده", uncharted: "کاوش‌نشده", lighthouse: "فانوس دریایی", pier: "اسکله", beachHut: "کلبه ساحلی", crater: "دهانه آتشفشان", swipeToSteer: "برای سکان بکشید", tiltSteering: "سکان با کج کردن", rotateHint: "برای دید گسترده‌تر گوشی را بچرخانید", dismiss: "بستن",
   },
   pl: {
     loadingTitle: "Przygotowywanie tropikalnego morza", loading: "Ładowanie", rendererNotice: "Komunikat renderera", sceneInterrupted: "Scena przerwana", reload: "Wczytaj symulator ponownie",
@@ -267,6 +289,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Trym żagla", quality: "Jakość", low: "Niska", medium: "Średnia", high: "Wysoka", reset: "Resetuj scenę", photoMode: "Tryb zdjęć", photoModeHint: "Wyjdź z trybu zdjęć: Esc / dwukrotne dotknięcie", language: "Język", rudder: "Ster", port: "Bakburta", starboard: "Sterburta", center: "Środek", centerRudder: "Wycentruj ster",
     engine: "Silnik", on: "Wł.", off: "Wył.", throttle: "Manetka", forward: "Naprzód", reverse: "Wstecz", fullAhead: "Cała naprzód", halfAhead: "Pół naprzód", slowAhead: "Wolno naprzód", fullAstern: "Cała wstecz", halfAstern: "Pół wstecz", slowAstern: "Wolno wstecz", neutral: "Luz",
     help: "Przesuń po morzu, by się rozejrzeć · uszczypnij, by przybliżyć · steruj sterem i manetką osobno",
+    map: "Mapa", openMap: "Otwórz mapę", closeMap: "Zamknij mapę", explored: "Odkryte", uncharted: "Nieodkryte", lighthouse: "Latarnia morska", pier: "Pomost", beachHut: "Chatka na plaży", crater: "Krater wulkanu", swipeToSteer: "Przesuń, aby sterować", tiltSteering: "Sterowanie przechyłem", rotateHint: "Obróć telefon, by widzieć więcej", dismiss: "Zamknij",
   },
   uk: {
     loadingTitle: "Підготовка тропічного моря", loading: "Завантаження", rendererNotice: "Повідомлення рендера", sceneInterrupted: "Сцену перервано", reload: "Перезавантажити симулятор",
@@ -275,6 +298,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Налаштування вітрила", quality: "Якість", low: "Низька", medium: "Середня", high: "Висока", reset: "Скинути сцену", photoMode: "Фоторежим", photoModeHint: "Вихід із фоторежиму: Esc / подвійний дотик", language: "Мова", rudder: "Кермо", port: "Лівий борт", starboard: "Правий борт", center: "Центр", centerRudder: "Вирівняти кермо",
     engine: "Двигун", on: "Увімк.", off: "Вимк.", throttle: "Газ", forward: "Уперед", reverse: "Назад", fullAhead: "Повний уперед", halfAhead: "Середній уперед", slowAhead: "Малий уперед", fullAstern: "Повний назад", halfAstern: "Середній назад", slowAstern: "Малий назад", neutral: "Нейтраль",
     help: "Свайп по морю — огляд · щипок — масштаб · кермо й газ працюють незалежно",
+    map: "Мапа", openMap: "Відкрити мапу", closeMap: "Закрити мапу", explored: "Досліджено", uncharted: "Не досліджено", lighthouse: "Маяк", pier: "Пірс", beachHut: "Пляжна хатина", crater: "Кратер вулкана", swipeToSteer: "Свайп для керма", tiltSteering: "Кермо нахилом", rotateHint: "Поверніть телефон для ширшого огляду", dismiss: "Закрити",
   },
   nl: {
     loadingTitle: "De tropische zee voorbereiden", loading: "Laden", rendererNotice: "Rendererbericht", sceneInterrupted: "Scène onderbroken", reload: "Simulator herladen",
@@ -283,6 +307,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Zeiltrim", quality: "Kwaliteit", low: "Laag", medium: "Middel", high: "Hoog", reset: "Scène resetten", photoMode: "Fotomodus", photoModeHint: "Fotomodus afsluiten: Esc / dubbeltikken", language: "Taal", rudder: "Roer", port: "Bakboord", starboard: "Stuurboord", center: "Midden", centerRudder: "Roer centreren",
     engine: "Motor", on: "Aan", off: "Uit", throttle: "Gashendel", forward: "Vooruit", reverse: "Achteruit", fullAhead: "Vol vooruit", halfAhead: "Half vooruit", slowAhead: "Langzaam vooruit", fullAstern: "Vol achteruit", halfAstern: "Half achteruit", slowAstern: "Langzaam achteruit", neutral: "Neutraal",
     help: "Veeg over zee om rond te kijken · knijp om te zoomen · bedien roer en gas apart",
+    map: "Kaart", openMap: "Kaart openen", closeMap: "Kaart sluiten", explored: "Verkend", uncharted: "Onverkend", lighthouse: "Vuurtoren", pier: "Steiger", beachHut: "Strandhut", crater: "Vulkaankrater", swipeToSteer: "Veeg om te sturen", tiltSteering: "Kantelbesturing", rotateHint: "Draai je telefoon voor meer zicht", dismiss: "Sluiten",
   },
   th: {
     loadingTitle: "กำลังเตรียมทะเลเขตร้อน", loading: "กำลังโหลด", rendererNotice: "แจ้งเตือนการแสดงผล", sceneInterrupted: "ฉากหยุดทำงาน", reload: "โหลดโปรแกรมจำลองใหม่",
@@ -291,6 +316,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "ปรับใบเรือ", quality: "คุณภาพ", low: "ต่ำ", medium: "กลาง", high: "สูง", reset: "รีเซ็ตฉาก", photoMode: "โหมดถ่ายภาพ", photoModeHint: "ออกจากโหมดถ่ายภาพ: Esc / แตะสองครั้ง", language: "ภาษา", rudder: "หางเสือ", port: "กราบซ้าย", starboard: "กราบขวา", center: "กลาง", centerRudder: "ตั้งหางเสือตรง",
     engine: "เครื่องยนต์", on: "เปิด", off: "ปิด", throttle: "คันเร่ง", forward: "เดินหน้า", reverse: "ถอยหลัง", fullAhead: "เต็มกำลังหน้า", halfAhead: "ครึ่งกำลังหน้า", slowAhead: "ช้าไปหน้า", fullAstern: "เต็มกำลังถอย", halfAstern: "ครึ่งกำลังถอย", slowAstern: "ช้าถอย", neutral: "เกียร์ว่าง",
     help: "ปัดบนทะเลเพื่อมอง · จีบเพื่อซูม · ใช้หางเสือและคันเร่งแยกกัน",
+    map: "แผนที่", openMap: "เปิดแผนที่", closeMap: "ปิดแผนที่", explored: "สำรวจแล้ว", uncharted: "ยังไม่สำรวจ", lighthouse: "ประภาคาร", pier: "ท่าเทียบเรือ", beachHut: "กระท่อมชายหาด", crater: "ปล่องภูเขาไฟ", swipeToSteer: "ปัดเพื่อบังคับหางเสือ", tiltSteering: "เอียงเพื่อบังคับ", rotateHint: "หมุนโทรศัพท์เพื่อมุมมองที่กว้างขึ้น", dismiss: "ปิด",
   },
   gu: {
     loadingTitle: "ઉષ્ણકટિબંધીય સમુદ્ર તૈયાર થઈ રહ્યો છે", loading: "લોડ થઈ રહ્યું છે", rendererNotice: "રેન્ડરર સૂચના", sceneInterrupted: "દૃશ્ય અટક્યું", reload: "સિમ્યુલેટર ફરી લોડ કરો",
@@ -299,6 +325,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "સઢ ગોઠવણી", quality: "ગુણવત્તા", low: "ઓછી", medium: "મધ્યમ", high: "ઉચ્ચ", reset: "દૃશ્ય રીસેટ", photoMode: "ફોટો મોડ", photoModeHint: "ફોટો મોડમાંથી બહાર: Esc / બે વાર ટૅપ", language: "ભાષા", rudder: "સુકાન", port: "ડાબું", starboard: "જમણું", center: "મધ્ય", centerRudder: "સુકાન મધ્યમાં",
     engine: "એન્જિન", on: "ચાલુ", off: "બંધ", throttle: "થ્રોટલ", forward: "આગળ", reverse: "પાછળ", fullAhead: "પૂર્ણ આગળ", halfAhead: "અડધું આગળ", slowAhead: "ધીમે આગળ", fullAstern: "પૂર્ણ પાછળ", halfAstern: "અડધું પાછળ", slowAstern: "ધીમે પાછળ", neutral: "ન્યુટ્રલ",
     help: "જોવા માટે સમુદ્ર પર સ્વાઇપ કરો · ઝૂમ માટે પિંચ કરો · સુકાન અને થ્રોટલ અલગ વાપરો",
+    map: "નકશો", openMap: "નકશો ખોલો", closeMap: "નકશો બંધ કરો", explored: "શોધાયેલ", uncharted: "અણશોધાયેલ", lighthouse: "દીવાદાંડી", pier: "જેટી", beachHut: "દરિયાકાંઠાની ઝૂંપડી", crater: "જ્વાળામુખીનું મુખ", swipeToSteer: "સુકાન માટે સ્વાઇપ કરો", tiltSteering: "નમાવીને સુકાન", rotateHint: "વિશાળ દૃશ્ય માટે ફોન ફેરવો", dismiss: "બંધ કરો",
   },
   fil: {
     loadingTitle: "Inihahanda ang tropikal na dagat", loading: "Naglo-load", rendererNotice: "Abiso sa renderer", sceneInterrupted: "Napatigil ang eksena", reload: "I-reload ang simulator",
@@ -307,6 +334,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Ayos ng layag", quality: "Kalidad", low: "Mababa", medium: "Katamtaman", high: "Mataas", reset: "I-reset ang eksena", photoMode: "Photo mode", photoModeHint: "Lumabas sa photo mode: Esc / i-tap nang dalawang beses", language: "Wika", rudder: "Timon", port: "Kaliwa", starboard: "Kanan", center: "Gitna", centerRudder: "Ig gitna ang timon",
     engine: "Makina", on: "Bukas", off: "Patay", throttle: "Silinyador", forward: "Pasulong", reverse: "Paatras", fullAhead: "Todo pasulong", halfAhead: "Kalahating pasulong", slowAhead: "Dahan-dahang pasulong", fullAstern: "Todo paatras", halfAstern: "Kalahating paatras", slowAstern: "Dahan-dahang paatras", neutral: "Neutral",
     help: "Mag-swipe sa dagat para tumingin · mag-pinch para mag-zoom · gamitin nang hiwalay ang timon at silinyador",
+    map: "Mapa", openMap: "Buksan ang mapa", closeMap: "Isara ang mapa", explored: "Nagalugad", uncharted: "Hindi pa nagalugad", lighthouse: "Parola", pier: "Pantalan", beachHut: "Kubo sa dalampasigan", crater: "Bunganga ng bulkan", swipeToSteer: "Mag-swipe para magtimon", tiltSteering: "Timon sa pagkiling", rotateHint: "Iikot ang telepono para mas malawak", dismiss: "Isara",
   },
   ms: {
     loadingTitle: "Menyediakan laut tropika", loading: "Memuatkan", rendererNotice: "Notis paparan", sceneInterrupted: "Pemandangan terganggu", reload: "Muat semula simulator",
@@ -315,6 +343,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "Trim layar", quality: "Kualiti", low: "Rendah", medium: "Sederhana", high: "Tinggi", reset: "Tetapkan semula adegan", photoMode: "Mod foto", photoModeHint: "Keluar mod foto: Esc / ketik dua kali", language: "Bahasa", rudder: "Kemudi", port: "Kiri", starboard: "Kanan", center: "Tengah", centerRudder: "Tengahkan kemudi",
     engine: "Enjin", on: "Hidup", off: "Mati", throttle: "Pendikit", forward: "Hadapan", reverse: "Undur", fullAhead: "Penuh hadapan", halfAhead: "Separuh hadapan", slowAhead: "Perlahan hadapan", fullAstern: "Penuh undur", halfAstern: "Separuh undur", slowAstern: "Perlahan undur", neutral: "Neutral",
     help: "Leret laut untuk melihat · cubit untuk zum · guna kemudi dan pendikit berasingan",
+    map: "Peta", openMap: "Buka peta", closeMap: "Tutup peta", explored: "Diterokai", uncharted: "Belum diterokai", lighthouse: "Rumah api", pier: "Jeti", beachHut: "Pondok pantai", crater: "Kawah gunung berapi", swipeToSteer: "Leret untuk mengemudi", tiltSteering: "Kemudi condong", rotateHint: "Putar telefon untuk paparan lebih luas", dismiss: "Tutup",
   },
   he: {
     loadingTitle: "מכין את הים הטרופי", loading: "טוען", rendererNotice: "הודעת תצוגה", sceneInterrupted: "הסצנה הופסקה", reload: "טעינה מחדש של הסימולטור",
@@ -323,6 +352,7 @@ const TRANSLATIONS: Record<LanguageCode, Messages> = {
     sailTrim: "כיוון מפרש", quality: "איכות", low: "נמוכה", medium: "בינונית", high: "גבוהה", reset: "איפוס הסצנה", photoMode: "מצב צילום", photoModeHint: "יציאה ממצב צילום: Esc / הקשה כפולה", language: "שפה", rudder: "הגה", port: "שמאל", starboard: "ימין", center: "מרכז", centerRudder: "מרכוז ההגה",
     engine: "מנוע", on: "פועל", off: "כבוי", throttle: "מצערת", forward: "קדימה", reverse: "אחורה", fullAhead: "מלא קדימה", halfAhead: "חצי קדימה", slowAhead: "לאט קדימה", fullAstern: "מלא אחורה", halfAstern: "חצי אחורה", slowAstern: "לאט אחורה", neutral: "ניוטרל",
     help: "החליקו על הים כדי להביט · צבטו לזום · השתמשו בהגה ובמצערת בנפרד",
+    map: "מפה", openMap: "פתיחת המפה", closeMap: "סגירת המפה", explored: "נחקר", uncharted: "לא נחקר", lighthouse: "מגדלור", pier: "מזח", beachHut: "בקתת חוף", crater: "לוע הר הגעש", swipeToSteer: "החליקו כדי לנווט", tiltSteering: "היגוי בהטיה", rotateHint: "סובבו את הטלפון לתצוגה רחבה", dismiss: "סגירה",
   },
 };
 

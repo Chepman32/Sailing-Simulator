@@ -27,6 +27,15 @@ export type SimulationSnapshot = {
   engineRunning: boolean;
   engineMuted: boolean;
   fps: number;
+  /** Yacht world position (meters) for the chart. */
+  positionX: number;
+  positionZ: number;
+  /** Ids of charted landmarks discovered so far; the array is replaced when it changes. */
+  discoveredLandmarks: readonly string[];
+  /** Increments whenever fog or discoveries change, so the chart knows to redraw. */
+  explorationRevision: number;
+  /** Share of the chart square revealed, in [0, 1]. */
+  exploredFraction: number;
   status: "loading" | "running" | "paused" | "error";
 };
 

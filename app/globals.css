@@ -538,9 +538,9 @@ input[type="range"] {
   bottom: max(18px, env(safe-area-inset-bottom));
   left: max(18px, env(safe-area-inset-left));
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) 104px;
+  grid-template-columns: minmax(0, 1fr) auto 104px;
   grid-template-areas:
-    "wheel heading center"
+    "swipe tilt center"
     "track track track";
   align-items: center;
   gap: 7px 10px;
@@ -549,10 +549,50 @@ input[type="range"] {
   border-radius: 18px;
 }
 
-.rudder-control > .control-heading { grid-area: heading; }
+.rudder-swipe {
+  grid-area: swipe;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border-radius: 14px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.rudder-control.is-tilt .rudder-swipe { cursor: default; }
+
+.swipe-hint {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tilt-button {
+  grid-area: tilt;
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  min-width: 48px;
+  min-height: 48px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(101, 226, 214, 0.08);
+}
+
+.tilt-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: #032029;
+  background: var(--accent);
+}
 
 .helm-wheel {
-  grid-area: wheel;
   display: grid;
   place-items: center;
   width: 86px;
@@ -1091,18 +1131,56 @@ input[type="range"]:disabled {
 
   .rudder-control {
     display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
-    grid-template-areas:
-      "wheel heading"
-      "track track"
-      "center center";
-    gap: 6px 8px;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: "swipe tilt center";
+    gap: 6px;
     align-content: center;
-    min-height: 204px;
-    padding: 10px;
+    min-height: 0;
+    padding: 7px;
   }
 
-  .rudder-control > .control-heading { grid-area: heading; }
+  .rudder-swipe {
+  grid-area: swipe;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border-radius: 14px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.rudder-control.is-tilt .rudder-swipe { cursor: default; }
+
+.swipe-hint {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tilt-button {
+  grid-area: tilt;
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  min-width: 48px;
+  min-height: 48px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(101, 226, 214, 0.08);
+}
+
+.tilt-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: #032029;
+  background: var(--accent);
+}
 
   .helm-wheel {
     width: 68px;
@@ -1136,10 +1214,10 @@ input[type="range"]:disabled {
 
   .center-button {
     grid-area: center;
-    width: 100%;
-    min-height: 44px;
+    width: 66px;
+    min-height: 56px;
     margin: 0;
-    padding: 0 10px;
+    padding: 0 6px;
     border-radius: 12px;
     font-size: 11px;
   }
@@ -1296,4 +1374,281 @@ input[type="range"]:disabled {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Chart: minimap and full-screen map with fog of war. */
+.minimap {
+  position: absolute;
+  z-index: 12;
+  top: max(96px, calc(env(safe-area-inset-top) + 96px));
+  right: max(18px, env(safe-area-inset-right));
+  width: 148px;
+  height: 148px;
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid rgba(151, 231, 238, 0.45);
+  border-radius: 50%;
+  background: #0b2a38;
+  box-shadow: 0 12px 30px rgba(0, 12, 18, 0.3);
+  cursor: pointer;
+}
+
+.minimap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.chart-dialog {
+  position: absolute;
+  z-index: 40;
+  inset: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: #04202b;
+  box-shadow: 0 24px 60px rgba(0, 10, 16, 0.5);
+}
+
+.chart-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chart-dialog header strong { font-size: 14px; }
+
+.chart-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 210px;
+  gap: 12px;
+  min-height: 0;
+}
+
+.chart-canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border-radius: 12px;
+  background: #0b2a38;
+}
+
+.chart-legend {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 8px;
+  border: 1px solid rgba(151, 231, 238, 0.12);
+  border-radius: 10px;
+}
+
+.chart-legend li.is-found { color: var(--text); }
+
+.legend-icon {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #33515d;
+}
+
+.is-found .legend-island { background: #4f9a58; }
+.is-found .legend-peak { background: #c2552d; border-radius: 2px; }
+.is-found .legend-lighthouse { background: linear-gradient(#fff 0 40%, #d33a2f 40% 60%, #fff 60%); border-radius: 2px; }
+.is-found .legend-pier { background: #a0784f; }
+.is-found .legend-hut { background: #f1cf6b; }
+
+.rotate-hint {
+  position: absolute;
+  z-index: 22;
+  top: calc(env(safe-area-inset-top) + 128px);
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 40px);
+  min-height: 44px;
+  padding: 0 4px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(4, 27, 38, 0.9);
+  font-size: 12px;
+  font-weight: 700;
+  transform: translateX(-50%);
+}
+
+.rotate-hint button {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text);
+  background: transparent;
+  font-size: 20px;
+}
+
+@media (max-width: 680px), (max-height: 560px) and (max-width: 960px) {
+  /* Compact instruments: all three readouts fit beside the controls button. */
+  .wind-instrument { display: grid; min-width: 78px; }
+  .instrument { min-width: 56px; min-height: 0; padding: 6px 7px; gap: 1px; }
+  .instrument span { font-size: 8px; letter-spacing: 0.08em; white-space: nowrap; }
+  .instrument strong { font-size: 17px; }
+  .instrument small { position: static; font-size: 8px; white-space: nowrap; }
+
+  .control-panel.is-minimized { width: auto; }
+  .control-panel.is-minimized header { min-height: 0; padding: 5px; }
+  .control-panel.is-minimized header > div { display: none; }
+
+  .scene-actions {
+    top: calc(env(safe-area-inset-top) + 74px);
+    left: calc(env(safe-area-inset-left) + 8px);
+    width: auto;
+    grid-template-columns: repeat(2, 44px);
+    gap: 6px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .scene-action {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border-radius: 12px;
+    background: rgba(4, 29, 40, 0.88);
+  }
+  .scene-action span,
+  .photo-mode-hint { display: none; }
+
+  .minimap {
+    top: calc(env(safe-area-inset-top) + 66px);
+    right: calc(env(safe-area-inset-right) + 8px);
+    width: 88px;
+    height: 88px;
+  }
+
+  .rudder-swipe {
+    grid-template-columns: 56px minmax(0, 1fr);
+    gap: 8px;
+    min-height: 56px;
+    padding: 0 6px 0 0;
+    border: 1px dashed rgba(151, 231, 238, 0.22);
+  }
+  .helm-wheel,
+  .helm-wheel svg { width: 54px; height: 54px; }
+  .tilt-button { min-width: 48px; }
+
+  /* The range input stays focusable for keyboards and screen readers; the
+     visible phone control is the swipe pad (or tilt) to save screen height. */
+  .rudder-track-wrap {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .throttle-control.is-off {
+    min-height: 0;
+    padding: 6px;
+  }
+  .throttle-control.is-off .vertical-heading,
+  .throttle-control.is-off .throttle-layout { display: none; }
+  .throttle-control.is-off .engine-toggle {
+    grid-template-columns: auto auto;
+    min-height: 52px;
+    margin: 0;
+  }
+
+  .engine-notice { bottom: calc(env(safe-area-inset-bottom) + 196px); }
+  .primary-controls { align-items: end; }
+  .rudder-swipe .control-heading {
+    display: grid;
+    gap: 1px;
+    justify-items: start;
+    min-width: 0;
+    text-align: start;
+  }
+  .rudder-swipe .control-heading strong { white-space: nowrap; }
+}
+
+@media (max-width: 680px) and (orientation: portrait) {
+  .primary-controls { gap: 6px; }
+
+  /* Running engine: a horizontal throttle row above the rudder. */
+  .throttle-control {
+    width: 100%;
+    justify-self: stretch;
+    grid-template-columns: 92px minmax(0, 1fr);
+    grid-template-areas:
+      "toggle heading"
+      "toggle slider";
+    gap: 2px 8px;
+    min-height: 0;
+    padding: 6px;
+  }
+  .throttle-control .engine-toggle { grid-area: toggle; min-height: 64px; margin: 0; }
+  .throttle-control .vertical-heading { grid-area: heading; text-align: start; }
+  .throttle-layout {
+    grid-area: slider;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+  }
+  .throttle-layout > span:first-child { order: 3; }
+  .throttle-layout > span:last-child { order: 1; }
+  .throttle-slider-slot { order: 2; width: 100%; height: 44px; }
+  .throttle-slider {
+    width: 100% !important;
+    height: 44px !important;
+    transform: translate(-50%, -50%);
+  }
+  .throttle-control.is-off {
+    width: auto;
+    justify-self: end;
+    grid-template-columns: auto;
+    grid-template-areas: "toggle";
+  }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .scene-actions {
+    top: calc(env(safe-area-inset-top) + 74px);
+    left: calc(env(safe-area-inset-left) + 8px);
+    right: auto;
+    width: auto;
+  }
+  .minimap {
+    top: calc(env(safe-area-inset-top) + 8px);
+    right: calc(env(safe-area-inset-right) + 70px);
+  }
+  .rudder-control { min-height: 0; padding: 7px; }
+  .throttle-control:not(.is-off) { min-height: 200px; }
+  .chart-body { grid-template-columns: minmax(0, 1fr) 180px; }
+}
+
+@media (max-width: 680px) and (orientation: portrait) {
+  .chart-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+  .chart-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 30dvh; }
 }
