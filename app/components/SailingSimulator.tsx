@@ -15,7 +15,7 @@ import {
   type Messages,
 } from "./i18n";
 
-const ASSET_LOAD_TOTAL = 7;
+const ASSET_LOAD_TOTAL = 10;
 
 type ControlIconName =
   | "sun"

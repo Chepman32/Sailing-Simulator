@@ -109,6 +109,17 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `WildlifeState.ts` | Pure dolphin and whale states, durations, transitions, tail-slap pose |
 | `WildlifeModel.ts` | GLB normalization, animation selection, asset validation, heading helpers |
 
+### Aviation
+
+| Path | Responsibility |
+| --- | --- |
+| `src/simulator/aviation/AviationSystem.ts` | Owns all aircraft; exposes listener-relative aircraft audio parameters |
+| `AviationMath.ts` | Pure pass/route planning, coordinated bank, contrail width/opacity, Doppler, distance gain, air absorption |
+| `LowPassAircraft.ts` | Periodic daytime low pass by the tourist floatplane or banner-tow plane |
+| `BannerTow.ts` | Towed advertising banner: path-following tow, bridle, flutter shader, canvas-painted advert |
+| `AirlinerTraffic.ts` | High-altitude airliners in a parallax-compressed sky layer, strobes and beacon |
+| `ContrailField.ts` | One bounded instanced pool of camera-facing contrail segments aged on the GPU |
+
 ### Input, camera, audio, and HUD
 
 | Path | Responsibility |
@@ -157,7 +168,7 @@ When introducing a model, document its native axis, units, expected bounding dim
 `Simulator.init()` currently performs these stages in order:
 
 1. construct and apply `QualityManager`;
-2. load seven local GLB definitions through `AssetManager`;
+2. load ten local GLB definitions through `AssetManager`;
 3. create the GPU ocean;
 4. create the unified environment and current light mode;
 5. create islands and bathymetry;
@@ -165,6 +176,7 @@ When introducing a model, document its native axis, units, expected bounding dim
 7. create the yacht visual and sail system;
 8. create wake, foam, and particle pools;
 9. create wildlife controllers from loaded assets;
+9a. create the aviation system (low passes, airliners, prewarmed contrail);
 10. create and configure the camera;
 11. attach keyboard/gamepad input;
 12. attach canvas camera gestures;
@@ -196,6 +208,7 @@ The loop clamps a long frame to 50 ms, caps the accumulator at five fixed steps,
 2. animate palms;
 3. interpolate yacht and sails;
 4. update wildlife movement and animation mixers;
+4a. advance aviation traffic and contrails;
 5. rebuild visible wake instances at a throttled rate;
 6. update camera spring and FOV;
 7. derive and apply environment state;
@@ -414,6 +427,7 @@ Master → DynamicsCompressor → destination
   EngineBus → low/high engine oscillators + start cue
   EnvironmentBus → wave noise + wind noise + hull-water noise
   WildlifeBus → one-shot splash noise
+  AviationBus → propeller voice (Doppler, air-absorption low-pass, stereo pan) + distant jet roar
 ```
 
 The master sound setting and audio readiness are different states:
@@ -543,6 +557,9 @@ The authoritative license text is `public/models/README.md`. Keep it synchronize
 | `whale` | `blue-whale-rigged-pbr-v2.glb` | 1,422,856 | 38,784 triangles, rigged PBR | No | Submerged blue whale tail slap |
 | `fishSchool` | `tropical-fish-school.glb` | 3,277,364 | 8,932 triangles, four species | No | Animated local fish school |
 | `seagull` | `seagull-animated.glb` | 133,248 | 1,174 triangles, authored clips | No | Aerial flock |
+| `seaplane` | `tourist-seaplane.glb` | 302,540 | 14,440 triangles, 9 materials | No | Low-pass sightseeing floatplane |
+| `bannerPlane` | `banner-tow-plane.glb` | 269,348 | 12,688 triangles, 9 materials | No | Low-pass banner tow |
+| `airliner` | `narrowbody-airliner.glb` | 242,988 | 11,536 triangles, 7 materials | No | High-altitude contrail traffic |
 
 Unused legacy files currently retained for provenance or possible comparison:
 
@@ -752,6 +769,13 @@ Do not commit every exploratory change. The standing project preference is to pu
 - derive splash from physical contact;
 - prevent opaque underwater silhouettes;
 - test the relevant pure helpers and asset constraints.
+
+### Changing aviation
+
+- keep low passes beside, never over, the yacht and fade them at the haze limit;
+- keep contrail shape rules in `AviationMath` and mirror them in the `ContrailField` GLSL;
+- keep contrail segments in the single bounded pool; never allocate a mesh per trail;
+- rebuild aircraft GLBs with `scripts/models/build-aircraft-models.mjs`, not by hand.
 
 ### Changing audio
 

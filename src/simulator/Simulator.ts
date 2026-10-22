@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { AudioSystem } from "./audio/AudioSystem";
+import { AviationSystem } from "./aviation/AviationSystem";
 import { CameraController } from "./camera/CameraController";
 import { AssetManager } from "./core/AssetManager";
 import { QualityManager } from "./core/QualityManager";
@@ -45,6 +46,7 @@ export class Simulator {
   private vessel!: Vessel;
   private wake!: WakeSystem;
   private wildlife!: WildlifeSystem;
+  private aviation!: AviationSystem;
   private camera!: CameraController;
   private input!: InputController;
   private touch!: TouchControls;
@@ -127,6 +129,7 @@ export class Simulator {
           this.audio?.splash(intensity);
         },
       );
+      this.aviation = new AviationSystem(this.scene, this.assets);
       this.camera = new CameraController(this.canvas.clientWidth / Math.max(1, this.canvas.clientHeight), this.ocean);
       this.camera.setMode(this.state.cameraMode);
       this.input = new InputController(this.state.controls, () => this.reset());
@@ -230,6 +233,7 @@ export class Simulator {
     if (!this.initialized) return;
     this.physics.reset();
     this.wake.reset();
+    this.aviation.reset();
     this.state.controls.throttle = 0;
     this.state.controls.rudder = 0;
     this.camera.recenter();
@@ -243,6 +247,7 @@ export class Simulator {
     this.input?.dispose();
     this.audio?.dispose();
     this.wildlife?.dispose();
+    this.aviation?.dispose();
     this.wake?.dispose();
     this.vessel?.dispose();
     this.islands?.dispose();
@@ -269,9 +274,11 @@ export class Simulator {
     this.islands.update(this.elapsed);
     this.vessel.update(this.physics, this.state.controls, this.elapsed, delta, this.environmentState.nightFactor);
     this.wildlife.update(delta, this.physics);
+    this.aviation.update(delta, this.physics.position, this.environmentState.nightFactor);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics);
     this.environmentState = this.environment.update(delta, this.camera.camera, this.physics.position);
+    this.audio.setAviation(this.aviation.audioState(this.camera.camera));
     this.audio.update(
       delta,
       Math.abs(this.physics.telemetry.forwardSpeed),

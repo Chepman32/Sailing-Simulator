@@ -1,3 +1,9 @@
+import {
+  airAbsorptionCutoff,
+  distanceGain,
+  dopplerRatio,
+} from "../aviation/AviationMath";
+import type { AviationAudioState } from "../aviation/AviationSystem";
 import { clamp } from "../math";
 
 type WebkitAudioWindow = Window & {
@@ -10,6 +16,14 @@ const MASTER_GAIN = 0.94;
 const ENGINE_BUS_GAIN = 1.35;
 const ENGINE_ENVIRONMENT_DUCK = 0.68;
 const RESUME_RETRY_MS = 850;
+// Light aircraft: two-blade propeller passing frequency and engine firing
+// order at cruise RPM. Harmonics and an air-rush band keep it audible on phone
+// speakers that cannot reproduce the ~80 Hz fundamental.
+const PROP_BLADE_PASS_HZ = { seaplane: 79, banner: 88 } as const;
+const PROP_FIRING_RATIO = 1.5;
+const PROP_REFERENCE_DISTANCE = 42;
+const PROP_MAX_GAIN = 0.62;
+const JET_MAX_GAIN = 0.16;
 
 export class AudioSystem {
   private context?: AudioContext;
@@ -25,6 +39,15 @@ export class AudioSystem {
   private waveGain?: GainNode;
   private windGain?: GainNode;
   private hullGain?: GainNode;
+  private aviationBus?: GainNode;
+  private propBlade?: OscillatorNode;
+  private propFiring?: OscillatorNode;
+  private propTremolo?: OscillatorNode;
+  private propFilter?: BiquadFilterNode;
+  private propPanner?: StereoPannerNode;
+  private propLevel?: GainNode;
+  private jetGain?: GainNode;
+  private aviation?: AviationAudioState;
   private resumePromise?: Promise<boolean>;
   private ready = false;
   private enabled = true;
@@ -125,6 +148,12 @@ export class AudioSystem {
     this.waveGain?.gain.setTargetAtTime(0.24 + clamp(speed / 28, 0, 1) * 0.2, now, 0.3);
     this.windGain?.gain.setTargetAtTime(0.1 + clamp(apparentWind / 18, 0, 1) * 0.17, now, 0.35);
     this.hullGain?.gain.setTargetAtTime(clamp(speed / 18, 0, 1) * 0.18, now, 0.18);
+    this.updateAviation(now);
+  }
+
+  /** Latest listener-relative aircraft parameters; applied on the audio update cadence. */
+  setAviation(state: AviationAudioState): void {
+    this.aviation = state;
   }
 
   splash(intensity = 1): void {
@@ -158,6 +187,9 @@ export class AudioSystem {
     this.context?.removeEventListener("statechange", this.handleContextStateChange);
     this.engineLow?.stop();
     this.engineHigh?.stop();
+    this.propBlade?.stop();
+    this.propFiring?.stop();
+    this.propTremolo?.stop();
     if (this.context && this.context.state !== "closed") void this.context.close();
   }
 
@@ -216,9 +248,11 @@ export class AudioSystem {
     this.engineBus = this.context.createGain();
     this.environmentBus = this.context.createGain();
     this.wildlifeBus = this.context.createGain();
+    this.aviationBus = this.context.createGain();
     this.engineBus.connect(this.master);
     this.environmentBus.connect(this.master);
     this.wildlifeBus.connect(this.master);
+    this.aviationBus.connect(this.master);
     const engineAudible = this.engineRunning && !this.engineMuted;
     this.engineBus.gain.value = engineAudible ? ENGINE_BUS_GAIN : 0;
     this.environmentBus.gain.value = engineAudible ? ENGINE_ENVIRONMENT_DUCK : 1;
@@ -292,7 +326,110 @@ export class AudioSystem {
     this.hullGain.gain.value = 0;
     hull.connect(hullFilter).connect(this.hullGain).connect(this.environmentBus);
     hull.start(0, 1.13);
+    this.createAviationVoices(this.context, this.aviationBus);
     this.setReady(this.context.state === "running");
+  }
+
+  private createAviationVoices(context: AudioContext, bus: GainNode): void {
+    // Light-aircraft engine: blade-pass sawtooth plus firing-order pulse,
+    // shaped by an air-absorption low-pass and a slow propeller "wop" tremolo.
+    this.propFilter = context.createBiquadFilter();
+    this.propFilter.type = "lowpass";
+    this.propFilter.frequency.value = 1800;
+    this.propFilter.Q.value = 0.8;
+    const tremoloNode = context.createGain();
+    tremoloNode.gain.value = 0.78;
+    this.propLevel = context.createGain();
+    this.propLevel.gain.value = 0;
+
+    this.propBlade = context.createOscillator();
+    this.propBlade.type = "sawtooth";
+    this.propBlade.frequency.value = PROP_BLADE_PASS_HZ.seaplane;
+    const bladeGain = context.createGain();
+    bladeGain.gain.value = 0.5;
+    this.propBlade.connect(bladeGain).connect(this.propFilter);
+
+    this.propFiring = context.createOscillator();
+    this.propFiring.type = "square";
+    this.propFiring.frequency.value = PROP_BLADE_PASS_HZ.seaplane * PROP_FIRING_RATIO;
+    const firingGain = context.createGain();
+    firingGain.gain.value = 0.2;
+    this.propFiring.connect(firingGain).connect(this.propFilter);
+
+    const rush = context.createBufferSource();
+    rush.buffer = this.createNoiseBuffer(3.3, "pink");
+    rush.loop = true;
+    const rushFilter = context.createBiquadFilter();
+    rushFilter.type = "bandpass";
+    rushFilter.frequency.value = 1150;
+    rushFilter.Q.value = 0.7;
+    const rushGain = context.createGain();
+    rushGain.gain.value = 0.55;
+    rush.connect(rushFilter).connect(rushGain).connect(this.propFilter);
+    rush.start(0, 0.6);
+
+    this.propTremolo = context.createOscillator();
+    this.propTremolo.type = "sine";
+    this.propTremolo.frequency.value = 6.5;
+    const tremoloDepth = context.createGain();
+    tremoloDepth.gain.value = 0.2;
+    this.propTremolo.connect(tremoloDepth).connect(tremoloNode.gain);
+
+    this.propFilter.connect(tremoloNode);
+    let output: AudioNode = tremoloNode;
+    if (typeof context.createStereoPanner === "function") {
+      // Older WebKit lacks StereoPannerNode; the aircraft then stays centered.
+      this.propPanner = context.createStereoPanner();
+      output = tremoloNode.connect(this.propPanner);
+    }
+    output.connect(this.propLevel).connect(bus);
+    this.propBlade.start();
+    this.propFiring.start();
+    this.propTremolo.start();
+
+    // Distant airliner roar: low brown-noise rumble with a mid band that
+    // survives small speakers.
+    this.jetGain = context.createGain();
+    this.jetGain.gain.value = 0;
+    const roar = context.createBufferSource();
+    roar.buffer = this.createNoiseBuffer(6.1, "brown");
+    roar.loop = true;
+    const roarFilter = context.createBiquadFilter();
+    roarFilter.type = "lowpass";
+    roarFilter.frequency.value = 340;
+    roar.connect(roarFilter).connect(this.jetGain);
+    roar.start(0, 2.2);
+    const hiss = context.createBufferSource();
+    hiss.buffer = this.createNoiseBuffer(4.4, "pink");
+    hiss.loop = true;
+    hiss.playbackRate.value = 0.7;
+    const hissFilter = context.createBiquadFilter();
+    hissFilter.type = "bandpass";
+    hissFilter.frequency.value = 560;
+    hissFilter.Q.value = 0.55;
+    const hissGain = context.createGain();
+    hissGain.gain.value = 0.45;
+    hiss.connect(hissFilter).connect(hissGain).connect(this.jetGain);
+    hiss.start(0, 1.4);
+    this.jetGain.connect(bus);
+  }
+
+  private updateAviation(now: number): void {
+    const state = this.aviation;
+    if (!state || !this.propLevel) return;
+    const presence = clamp(state.propPresence, 0, 1);
+    if (presence > 0) {
+      const doppler = dopplerRatio(state.propRadialSpeed);
+      const base = PROP_BLADE_PASS_HZ[state.propKind];
+      this.propBlade?.frequency.setTargetAtTime(base * doppler, now, 0.08);
+      this.propFiring?.frequency.setTargetAtTime(base * PROP_FIRING_RATIO * doppler, now, 0.08);
+      this.propTremolo?.frequency.setTargetAtTime(6.5 * doppler, now, 0.2);
+      this.propFilter?.frequency.setTargetAtTime(airAbsorptionCutoff(state.propDistance), now, 0.12);
+      this.propPanner?.pan.setTargetAtTime(state.propPan * 0.85, now, 0.1);
+    }
+    const loudness = distanceGain(state.propDistance, PROP_REFERENCE_DISTANCE) ** 1.1;
+    this.propLevel.gain.setTargetAtTime(presence * loudness * PROP_MAX_GAIN, now, 0.15);
+    this.jetGain?.gain.setTargetAtTime(clamp(state.jetLevel, 0, 1) * JET_MAX_GAIN, now, 1.2);
   }
 
   private playEngineStartCue(): void {
