@@ -67,6 +67,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `app/components/i18n.ts` | Thirty language definitions, system-language resolution, aliases, RTL helpers |
 | `app/components/VoyageUI.tsx` | Signal buttons (horn, bell, flare chooser), the radio mini-player and GTA-style station banner, the nearest-loot chip, find/discovery cards, the three-step first-run guide, the tow offer |
 | `app/components/featureMessages.ts` | Words for the voyage features (English and Russian; other languages fall back to English) |
+| `app/components/NauticalChart.tsx` | Round minimap and full chart (tap the minimap or press `N`; `Esc` closes): islands, landmarks, places and finds in explored water, fog of war, zoom, scale bar, legend |
+| `app/components/PhotoToolbar.tsx` | Photo mode's three half-transparent buttons, top left: auto-aim at events, take a photo (JPEG of the frame, shared on phones, downloaded elsewhere), sound |
 | `app/globals.css` | Full-screen layout, mobile breakpoints, safe areas, control sizing, UI states |
 | `app/chatgpt-auth.ts` | Sites/ChatGPT runtime integration; do not remove without understanding the host contract |
 
@@ -107,6 +109,9 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/EnvironmentSystem.ts` | Sky dome, image-based lighting capture, fog, exposure, sun, moon, stars, directional light |
 | `src/simulator/environment/IslandMath.ts` | Pure, seeded, endless (per-cell) island generator, bathymetry, coastline noise, terrain noise, exact nearest-coast search over the 3×3 cells, shader island slots |
 | `src/simulator/environment/IslandSystem.ts` | Terrain (two LODs per island), palms merged per cluster, seabed following the yacht, draw distances, collision, shore direction |
+| `src/simulator/environment/IslandLandmarkMath.ts` | Pure, per-island landmark plan from the island id (lighthouse, pier with stilt hut, beach boulders; hand-set by the start), spots on the coast, pier line and pier clearance |
+| `src/simulator/environment/IslandLandmarks.ts` | Builds the plan for islands within ~1 km (merged per material), disposes them behind, one bounded instanced mesh of boulders, lighthouse lantern and sweeping beam at night, pier obstacles |
+| `src/simulator/environment/IslandProps.ts` | Builders: lighthouse with beam, plank pier, thatched stilt hut, boulder geometry |
 | `src/simulator/environment/IslandSurface.ts` | Sand shading (grain, ripples, wet sand), swash on the beach, palm shadow map and trunk contact shading |
 | `src/simulator/environment/SurfMath.ts` | Pure surf model (breaking crest, bore, swash, drying sand) and its GLSL twin, shared by ocean and sand; the island slot uniforms the shaders read |
 | `src/simulator/environment/WeatherMath.ts` | Pure weather model: seven kinds (clear … hurricane) as presets, exponential easing, deterministic auto planner |
@@ -131,6 +136,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/vessel/VesselPhysics.ts` | Engines, sails, windage, hull and keel hydrodynamics, rudders, seakeeping, grounding |
 | `src/simulator/vessel/SailAerodynamics.ts` | Pure sail lift/drag polar and automatic sheeting |
 | `src/simulator/vessel/SailSystem.ts` | Sail material and wind/trim deformation |
+| `src/simulator/vessel/JibSail.ts` | The jib on the GLB's forestay: a cloth surface rebuilt each frame from the main's shape, sheeted to the boom's side; its rig is measured from the mast and hulls |
+| `src/simulator/vessel/Helmsman.ts`, `HelmsmanPose.ts` | The helmsman standing at the starboard wheel (lathed body, merged per material) and the pure rules that pose him: lean against heel and pitch, grip angles on the rim, two-bone IK for the arms; hidden in the helm view |
 | `src/simulator/vessel/WakeField.ts` | Top-down wake texture (foam, aerated slick, wave height) the ocean shader samples |
 | `src/simulator/vessel/WakeSystem.ts` | Twin hull tracks, prop wash, bow droplets; wildlife splashes by contact kind: droplets, mist, crown sheets, rings, foam fields, fin trails, whale blows |
 
@@ -177,15 +184,21 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | --- | --- |
 | `src/simulator/input/InputController.ts` | Keyboard, gamepad, rudder/throttle setters, dead zones; the helm sign convention (`HELM_STARBOARD`: the physics frame has +X on the left of the view, so a starboard helm is a negative `controls.rudder`; `rudderFromHelm`/`helmFromRudder` convert, the HUD speaks the player's terms) and which keys belong to a focused element (`keyBelongsToElement`: only text entry and a slider's own arrows; held keys are dropped on window blur) |
 | `src/simulator/input/TouchControls.ts` | Camera-only pointer orbit, pinch zoom, double-tap recenter |
+| `src/simulator/input/TiltSteering.ts` | Pure tilt-to-rudder (any screen orientation) and swipe-to-rudder mapping for the phone rudder row |
+| `src/simulator/navigation/Exploration.ts` | Chart fog of war for an endless sea: sparse 40 m-cell chunks, reveal around the yacht, bounded (oldest forgotten), stored under `sailing-simulator-exploration-v1` |
 | `src/simulator/camera/CameraController.ts` | Chase, helm, orbit, drone framing; damping; FOV; water-floor guard |
 | `src/simulator/audio/AudioSystem.ts` | Web Audio lifecycle, buses, engine synthesis, waves, wind, splash cues, music bus (shanty band, party barge, monolith hum) |
 | `src/simulator/audio/BoatSoundMath.ts`, `BoatVoices.ts` | Pure levels of the yacht's own sound layers (slap → bow rush → spray above 6 kn, rigging, flogging, winches, gust swell) and the voices that play them; horn, bell, flare launch, pick-up chime |
+| `src/simulator/audio/SplashSynth.ts` | Pure offline splash synthesis (smack, spray hiss, gush, a shower of Minnaert bubble plinks and droplet ticks), rendered once per size and variant in idle moments |
+| `src/simulator/audio/AviationVoices.ts` | Aircraft voices on their own bus: propeller buzz (blade-pass harmonics, firing crackle, Doppler, air absorption, pan, sea echo) and distant jet roar |
 | `src/simulator/audio/MusicMath.ts`, `MusicSynth.ts` | Notes of "Drunken Sailor" (traditional, public domain) and jigs composed per seed; the look-ahead sequencer, the shanty band and the barge's house groove |
 | `src/simulator/audio/RadioSystem.ts` | The yacht radio: SomaFM streams through a plain media element with server fallbacks, the band on board, per-station mood grade |
 | `src/simulator/effects/FlareMath.ts`, `FlareSystem.ts` | Parachute flare flight, burn, flicker, smoke and its light (handed to `EnvironmentSystem.setFlare`, no extra light) |
 | `src/simulator/effects/LootMath.ts`, `LootSystem.ts`, `LootModels.ts` | Floating bottles, crates and flamingos on a 260 m hash grid, pick-up alongside, contents (sail colours, messages, cargo and doubloons) |
 | `src/simulator/effects/VolcanoMath.ts`, `VolcanoSystem.ts` | Eruption schedule, plume and bomb kinematics; plume, crater glow, lava tongues and eruptions on volcanic islands |
 | `src/simulator/effects/PoiMath.ts`, `PoiSystem.ts`, `PoiModels.ts`, `PuffPoints.ts` | Party barge, pirate wreck on its reef and monolith: placement, footprints (physics obstacles), procedural models and animation; pooled soft puffs for smoke |
+| `src/simulator/camera/PhotoDirector.ts` | Photo mode's photographer: subject priority and hold, stand-points that keep the mast and sails (`PhotoRig`, `rigBlocksView`) out of the line of sight |
+| `src/simulator/aviation/*` | Low passes by a floatplane or banner tow, airliners laying contrails (`AviationSystem`, `AviationMath`, `LowPassAircraft`, `AircraftLights`, `BannerTow`, `AirlinerTraffic`, `ContrailField`) |
 | `src/simulator/vessel/RescueMath.ts` | `findOpenWater`: where a stuck yacht is towed |
 | `src/simulator/ui/HudController.ts` | Snapshot throttling between simulator and React |
 
@@ -238,14 +251,15 @@ When introducing a model, document its native axis, units, expected bounding dim
 `Simulator.init()` currently performs these stages in order:
 
 1. construct and apply `QualityManager`;
-2. load seven local GLB definitions through `AssetManager`;
+2. load ten local GLB definitions through `AssetManager` (the three aircraft are optional);
 3. create the GPU ocean;
 4. create the unified environment and current light mode;
-5. create islands and bathymetry;
+5. create islands and bathymetry, and the island landmarks (lighthouses, piers and huts, boulders);
 6. create vessel physics and the ships (every ship type is built here, before the first frame);
-7. create the yacht visual and sail system;
+7. create the yacht visual, sail system, jib and helmsman;
 8. create wake, foam, and particle pools;
 9. create wildlife controllers from loaded assets;
+9a. create the aviation system (low passes, airliners, prewarmed contrails);
 10. create and configure the camera;
 11. attach keyboard/gamepad input;
 12. attach canvas camera gestures;
@@ -279,6 +293,7 @@ The loop clamps a long frame to 50 ms, caps the accumulator at five fixed steps,
 2. animate palms;
 3. put the yacht between her last two fixed steps (`VesselPhysics.blendPose(alpha)`, undone by `restorePose` before the next step; heading is blended the short way round), so a fast yacht does not judder when frames and 60 Hz steps drift apart; interpolate sails and swing the boom; a gybe slam is passed to audio; place the ships on the swell;
 4. update wildlife movement and animation mixers, and the reef-fish schools (which flee the hulls, dolphins and shark);
+4a. reveal the chart around the yacht (`ExplorationFog`, a few times a second), advance aviation traffic and contrails;
 5. redraw the wake field at a throttled rate (about 30 Hz);
 6. update camera spring and FOV;
 7. derive and apply environment state, and refresh the lighting capture when the time of day has moved;
@@ -302,7 +317,7 @@ Do not run physics from React renders, HUD timers, GLB animation clip events, or
 - engine running state for the current session;
 - engine-only mute preference.
 
-The persistence key is `sailing-simulator-pro-preferences-v2`. Persisted fields are lighting, camera, the quality preset the player picked by hand (`qualityChoice`; an automatic fallback is never saved, and the old `quality` field is ignored, because it used to keep every later visit on a preset reached in one slow moment), master sound, and engine mute. Engine running and active throttle deliberately do not persist across a page load.
+The persistence key is `sailing-simulator-pro-preferences-v2`. Persisted fields are lighting, camera, the quality preset the player picked by hand (`qualityChoice`; an automatic fallback is never saved, and the old `quality` field is ignored, because it used to keep every later visit on a preset reached in one slow moment), master sound, and engine mute. Engine running and active throttle deliberately do not persist across a page load. Chart exploration (the fog of war) persists separately under `sailing-simulator-exploration-v1`: it is stored every fifteen seconds or so when it changed, on `pagehide` and on dispose, and the chart reads it only while drawing (`Simulator.isExplored`, `Simulator.chartData`).
 
 An engine start selects slow ahead when the throttle is near neutral and never touches the engine-sound preference: engine power and engine sound are independent controls.
 
@@ -400,6 +415,8 @@ Rules for yacht work:
 - use the physics root for position, heading, pitch, and roll, with visual-only damping inside `Vessel`;
 - keep propellers/rudders tied to engine/rudder state if the asset exposes suitable nodes;
 - the helm station is procedural (`HelmStation`) because the asset has none. It stands on the starboard aft deck, inside the transom (its parts are laid out and then shifted forward by `HELM_STATION_SHIFT`; `helm.test.ts` raycasts the yacht model to check there is deck under the helmsman and under the seat), out of the boom's sweep (the boom clears the coachroof by only half a metre): a pedestal with a leather-rimmed five-spoke wheel that turns with the rudder, an instrument pod whose chart plotter shows the islands, the ships as AIS targets and the yacht head-up, a speed/depth/RPM display and a wind dial (one 1024×672 canvas atlas, redrawn about five times a second and only while the helm camera or a close camera can read it; red night palette), a binnacle compass whose card keeps north, the engine lever that follows the throttle, a guard rail, a helm seat and the sheet winch. Static parts are merged by material with vertex colours: eight draw calls. The helm camera stands at `HELM_EYE`;
+- the helmsman (`Helmsman`) stands at the wheel with eyes at `HELM_EYE`: his legs stand with the deck, his upper body counters most of the heel and pitch (`helmsmanLean`), his head steadies and glances where he steers, and his arms reach the rim through two-bone IK (`solveTwoBone`) at grips that follow small wheel turns and slide around the rim beyond them (`gripAngles`), so the hands never cross. He is hidden in the helm view, whose camera is his eyes;
+- the asset has a forestay but no headsail: `JibSail` sets a jib on it, measured from the mast (`rigShape`) and the hulls' bows, shaped by the main's damped `SailShape` (belly a third aft, luff flutter at the leech) and sheeted to the boom's side a little tighter than the main;
 - validate close camera framing after any scale, pivot, or bounding-box change;
 - keep new fixed parts batchable (one material, no per-part animation); a part that must move on its own needs its own mesh outside the batches;
 - underwater parts do not cast shadows: nothing could show them.
@@ -574,9 +591,9 @@ The rig is rooted at the tail and its authored clip only flaps the pectoral fins
 
 `SharkBehavior` runs:
 
-`cruise ⇄ patrol → investigate → approach → accelerate → retreat → deep_swim`, with an occasional `fin_show`.
+`cruise ⇄ patrol → investigate → approach → accelerate → retreat → deep_swim`, with a scheduled `fin_show`.
 
-The shark patrols wide circles, cruises with slow changes of course, spirals in to look at the yacht and turns away, and drops into the deep where it disappears. Rarely (`SHARK_CLOSE_PASS_COOLDOWN`) it curves in and passes under the hulls below `SHARK_UNDER_KEEL_DEPTH`, sometimes followed by a burst; occasionally it rises until its dorsal fin cuts the surface for a few seconds, leaving a thin foam line. It never jumps, never chases the yacht for long and dives quickly if she comes over it. The authored swim clip is kept but driven: its phase is the shark's own tail-beat phase (faster with speed and effort) and its weight is the effort, so a gliding shark barely strokes and a bursting one thrashes; the spine curves into turns. The source ships white, so the material is countershaded (dark back, pale belly), which is what makes it a dark shape from above. Do not use the bite clip for locomotion.
+The shark patrols wide circles, cruises with slow changes of course, spirals in to look at the yacht and turns away, and drops into the deep where it disappears. Rarely (`SHARK_CLOSE_PASS_COOLDOWN`) it curves in and passes under the hulls below `SHARK_UNDER_KEEL_DEPTH`, sometimes followed by a burst; and on its own schedule (first after `SHARK_FIRST_FIN_SHOW`, then every `SHARK_FIN_SHOW_INTERVAL` counted from the end of the last one, whenever it is calm and within `SHARK_FIN_SHOW_RANGE`) it rises to `SHARK_FIN_SHOW_DEPTH`, so the dorsal fin stands about half a metre clear, and circles the yacht 18–32 m out for `SHARK_FIN_SHOW_SECONDS`, keeping pace with her, leaving a thin foam line: the "Jaws" sight. The body itself stays under. It never jumps, never chases the yacht for long and dives quickly if she comes over it. The authored swim clip is kept but driven: its phase is the shark's own tail-beat phase (faster with speed and effort) and its weight is the effort, so a gliding shark barely strokes and a bursting one thrashes; the spine curves into turns. The source ships white, so the material is countershaded (dark back, pale belly), which is what makes it a dark shape from above. Do not use the bite clip for locomotion.
 
 ### Reef fish
 
@@ -628,14 +645,19 @@ The current audio implementation is procedural Web Audio. There are no runtime a
 Master → DynamicsCompressor → destination
   EngineBus → diesel firing pulses + half-speed crank + combustion knock + wet-exhaust burble → opening low-pass; starter cue
   EnvironmentBus → wave noise + soft low wind (weather-driven, kept well under the water at `WIND_LEVEL`) + rigging whistle in strong wind + hull-water noise
-  WildlifeBus → one-shot splashes (panned to where they happened, darker with distance) + positional gull calls (also when a bird is disturbed on the water or takes off)
+  WildlifeBus → one-shot splashes (panned to where they happened, darker with distance; slaps and entries play pre-rendered `SplashSynth` buffers) + positional gull calls (also when a bird is disturbed on the water or takes off)
   EnvironmentBus → thunder per strike (delayed by distance, panned to the strike, crack when close, low roll when far)
   EnvironmentBus → two ship voices (diesel throb and beat, bow-wave rush, air absorption by distance) + ship horns (delayed by distance / 343 m/s)
   EnvironmentBus → BoatVoices: hull slap, bow rush, spray, rigging, sail flogging and the crack as it fills, winch ratchet, eased-sheet slip; air horn, bell, flare
+  AviationBus → AviationVoices: light-aircraft propeller (blade-pass harmonics, firing crackle, tremolo, Doppler, air absorption, pan, sea-reflection comb, sound-delayed position) + distant jet roar
   MusicBus → shanty band (radio), party barge groove (low-passed and quieter with distance), monolith hum; radio static between stations
 ```
 
 The yacht's sound is layered by what she does (`boatSoundLevels`): water slapping the hulls at rest, the bow wave's rush opening with speed, spray only above `SPRAY_START_KNOTS`, the rigging singing when it blows, the sail flogging while it luffs (going about) and cracking full on the new tack, the winches ratcheting while the sheet comes in. A gust (`WindMath.gustEvent`) is one event: heard coming (`GUST_WARNING` s ahead), seen as a darker patch running over the water (`uGustPatch`), then wind, heel and speed rise together.
+
+Splashes are not a low boom: a whale crashing down or slapping its fluke, and a dolphin re-entering, play buffers rendered offline by `SplashSynth` from a physical model — a band-limited smack, spray hiss, the gush of falling water and a shower of hundreds of Minnaert bubble plinks (pitch ≈ 3.26 m·Hz / radius, rising as the bubble is squeezed, van den Doel 2005) with droplet ticks, the shower later and longer for a bigger splash. Three sizes × two variants are rendered at 24 kHz one at a time after the graph is created (never in one frame); until then a bright noise fallback plays. Wind is kept well under the sea (`WIND_LEVEL` 0.12, rigging at `RIGGING_LEVEL` 0.4).
+
+Ship horns, from every ship and the answer to the yacht's own horn, share one `HornGate`: never two within `MIN_HORN_GAP` (30 s).
 
 The air horn and the bell are buttons whose purpose is a sound, so they may start the audio graph inside their own gesture (`Simulator.playSignal`), but never when the player switched sound off (the interface says so instead). A ship within hail answers the horn with one long blast. The radio streams SomaFM (listener-supported, credited in the player with a link) through a visible-in-the-UI plain `<audio>` element — never a hidden YouTube player, which YouTube's terms forbid — tries each server in turn, pauses with a hidden page, and mutes with the master switch; turning the radio on is itself a request for sound.
 
@@ -683,7 +705,7 @@ Canvas gestures are camera-only:
 - double tap: recenter;
 - wheel: zoom on desktop.
 
-Rudder and throttle inputs are React controls outside the canvas. Their events must not leak into camera orbit. Maintain large touch targets and `touch-action` rules when modifying CSS.
+Rudder and throttle inputs are React controls outside the canvas. Their events must not leak into camera orbit. On phones the rudder is steered by swiping across its row (the swipe pad, `swipeToRudder`) or, after an explicit (iOS-permissioned) toggle, by tilting the phone (`deviceorientation`, `tiltToRudder`); never by gestures on the canvas. Maintain large touch targets and `touch-action` rules when modifying CSS.
 
 The camera may not pass below the sampled water surface. Portrait devices receive increased follow distance so the yacht remains framed. Camera motion is damped; avoid hard teleports after ordinary mode input.
 
@@ -719,7 +741,9 @@ Layout is driven by tokens on `.simulator-shell` (`--gap`, `--top-bar`, `--edge-
 
 - desktop and large tablets: instruments, reset/photo and the notice column on the left and centre top, settings top right, rudder bottom left, throttle bottom right; from 1280 px wide the open settings use two short columns so they clear the throttle on a 720 px tall laptop, and the throttle (300 px on a desktop) shortens only on short windows; any press outside the open control panel closes it (the press still steers, looks or presses what it hit);
 - up to 900 px wide or 560 px tall: reset and photo mode become 44 px icon buttons (names kept for assistive technology and as tooltips);
-- phone portrait (up to 680 px): a bottom dock; the rudder spans the width and the narrow throttle stands above its right end, beside the yacht rather than over it; settings open as a bottom sheet over a scrim;
+- phones (up to 680 px wide, or landscape up to 560 px tall): the rudder card is one row — a dashed swipe pad with the wheel, the angle and "Swipe to steer", the tilt-steering toggle, the centre button — and the range input is visually hidden but focusable; with the engine stopped the throttle card is only the engine switch; portrait phones get a dismissible "rotate for a wider view" hint for twelve seconds after the scene appears (never forced);
+- phone portrait (up to 680 px): a bottom dock; the rudder spans the width and the narrow throttle stands above its right end, beside the yacht rather than over it (shorter while running, `--throttle-length`); settings open as a bottom sheet over a scrim;
+- the round minimap sits under the controls pill (under the action buttons in phone landscape, where the right edge belongs to the throttle) and opens the full chart;
 - phone landscape and short windows (up to 560 px tall): rudder bottom left, throttle bottom right, the middle left to the yacht; settings open as a side sheet; below 350 px tall the collapsed settings button steps left of the throttle column;
 - over the scene there are only the sound-unlock prompt and the action plaque: what a switch has just done (`showNotice`: “Time of day: Night”, “Weather: Auto”, “Engine sound: Off”) shows for 2.4 s centred 10 % below the middle of the screen (`.action-toast`, above the open panel, never taking a tap); the first-run tip stays at the top of the open control panel (`.panel-status`); while the shore guard holds the helm the rudder card's readout says “Steering clear of the island” instead of the angle, which is why the wheel does not answer for that moment;
 - layout containers that only position their children (`.primary-controls`, `.scene-actions`, `.notice-stack`) set `pointer-events: none`, so their empty areas belong to the camera; every control inside sets it back;
@@ -729,8 +753,8 @@ Layout is driven by tokens on `.simulator-shell` (`--gap`, `--top-bar`, `--edge-
 - the scene actions are sound, camera cycle, photo, radio, then (after a divider) horn, bell and flare gun; reset is not among them: the "Yacht" tab of the panel holds the service commands (recenter camera, tow to open water, restart with a confirmation), and a "Stuck? Tow to open water" chip appears by itself when she has been held fast while the player tries to move (`snapshot.stuck`). Pop-overs (flare colour, radio) hang below their button in the row and beside it in the portrait column, and close on any press elsewhere;
 - the panel has two tabs: "Sea & sky" (time, sound, camera, weather, quality, language) and "Yacht" (sail trim, helm auto-return, steady helm view, sail colours, logbook, service, keyboard list on fine pointers);
 - the first-run guide (three steps, ticked off by doing them, `sailing-onboarding-done` in storage, skippable) and find/discovery cards live in the notice column on desktop and landscape (between the rudder card and the throttle on short screens, below the scene actions) and above the rudder, left of the throttle, on portrait phones; the control the guide talks about pulses; the nearest thing afloat within 340 m is a chip with distance and an arrow;
-- keyboard commands handled by React (never in text fields): `P` photo, `H` horn, `B` bell, `F`/`G` red/green flare, `M`/`Shift+M` radio, `V` camera, `R` recenter, `Esc`; `A`/`D` (auto-return when released, also for a released slider), `W`/`S` (W starts the engine), `Q`/`E` sheet, `C`/`Space` centre belong to `InputController`;
-- photo mode fades the interface out (inert while hidden); one tap or click on the scene (a short press that barely moved, so drags still frame the shot), `Escape` or `Tab` fades it back in; the hint says so for three seconds. In photo mode the camera is a photographer (`PhotoDirector`, applied by `CameraController.direct` after the normal camera, which it never disturbs): a breach (from its run-up), a whale at the surface or slapping its tail, a ship's horn, a shark's fin and leaping dolphins — in that order of priority — make it swing from just behind and above the yacht toward the event and zoom so the subject fills about half the frame, hold for `PHOTO_HOLD` seconds (or until the event is over), then ease back; a drag or zoom by the player wins and keeps it quiet for `PHOTO_USER_PAUSE` seconds.
+- keyboard commands handled by React (never in text fields): `P` photo, `H` horn, `B` bell, `F`/`G` red/green flare, `M`/`Shift+M` radio, `N` chart, `V` camera, `R` recenter, `Esc`; `A`/`D` (auto-return when released, also for a released slider), `W`/`S` (W starts the engine), `Q`/`E` sheet, `C`/`Space` centre belong to `InputController`;
+- photo mode fades the interface out (inert while hidden); one tap or click on the scene (a short press that barely moved, so drags still frame the shot) or `Escape` fades it back in; the hint says so for three seconds. Photo mode keeps three half-transparent buttons of its own top left (`PhotoToolbar`, outside the hidden interface and the canvas, so a press never ends photo mode; `Tab` moves between them): auto-aim at events on/off (remembered under `sailing-simulator-photo-autoaim-v1`), take a photo (`Simulator.capturePhoto` draws the frame again and copies it as JPEG in the same task; phones get the share sheet, others a download named `sailing-YYYY-MM-DD-hh-mm-ss.jpg`; a white shutter flash), and sound on/off. In photo mode the camera is a photographer (`PhotoDirector`, applied by `CameraController.direct` after the normal camera, which it never disturbs): a breach (from its run-up), a whale at the surface or slapping its tail, a ship's horn, a shark's fin and leaping dolphins — in that order of priority — make it swing from just behind and above the yacht toward the event and zoom so the subject fills about half the frame, hold for `PHOTO_HOLD` seconds (or until the event is over), then ease back; a drag or zoom by the player wins and keeps it quiet for `PHOTO_USER_PAUSE` seconds. The mast and sails are an occluder for it (`Vessel.photoRig`, a cone around the mast as wide as the boom is long): when they would hide the subject it stands beside the rig (the subject's side first), ahead of it, or above the masthead, and keeps a clear stand-point (`PhotoShot.slot`) so the camera does not hop.
 
 Verify layout changes at least at 320×568, 375×667, 390×844, 360×740, 568×320, 667×375, 844×390, 932×430, 768×1024, 1024×768, 1280×720, 1366×768 and 1920×1080, with the panel open and closed, in a long language (German or Russian), an RTL language and a non-Latin script (Tamil).
 
@@ -764,9 +788,9 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 
 Ocean detail gates fragment work: above 0.2 the detail spectrum and one ripple layer are shaded; above 0.5 the finer ripple layer and the metre-scale chop are added; above 0.6 cloud reflections. Sky detail selects three- or five-octave clouds.
 
-The drawing buffer never holds more pixels than the preset's budget (`budgetPixelRatio`): a Retina laptop at full screen renders about 2.6 million pixels on high instead of 4–5 million. Where the browser can time GPU work (`GpuTimer`, Chrome and Edge on desktop), `GpuGovernor` eases the render scale (down to `MIN_RENDER_SCALE`) while a frame costs more than `GPU_TARGET_MS` (8.5 ms, about half a 60 Hz frame) and back up when there is room, at most once every `SCALE_CHANGE_INTERVAL`; a GPU still overloaded at the lowest scale steps the preset down, and only a long idle one steps it up (the frame rate alone no longer raises the preset there, since a GPU can deliver 60 fps working flat out). Without GPU timing the preset falls back on the frame rate (`FpsJudge`): windows during start-up and after a preset change (shader compilation) do not count, nor do windows while the page is paced to 30 fps because another app has the focus; it takes three slow windows in a row to step down. Before this, switching to another app (to take a screenshot, say) dropped a session from high to low within seconds and left it there, aliased and flat. The canvas itself is not multisampled when the HDR pipeline will draw (it would only add a full-screen resolve every frame), and the context asks for the default power preference, so a laptop with two GPUs can stay on the efficient one.
+The drawing buffer never holds more pixels than the preset's budget (`budgetPixelRatio`): a Retina laptop at full screen renders about 2.6 million pixels on high instead of 4–5 million. Where the browser can time GPU work (`GpuTimer`, Chrome and Edge on desktop), `GpuGovernor` eases the render scale (down to `MIN_RENDER_SCALE`) while a frame costs more than `GPU_TARGET_MS` (26 ms: 30 fps is the target, `ACCEPTABLE_FPS`, so detail is only shed when the scene cannot hold it) and back up when there is room, at most once every `SCALE_CHANGE_INTERVAL`; a GPU still overloaded at the lowest scale steps the preset down, and only a long idle one steps it up (the frame rate alone no longer raises the preset there, since a GPU can deliver 60 fps working flat out). Without GPU timing the preset falls back on the frame rate (`FpsJudge`): windows during start-up and after a preset change (shader compilation) do not count, nor do windows while the page is paced to 30 fps because another app has the focus; it takes three slow windows in a row to step down. Before this, switching to another app (to take a screenshot, say) dropped a session from high to low within seconds and left it there, aliased and flat. The canvas itself is not multisampled when the HDR pipeline will draw (it would only add a full-screen resolve every frame), and the context asks for the default power preference, so a laptop with two GPUs can stay on the efficient one.
 
-Coarse devices start low. Adaptive quality observes FPS windows, steps down quickly when slow, and requires a long stable period above 58 FPS before stepping up. Coarse devices never automatically step to high.
+Coarse devices start low. Adaptive quality observes FPS windows and steps down only after three windows in a row below `SLOW_FPS` (28: a steady 30 fps is enough and keeps the preset), and requires a long stable period of fast frames before stepping up. Coarse devices never automatically step to high.
 
 Important implementation caveats:
 
@@ -799,6 +823,11 @@ The authoritative license text is `public/models/README.md`. Keep it synchronize
 | `whale` | `blue-whale-rigged-pbr-v2.glb` | 1,422,856 | 38,784 triangles, rigged PBR | No | Submerged blue whale tail slap |
 | `fishSchool` | `tropical-fish-school.glb` | 3,277,364 | 8,932 triangles, four species | No | Source of the four instanced reef-fish species |
 | `seagull` | `seagull-animated.glb` | 133,248 | 1,174 triangles, authored clips | No | Aerial flock |
+| `seaplane` | `tourist-seaplane.glb` | 667,828 | 18,400 triangles, painted PBR livery | No | Sightseeing floatplane: orbits and low passes |
+| `bannerPlane` | `banner-tow-plane.glb` | 577,628 | 15,528 triangles, painted PBR livery | No | Low-pass banner tow |
+| `airliner` | `narrowbody-airliner.glb` | 856,748 | 17,320 triangles, painted PBR livery | No | High-altitude contrail traffic |
+
+The three aircraft are original CC0 models generated by `scripts/models/build-aircraft-models.mjs` (needs Playwright and Chromium; set `PLAYWRIGHT_MODULE` if it is installed elsewhere): rebuild them with it, never by hand. Aircraft look the same at every preset: do not gate their textures, lights or reflections on quality. Low passes stay beside, never over, the yacht and fade at the haze limit; contrail shape rules live in `AviationMath` and are mirrored in the `ContrailField` GLSL, in one bounded instanced pool.
 
 Unused legacy files currently retained for provenance or possible comparison:
 

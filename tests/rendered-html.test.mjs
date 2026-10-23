@@ -42,8 +42,10 @@ test("renders the modular simulator shell without the legacy iframe", async () =
   assert.match(html, /<title>Enhanced Sailing Simulator Pro<\/title>/i);
   assert.match(html, /<canvas[^>]+class="simulator-canvas"[^>]+aria-label=/i);
   assert.match(html, /<section[^>]+class="control-panel is-minimized"[^>]+aria-label=/i);
-  assert.match(html, /<span>Reset scene<\/span>/);
-  assert.match(html, /<span>Photo mode<\/span>/);
+  // Reset lives in the panel's "Yacht" tab; the scene actions and the helm are server-rendered.
+  assert.match(html, /<span class="scene-action-label">Photo mode<\/span>/);
+  assert.match(html, /class="engine-toggle"[^>]+role="switch"/);
+  assert.match(html, /class="rudder-swipe"/);
   assert.match(html, /id="photo-mode-hint"/);
   assert.doesNotMatch(html, /Sailing_Simulator_Pro_-_Ultimate\.html/);
   assert.doesNotMatch(html, /<iframe\b/i);
