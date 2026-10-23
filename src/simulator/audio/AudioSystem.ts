@@ -1,6 +1,13 @@
 import { clamp } from "../math";
 import { BoatVoices } from "./BoatVoices";
 import { HouseGroove, ShantyBand } from "./MusicSynth";
+import { renderSplash } from "./SplashSynth";
+
+/** Splash sizes rendered ahead of time, and variants of each (see `SplashSynth`). */
+const SPLASH_SIZES = [0.2, 0.55, 1] as const;
+const SPLASH_VARIANTS = 2;
+/** The splash content is below 6 kHz, so half the usual rate is plenty and renders twice as fast. */
+const SPLASH_SAMPLE_RATE = 24000;
 
 type WebkitAudioWindow = Window & {
   webkitAudioContext?: typeof AudioContext;
@@ -122,6 +129,10 @@ export class AudioSystem {
   private rainHissGain?: GainNode;
   private rainPatterGain?: GainNode;
   private thunderBuffer?: AudioBuffer;
+  /** Pre-rendered splashes by `size:variant`; filled in idle moments after the graph is made. */
+  private readonly splashBuffers = new Map<string, AudioBuffer>();
+  private splashTimer: number | undefined;
+  private splashVariant = 0;
   private windGain?: GainNode;
   private windFilter?: BiquadFilterNode;
   private gullClock = 4 + Math.random() * 6;
@@ -868,26 +879,35 @@ export class AudioSystem {
         noise(1.8, "bandpass", 620, 0.45, 0.2 * level, 0.09, 1.5);
         noise(1.2, "highpass", 2400, 0.3, 0.05 * level, 0.05, 0.9);
         return;
-      case "slap": {
-        // A sharp crack over a heavy, low body of water.
-        noise(0.4, "bandpass", 1500, 0.8, 0.22 * level, 0.004, 0.3);
-        noise(1.6, "lowpass", 420, 0.7, 0.32 * level, 0.012, 1.3);
-        const thump = this.context.createOscillator();
-        thump.type = "sine";
-        thump.frequency.setValueAtTime(140, now);
-        thump.frequency.exponentialRampToValueAtTime(62, now + 0.35);
-        const thumpGain = this.context.createGain();
-        thumpGain.gain.setValueAtTime(0.0001, now);
-        thumpGain.gain.exponentialRampToValueAtTime(0.28 * level, now + 0.01);
-        thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
-        thump.connect(thumpGain).connect(output);
-        thump.start(now);
-        thump.stop(now + 0.5);
-        if (intensity >= 4.5) {
-          // A body crashing down: a long, rolling roar of falling water.
-          noise(3.4, "lowpass", 700, 0.6, 0.26 * level, 0.08, 3.1);
-          noise(2.6, "bandpass", 1800, 0.5, 0.08 * level, 0.2, 2.2);
+      case "slap":
+      case "entry": {
+        // The pre-rendered splash (smack, spray, gush and the shower of bubble
+        // plinks as the water falls back), when it is ready.
+        const size = kind === "slap" ? clamp((intensity - 0.5) / 5, 0, 1) : clamp((intensity - 0.3) / 4.5, 0, 1) * 0.8;
+        const buffer = this.splashBuffer(size);
+        if (buffer) {
+          const source = this.context.createBufferSource();
+          source.buffer = buffer;
+          // Small variety in pitch so repeated splashes are not identical.
+          source.playbackRate.value = 0.93 + Math.random() * 0.14;
+          const filter = this.context.createBiquadFilter();
+          filter.type = "lowpass";
+          filter.frequency.value = 11000 * (1 - far * 0.75);
+          const gain = this.context.createGain();
+          gain.gain.value = (kind === "slap" ? 0.55 : 0.36) * level;
+          source.connect(filter).connect(gain).connect(output);
+          source.start(now);
+          source.stop(now + buffer.duration / source.playbackRate.value + 0.05);
+          return;
         }
+        if (kind === "entry") {
+          noise(0.7, "bandpass", 850, 0.62, 0.16 * level, 0.018, 0.56);
+          return;
+        }
+        // Not rendered yet: a sharp crack over a short, bright body of water.
+        noise(0.4, "bandpass", 1500, 0.8, 0.22 * level, 0.004, 0.3);
+        noise(1.2, "bandpass", 800, 0.6, 0.2 * level, 0.012, 0.9);
+        if (intensity >= 4.5) noise(2.6, "bandpass", 1300, 0.5, 0.12 * level, 0.15, 2.2);
         return;
       }
       case "exit":
@@ -897,14 +917,49 @@ export class AudioSystem {
       case "breath":
         noise(0.5, "bandpass", 1050, 0.6, 0.07 * level, 0.02, 0.35);
         return;
-      case "entry":
-        noise(0.7, "bandpass", 850, 0.62, 0.16 * level, 0.018, 0.56);
-        return;
     }
+  }
+
+  /** The nearest pre-rendered splash to `size`, alternating variants, if it is ready. */
+  private splashBuffer(size: number): AudioBuffer | undefined {
+    let nearest: number = SPLASH_SIZES[0];
+    for (const candidate of SPLASH_SIZES) if (Math.abs(candidate - size) < Math.abs(nearest - size)) nearest = candidate;
+    this.splashVariant = (this.splashVariant + 1) % SPLASH_VARIANTS;
+    return this.splashBuffers.get(`${nearest}:${this.splashVariant}`) ?? this.splashBuffers.get(`${nearest}:0`);
+  }
+
+  /**
+   * Renders the splash buffers one at a time (each takes tens of
+   * milliseconds), spaced out so the work never lands in one frame.
+   */
+  private prepareSplashes(): void {
+    window.clearTimeout(this.splashTimer);
+    this.splashBuffers.clear();
+    const pending: [number, number][] = [];
+    // The whale's splash first: it is the one the old sound let down.
+    for (const size of [...SPLASH_SIZES].reverse()) for (let variant = 0; variant < SPLASH_VARIANTS; variant += 1) pending.push([size, variant]);
+    const context = this.context;
+    const next = (): void => {
+      const job = pending.shift();
+      if (!job || !context || context !== this.context || context.state === "closed") return;
+      const [size, variant] = job;
+      const render = renderSplash(SPLASH_SAMPLE_RATE, size, 11 + variant * 7 + size * 100);
+      try {
+        const buffer = context.createBuffer(1, render.samples.length, render.sampleRate);
+        buffer.getChannelData(0).set(render.samples);
+        this.splashBuffers.set(`${size}:${variant}`, buffer);
+      } catch {
+        // A browser that rejects the rate keeps the simple noise splash.
+        return;
+      }
+      this.splashTimer = window.setTimeout(next, 350);
+    };
+    this.splashTimer = window.setTimeout(next, 1200);
   }
 
   dispose(): void {
     window.clearTimeout(this.muteTimer);
+    window.clearTimeout(this.splashTimer);
     window.removeEventListener("pointerdown", this.onUserGesture, true);
     window.removeEventListener("mousedown", this.onUserGesture, true);
     window.removeEventListener("touchstart", this.onUserGesture, true);
@@ -997,6 +1052,7 @@ export class AudioSystem {
     this.wildlifeBus.gain.value = 1;
 
     this.createEngine(this.context, this.engineBus);
+    this.prepareSplashes();
 
     const waveNoise = this.createNoiseBuffer(5.3, "pink");
     const waves = this.context.createBufferSource();

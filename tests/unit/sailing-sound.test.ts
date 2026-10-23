@@ -51,3 +51,38 @@ test("a gust is one event: heard coming, then the wind rises and eases, within b
     }
   }
 });
+
+test("a big splash is bright water, not a boom: bubbles and spray above 400 Hz, a late shower", async () => {
+  const { renderSplash, splashDuration, bubbleFrequency } = await import("../../src/simulator/audio/SplashSynth");
+  assert.ok(Math.abs(bubbleFrequency(0.001) - 3260) < 1, "a 1 mm bubble rings near 3.3 kHz");
+  const rate = 24000;
+  const whale = renderSplash(rate, 1, 3).samples;
+  const small = renderSplash(rate, 0.2, 3).samples;
+  assert.ok(whale.length > small.length * 2, "a whale's splash lasts much longer");
+  assert.equal(whale.length, Math.ceil(splashDuration(1) * rate));
+  let peak = 0;
+  let lowEnergy = 0;
+  let energy = 0;
+  let low = 0;
+  const pole = Math.exp((-2 * Math.PI * 300) / rate);
+  for (const sample of whale) {
+    assert.ok(Number.isFinite(sample));
+    peak = Math.max(peak, Math.abs(sample));
+    low = pole * low + (1 - pole) * sample;
+    lowEnergy += low * low;
+    energy += sample * sample;
+  }
+  assert.ok(peak <= 0.91 && peak > 0.5);
+  assert.ok(lowEnergy / energy < 0.25, `energy below ~300 Hz is ${(lowEnergy / energy).toFixed(2)} of the whole`);
+  // The water thrown up is still falling back a second after the impact.
+  const window = (from: number) => {
+    let sum = 0;
+    for (let index = Math.floor(from * rate); index < Math.floor((from + 0.1) * rate); index += 1) sum += whale[index] ** 2;
+    return Math.sqrt(sum / (0.1 * rate));
+  };
+  assert.ok(window(1.0) > window(0) * 0.2, "an audible shower follows the impact");
+  assert.ok(window(3.1) < window(0.1) * 0.1, "and dies away");
+  // Deterministic per seed, different between seeds.
+  assert.deepEqual(renderSplash(rate, 0.5, 9).samples.slice(0, 200), renderSplash(rate, 0.5, 9).samples.slice(0, 200));
+  assert.notDeepEqual(renderSplash(rate, 0.5, 9).samples.slice(0, 200), renderSplash(rate, 0.5, 10).samples.slice(0, 200));
+});
