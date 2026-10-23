@@ -1,4 +1,6 @@
 import { clamp } from "../math";
+import type { AviationAudioState } from "../aviation/AviationSystem";
+import { AviationVoices } from "./AviationVoices";
 import { BoatVoices } from "./BoatVoices";
 import { HouseGroove, ShantyBand } from "./MusicSynth";
 import { renderSplash } from "./SplashSynth";
@@ -138,6 +140,8 @@ export class AudioSystem {
   private gullClock = 4 + Math.random() * 6;
   private engineLoad = 0;
   private boat?: BoatVoices;
+  private aviationVoices?: AviationVoices;
+  private aviation?: AviationAudioState;
   /** Music: the radio's shanty band, and the party barge's groove heard over the water. */
   private musicBus?: GainNode;
   private shanty?: ShantyBand;
@@ -494,6 +498,7 @@ export class AudioSystem {
     this.updateHum();
     // The yacht's own layers: slap at rest, the bow wave's rush, spray at
     // speed, the rigging, the flogging sail, the winches (see BoatVoices).
+    if (this.aviation) this.aviationVoices?.update(now, this.aviation);
     this.boat?.update(step, {
       knots: speed * 1.943844,
       waves: weather.waves,
@@ -957,7 +962,13 @@ export class AudioSystem {
     this.splashTimer = window.setTimeout(next, 1200);
   }
 
+  /** Latest listener-relative aircraft parameters; applied on the audio update cadence. */
+  setAviation(state: AviationAudioState): void {
+    this.aviation = state;
+  }
+
   dispose(): void {
+    this.aviationVoices?.dispose();
     window.clearTimeout(this.muteTimer);
     window.clearTimeout(this.splashTimer);
     window.removeEventListener("pointerdown", this.onUserGesture, true);
@@ -1112,6 +1123,11 @@ export class AudioSystem {
     wind.connect(this.windFilter).connect(windSoftener).connect(this.windGain).connect(this.environmentBus);
     wind.start(0, 0.41);
     this.boat = new BoatVoices(this.context, this.environmentBus, (duration, color) => this.createNoiseBuffer(duration, color));
+    // Aircraft on their own bus, straight to the master (not ducked with the sea).
+    const aviationBus = this.context.createGain();
+    aviationBus.connect(this.master);
+    this.aviationVoices?.dispose();
+    this.aviationVoices = new AviationVoices(this.context, aviationBus, (duration, color) => this.createNoiseBuffer(duration, color));
     this.musicBus = this.context.createGain();
     this.musicBus.gain.value = 0.8;
     this.musicBus.connect(this.master);

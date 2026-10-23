@@ -6,6 +6,7 @@ import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
 import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
 import { ShipShadows } from "./ships/ShipShadows";
+import { AviationSystem } from "./aviation/AviationSystem";
 import { PhotoDirector, photoShot, type PhotoRig, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
 import { GpuTimer } from "./core/GpuTimer";
 import { GpuGovernor } from "./core/RenderBudget";
@@ -90,6 +91,7 @@ export class Simulator {
   private vessel!: Vessel;
   private wake!: WakeSystem;
   private wildlife!: WildlifeSystem;
+  private aviation!: AviationSystem;
   private ships!: ShipSystem;
   private shipShadows?: ShipShadows;
   private readonly shipImpact = new THREE.Vector3();
@@ -300,6 +302,8 @@ export class Simulator {
           ripple: (position, strength) => this.wake.ripple(position, strength),
         },
       );
+      // Low passes by a floatplane or a banner tow, airliners laying contrails.
+      this.aviation = new AviationSystem(this.scene, this.assets);
       this.camera = new CameraController(this.canvas.clientWidth / Math.max(1, this.canvas.clientHeight), this.ocean);
       this.camera.setMode(this.state.cameraMode);
       this.camera.steadyHelm = this.state.steadyHelmView;
@@ -803,6 +807,7 @@ export class Simulator {
     this.physics.reset();
     this.flares.clear();
     this.wake.reset();
+    this.aviation.reset();
     this.state.controls.throttle = 0;
     this.state.controls.rudder = 0;
     this.camera.recenter();
@@ -818,6 +823,7 @@ export class Simulator {
     this.radio?.dispose();
     this.audio?.dispose();
     this.wildlife?.dispose();
+    this.aviation?.dispose();
     this.ships?.dispose();
     this.post?.dispose();
     this.reflection?.dispose();
@@ -900,6 +906,8 @@ export class Simulator {
     if (slam > 0) this.audio.boomSlam(slam);
     this.ships.update(delta, this.sampleSurface);
     this.wildlife.update(delta, this.physics, this.camera.camera);
+    this.aviation.setSky(this.scene.environment, this.environment.lightDirection);
+    this.aviation.update(delta, this.physics.position, this.environmentState.nightFactor, this.camera.camera);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics, { root: this.vessel.root, eye: this.vessel.helmEye });
     this.directPhoto(delta);
@@ -955,6 +963,7 @@ export class Simulator {
     this.ships.setNight(this.environmentState.nightFactor);
     this.wildlife.setLightDirection(this.environment.lightDirection);
     this.underwater.setTime(this.elapsed);
+    this.audio.setAviation(this.aviation.audioState(this.camera.camera));
     this.audio.update(
       delta,
       Math.abs(this.physics.telemetry.forwardSpeed),
