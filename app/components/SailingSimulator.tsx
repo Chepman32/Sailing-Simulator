@@ -346,8 +346,6 @@ export function SailingSimulator() {
     if (!photoMode) return;
     const photoButton = photoButtonRef.current;
     canvasRef.current?.focus({ preventScroll: true });
-    // The interface is hidden in photo mode, so say once how to get it back.
-    setPhotoHint(true);
     const hintTimer = window.setTimeout(() => setPhotoHint(false), 3200);
     const onKeyDown = (event: KeyboardEvent) => {
       // Tab moves between the canvas and photo mode's own visible buttons;
@@ -644,6 +642,8 @@ export function SailingSimulator() {
   const enterPhotoMode = () => {
     photoModeRef.current = true;
     setPhotoMode(true);
+    // The interface is hidden in photo mode, so say once how to get it back.
+    setPhotoHint(true);
     // The camera now turns by itself to whales, dolphins, sharks, eruptions and ships' horns.
     simulatorRef.current?.setPhotoAutoAim(photoAutoAim);
     simulatorRef.current?.setPhotoMode(true);

@@ -110,10 +110,9 @@ export function SoundPrompt({ active, targetRef, label, onUnlock, onArrived }: P
     return () => window.clearTimeout(timer);
   }, [active]);
 
-  // Sound started some other way: leave at once.
-  useEffect(() => {
-    if (!active && phase === "visible") setPhase("snapping");
-  }, [active, phase]);
+  // Sound started some other way: leave at once (state adjusted while
+  // rendering, as React recommends for a change that follows a prop).
+  if (!active && phase === "visible") setPhase("snapping");
 
   // Photograph the pill just before it is replaced by its dust.
   useLayoutEffect(() => {
