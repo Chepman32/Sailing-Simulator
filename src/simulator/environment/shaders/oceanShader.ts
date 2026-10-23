@@ -666,6 +666,13 @@ ${detailCalls}
     float specularFresnel = 0.02 + 0.98 * pow(1.0 - max(dot(viewDirection, halfVector), 0.0), 5.0);
     float visibility = 0.25 / max(mix(nDotL * nDotV, 1.0, 0.25), 0.05);
     float specular = min(distribution * specularFresnel * visibility * nDotL, 48.0);
+    // The glitter path: where the mean sea surface (the ripples mostly
+    // calmed) mirrors the sun. Steep ripples far off it still catch the sun,
+    // but much more weakly, so a noon sea does not twinkle from edge to edge.
+    vec3 meanNormal = normalize(mix(normal, vec3(0.0, 1.0, 0.0), 0.65));
+    float pathAlign = max(dot(reflect(-viewDirection, meanNormal), uLightDirection), 0.0);
+    float glitterPath = smoothstep(0.55, 0.93, pathAlign);
+    specular *= mix(0.28, 1.0, glitterPath);
     // A broader sheen lobe stretches the glitter path toward the viewer.
     float sheenAlpha2 = pow(max(roughness * 2.4, 0.16), 4.0);
     float sheenDenominator = nDotH * nDotH * (sheenAlpha2 - 1.0) + 1.0;
@@ -712,7 +719,11 @@ ${detailCalls}
       float glint = smoothstep(0.9965, 0.9993, facetAlign) * smoothstep(0.52, 0.72, sparkleA * sparkleB * 1.9);
       // Below a pixel the flashes would only shimmer; let the GGX lobe carry them.
       glint *= (1.0 - smoothstep(0.12, 0.45, footprint)) * smoothstep(0.0, 0.08, nDotL);
-      color += sunLit * glint * 7.0 * sunVeil;
+      // Only on the glitter path: where the wave itself (not the tilted
+      // facet) already mirrors the sun. Away from it, as on a real sea at
+      // noon, the water stays a calm blue instead of twinkling everywhere.
+      float onPath = smoothstep(0.8, 0.97, pathAlign);
+      color += sunLit * glint * onPath * 4.0 * sunVeil;
     }
 
     // --- Hulls -------------------------------------------------------------
