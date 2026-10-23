@@ -672,7 +672,12 @@ ${detailCalls}
     float sheen = sheenAlpha2 / (OCEAN_PI * sheenDenominator * sheenDenominator) * specularFresnel * visibility * nDotL;
     // Under a storm's cloud the sun is only a pale patch: the glitter path fades.
     float sunVeil = 1.0 - 0.88 * gale;
-    color += sunLit * (specular + min(sheen, 5.0) * 0.1) * sunVeil;
+    // The glitter belongs to the sun's path: where the mean surface does not
+    // mirror the sun toward the eye, only a faint trace of it is left, so the
+    // noon sea stays satin instead of glinting everywhere like plastic.
+    float sunPath = smoothstep(0.84, 0.99, dot(reflect(-viewDirection, vec3(0.0, 1.0, 0.0)), uLightDirection));
+    float glitterMask = mix(0.4, 1.0, sunPath);
+    color += sunLit * (specular + min(sheen, 5.0) * 0.1) * sunVeil * glitterMask;
 
     // --- A signal flare overhead -------------------------------------------
     // A point of light a hundred and more metres up: it lays its own glitter
@@ -712,7 +717,7 @@ ${detailCalls}
       float glint = smoothstep(0.9965, 0.9993, facetAlign) * smoothstep(0.52, 0.72, sparkleA * sparkleB * 1.9);
       // Below a pixel the flashes would only shimmer; let the GGX lobe carry them.
       glint *= (1.0 - smoothstep(0.12, 0.45, footprint)) * smoothstep(0.0, 0.08, nDotL);
-      color += sunLit * glint * 7.0 * sunVeil;
+      color += sunLit * glint * 7.0 * sunVeil * mix(0.06, 1.0, sunPath);
     }
 
     // --- Hulls -------------------------------------------------------------

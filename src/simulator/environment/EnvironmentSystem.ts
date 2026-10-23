@@ -22,7 +22,9 @@ const CAPTURE_SIZE = 128;
  */
 const TRANSITION_SECONDS = 11;
 /** HDR radiance of the solar disc relative to the sun's tint. */
-const SUN_DISC_RADIANCE = 9;
+const SUN_DISC_RADIANCE = 2.0;
+/** Linear colour of the noon sun disc: a saturated golden yellow. */
+const SUN_DISC_GOLD = [1.0, 0.6, 0.12] as const;
 
 export class EnvironmentSystem {
   private readonly sky: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
@@ -327,10 +329,13 @@ export class EnvironmentSystem {
     // Near the horizon the disc is seen through a long, hazy path: dimmer, so
     // its red-orange survives the tone curve instead of clipping to white.
     const sunRadiance = SUN_DISC_RADIANCE * sunUp * (1 - 0.82 * palette.twilight) * (1 - 0.6 * this.weather.overcast);
+    // A saturated tropical gold by day (the white-hot palette colour clipped
+    // the disc to white), easing into the palette's orange at dusk.
+    const goldMix = clamp(palette.twilight * 1.1, 0, 1);
     this.sunDisc.value.setRGB(
-      palette.sunColor[0] * sunRadiance,
-      palette.sunColor[1] * sunRadiance,
-      palette.sunColor[2] * sunRadiance,
+      (SUN_DISC_GOLD[0] + (palette.sunColor[0] - SUN_DISC_GOLD[0]) * goldMix) * sunRadiance,
+      (SUN_DISC_GOLD[1] + (palette.sunColor[1] - SUN_DISC_GOLD[1]) * goldMix) * sunRadiance,
+      (SUN_DISC_GOLD[2] + (palette.sunColor[2] - SUN_DISC_GOLD[2]) * goldMix) * sunRadiance,
       THREE.LinearSRGBColorSpace,
     );
     const moonUp = clamp((night - 0.04) / 0.3, 0, 1) * (this.state.moonElevation > -0.02 ? 1 : 0);

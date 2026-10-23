@@ -147,6 +147,7 @@ function screenPlane(width: number, height: number, region: Region): THREE.Plane
 export class HelmStation {
   readonly group = new THREE.Group();
   private readonly wheel = new THREE.Group();
+  private readonly wheelMount = new THREE.Group();
   private readonly lever = new THREE.Group();
   private readonly card: THREE.Mesh;
   private readonly screenMaterial: THREE.MeshStandardMaterial;
@@ -343,7 +344,7 @@ export class HelmStation {
     rimMesh.castShadow = true;
     spokeMesh.castShadow = true;
     this.wheel.add(rimMesh, spokeMesh);
-    const wheelMount = new THREE.Group();
+    const wheelMount = this.wheelMount;
     wheelMount.position.copy(WHEEL_CENTRE);
     wheelMount.rotation.order = "YXZ";
     wheelMount.rotation.set(WHEEL_TILT, Math.PI, 0);
@@ -362,6 +363,21 @@ export class HelmStation {
     this.geometries.push(compositeGeometry, steelGeometry, screens, cardGeometry, dome.geometry, rim, spokeGeometry, leverParts);
     this.paintCard();
   }
+
+  /** A point on the wheel's rim at `angle` in the mount's frame (not turning with the spokes), in the world. */
+  rimPoint(angle: number, target: THREE.Vector3): THREE.Vector3 {
+    this.group.updateWorldMatrix(true, true);
+    target.set(Math.cos(angle) * WHEEL_RADIUS, Math.sin(angle) * WHEEL_RADIUS, 0);
+    return this.wheelMount.localToWorld(target);
+  }
+
+  /** Current turn of the wheel, radians. */
+  get wheelAngle(): number {
+    return this.wheel.rotation.z;
+  }
+
+  /** Where the skipper's feet are: on the deck behind the wheel (vessel space). */
+  static readonly STAND_FEET = new THREE.Vector3(HELM_X, DECK_Y, HELM_EYE.z);
 
   /** Ships for the chart plotter's targets (shared by reference). */
   setTraffic(traffic: readonly HelmTraffic[]): void {

@@ -313,6 +313,7 @@ src/simulator/
                BodyRig, WildlifeModel, Dolphin*, Shark*, Whale*, ReefFish*, Gull*
   camera/      CameraController
   input/       InputController, TouchControls, DoubleTapGesture
+  world/       ExploredChart (the chart's fog of war)
   audio/       AudioSystem, BoatSoundMath, BoatVoices, MusicMath, MusicSynth, RadioSystem
   ui/          HudController
 public/models/  GLB-модели + README с лицензиями

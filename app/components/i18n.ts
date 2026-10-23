@@ -102,9 +102,12 @@ const ENGLISH_MESSAGES = {
   help: "Swipe the sea to look · pinch to zoom · use rudder and throttle independently",
 };
 
-export type Messages = { [Key in keyof typeof ENGLISH_MESSAGES]: string };
+import { PORT_TRANSLATIONS, type PortMessages } from "./portMessages";
 
-const TRANSLATIONS: Record<LanguageCode, Messages> = {
+type CoreMessages = { [Key in keyof typeof ENGLISH_MESSAGES]: string };
+export type Messages = CoreMessages & PortMessages;
+
+const TRANSLATIONS: Record<LanguageCode, CoreMessages> = {
   en: ENGLISH_MESSAGES,
   zh: {
     loadingTitle: "正在准备热带海域", loading: "加载中", rendererNotice: "渲染器提示", sceneInterrupted: "场景已中断", reload: "重新加载模拟器",
@@ -405,8 +408,15 @@ export function resolveLanguagePreference(
     : detectLanguage(systemLanguages);
 }
 
+const MERGED_MESSAGES = new Map<LanguageCode, Messages>();
+
 export function getMessages(language: LanguageCode): Messages {
-  return TRANSLATIONS[language];
+  let messages = MERGED_MESSAGES.get(language);
+  if (!messages) {
+    messages = { ...TRANSLATIONS[language], ...PORT_TRANSLATIONS[language] };
+    MERGED_MESSAGES.set(language, messages);
+  }
+  return messages;
 }
 
 export function isRtlLanguage(language: LanguageCode): boolean {

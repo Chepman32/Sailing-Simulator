@@ -35,6 +35,8 @@ export type SimulatorState = {
   discoveredPlaces: string[];
   /** Keys of the things already picked up (so they stay gone after a reload). */
   collectedLoot: string[];
+  /** Chart squares the yacht has seen (the fog of war of the map). */
+  exploredCells: string[];
 };
 
 export const ENGINE_START_THROTTLE = 0.12;
@@ -59,6 +61,7 @@ export function createSimulatorState(): SimulatorState {
     flamingos: 0,
     discoveredPlaces: [],
     collectedLoot: [],
+    exploredCells: [],
   };
 }
 
@@ -95,6 +98,7 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   waveHeight: 0.9,
   trueWindKnots: 15,
   quality: "high",
+  qualityChoice: "auto",
   soundEnabled: true,
   audioReady: false,
   engineRunning: false,
@@ -112,6 +116,10 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   stuck: false,
   radioStation: null,
   radioBuffering: false,
+  positionX: 0,
+  positionZ: 0,
+  mapRevision: 0,
+  photoAutoTarget: true,
   fps: 60,
   status: "loading",
 };

@@ -76,6 +76,8 @@ export const LANE_MAX_PASSING = 650;
 /** A new ship appears this far up her lane before the closest approach (in the haze). */
 export const SPAWN_MIN_RUN = 1500;
 export const SPAWN_MAX_RUN = 1950;
+/** Ships are placed at least this far from each other, metres, so they never bunch up in one stretch of sea. */
+export const SHIP_MIN_SPACING = 1500;
 /** A ship this far from the yacht, and moving away, is replaced. */
 export const RECYCLE_DISTANCE = 2300;
 /** An anchored ship this far from the yacht is moved to a new anchorage. */
@@ -270,7 +272,7 @@ export function planLane(
   across?: number,
 ): boolean {
   const spec = SHIP_SPECS[ship.kind];
-  for (let attempt = 0; attempt < 120; attempt += 1) {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
     const heading =
       across === undefined ? random() * Math.PI * 2 : across + (random() < 0.5 ? 1 : -1) * (Math.PI / 2 + (random() - 0.5) * 0.9);
     const forwardX = Math.sin(heading);
@@ -282,7 +284,7 @@ export function planLane(
     const cpaX = yachtX + forwardZ * passing * side;
     const cpaZ = yachtZ - forwardX * passing * side;
     const run =
-      across !== undefined ? between(random, -250, 250) : initial ? between(random, -700, 900) : between(random, SPAWN_MIN_RUN, SPAWN_MAX_RUN);
+      across !== undefined ? between(random, -250, 250) : initial ? between(random, -1900, 1900) : between(random, SPAWN_MIN_RUN, SPAWN_MAX_RUN);
     const startX = cpaX - forwardX * run;
     const startZ = cpaZ - forwardZ * run;
     // The whole passage must be in deep water, well off every island.
@@ -297,7 +299,7 @@ export function planLane(
     // Keep away from the other ships' positions and tracks.
     const crowded = others.some((other) => {
       if (other === ship || !other.active) return false;
-      if (Math.hypot(other.x - startX, other.z - startZ) < 700) return true;
+      if (Math.hypot(other.x - startX, other.z - startZ) < SHIP_MIN_SPACING) return true;
       // Converging courses that would meet near the yacht are avoided too.
       const relativeHeading = Math.abs(Math.atan2(Math.sin(other.heading - heading), Math.cos(other.heading - heading)));
       return !other.anchored && relativeHeading < 0.35 && Math.hypot(other.x - cpaX, other.z - cpaZ) < 900;
@@ -330,16 +332,16 @@ export function planAnchorage(
   bearing: number,
   others: readonly Ship[],
   random: RandomSource,
-  minDistance = 320,
-  maxDistance = 1150,
+  minDistance = 600,
+  maxDistance = 1900,
 ): boolean {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
     const direction = bearing + between(random, -0.9, 0.9);
     const distance = between(random, minDistance, maxDistance);
     const x = yachtX + Math.sin(direction) * distance;
     const z = yachtZ + Math.cos(direction) * distance;
     if (world.shoreDistance(x, z) < 260) continue;
-    if (others.some((other) => other !== ship && other.active && Math.hypot(other.x - x, other.z - z) < 600)) continue;
+    if (others.some((other) => other !== ship && other.active && Math.hypot(other.x - x, other.z - z) < SHIP_MIN_SPACING)) continue;
     ship.x = x;
     ship.z = z;
     ship.heading = world.windFrom;
@@ -463,6 +465,16 @@ export function shipOutOfRange(ship: Ship, yachtX: number, yachtZ: number): bool
 }
 
 export type HornSignal = "danger" | "prolonged" | null;
+
+/** No two horn blasts, from any ships, closer together than this, seconds. */
+export const HORN_MIN_INTERVAL = 30;
+/** A signal held back by that rule is tried again after this many seconds. */
+export const HORN_RETRY_SECONDS = 2;
+
+/** Whether a horn may sound at `now`, given when the last one did. */
+export function canSoundHorn(now: number, lastHorn: number): boolean {
+  return now - lastHorn >= HORN_MIN_INTERVAL;
+}
 
 /**
  * Sound signals: five short blasts when the yacht stands into the ship's

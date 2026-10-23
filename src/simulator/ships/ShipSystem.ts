@@ -14,6 +14,8 @@ import {
   SHIP_KINDS,
   shipContact,
   nearestHullClearance,
+  canSoundHorn,
+  HORN_RETRY_SECONDS,
   shipHornSignal,
   shipOutOfRange,
   stepShip,
@@ -103,6 +105,8 @@ export class ShipSystem {
   private readonly normal = { x: 0, z: 0 };
   private readonly world: ShipWorld;
   private readonly horns: ShipHornEvent[] = [];
+  /** When a horn last sounded (any ship): a global minimum gap keeps the sea from honking. */
+  private lastHorn = -Infinity;
   /** A ship answering the yacht's horn: which, and in how many seconds. */
   private reply: { ship: Ship; delay: number } | null = null;
   private readonly sources: ShipSoundSource[] = [];
@@ -171,7 +175,11 @@ export class ShipSystem {
       if (this.retry[slot]! <= 0 && shipOutOfRange(ship, yacht.x, yacht.z)) this.place(ship, slot, yacht, false);
       stepShip(ship, this.ships, this.world, delta);
       const signal = shipHornSignal(ship, yacht.x, yacht.z, this.random);
-      if (signal) {
+      if (signal && !canSoundHorn(time, this.lastHorn)) {
+        // Too soon after another blast: hold this one back and try again shortly.
+        ship.hornCooldown = HORN_RETRY_SECONDS;
+      } else if (signal) {
+        this.lastHorn = time;
         this.horns.push({
           position: new THREE.Vector3(ship.x, 22, ship.z),
           signal,
@@ -181,9 +189,11 @@ export class ShipSystem {
     });
     if (this.reply) {
       this.reply.delay -= delta;
-      if (this.reply.delay <= 0) {
+      // The answer waits for the rule's gap like every other blast.
+      if (this.reply.delay <= 0 && canSoundHorn(time, this.lastHorn)) {
         const ship = this.reply.ship;
         this.reply = null;
+        if (ship.active) this.lastHorn = time;
         if (ship.active) this.horns.push({ position: new THREE.Vector3(ship.x, 22, ship.z), signal: "prolonged", length: ship.halfLength * 2 });
       }
     }
@@ -359,7 +369,7 @@ export class ShipSystem {
     if (slot >= MOVING_SHIPS) {
       // An anchorage anywhere in sight at the start; later, ahead of the yacht.
       const bearing = initial ? this.random() * Math.PI * 2 : this.yachtHeading + (this.random() - 0.5) * 1.6;
-      placed = planAnchorage(ship, this.world, yacht.x, yacht.z, bearing, this.ships, this.random, initial ? 300 : 900, initial ? 800 : 1500);
+      placed = planAnchorage(ship, this.world, yacht.x, yacht.z, bearing, this.ships, this.random, initial ? 600 : 1000, initial ? 1700 : 1900);
     } else {
       // At the start the first ship crosses ahead, so one is in view at once.
       placed =

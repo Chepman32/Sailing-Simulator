@@ -8,12 +8,12 @@ import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/Render
 import { ShipShadows } from "./ships/ShipShadows";
 import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
 import { GpuTimer } from "./core/GpuTimer";
-import { GpuGovernor } from "./core/RenderBudget";
+import { AUTO_GPU_TARGET_MS, GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
 import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
-import { distanceFromWaterline } from "./environment/IslandMath";
+import { distanceFromWaterline, islandsWithin, type IslandDefinition } from "./environment/IslandMath";
 import { OceanReflection } from "./environment/OceanReflection";
 import { OceanSystem } from "./environment/OceanSystem";
 import { setShoalField, significantWaveHeight } from "./environment/OceanMath";
@@ -30,6 +30,7 @@ import { applyEnginePower, createSimulatorState, type SimulatorState } from "./s
 import type {
   CameraMode,
   LightingMode,
+  QualityChoice,
   QualityPreset,
   SimulationSnapshot,
   SimulatorOptions,
@@ -43,12 +44,13 @@ import { ShipSystem } from "./ships/ShipSystem";
 import { FlareSystem } from "./effects/FlareSystem";
 import type { FlareColor } from "./effects/FlareMath";
 import { LootSystem, type LootPickup } from "./effects/LootSystem";
-import { BOTTLE_MESSAGES, isSailColor, LOOT_SHORE_CLEARANCE, lootContents, SAIL_COLORS, type SailColor } from "./effects/LootMath";
+import { BOTTLE_MESSAGES, isSailColor, LOOT_SHORE_CLEARANCE, lootAround, lootContents, SAIL_COLORS, type SailColor } from "./effects/LootMath";
 import { createFlamingo } from "./effects/LootModels";
 import { NEUTRAL_GRADE, RadioSystem, type RadioStationId } from "./audio/RadioSystem";
 import { VolcanoSystem } from "./effects/VolcanoSystem";
 import { PoiSystem } from "./effects/PoiSystem";
-import { DISCOVERY_RANGE, POI_CLEARANCE } from "./effects/PoiMath";
+import { DISCOVERY_RANGE, POI_CLEARANCE, poisAround } from "./effects/PoiMath";
+import { CHART_MAX_CELLS, ExploredChart } from "./world/ExploredChart";
 import { findOpenWater, RESCUE_CLEARANCE } from "./vessel/RescueMath";
 
 const STORAGE_KEY = "sailing-simulator-pro-preferences-v2";
@@ -67,6 +69,16 @@ function isCoarseInputDevice(): boolean {
 function shipShadowSize(preset: string): number {
   return preset === "low" ? 0 : 2048;
 }
+
+/** What the map draws, read from the live simulation; the references must not be mutated. */
+export type MapState = {
+  yacht: { x: number; z: number; heading: number };
+  islands: readonly IslandDefinition[];
+  places: ReadonlyArray<{ kind: "volcano" | "barge" | "wreck" | "monolith"; x: number; z: number; discovered: boolean }>;
+  loot: ReadonlyArray<{ kind: "bottle" | "crate" | "flamingo"; x: number; z: number }>;
+  ships: ReadonlyArray<{ x: number; z: number; heading: number; length: number }>;
+  chart: ExploredChart;
+};
 
 export class Simulator {
   private readonly scene = new THREE.Scene();
@@ -134,7 +146,12 @@ export class Simulator {
   private elapsed = 0;
   private frameDelta = 1 / 60;
   /** The preset the player chose by hand, if any: the only one remembered between visits. */
+  /** null = automatic: the only mode that changes the level (and render scale) by itself. */
   private chosenQuality: QualityPreset | null = null;
+  private chart: ExploredChart;
+  private chartTimer = 0;
+  private chartSaveTimer = 0;
+  private chartSavedRevision = 0;
   private fps = 60;
   private status: SimulationSnapshot["status"] = "loading";
   private initialized = false;
@@ -153,6 +170,8 @@ export class Simulator {
     private readonly options: SimulatorOptions = {},
   ) {
     this.state = this.loadState();
+    this.chart = new ExploredChart(this.state.exploredCells);
+    this.chartSavedRevision = this.chart.revision;
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       // The HDR pipeline renders into its own multisampled target, so a
@@ -223,6 +242,7 @@ export class Simulator {
         this.persistState();
       });
       this.state.quality = this.quality.current;
+      this.applyQualityMode();
       this.gpuTimer = new GpuTimer(this.renderer.getContext());
       this.resize();
       await this.assets.load();
@@ -312,7 +332,7 @@ export class Simulator {
         this.ocean,
         this.underwater,
         new Set(this.state.collectedLoot),
-        (x, z) => distanceFromWaterline(x, z) > LOOT_SHORE_CLEARANCE && this.places.clearance(x, z, this.obstacleNormal) > 40,
+        (x, z) => this.lootIsOpen(x, z),
       );
       this.applySailColor();
       this.updateDeckFlamingo();
@@ -447,10 +467,21 @@ export class Simulator {
     this.hud.emit(this.snapshot());
   }
 
-  setQuality(preset: QualityPreset): void {
-    this.chosenQuality = preset;
-    this.quality?.setPreset(preset);
+  setQuality(choice: QualityChoice): void {
+    this.chosenQuality = choice === "auto" ? null : choice;
+    if (choice !== "auto") this.quality?.setPreset(choice);
+    this.applyQualityMode();
     this.persistState();
+    this.hud.emit(this.snapshot());
+  }
+
+  /** Automatic mode holds ~30 fps; a chosen preset is left exactly as chosen. */
+  private applyQualityMode(): void {
+    const automatic = this.chosenQuality === null;
+    this.quality?.setAdaptive(automatic);
+    this.governor.target = AUTO_GPU_TARGET_MS;
+    this.governor.reset();
+    if (this.initialized) this.resize();
   }
 
   setSoundEnabled(enabled: boolean): void {
@@ -482,9 +513,29 @@ export class Simulator {
 
   /** Photo mode: the camera turns to whatever is worth a picture by itself. */
   setPhotoMode(enabled: boolean): void {
-    this.photo.setEnabled(enabled);
+    this.photoMode = enabled;
+    this.photo.setEnabled(enabled && this.photoAutoTarget);
     this.photoInteractions = this.camera?.interactions ?? 0;
+    this.hud.emit(this.snapshot());
   }
+
+  /** Photo mode's own switch: whether the camera turns to events by itself. */
+  setPhotoAutoTarget(enabled: boolean): void {
+    this.photoAutoTarget = enabled;
+    this.photo.setEnabled(this.photoMode && enabled);
+    this.photoInteractions = this.camera?.interactions ?? 0;
+    this.hud.emit(this.snapshot());
+  }
+
+  /** A JPEG of the next frame drawn (the interface is never part of the canvas). */
+  capturePhoto(): Promise<Blob | null> {
+    if (!this.initialized) return Promise.resolve(null);
+    return new Promise((resolve) => this.pendingCaptures.push(resolve));
+  }
+
+  private photoMode = false;
+  private photoAutoTarget = true;
+  private readonly pendingCaptures: Array<(blob: Blob | null) => void> = [];
 
   private readonly photo = new PhotoDirector();
   private readonly photoSubjects: PhotoSubject[] = [];
@@ -501,7 +552,7 @@ export class Simulator {
     const yacht = this.physics.position;
     for (const subject of this.wildlife.collectPhotoSubjects(this.photoSubjects)) photo.offer(subject, yacht.x, yacht.z);
     photo.update(delta);
-    if (photo.subject) photoShot(photo.subject, yacht.x, yacht.y, yacht.z, this.photoShotState);
+    if (photo.subject) photoShot(photo.subject, yacht.x, yacht.y, yacht.z, this.photoShotState, this.physics.heading);
     this.camera.direct(this.photoShotState, photo.blend);
   }
 
@@ -780,6 +831,7 @@ export class Simulator {
   }
 
   dispose(): void {
+    this.pendingCaptures.splice(0).forEach((resolve) => resolve(null));
     this.loop?.dispose();
     this.resizeObserver?.disconnect();
     this.touch?.dispose();
@@ -854,6 +906,7 @@ export class Simulator {
     this.frameDelta = delta;
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.islands.update(this.elapsed, this.environment.currentWeather.wind, this.physics.position.x, this.physics.position.z);
+    this.vessel.setCrewVisible(this.state.cameraMode !== "helm");
     this.vessel.update(this.physics, this.physics.guard.output, this.elapsed, delta, this.environmentState.nightFactor, {
       camera: this.camera.camera,
       lightDirection: this.environment.lightDirection,
@@ -944,7 +997,54 @@ export class Simulator {
       // In photo mode a ship sounding her horn is worth turning round for.
       this.photo.offer({ kind: "horn", x: horn.position.x, y: 8, z: horn.position.z, size: horn.length * 0.75 }, this.physics.position.x, this.physics.position.z);
     }
+    this.updateChart(delta);
     this.hud.update(delta, () => this.snapshot());
+  }
+
+  /** The fog of war: reveal the squares around the yacht twice a second, and save sparingly. */
+  private updateChart(delta: number): void {
+    this.chartTimer -= delta;
+    if (this.chartTimer > 0) return;
+    this.chartTimer = 0.5;
+    const yacht = this.physics.position;
+    this.chart.observe(yacht.x, yacht.z);
+    this.chartSaveTimer += 0.5;
+    if (this.chartSaveTimer >= 8 && this.chart.revision !== this.chartSavedRevision) {
+      this.chartSaveTimer = 0;
+      this.chartSavedRevision = this.chart.revision;
+      this.persistState();
+    }
+  }
+
+  /** What the map draws: the yacht, the islands, places, finds and ships within `radius` metres. */
+  getMapState(radius: number): MapState {
+    const yacht = this.physics?.position;
+    const x = yacht?.x ?? 0;
+    const z = yacht?.z ?? 0;
+    const discovered = new Set(this.state.discoveredPlaces);
+    const islands = islandsWithin(x, z, radius);
+    const places: Array<MapState["places"][number]> = [];
+    for (const island of islands) {
+      if (island.volcano) places.push({ kind: "volcano", x: island.centerX, z: island.centerZ, discovered: discovered.has(`volcano:${island.id}`) });
+    }
+    for (const poi of poisAround(x, z, radius, (px, pz) => distanceFromWaterline(px, pz) > POI_CLEARANCE)) {
+      places.push({ kind: poi.kind, x: poi.x, z: poi.z, discovered: discovered.has(`${poi.kind}:${poi.id}`) });
+    }
+    const loot = lootAround(x, z, radius, new Set(this.state.collectedLoot), (px, pz) => this.lootIsOpen(px, pz))
+      .filter((item) => this.chart.isExploredAt(item.x, item.z))
+      .map((item) => ({ kind: item.kind, x: item.x, z: item.z }));
+    return {
+      yacht: { x, z, heading: this.physics?.heading ?? 0 },
+      islands,
+      places,
+      loot,
+      ships: (this.ships?.ships ?? []).filter((ship) => ship.active).map((ship) => ({ x: ship.x, z: ship.z, heading: ship.heading, length: ship.halfLength * 2 })),
+      chart: this.chart,
+    };
+  }
+
+  private lootIsOpen(x: number, z: number): boolean {
+    return distanceFromWaterline(x, z) > LOOT_SHORE_CLEARANCE && this.places.clearance(x, z, this.obstacleNormal) > 40;
   }
 
   /**
@@ -977,6 +1077,12 @@ export class Simulator {
     this.shipShadows?.render(this.scene, this.ships.ships, this.ships.roots, this.camera.camera.position, this.environment.lightDirection);
     this.renderReflection();
     this.post.render(this.frameDelta, this.elapsed);
+    if (this.pendingCaptures.length > 0) {
+      const resolvers = this.pendingCaptures.splice(0);
+      // toBlob copies the drawing buffer synchronously, right after the draw,
+      // so no preserveDrawingBuffer is needed.
+      this.renderer.domElement.toBlob((blob) => resolvers.forEach((resolve) => resolve(blob)), "image/jpeg", 0.92);
+    }
     timer?.end();
     this.watchFrame();
   };
@@ -1028,6 +1134,7 @@ export class Simulator {
 
   /** GPU time of a finished frame: eases the render scale, and the preset if that is not enough. */
   private observeGpu(gpuMs: number): void {
+    if (this.chosenQuality !== null) return;
     const verdict = this.governor.observe(gpuMs, this.elapsed, this.frameDelta);
     if (verdict === "scaled") this.resize();
     else if (verdict !== "steady") this.quality.observeGpu(verdict);
@@ -1135,6 +1242,7 @@ export class Simulator {
       waveHeight: significantWaveHeight(),
       trueWindKnots: (telemetry?.trueWindSpeed ?? 8) * 1.943844,
       quality: this.state.quality,
+      qualityChoice: this.chosenQuality ?? "auto",
       soundEnabled: this.state.soundEnabled,
       audioReady: this.audio?.isReady() ?? false,
       engineRunning: this.state.engineRunning,
@@ -1152,6 +1260,10 @@ export class Simulator {
       stuck: this.stuckTime > STUCK_SECONDS,
       radioStation: this.radio?.station ?? null,
       radioBuffering: this.radio?.buffering ?? false,
+      positionX: this.physics?.position.x ?? 0,
+      positionZ: this.physics?.position.z ?? 0,
+      mapRevision: this.chart.revision,
+      photoAutoTarget: this.photoAutoTarget,
       fps: this.fps,
       status: this.status,
     };
@@ -1173,9 +1285,10 @@ export class Simulator {
       // down while another app had the focus) left every later visit on the
       // low preset; the old `quality` field is therefore ignored.
       const chosen = (saved as { qualityChoice?: string }).qualityChoice;
-      if (!this.coarseDevice && (chosen === "low" || chosen === "medium" || chosen === "high")) {
-        base.quality = chosen;
-        this.chosenQuality = chosen;
+      if (chosen === "low" || chosen === "medium" || chosen === "high") {
+        // A phone keeps a chosen preset too, but never the high one.
+        base.quality = this.coarseDevice && chosen === "high" ? "medium" : chosen;
+        this.chosenQuality = base.quality;
       }
       if (typeof saved.soundEnabled === "boolean") base.soundEnabled = saved.soundEnabled;
       if (typeof saved.engineMuted === "boolean") base.engineMuted = saved.engineMuted;
@@ -1190,6 +1303,7 @@ export class Simulator {
       if (typeof saved.flamingos === "number" && Number.isFinite(saved.flamingos)) base.flamingos = Math.max(0, Math.floor(saved.flamingos));
       base.discoveredPlaces = strings(saved.discoveredPlaces, 32);
       base.collectedLoot = strings(saved.collectedLoot, MAX_REMEMBERED_LOOT);
+      base.exploredCells = strings(saved.exploredCells, CHART_MAX_CELLS);
     } catch {
       localStorage.removeItem(STORAGE_KEY);
     }
@@ -1216,6 +1330,7 @@ export class Simulator {
         flamingos: this.state.flamingos,
         discoveredPlaces: this.state.discoveredPlaces,
         collectedLoot: this.state.collectedLoot.slice(-MAX_REMEMBERED_LOOT),
+        exploredCells: this.chart.serialize(),
       }),
     );
   }

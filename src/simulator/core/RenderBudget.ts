@@ -18,6 +18,10 @@
 
 /** GPU time a frame may take, ms: about half of a 60 Hz frame. */
 export const GPU_TARGET_MS = 8.5;
+/** Auto quality only aims to hold about 30 fps, so it tolerates a frame up to this long. */
+export const AUTO_GPU_TARGET_MS = 24;
+/** Auto steps the level down when the frame rate stays below this. */
+export const AUTO_SLOW_FPS = 27;
 /** Lowest render scale the governor uses before handing over to the presets. */
 export const MIN_RENDER_SCALE = 0.7;
 /** Shortest time between two resolution changes, s (targets are reallocated). */
@@ -59,7 +63,7 @@ export class GpuGovernor {
   private overloadTime = 0;
   private idleTime = 0;
 
-  constructor(private readonly target = GPU_TARGET_MS) {}
+  constructor(public target = GPU_TARGET_MS) {}
 
   observe(gpuMs: number, now: number, delta: number): GovernorVerdict {
     if (!Number.isFinite(gpuMs) || gpuMs < 0) return "steady";

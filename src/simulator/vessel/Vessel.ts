@@ -11,6 +11,7 @@ import {
   RUDDER_SPAN,
 } from "./Appendages";
 import { HELM_EYE, HelmStation, type HelmTraffic } from "./HelmStation";
+import { Skipper } from "./Skipper";
 import { boomPivotPose, boomTarget, createBoomState, stepBoom } from "./BoomDynamics";
 import { SailSystem } from "./SailSystem";
 import type { VesselPhysics } from "./VesselPhysics";
@@ -65,6 +66,7 @@ export class Vessel {
   private readonly hulls: HullProfile[] = [];
   private readonly boomPivot = new THREE.Group();
   private readonly helm = new HelmStation();
+  private skipper?: Skipper;
   /** Parts left out of the planar mirror (see `batchStaticParts`). */
   readonly mirrorSkipped: THREE.Object3D[] = [];
   private readonly boom = createBoomState();
@@ -155,6 +157,17 @@ export class Vessel {
     this.createAppendages();
     this.createNavigationLights();
     this.root.add(this.helm.group);
+    this.skipper = new Skipper(this.root, {
+      feet: HelmStation.STAND_FEET,
+      eyeHeight: HELM_EYE.y - HelmStation.STAND_FEET.y,
+      rimPoint: (angle, target) => this.helm.rimPoint(angle, target),
+      wheelAngle: () => this.helm.wheelAngle,
+    });
+  }
+
+  /** The skipper is hidden from his own eyes (the helm camera). */
+  setCrewVisible(visible: boolean): void {
+    if (this.skipper) this.skipper.visible = visible;
   }
 
   /** Dyes the mainsail (sRGB hex). */
@@ -227,6 +240,7 @@ export class Vessel {
       night: nightFactor,
       readable: lighting?.helmReadable ?? false,
     });
+    this.skipper?.update(time, delta, physics.roll, physics.pitch, physics.yawRate, physics.telemetry.forwardSpeed);
     // Follow the simulated shaft so the screws spool up and down with the
     // engines instead of snapping to the lever position.
     const shaft = physics.engineShaft;
@@ -274,6 +288,7 @@ export class Vessel {
       materials.forEach((material) => material.dispose());
     });
     this.generatedGeometries.forEach((geometry) => geometry.dispose());
+    this.skipper?.dispose();
     this.helm.dispose();
   }
 

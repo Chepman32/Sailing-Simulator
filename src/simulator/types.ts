@@ -1,5 +1,7 @@
 export type CameraMode = "chase" | "helm" | "orbit" | "drone";
 export type QualityPreset = "low" | "medium" | "high";
+/** What the player picked. Only "auto" lets the simulator change the level by itself. */
+export type QualityChoice = QualityPreset | "auto";
 export type LightingMode = "day" | "night";
 export type { WeatherKind, WeatherMode } from "./environment/WeatherMath";
 import type { WeatherKind, WeatherMode } from "./environment/WeatherMath";
@@ -35,7 +37,10 @@ export type SimulationSnapshot = {
   waveHeight: number;
   /** True wind speed at present, knots. */
   trueWindKnots: number;
+  /** The level in force now. */
   quality: QualityPreset;
+  /** The player's choice; "auto" adapts the level to hold about 30 fps. */
+  qualityChoice: QualityChoice;
   soundEnabled: boolean;
   audioReady: boolean;
   engineRunning: boolean;
@@ -63,6 +68,13 @@ export type SimulationSnapshot = {
   radioStation: string | null;
   /** The radio is connecting or buffering. */
   radioBuffering: boolean;
+  /** Position in the world, metres (for the map). */
+  positionX: number;
+  positionZ: number;
+  /** Bumped when the chart gains a square, so the map redraws. */
+  mapRevision: number;
+  /** Photo mode: the camera turns to events by itself. */
+  photoAutoTarget: boolean;
   fps: number;
   status: "loading" | "running" | "paused" | "error";
 };
