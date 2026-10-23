@@ -5,7 +5,7 @@ import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import type { LoadingState } from "../types";
 
 export type AnimatedAssetKey = "dolphin" | "shark" | "whale" | "fishSchool" | "seagull";
-export type StaticAssetKey = "yacht" | "palms" | "seaplane" | "bannerPlane" | "airliner";
+export type StaticAssetKey = "yacht" | "palms";
 export type AssetKey = StaticAssetKey | AnimatedAssetKey;
 
 export type AnimatedAssetInstance = {
@@ -27,9 +27,6 @@ const ASSETS = {
   whale: { url: "/models/blue-whale-rigged-pbr-v2.glb", label: "Loading whale", required: false },
   fishSchool: { url: "/models/tropical-fish-school.glb", label: "Loading tropical fish", required: false },
   seagull: { url: "/models/seagull-animated.glb", label: "Loading seabirds", required: false },
-  seaplane: { url: "/models/tourist-seaplane.glb", label: "Fuelling the floatplane", required: false },
-  bannerPlane: { url: "/models/banner-tow-plane.glb", label: "Rigging the banner plane", required: false },
-  airliner: { url: "/models/narrowbody-airliner.glb", label: "Scheduling airliners", required: false },
 } satisfies Record<AssetKey, AssetDefinition>;
 
 const ASSET_ENTRIES = Object.entries(ASSETS) as Array<[AssetKey, AssetDefinition]>;
@@ -89,11 +86,6 @@ export class AssetManager {
     return this.cloneScene("palms", false);
   }
 
-  /** Clone of an optional static model, or undefined when it failed to load. */
-  optionalScene(key: StaticAssetKey): THREE.Group | undefined {
-    return this.assets.has(key) ? this.cloneScene(key, false) : undefined;
-  }
-
   dolphin(): AnimatedAssetInstance {
     const asset = this.animated("dolphin");
     if (!asset) throw new Error("Required dolphin asset was requested before it finished loading.");
@@ -108,10 +100,9 @@ export class AssetManager {
       }
       return undefined;
     }
-    return {
-      scene: cloneSkinned(asset.scene) as THREE.Group,
-      animations: asset.animations,
-    };
+    const scene = cloneSkinned(asset.scene) as THREE.Group;
+    shareSkeletons(scene);
+    return { scene, animations: asset.animations };
   }
 
   has(key: AssetKey): boolean {
@@ -154,4 +145,39 @@ export class AssetManager {
       ready,
     });
   }
+}
+
+/**
+ * GLTFLoader and SkeletonUtils.clone give every skinned mesh its own Skeleton,
+ * even when the meshes of one animal are bound to the very same bones. Each
+ * skeleton recomputes its bone matrices and re-uploads its bone texture every
+ * frame, so a gull modelled as fourteen meshes cost fourteen uploads. Meshes
+ * bound to the same bones with the same inverse bind matrices share one
+ * skeleton instead. Returns the number of skeletons made redundant.
+ */
+export function shareSkeletons(root: THREE.Object3D): number {
+  const kept: THREE.Skeleton[] = [];
+  let replaced = 0;
+  root.traverse((object) => {
+    if (!(object instanceof THREE.SkinnedMesh)) return;
+    const own = object.skeleton;
+    const match = kept.find((candidate) => sameBinding(candidate, own));
+    if (!match) {
+      kept.push(own);
+    } else if (match !== own) {
+      object.skeleton = match;
+      own.dispose();
+      replaced += 1;
+    }
+  });
+  return replaced;
+}
+
+function sameBinding(a: THREE.Skeleton, b: THREE.Skeleton): boolean {
+  if (a === b) return true;
+  if (a.bones.length !== b.bones.length) return false;
+  for (let index = 0; index < a.bones.length; index += 1) {
+    if (a.bones[index] !== b.bones[index] || !a.boneInverses[index].equals(b.boneInverses[index])) return false;
+  }
+  return true;
 }

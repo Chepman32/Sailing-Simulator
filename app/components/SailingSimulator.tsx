@@ -2,9 +2,23 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
-import { swipeToRudder, tiltToRudder } from "@/src/simulator/input/TiltSteering";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
-import type { CameraMode, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
+import type { CameraMode, Discovery, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
+import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
+import { SoundPrompt } from "./SoundPrompt";
+import { featureText, getFeatureMessages } from "./featureMessages";
+import {
+  DiscoveryCard,
+  LootChip,
+  QuickStart,
+  RadioPlayer,
+  SignalButtons,
+  StationBanner,
+  stationInfo,
+  StuckChip,
+  VoyageIcon,
+  type DiscoveryView,
+} from "./VoyageUI";
 import {
   getMessages,
   isLanguageCode,
@@ -15,9 +29,37 @@ import {
   type LanguageCode,
   type Messages,
 } from "./i18n";
-import { ChartDialog, MiniMap } from "./NauticalChart";
 
-const ASSET_LOAD_TOTAL = 10;
+const ASSET_LOAD_TOTAL = 7;
+/** Set once the first-run guide has been finished or skipped. */
+const GUIDE_STORAGE_KEY = "sailing-onboarding-done";
+const SAIL_SWATCHES: { id: string; color: string }[] = [
+  { id: "white", color: "#dcd8ca" },
+  { id: "sunset", color: "#f06a3c" },
+  { id: "lagoon", color: "#2bb7b3" },
+  { id: "royal", color: "#4f46c8" },
+  { id: "gold", color: "#e8b23c" },
+  { id: "flamingo", color: "#f47fb8" },
+  { id: "pirate", color: "#232328" },
+];
+
+function readGuideDone(): boolean {
+  try {
+    return window.localStorage.getItem(GUIDE_STORAGE_KEY) === "1";
+  } catch {
+    return true;
+  }
+}
+
+/** Typing in a field (or a slider's own arrow keys) is not a command. */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag === "INPUT") return (target as HTMLInputElement).type !== "range";
+  return false;
+}
 
 type ControlIconName =
   | "sun"
@@ -33,25 +75,19 @@ type ControlIconName =
   | "drone"
   | "reset"
   | "photo"
-  | "tilt"
-  | "rotate";
+  | "auto-time"
+  | "clear"
+  | "cloudy"
+  | "overcast"
+  | "rain"
+  | "downpour"
+  | "storm"
+  | "hurricane";
 
 function ControlIcon({ name }: { name: ControlIconName }) {
   return (
     <svg className="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       {name === "reset" && <path d="M4 10a8 8 0 1 1 1 7M4 4v6h6" />}
-      {name === "tilt" && (
-        <>
-          <rect x="7" y="3.5" width="10" height="17" rx="2" transform="rotate(18 12 12)" />
-          <path d="M3 8.5a10 10 0 0 0 0 7M21 8.5a10 10 0 0 1 0 7" />
-        </>
-      )}
-      {name === "rotate" && (
-        <>
-          <rect x="8" y="2.5" width="8" height="13" rx="1.6" />
-          <path d="M4 14.5a8 8 0 0 0 13.6 5.4M17.6 20l.4-3.4-3.4-.2" />
-        </>
-      )}
       {name === "photo" && (
         <>
           <path d="M4 6h4l2-3h4l2 3h4a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Z" />
@@ -62,6 +98,41 @@ function ControlIcon({ name }: { name: ControlIconName }) {
         <>
           <circle cx="12" cy="12" r="3.4" />
           <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4" />
+        </>
+      )}
+      {name === "auto-time" && (
+        <>
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M12 7v5l3.2 2" />
+        </>
+      )}
+      {name === "clear" && (
+        <>
+          <circle cx="12" cy="12" r="3.4" />
+          <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" />
+        </>
+      )}
+      {(name === "cloudy" || name === "overcast") && (
+        <>
+          <path d="M7 18h10a4 4 0 0 0 .6-7.95A5.5 5.5 0 0 0 7 9.2 4.4 4.4 0 0 0 7 18Z" />
+          {name === "cloudy" && <path d="M4 5.5l1 1M8 3.5v1.4" />}
+        </>
+      )}
+      {(name === "rain" || name === "downpour") && (
+        <>
+          <path d="M7 14h10a3.6 3.6 0 0 0 .5-7.15A5 5 0 0 0 7.2 6.2 3.9 3.9 0 0 0 7 14Z" />
+          <path d={name === "rain" ? "M9 17l-1 2.5M13 17l-1 2.5M17 17l-1 2.5" : "M8 16.5l-1.4 4M12 16.5l-1.4 4M16 16.5l-1.4 4M10 18l-.8 2.5M14 18l-.8 2.5"} />
+        </>
+      )}
+      {name === "storm" && (
+        <>
+          <path d="M7 13h10a3.6 3.6 0 0 0 .5-7.15A5 5 0 0 0 7.2 5.2 3.9 3.9 0 0 0 7 13Z" />
+          <path d="m12.5 12-2.6 4.4h3L11.2 21" />
+        </>
+      )}
+      {name === "hurricane" && (
+        <>
+          <path d="M4 8h11a3 3 0 1 0-3-3M3 12.5h16a3 3 0 1 1-3 3M6 17h7a2.5 2.5 0 1 1-2.5 2.5" />
         </>
       )}
       {name === "moon" && <path d="M20.2 15.1A8.2 8.2 0 0 1 8.9 3.8 8.3 8.3 0 1 0 20.2 15.1Z" />}
@@ -138,20 +209,13 @@ function throttleLabel(value: number, messages: Messages): string {
   return messages.neutral;
 }
 
-const PORTRAIT_PHONE_QUERY = "(max-width: 680px) and (orientation: portrait) and (pointer: coarse)";
-
-type OrientationPermission = { requestPermission?: () => Promise<"granted" | "denied"> };
-
-function supportsTiltSteering(): boolean {
-  return typeof window !== "undefined" && "DeviceOrientationEvent" in window && window.matchMedia("(pointer: coarse)").matches;
-}
-
 export function SailingSimulator() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const simulatorRef = useRef<SimulatorInstance | null>(null);
   const photoButtonRef = useRef<HTMLButtonElement>(null);
   const photoModeRef = useRef(false);
   const [photoMode, setPhotoMode] = useState(false);
+  const [photoHint, setPhotoHint] = useState(false);
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT);
   const [loading, setLoading] = useState<LoadingState>({
     loaded: 0,
@@ -161,35 +225,109 @@ export function SailingSimulator() {
   });
   const [error, setError] = useState("");
   const [panelMinimized, setPanelMinimized] = useState(true);
+  const panelRef = useRef<HTMLElement>(null);
+  // Any press outside the open control panel closes it (the press still does
+  // what it does: steer, look around, press another control).
+  useEffect(() => {
+    if (panelMinimized) return;
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && panelRef.current?.contains(target)) return;
+      setPanelMinimized(true);
+    };
+    document.addEventListener("pointerdown", closeOutside, true);
+    return () => document.removeEventListener("pointerdown", closeOutside, true);
+  }, [panelMinimized]);
   const [showHelp, setShowHelp] = useState(true);
   const [rudderInput, setRudderInput] = useState(0);
   const [throttleInput, setThrottleInput] = useState(0);
   const [engineInput, setEngineInput] = useState(false);
   const [engineNotice, setEngineNotice] = useState("");
+  const [noticeKey, setNoticeKey] = useState(0);
   const [language, setLanguage] = useState<LanguageCode>("en");
-  const [mapOpen, setMapOpen] = useState(false);
-  // Both are only rendered after loading completes, so reading the browser
-  // here cannot cause a hydration mismatch with the server-rendered shell.
-  const [tiltAvailable] = useState(supportsTiltSteering);
-  const [tiltSteering, setTiltSteering] = useState(false);
-  const [rotateHint, setRotateHint] = useState(
-    () => typeof window !== "undefined" && window.matchMedia(PORTRAIT_PHONE_QUERY).matches,
-  );
-  const swipeStart = useRef<{ pointerId: number; x: number; rudder: number; width: number } | null>(null);
   const rudderDragging = useRef(false);
   const throttleDragging = useRef(false);
   const soundReadyAtPress = useRef(false);
+  const soundDockRef = useRef<HTMLButtonElement>(null);
+  const soundDockUnlocked = useRef(false);
+  const [soundArrived, setSoundArrived] = useState(false);
+  const soundArrivedTimer = useRef<number | undefined>(undefined);
+  const onSoundPromptArrived = useCallback(() => {
+    // The dust has settled into the corner button: let it glow for a moment.
+    setSoundArrived(true);
+    if (soundArrivedTimer.current !== undefined) window.clearTimeout(soundArrivedTimer.current);
+    soundArrivedTimer.current = window.setTimeout(() => setSoundArrived(false), 900);
+  }, []);
+  useEffect(() => () => window.clearTimeout(soundArrivedTimer.current), []);
   const engineNoticeTimer = useRef<number | undefined>(undefined);
+  // Finds and discoveries wait their turn for the card at the top.
+  const [discoveries, setDiscoveries] = useState<DiscoveryView[]>([]);
+  const discoveryId = useRef(0);
+  const [stationBanner, setStationBanner] = useState<{ id: string; key: number } | null>(null);
+  const [radioVolume, setRadioVolume] = useState(0.7);
+  const [panelTab, setPanelTab] = useState<"scene" | "yacht">("scene");
+  const [confirmRestart, setConfirmRestart] = useState(false);
+  // First-run guide: 1–3 while it runs, 0 once done (decided after mount, from storage).
+  const [guideStep, setGuideStep] = useState(0);
+  const [coarsePointer, setCoarsePointer] = useState(false);
+  const finishGuide = useCallback(() => {
+    setGuideStep(0);
+    try {
+      window.localStorage.setItem(GUIDE_STORAGE_KEY, "1");
+    } catch {
+      // The guide simply shows again next time.
+    }
+  }, []);
+
+  // Keep the phone awake while the yacht is on screen: a screen that dims in the middle of a passage is the
+  // most common complaint of a handheld sim. The lock is released by the browser whenever the page is hidden,
+  // so it is requested again each time the page becomes visible.
+  useEffect(() => {
+    type WakeLockHandle = { release: () => Promise<void> };
+    const nav = navigator as Navigator & { wakeLock?: { request: (type: "screen") => Promise<WakeLockHandle> } };
+    if (!nav.wakeLock) return;
+    let lock: WakeLockHandle | null = null;
+    let disposed = false;
+    const acquire = async () => {
+      if (disposed || document.visibilityState !== "visible" || lock) return;
+      try {
+        const handle = await nav.wakeLock!.request("screen");
+        if (disposed) {
+          void handle.release().catch(() => undefined);
+          return;
+        }
+        lock = handle;
+        (handle as unknown as EventTarget).addEventListener?.("release", () => {
+          if (lock === handle) lock = null;
+        });
+      } catch {
+        // Denied (battery saver, permissions policy): the screen simply dims as usual.
+      }
+    };
+    const onVisibility = () => void acquire();
+    document.addEventListener("visibilitychange", onVisibility);
+    void acquire();
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      void lock?.release().catch(() => undefined);
+      lock = null;
+    };
+  }, []);
 
   const exitPhotoMode = useCallback(() => {
     photoModeRef.current = false;
     setPhotoMode(false);
+    simulatorRef.current?.setPhotoMode(false);
   }, []);
 
   useEffect(() => {
     if (!photoMode) return;
     const photoButton = photoButtonRef.current;
     canvasRef.current?.focus({ preventScroll: true });
+    // The interface is hidden in photo mode, so say once how to get it back.
+    setPhotoHint(true);
+    const hintTimer = window.setTimeout(() => setPhotoHint(false), 3200);
     const onKeyDown = (event: KeyboardEvent) => {
       // Tab restores the interface as well, so keyboard users cannot end up
       // navigating invisible controls or trapped on the canvas.
@@ -199,56 +337,56 @@ export function SailingSimulator() {
       }
     };
     window.addEventListener("keydown", onKeyDown);
+    // One tap or click on the picture ends photo mode. A drag still frames
+    // the shot (the camera gestures keep working), so only a short press that
+    // barely moved counts as a tap.
+    const canvas = canvasRef.current;
+    let pressX = 0;
+    let pressY = 0;
+    let pressTime = 0;
+    let pressId = -1;
+    let pointers = 0;
+    const onPointerDown = (event: PointerEvent) => {
+      pointers += 1;
+      if (pointers > 1) {
+        pressId = -1;
+        return;
+      }
+      pressId = event.pointerId;
+      pressX = event.clientX;
+      pressY = event.clientY;
+      pressTime = event.timeStamp;
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      pointers = Math.max(0, pointers - 1);
+      if (event.pointerId !== pressId) return;
+      pressId = -1;
+      const moved = Math.hypot(event.clientX - pressX, event.clientY - pressY);
+      if (moved < 10 && event.timeStamp - pressTime < 450) exitPhotoMode();
+    };
+    const onPointerCancel = () => {
+      pointers = Math.max(0, pointers - 1);
+      pressId = -1;
+    };
+    canvas?.addEventListener("pointerdown", onPointerDown);
+    canvas?.addEventListener("pointerup", onPointerUp);
+    canvas?.addEventListener("pointercancel", onPointerCancel);
     return () => {
+      window.clearTimeout(hintTimer);
+      setPhotoHint(false);
       window.removeEventListener("keydown", onKeyDown);
+      canvas?.removeEventListener("pointerdown", onPointerDown);
+      canvas?.removeEventListener("pointerup", onPointerUp);
+      canvas?.removeEventListener("pointercancel", onPointerCancel);
       photoButton?.focus({ preventScroll: true });
     };
   }, [photoMode, exitPhotoMode]);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (photoModeRef.current || event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.target instanceof HTMLSelectElement) return;
-      if (event.key === "m" || event.key === "M") {
-        event.preventDefault();
-        setMapOpen((open) => !open);
-      } else if (event.key === "Escape") {
-        setMapOpen(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  useEffect(() => {
-    // Phones held upright get a one-time suggestion to turn sideways; it goes
-    // away on rotation, on dismissal, or after a few seconds.
-    const portraitPhone = window.matchMedia(PORTRAIT_PHONE_QUERY);
-    const sync = () => setRotateHint((visible) => visible && portraitPhone.matches);
-    portraitPhone.addEventListener("change", sync);
-    const timer = window.setTimeout(() => setRotateHint(false), 9000);
-    return () => {
-      portraitPhone.removeEventListener("change", sync);
-      window.clearTimeout(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!tiltSteering) return;
-    let lastValue = Number.NaN;
-    const onOrientation = (event: DeviceOrientationEvent) => {
-      const angle = window.screen.orientation?.angle ?? 0;
-      const value = Math.round(tiltToRudder(event.beta, event.gamma, angle) * 100);
-      if (value === lastValue) return;
-      lastValue = value;
-      setRudderInput(value);
-      simulatorRef.current?.setRudder(value / 100);
-    };
-    window.addEventListener("deviceorientation", onOrientation);
-    return () => window.removeEventListener("deviceorientation", onOrientation);
-  }, [tiltSteering]);
-
   const messages = useMemo(() => getMessages(language), [language]);
+  const voyage = useMemo(() => getFeatureMessages(language), [language]);
+  // Callbacks the simulator holds for its lifetime reach the current render through this.
+  type LatestHandlers = { keyAction: (action: string) => void; discovery: (discovery: Discovery) => void; radioFailed: (station: string) => void };
+  const latest = useRef<LatestHandlers>({ keyAction: () => {}, discovery: () => {}, radioFailed: () => {} });
   const cameraLabels = useMemo<Record<CameraMode, string>>(() => ({
     chase: messages.chase,
     helm: messages.helm,
@@ -281,8 +419,8 @@ export function SailingSimulator() {
   }, []);
 
   useEffect(() => {
-    if (!rudderDragging.current && !tiltSteering) setRudderInput(Math.round(snapshot.rudderDegrees / 35 * 100));
-  }, [snapshot.rudderDegrees, tiltSteering]);
+    if (!rudderDragging.current) setRudderInput(Math.round(snapshot.rudderDegrees / 35 * 100));
+  }, [snapshot.rudderDegrees]);
 
   useEffect(() => {
     if (!throttleDragging.current) setThrottleInput(Math.round(snapshot.throttle * 100));
@@ -302,10 +440,19 @@ export function SailingSimulator() {
         // server bundle never executes browser-only Three.js globals.
         const simulatorModule = await import("@/src/simulator/Simulator");
         if (disposed) return;
+        // Client-only facts, read once the page is in the browser.
+        setCoarsePointer(window.matchMedia("(pointer: coarse)").matches);
+        if (!readGuideDone()) setGuideStep(1);
         simulator = new simulatorModule.Simulator(canvas, {
           onSnapshot: (nextSnapshot) => {
             setSnapshot(nextSnapshot);
             setEngineInput(nextSnapshot.engineRunning);
+            // The first-run guide ticks itself off as the player does each thing.
+            setGuideStep((step) => {
+              if (step === 1 && (nextSnapshot.engineRunning || nextSnapshot.speedKnots > 1.2)) return 2;
+              if (step === 2 && Math.abs(nextSnapshot.rudderDegrees) > 8) return 3;
+              return step;
+            });
           },
           onLoading: setLoading,
           onError: (message) => {
@@ -317,8 +464,14 @@ export function SailingSimulator() {
             exitPhotoMode();
             return true;
           },
+          onKeyAction: (action) => latest.current.keyAction(action),
+          onDiscovery: (discovery) => latest.current.discovery(discovery),
+          onRadioFailed: (station) => latest.current.radioFailed(station),
         });
         simulatorRef.current = simulator;
+        // Development builds only: lets visual checks drive the scene from a
+        // headless browser (camera, engine) without clicking through the UI.
+        if (process.env.NODE_ENV !== "production") (window as unknown as { __simulator?: SimulatorInstance }).__simulator = simulator;
         await simulator.init();
       } catch (reason: unknown) {
         if (!disposed) {
@@ -342,8 +495,27 @@ export function SailingSimulator() {
   const wheelRotation = rudderInput * 2.7;
 
   const setLighting = (mode: LightingMode) => simulatorRef.current?.setLightingMode(mode);
+  const weatherLabels: Record<WeatherKind, string> = {
+    clear: messages.weatherClear,
+    cloudy: messages.weatherCloudy,
+    overcast: messages.weatherOvercast,
+    rain: messages.weatherRain,
+    downpour: messages.weatherDownpour,
+    storm: messages.weatherStorm,
+    hurricane: messages.weatherHurricane,
+  };
   const setCamera = (mode: CameraMode) => simulatorRef.current?.setCameraMode(mode);
-  const setQuality = (preset: QualityPreset) => simulatorRef.current?.setQuality(preset);
+  const setQuality = (preset: QualityPreset) => {
+    simulatorRef.current?.setQuality(preset);
+    showNotice(`${messages.quality}: ${qualityLabels[preset]}`);
+  };
+  /** A plaque naming what a switch has just done, for a couple of seconds. */
+  const showNotice = (text: string) => {
+    setEngineNotice(text);
+    setNoticeKey((key) => key + 1);
+    if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
+    engineNoticeTimer.current = window.setTimeout(() => setEngineNotice(""), 2400);
+  };
   const resetScene = () => {
     if (!loading.ready || error) return;
     rudderDragging.current = false;
@@ -353,11 +525,14 @@ export function SailingSimulator() {
     setEngineNotice("");
     if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
     simulatorRef.current?.reset();
+    showNotice(messages.reset);
   };
   const setEngineRunning = (running: boolean) => {
     const simulator = simulatorRef.current;
     if (!simulator || !loading.ready) return;
     simulator.resumeAudioFromGesture();
+    // A short tick under the thumb confirms the switch on phones without sound; ignored where unsupported.
+    try { navigator.vibrate?.(running ? 18 : 10); } catch { /* not available */ }
     setEngineInput(running);
     if (!running) {
       throttleDragging.current = false;
@@ -365,49 +540,179 @@ export function SailingSimulator() {
     }
     simulator.setEngineRunning(running);
     const activeThrottle = running && Math.abs(displayedThrottle) <= 0.08 ? 0.12 : displayedThrottle;
-    setEngineNotice(
+    showNotice(
       running
-        ? `${messages.engine}: ${messages.on} · ${throttleLabel(activeThrottle, messages)} · ${messages.engineSound}: ${messages.on}`
+        ? `${messages.engine}: ${messages.on} · ${throttleLabel(activeThrottle, messages)}`
         : `${messages.engine}: ${messages.off} · ${messages.throttle}: ${messages.neutral}`,
     );
-    if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
-    engineNoticeTimer.current = window.setTimeout(() => setEngineNotice(""), 2600);
     navigator.vibrate?.(running ? 24 : 14);
   };
 
-  const getExplorationFog = useCallback(() => simulatorRef.current?.getExplorationFog(), []);
+  const ready = loading.ready && !error;
+  const stations = stationInfo(voyage);
 
-  const applyRudder = (value: number) => {
-    setRudderInput(value);
-    setShowHelp(false);
-    simulatorRef.current?.setRudder(value / 100);
+  const handlers: LatestHandlers = {
+    keyAction: (action) => {
+      if (action === "engine-on") showNotice(voyage.engineOnKey);
+    },
+    discovery: (discovery) => {
+      discoveryId.current += 1;
+      const view = { ...discovery, id: discoveryId.current };
+      setDiscoveries((queue) => [...queue.slice(-3), view]);
+      try { navigator.vibrate?.(discovery.kind === "poi" ? [20, 40, 20] : 16); } catch { /* not available */ }
+    },
+    radioFailed: () => showNotice(voyage.radioFailed),
+  };
+  useEffect(() => {
+    latest.current = handlers;
+  });
+
+  const closeDiscovery = useCallback(() => setDiscoveries((queue) => queue.slice(1)), []);
+
+  /** Horn or bell: they start the sound if needed, but never against the sound switch. */
+  const playSignal = (signal: "horn" | "bell") => {
+    const simulator = simulatorRef.current;
+    if (!simulator || !ready) return;
+    void simulator.playSignal(signal).then((result) => {
+      if (result === "muted") showNotice(voyage.soundOffHint);
+    });
+  };
+  const launchFlare = (color: "red" | "green") => {
+    const simulator = simulatorRef.current;
+    if (!simulator || !ready) return;
+    const fired = simulator.launchFlare(color);
+    showNotice(fired ? `${color === "red" ? voyage.flareRed : voyage.flareGreen} · ${voyage.flareFired}` : voyage.flareReloading);
+    if (fired) {
+      try { navigator.vibrate?.(22); } catch { /* not available */ }
+    }
+  };
+  const tuneRadio = (station: string | null) => {
+    const simulator = simulatorRef.current;
+    if (!simulator || !ready) return;
+    simulator.setRadio(station as Parameters<SimulatorInstance["setRadio"]>[0]);
+    if (station) setStationBanner((banner) => ({ id: station, key: (banner?.key ?? 0) + 1 }));
+    else showNotice(voyage.radioOff);
+  };
+  const stepRadio = (direction: 1 | -1) => {
+    const simulator = simulatorRef.current;
+    if (!simulator || !ready) return;
+    const ids = stations.map((station) => station.id);
+    const index = snapshot.radioStation ? ids.indexOf(snapshot.radioStation) : direction > 0 ? -1 : 0;
+    const next = ids[(index + direction + ids.length) % ids.length]!;
+    tuneRadio(next);
+  };
+  const rescueBoat = () => {
+    const simulator = simulatorRef.current;
+    if (!simulator || !ready) return;
+    showNotice(simulator.rescueBoat() ? voyage.rescueDone : voyage.rescueClear);
+  };
+  const restartVoyage = () => {
+    setConfirmRestart(false);
+    setPanelMinimized(true);
+    resetScene();
+    showNotice(voyage.restarted);
+  };
+  const recenterCamera = () => {
+    simulatorRef.current?.recenterCamera();
+    showNotice(voyage.recenterCamera);
+  };
+  const hoistSail = (color: string) => {
+    simulatorRef.current?.setSailColor(color);
+    showNotice(`${voyage.sailColor}: ${featureText(voyage, `sail_${color}`)}`);
+  };
+  const enterPhotoMode = () => {
+    photoModeRef.current = true;
+    setPhotoMode(true);
+    // The camera now turns by itself to whales, dolphins, sharks, eruptions and ships' horns.
+    simulatorRef.current?.setPhotoMode(true);
+    if (guideStep === 3) finishGuide();
   };
 
-  const toggleTiltSteering = async () => {
-    if (tiltSteering) {
-      setTiltSteering(false);
-      return;
+  const guideWasRunning = useRef(false);
+  useEffect(() => {
+    if (guideStep > 0) guideWasRunning.current = true;
+  }, [guideStep]);
+  useEffect(() => {
+    // Back from the guide's photo mode: one word of encouragement.
+    if (!photoMode && guideStep === 0 && guideWasRunning.current && readGuideDone()) {
+      guideWasRunning.current = false;
+      showNotice(voyage.guideDone);
     }
-    // iOS requires an explicit permission request from a user gesture.
-    const permission = (window.DeviceOrientationEvent as unknown as OrientationPermission).requestPermission;
-    if (permission) {
-      try {
-        if ((await permission()) !== "granted") return;
-      } catch {
-        return;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoMode, guideStep]);
+
+  // Keyboard commands (the helm and the throttle are the simulator's own keys).
+  const keyHandler = useRef<(event: KeyboardEvent) => void>(() => {});
+  const onKey = (event: KeyboardEvent) => {
+    if (!ready || photoMode || event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+    if (isTypingTarget(event.target)) return;
+    switch (event.code) {
+      case "KeyP":
+        enterPhotoMode();
+        break;
+      case "KeyH":
+        playSignal("horn");
+        break;
+      case "KeyB":
+        playSignal("bell");
+        break;
+      case "KeyF":
+        launchFlare("red");
+        break;
+      case "KeyG":
+        launchFlare("green");
+        break;
+      case "KeyM":
+        if (event.shiftKey) stepRadio(-1);
+        else if (snapshot.radioStation && snapshot.radioStation === stations[stations.length - 1]!.id) tuneRadio(null);
+        else stepRadio(1);
+        break;
+      case "KeyV": {
+        const modes = Object.keys(cameraLabels) as CameraMode[];
+        const next = modes[(modes.indexOf(snapshot.cameraMode) + 1) % modes.length]!;
+        setCamera(next);
+        showNotice(`${messages.camera}: ${cameraLabels[next]}`);
+        break;
       }
+      case "KeyR":
+        recenterCamera();
+        break;
+      case "Escape":
+        if (!panelMinimized) setPanelMinimized(true);
+        else if (discoveries.length > 0) closeDiscovery();
+        return;
+      default:
+        return;
     }
-    setTiltSteering(true);
+    event.preventDefault();
   };
+  useEffect(() => {
+    keyHandler.current = onKey;
+  });
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => keyHandler.current(event);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const soundLocked = snapshot.soundEnabled && !snapshot.audioReady;
+  const soundLabel = snapshot.soundEnabled
+    ? snapshot.audioReady
+      ? `${messages.sound}: ${messages.on}`
+      : messages.tapSound
+    : `${messages.sound}: ${messages.off}`;
 
   const toggleSound = () => {
     const simulator = simulatorRef.current;
     if (!simulator) return;
     if (snapshot.soundEnabled && !soundReadyAtPress.current) {
-      simulator.resumeAudioFromGesture();
+      simulator.startAudioFromUser();
+      showNotice(`${messages.sound}: ${messages.on}`);
       return;
     }
     simulator.setSoundEnabled(!snapshot.soundEnabled);
+    if (!snapshot.soundEnabled) simulator.startAudioFromUser();
+    showNotice(`${messages.sound}: ${snapshot.soundEnabled ? messages.off : messages.on}`);
   };
 
   const unlockSound = () => {
@@ -417,7 +722,7 @@ export function SailingSimulator() {
     // AudioContext state change can remove this button before a later click is
     // dispatched, so click alone is not a reliable first-gesture handler.
     simulator.setSoundEnabled(true);
-    simulator.resumeAudioFromGesture();
+    simulator.startAudioFromUser();
   };
 
   const changeLanguage = (nextLanguage: LanguageCode) => {
@@ -445,7 +750,11 @@ export function SailingSimulator() {
         aria-label={photoMode ? `${messages.photoMode}. ${messages.photoModeHint}` : messages.sailingControls}
       />
 
-      <div className="simulator-interface" hidden={photoMode}>
+      {photoMode && photoHint && <p className="photo-toast" aria-hidden="true">{messages.photoModeHint}</p>}
+
+      {/* Faded rather than removed, so leaving photo mode is a smooth return;
+          inert keeps the hidden controls out of reach meanwhile. */}
+      <div className={`simulator-interface ${photoMode ? "photo-hidden" : ""}`} inert={photoMode} aria-hidden={photoMode}>
 
         {!loading.ready && !error && (
           <section className="loading-screen" aria-live="polite">
@@ -466,51 +775,123 @@ export function SailingSimulator() {
           </section>
         )}
 
-        {loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error && (
-          <button
-            type="button"
-            className="audio-unlock"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              unlockSound();
-            }}
-            onClick={unlockSound}
-          >
-            <span aria-hidden="true">♪</span>
-            <strong>{messages.tapSound}</strong>
-          </button>
+        {/* Transient prompts share one centred column, so they never collide
+            with each other or with the controls at any screen size. */}
+        {/* What a control has just done: a short plaque a little below the
+            centre of the screen, over everything, never in the way of a tap. */}
+        {engineNotice && (
+          <div className="action-toast" role="status" aria-live="polite" key={noticeKey}>
+            {engineNotice}
+          </div>
+        )}
+
+        <div className="notice-stack">
+          <SoundPrompt
+            active={loading.ready && snapshot.soundEnabled && !snapshot.audioReady && !error}
+            targetRef={soundDockRef}
+            label={messages.tapSound}
+            onUnlock={unlockSound}
+            onArrived={onSoundPromptArrived}
+          />
+          {ready && !discoveries.length && <QuickStart step={guideStep} touch={coarsePointer} messages={voyage} onSkip={finishGuide} />}
+          {ready && (
+            <DiscoveryCard key={discoveries[0]?.id ?? 0} discovery={discoveries[0] ?? null} messages={voyage} onClose={closeDiscovery} onHoist={(color) => {
+              hoistSail(color);
+              closeDiscovery();
+            }} />
+          )}
+          {ready && snapshot.stuck && <StuckChip messages={voyage} onRescue={rescueBoat} />}
+          {ready && !discoveries.length && guideStep === 0 && <LootChip loot={snapshot.nearestLoot} messages={voyage} />}
+        </div>
+
+        {stationBanner && (
+          <StationBanner station={stations.find((station) => station.id === stationBanner.id) ?? null} keyId={stationBanner.key} />
         )}
 
         <div className="scene-actions">
-          <button type="button" className="scene-action" aria-label={messages.reset} title={messages.reset} disabled={!loading.ready || Boolean(error)} onClick={resetScene}>
-            <ControlIcon name="reset" />
-            <span>{messages.reset}</span>
+          {/* Permanent mute/unmute. While the browser still holds sound back it
+              pulses; one press both unlocks and plays. */}
+          <button
+            ref={soundDockRef}
+            type="button"
+            className={`scene-action sound-dock${soundLocked ? " is-locked" : ""}${soundArrived ? " is-arriving" : ""}`}
+            disabled={!loading.ready || Boolean(error)}
+            aria-label={soundLabel}
+            title={soundLabel}
+            aria-pressed={snapshot.soundEnabled && snapshot.audioReady}
+            onPointerDown={() => {
+              soundDockUnlocked.current = false;
+              if (!snapshot.soundEnabled || !snapshot.audioReady) {
+                // Unlock inside the trusted pointer gesture (iOS needs it here).
+                soundDockUnlocked.current = true;
+                unlockSound();
+              }
+            }}
+            onClick={() => {
+              if (soundDockUnlocked.current) {
+                soundDockUnlocked.current = false;
+                showNotice(`${messages.sound}: ${messages.on}`);
+                return;
+              }
+              const simulator = simulatorRef.current;
+              if (!simulator) return;
+              if (!snapshot.soundEnabled || !snapshot.audioReady) unlockSound();
+              else simulator.setSoundEnabled(false);
+              showNotice(`${messages.sound}: ${!snapshot.soundEnabled || !snapshot.audioReady ? messages.on : messages.off}`);
+            }}
+          >
+            <ControlIcon name={snapshot.soundEnabled && snapshot.audioReady ? "sound-on" : "sound-off"} />
+          </button>
+          <button
+            type="button"
+            className="scene-action"
+            aria-label={`${messages.camera}: ${cameraLabels[snapshot.cameraMode]}`}
+            title={`${messages.camera}: ${cameraLabels[snapshot.cameraMode]}`}
+            onClick={() => {
+              const modes = Object.keys(cameraLabels) as CameraMode[];
+              const next = modes[(modes.indexOf(snapshot.cameraMode) + 1) % modes.length]!;
+              setCamera(next);
+              showNotice(`${messages.camera}: ${cameraLabels[next]}`);
+            }}
+          >
+            <ControlIcon name={snapshot.cameraMode} />
+            <span className="scene-action-label">{cameraLabels[snapshot.cameraMode]}</span>
           </button>
           <button
             ref={photoButtonRef}
             type="button"
-            className="scene-action"
+            className={`scene-action${guideStep === 3 ? " guide-target" : ""}`}
             disabled={!loading.ready || Boolean(error)}
-            aria-label={messages.photoMode}
-            title={`${messages.photoMode}. ${messages.photoModeHint}`}
+            title={`${messages.photoMode} (P). ${messages.photoModeHint}`}
             aria-describedby="photo-mode-hint"
-            onClick={() => {
-              photoModeRef.current = true;
-              setPhotoMode(true);
-            }}
+            onClick={enterPhotoMode}
           >
             <ControlIcon name="photo" />
-            <span>{messages.photoMode}</span>
+            <span className="scene-action-label">{messages.photoMode}</span>
           </button>
           <p id="photo-mode-hint" className="photo-mode-hint">{messages.photoModeHint}</p>
+          <RadioPlayer
+            messages={voyage}
+            snapshot={snapshot}
+            disabled={!ready}
+            volume={radioVolume}
+            onStation={tuneRadio}
+            onStep={stepRadio}
+            onVolume={(volume) => {
+              setRadioVolume(volume);
+              simulatorRef.current?.setRadioVolume(volume);
+            }}
+          />
+          <SignalButtons messages={voyage} disabled={!ready} onHorn={() => playSignal("horn")} onBell={() => playSignal("bell")} onFlare={launchFlare} />
         </div>
 
         <section className="instrument-cluster" aria-label={messages.sailingControls}>
           <div className="instrument"><span>{messages.speed}</span><strong>{snapshot.speedKnots.toFixed(1)}</strong><small>kn</small></div>
           <div className="instrument"><span>{messages.depth}</span><strong>{snapshot.depthMeters.toFixed(1)}</strong><small>m</small></div>
           <div className="instrument wind-instrument">
-            <span>{messages.apparentWind}</span><strong>{snapshot.apparentWindKnots.toFixed(1)}</strong>
-            <small>kn · {Math.abs(snapshot.apparentWindAngle).toFixed(0)}°</small>
+            <span><span className="wind-label-full">{messages.apparentWind}</span><span className="wind-label-short">{messages.wind}</span></span><strong>{snapshot.apparentWindKnots.toFixed(1)}</strong>
+            <small>kn<span className="wind-angle"> · {Math.abs(snapshot.apparentWindAngle).toFixed(0)}°</span></small>
+            {snapshot.gust > 0.15 && <em className="gust-flag" title={voyage.gust}>{voyage.gust}</em>}
           </div>
         </section>
 
@@ -518,41 +899,6 @@ export function SailingSimulator() {
           <span className={`status-dot ${snapshot.status}`} />
           <strong>{compass}</strong><span>{messages.heading}</span>
         </section>
-
-        {loading.ready && !error && (
-          <MiniMap
-            getFog={getExplorationFog}
-            positionX={snapshot.positionX}
-            positionZ={snapshot.positionZ}
-            headingDegrees={snapshot.headingDegrees}
-            discovered={snapshot.discoveredLandmarks}
-            revision={snapshot.explorationRevision}
-            messages={messages}
-            onOpen={() => setMapOpen(true)}
-          />
-        )}
-
-        {mapOpen && loading.ready && !error && (
-          <ChartDialog
-            getFog={getExplorationFog}
-            positionX={snapshot.positionX}
-            positionZ={snapshot.positionZ}
-            headingDegrees={snapshot.headingDegrees}
-            discovered={snapshot.discoveredLandmarks}
-            revision={snapshot.explorationRevision}
-            exploredFraction={snapshot.exploredFraction}
-            messages={messages}
-            onClose={() => setMapOpen(false)}
-          />
-        )}
-
-        {rotateHint && loading.ready && !error && (
-          <div className="rotate-hint" role="status">
-            <ControlIcon name="rotate" />
-            <span>{messages.rotateHint}</span>
-            <button type="button" aria-label={messages.dismiss} title={messages.dismiss} onClick={() => setRotateHint(false)}>×</button>
-          </div>
-        )}
 
         {!panelMinimized && (
           <button
@@ -564,6 +910,7 @@ export function SailingSimulator() {
         )}
 
         <section
+          ref={panelRef}
           id="simulator-settings"
           className={`control-panel ${panelMinimized ? "is-minimized" : ""}`}
           aria-label={messages.controls}
@@ -574,9 +921,12 @@ export function SailingSimulator() {
                 <span className="full-control-title">{messages.sailingControls}</span>
                 <span className="mobile-control-title">{messages.controls}</span>
               </p>
+              {/* On phones the heading card is hidden and this line carries the
+                  heading. The sound prompt has its own button, and a live
+                  region here would announce every degree of a turn. */}
               {panelMinimized && (
-                <span className="panel-mini-status" aria-live="polite">
-                  {snapshot.soundEnabled && !snapshot.audioReady ? messages.tapSound : `${compass} ${messages.heading}`}
+                <span className="panel-mini-status">
+                  {compass}<span className="mini-status-word"> {messages.heading}</span>
                 </span>
               )}
               {!panelMinimized && (
@@ -592,15 +942,45 @@ export function SailingSimulator() {
               aria-controls="simulator-settings"
               aria-expanded={!panelMinimized}
               aria-label={panelMinimized ? messages.expand : messages.minimize}
-              onClick={() => setPanelMinimized((value) => !value)}
+              onClick={() => {
+                // The first-run tip waits inside the panel until it is dismissed.
+                setPanelMinimized((value) => !value);
+              }}
             >{panelMinimized ? "≡" : "×"}</button>
           </header>
 
 
           {!panelMinimized && (
-            <div className="panel-body">
+            <div className={`panel-body${panelTab === "yacht" ? " is-yacht" : ""}`}>
+              {/* The first-run tip lives in the control panel; what a switch has
+                  just done is announced in the middle of the screen (see
+                  .action-toast). The shore guard is announced on the rudder card. */}
+              {showHelp && loading.ready && !error && (
+                <div className="panel-status">
+                  {showHelp && loading.ready && !error && (
+                    <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
+                      {messages.help}
+                    </button>
+                  )}
+                </div>
+              )}
+              <div className="panel-tabs segmented" role="tablist" aria-label={messages.controls}>
+                {(["scene", "yacht"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    role="tab"
+                    aria-selected={panelTab === tab}
+                    onClick={() => {
+                      setPanelTab(tab);
+                      setConfirmRestart(false);
+                    }}
+                  >{tab === "scene" ? voyage.tabScene : voyage.tabYacht}</button>
+                ))}
+              </div>
+              {panelTab === "scene" && (<>
               <div className="compact-row">
-                <div className="segmented" aria-label={`${messages.day} / ${messages.night}`}>
+                <div className="segmented time-group" role="group" aria-label={`${messages.day} / ${messages.night}`}>
                   {(["day", "night"] as LightingMode[]).map((mode) => (
                     <button
                       type="button"
@@ -609,22 +989,26 @@ export function SailingSimulator() {
                       aria-label={mode === "day" ? messages.day : messages.night}
                       title={mode === "day" ? messages.day : messages.night}
                       aria-pressed={snapshot.lightingMode === mode}
-                      onClick={() => setLighting(mode)}
+                      onClick={() => {
+                        setLighting(mode);
+                        showNotice(`${messages.timeOfDay}: ${mode === "day" ? messages.day : messages.night}`);
+                      }}
                     >
                       <ControlIcon name={mode === "day" ? "sun" : "moon"} />
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    className="icon-control"
+                    aria-label={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
+                    title={`${messages.autoTime}: ${snapshot.autoTime ? messages.on : messages.off}`}
+                    aria-pressed={snapshot.autoTime}
+                    onClick={() => {
+                      simulatorRef.current?.setAutoTime(!snapshot.autoTime);
+                      showNotice(`${messages.autoTime}: ${snapshot.autoTime ? messages.off : messages.on}`);
+                    }}
+                  ><ControlIcon name="auto-time" /></button>
                 </div>
-                <button
-                  type="button"
-                  className="quiet-button icon-control"
-                  aria-label={`${messages.engine}: ${engineInput ? messages.stop : messages.start}`}
-                  title={`${messages.engine}: ${engineInput ? messages.stop : messages.start}`}
-                  aria-pressed={engineInput}
-                  disabled={!loading.ready}
-                  onPointerDown={() => simulatorRef.current?.resumeAudioFromGesture()}
-                  onClick={() => setEngineRunning(!engineInput)}
-                ><ControlIcon name="power" /></button>
                 <button
                   type="button"
                   className="quiet-button icon-control"
@@ -633,7 +1017,8 @@ export function SailingSimulator() {
                   aria-pressed={snapshot.soundEnabled && snapshot.audioReady}
                   onPointerDown={() => {
                     soundReadyAtPress.current = snapshot.audioReady;
-                    simulatorRef.current?.resumeAudioFromGesture();
+                    // This is the sound button: the press itself may start sound (iOS needs the pointer gesture).
+                    simulatorRef.current?.startAudioFromUser();
                   }}
                   onClick={toggleSound}
                 ><ControlIcon name={snapshot.soundEnabled && snapshot.audioReady ? "sound-on" : "sound-off"} /></button>
@@ -643,11 +1028,15 @@ export function SailingSimulator() {
                   aria-label={`${messages.engineSound}: ${snapshot.engineMuted ? messages.off : messages.on}`}
                   title={`${messages.engineSound}: ${snapshot.engineMuted ? messages.off : messages.on}`}
                   aria-pressed={!snapshot.engineMuted}
-                  onClick={() => simulatorRef.current?.setEngineMuted(!snapshot.engineMuted)}
+                  onClick={() => {
+                    // Sound only: this never starts, stops or throttles the engine.
+                    simulatorRef.current?.setEngineMuted(!snapshot.engineMuted);
+                    showNotice(`${messages.engineSound}: ${snapshot.engineMuted ? messages.on : messages.off}`);
+                  }}
                 ><ControlIcon name={snapshot.engineMuted ? "engine-muted" : "engine-sound"} /></button>
               </div>
 
-              <div className="panel-section">
+              <div className="panel-section panel-camera">
                 <div className="section-label"><span>{messages.camera}</span><strong>{cameraLabels[snapshot.cameraMode]}</strong></div>
                 <div className="camera-grid">
                   {(Object.keys(cameraLabels) as CameraMode[]).map((mode) => (
@@ -658,7 +1047,10 @@ export function SailingSimulator() {
                       aria-label={`${messages.camera}: ${cameraLabels[mode]}`}
                       title={`${messages.camera}: ${cameraLabels[mode]}`}
                       aria-pressed={snapshot.cameraMode === mode}
-                      onClick={() => setCamera(mode)}
+                      onClick={() => {
+                        setCamera(mode);
+                        showNotice(`${messages.camera}: ${cameraLabels[mode]}`);
+                      }}
                     >
                       <ControlIcon name={mode} />
                     </button>
@@ -666,6 +1058,51 @@ export function SailingSimulator() {
                 </div>
               </div>
 
+              <div className="panel-section panel-weather">
+                <div className="section-label">
+                  <span>{messages.weather}</span>
+                  <strong>{weatherLabels[snapshot.weatherNow]}</strong>
+                </div>
+                <div className="weather-mode segmented" role="group" aria-label={messages.weather}>
+                  {(["auto", "manual"] as WeatherMode[]).map((mode) => (
+                    <button
+                      type="button"
+                      key={mode}
+                      aria-pressed={snapshot.weatherMode === mode}
+                      onClick={() => {
+                        simulatorRef.current?.setWeatherMode(mode);
+                        showNotice(`${messages.weather}: ${mode === "auto" ? messages.weatherAuto : messages.weatherManual}`);
+                      }}
+                    >{mode === "auto" ? messages.weatherAuto : messages.weatherManual}</button>
+                  ))}
+                </div>
+                <div className="weather-grid">
+                  {WEATHER_KINDS.map((kind) => (
+                    <button
+                      type="button"
+                      className="icon-control"
+                      key={kind}
+                      aria-label={`${messages.weather}: ${weatherLabels[kind]}`}
+                      title={weatherLabels[kind]}
+                      aria-pressed={snapshot.weatherMode === "manual" ? snapshot.weather === kind : snapshot.weatherNow === kind}
+                      data-auto={snapshot.weatherMode === "auto" ? "true" : undefined}
+                      onClick={() => {
+                        simulatorRef.current?.setWeather(kind);
+                        showNotice(`${messages.weather}: ${weatherLabels[kind]}`);
+                      }}
+                    >
+                      <ControlIcon name={kind} />
+                    </button>
+                  ))}
+                </div>
+                <div className="sea-readout">
+                  <span>{messages.waves} <strong>{snapshot.waveHeight.toFixed(1)} m</strong></span>
+                  <span>{messages.wind} <strong>{Math.round(snapshot.trueWindKnots)} kn</strong></span>
+                </div>
+              </div>
+
+              </>)}
+              {panelTab === "yacht" && (<>
               <div className="panel-section trim-row">
                 <label htmlFor="sail-trim">{messages.sailTrim} <strong>{Math.round(snapshot.sailTrim * 100)}%</strong></label>
                 <input
@@ -678,7 +1115,94 @@ export function SailingSimulator() {
                 />
               </div>
 
-              <footer className="panel-footer">
+              <div className="panel-section helm-options" role="group" aria-label={voyage.helmSection}>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={snapshot.autoCenterHelm}
+                    onChange={(event) => {
+                      simulatorRef.current?.setAutoCenterHelm(event.target.checked);
+                      showNotice(`${voyage.autoCenter}: ${event.target.checked ? messages.on : messages.off}`);
+                    }}
+                  />
+                  <span>{voyage.autoCenter}</span>
+                </label>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={snapshot.steadyHelmView}
+                    onChange={(event) => {
+                      simulatorRef.current?.setSteadyHelmView(event.target.checked);
+                      showNotice(`${voyage.steadyView}: ${event.target.checked ? messages.on : messages.off}`);
+                    }}
+                  />
+                  <span>{voyage.steadyView}</span>
+                </label>
+              </div>
+
+              <div className="panel-section sail-colours">
+                <div className="section-label"><span>{voyage.sailColor}</span><strong>{featureText(voyage, `sail_${snapshot.sailColor}`)}</strong></div>
+                <div className="swatch-row">
+                  {SAIL_SWATCHES.map((swatch) => {
+                    const unlocked = snapshot.unlockedSails.includes(swatch.id);
+                    const name = featureText(voyage, `sail_${swatch.id}`);
+                    return (
+                      <button
+                        key={swatch.id}
+                        type="button"
+                        className={`swatch${unlocked ? "" : " is-locked"}`}
+                        aria-pressed={snapshot.sailColor === swatch.id}
+                        aria-label={unlocked ? name : `${name}: ${voyage.sailLocked}`}
+                        title={unlocked ? name : voyage.sailLocked}
+                        disabled={!unlocked}
+                        style={{ "--swatch": swatch.color } as CSSProperties}
+                        onClick={() => hoistSail(swatch.id)}
+                      >{unlocked ? null : "?"}</button>
+                    );
+                  })}
+                </div>
+                <div className="logbook" aria-label={voyage.logbook}>
+                  <span title={voyage.doubloons}>🪙 {snapshot.doubloons}</span>
+                  <span title={voyage.flamingos}>🦩 {snapshot.flamingos}</span>
+                  <span title={voyage.placesFound}>🧭 {new Set(snapshot.discoveredPlaces.map((key) => key.split(":")[0])).size}/4</span>
+                </div>
+              </div>
+
+              <div className="panel-section service-row" role="group" aria-label={voyage.service}>
+                <div className="section-label"><span>{voyage.service}</span></div>
+                {confirmRestart ? (
+                  <div className="restart-confirm" role="alertdialog" aria-label={voyage.restart}>
+                    <p>{voyage.restartConfirm}</p>
+                    <div>
+                      <button type="button" className="danger" onClick={restartVoyage}>{voyage.restartYes}</button>
+                      <button type="button" onClick={() => setConfirmRestart(false)}>{voyage.cancel}</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="service-grid">
+                    <button type="button" onClick={recenterCamera}><VoyageIcon name="recenter" /><span>{voyage.recenterCamera}</span></button>
+                    <button type="button" onClick={rescueBoat}><VoyageIcon name="rescue" /><span>{voyage.rescue}</span></button>
+                    <button type="button" className="quiet-danger" onClick={() => setConfirmRestart(true)}><VoyageIcon name="restart" /><span>{voyage.restart}</span></button>
+                  </div>
+                )}
+              </div>
+
+              {!coarsePointer && (
+                <div className="panel-section key-help">
+                  <div className="section-label"><span>{voyage.keys}</span></div>
+                  <ul>
+                    <li>{voyage.keyHelm}</li>
+                    <li>{voyage.keyThrottle}</li>
+                    <li>{voyage.keySheet}</li>
+                    <li>{voyage.keyCenter}</li>
+                    <li>{voyage.keySignals}</li>
+                    <li>{voyage.keyMore}</li>
+                  </ul>
+                </div>
+              )}
+              </>)}
+
+              {panelTab === "scene" && <footer className="panel-footer">
                 <label>
                   <span>{messages.quality}</span>
                   <select value={snapshot.quality} onChange={(event) => setQuality(event.target.value as QualityPreset)}>
@@ -697,36 +1221,13 @@ export function SailingSimulator() {
                     ))}
                   </select>
                 </label>
-              </footer>
+              </footer>}
             </div>
           )}
         </section>
 
         <div className="primary-controls">
-          <section className={`rudder-control ${tiltSteering ? "is-tilt" : ""}`} aria-label={messages.rudder}>
-            <div
-              className="rudder-swipe"
-              title={messages.swipeToSteer}
-              onPointerDown={(event) => {
-                if (tiltSteering) return;
-                event.currentTarget.setPointerCapture(event.pointerId);
-                rudderDragging.current = true;
-                swipeStart.current = {
-                  pointerId: event.pointerId,
-                  x: event.clientX,
-                  rudder: rudderInput / 100,
-                  width: event.currentTarget.getBoundingClientRect().width,
-                };
-              }}
-              onPointerMove={(event) => {
-                const start = swipeStart.current;
-                if (!start || start.pointerId !== event.pointerId) return;
-                // Right-to-left layouts still steer by physical direction.
-                applyRudder(Math.round(swipeToRudder(start.rudder, event.clientX - start.x, start.width) * 100));
-              }}
-              onPointerUp={() => { swipeStart.current = null; rudderDragging.current = false; }}
-              onPointerCancel={() => { swipeStart.current = null; rudderDragging.current = false; }}
-            >
+          <section className={`rudder-control${guideStep === 2 ? " guide-target" : ""}`} aria-label={messages.rudder}>
             <div className="helm-wheel" aria-hidden="true">
               <svg viewBox="0 0 100 100">
                 <g transform={`rotate(${wheelRotation} 50 50)`}>
@@ -741,20 +1242,14 @@ export function SailingSimulator() {
             </div>
             <div className="control-heading">
               <span>{messages.rudder}</span>
-              <strong>{displayedRudderDegrees < -0.5 ? messages.port : displayedRudderDegrees > 0.5 ? messages.starboard : messages.center} {Math.abs(displayedRudderDegrees).toFixed(0)}°</strong>
-              <small className="swipe-hint">{tiltSteering ? messages.tiltSteering : messages.swipeToSteer}</small>
+              {/* While the shore guard holds the helm the rudder card says so:
+                  it is why the wheel does not answer for a moment. */}
+              {snapshot.shoreGuardActive && loading.ready ? (
+                <strong className="rudder-guard" role="status">{messages.shoreGuard}</strong>
+              ) : (
+                <strong>{displayedRudderDegrees < -0.5 ? messages.port : displayedRudderDegrees > 0.5 ? messages.starboard : messages.center} {Math.abs(displayedRudderDegrees).toFixed(0)}°</strong>
+              )}
             </div>
-            </div>
-            {tiltAvailable && loading.ready && (
-              <button
-                type="button"
-                className="tilt-button"
-                aria-pressed={tiltSteering}
-                aria-label={messages.tiltSteering}
-                title={messages.tiltSteering}
-                onClick={() => void toggleTiltSteering()}
-              ><ControlIcon name="tilt" /></button>
-            )}
             <div className="rudder-track-wrap">
               <span>{messages.port}</span>
               <input
@@ -767,11 +1262,22 @@ export function SailingSimulator() {
                 value={rudderInput}
                 style={{ "--rudder-progress": `${(rudderInput + 100) / 2}%` } as CSSProperties}
                 onPointerDown={() => { rudderDragging.current = true; }}
-                onPointerUp={() => { rudderDragging.current = false; }}
-                onPointerCancel={() => { rudderDragging.current = false; }}
+                onPointerUp={() => {
+                  rudderDragging.current = false;
+                  // Let go of the wheel: it eases back amidships if the player wants that.
+                  simulatorRef.current?.releaseRudder();
+                }}
+                onPointerCancel={() => {
+                  rudderDragging.current = false;
+                  simulatorRef.current?.releaseRudder();
+                }}
                 onBlur={() => { rudderDragging.current = false; }}
-                disabled={tiltSteering}
-                onChange={(event) => applyRudder(Number(event.target.value))}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  setRudderInput(value);
+                  setShowHelp(false);
+                  simulatorRef.current?.setRudder(value / 100);
+                }}
               />
               <span>{messages.starboard}</span>
             </div>
@@ -779,7 +1285,6 @@ export function SailingSimulator() {
               type="button"
               className="center-button"
               onClick={() => {
-                setTiltSteering(false);
                 setRudderInput(0);
                 simulatorRef.current?.centerRudder();
               }}
@@ -792,7 +1297,7 @@ export function SailingSimulator() {
           <section className={`throttle-control ${engineInput ? "" : "is-off"}`} aria-label={`${messages.engine} · ${messages.throttle}`}>
             <button
               type="button"
-              className="engine-toggle"
+              className={`engine-toggle${guideStep === 1 ? " guide-target" : ""}`}
               role="switch"
               aria-checked={engineInput}
               aria-label={`${messages.engine}: ${engineInput ? messages.on : messages.off}`}
@@ -838,13 +1343,6 @@ export function SailingSimulator() {
           </section>
         </div>
 
-        {engineNotice && <div className="engine-notice" role="status">{engineNotice}</div>}
-
-        {showHelp && loading.ready && !error && (
-          <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
-            {messages.help}
-          </button>
-        )}
       </div>
     </main>
   );

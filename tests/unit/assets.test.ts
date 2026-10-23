@@ -65,39 +65,3 @@ test("whale asset stays detailed, rigged, animated, textured, and mobile-safe", 
 test("visible island geometry no longer contains the giant submerged shelf", () => {
   assert.ok(MAX_VISIBLE_TERRAIN_RADIUS_SCALE <= 1.06);
 });
-
-function sceneNodeNames(json: GlbJson & { nodes?: Array<{ name?: string }> }): Set<string> {
-  return new Set((json.nodes ?? []).map((node) => node.name ?? ""));
-}
-
-function triangleTotal(json: GlbJson): number {
-  return (json.meshes ?? []).reduce(
-    (total, mesh) => total + (mesh.primitives ?? []).reduce((meshTotal, primitive) => {
-      const count = primitive.indices === undefined ? 0 : json.accessors?.[primitive.indices]?.count ?? 0;
-      return meshTotal + count / 3;
-    }, 0),
-    0,
-  );
-}
-
-const AIRCRAFT_ASSETS = [
-  { file: "tourist-seaplane.glb", nodes: ["Propeller", "Propeller_Blades", "Floats", "Cabin_Glazing", "NavPort", "NavStarboard", "Beacon", "LandingLight", "TailLight"] },
-  { file: "banner-tow-plane.glb", nodes: ["Propeller", "Propeller_Blades", "TowHook", "Tires", "Cabin_Glazing", "LandingLight"] },
-  { file: "narrowbody-airliner.glb", nodes: ["EngineExhaustPort", "EngineExhaustStarboard", "Engine_Nacelles", "Engine_Inlet_Lips", "Beacon", "BeaconLower", "TailLight"] },
-];
-
-for (const asset of AIRCRAFT_ASSETS) {
-  test(`${asset.file} is detailed, licensed, light, and exposes its runtime nodes`, () => {
-    const { bytes, json } = readGlbJson(`public/models/${asset.file}`);
-    const triangles = triangleTotal(json);
-    assert.ok(triangles >= 12_000 && triangles <= 30_000, `unexpected triangle count: ${triangles}`);
-    assert.ok(bytes < 1_200_000, `aircraft asset is too heavy for mobile: ${bytes} bytes`);
-    assert.ok((json.materials?.length ?? 0) >= 6, "aircraft need separate paint, glass and metal materials");
-    // Painted liveries: colour, normal (panel seams) and metallic-roughness maps.
-    assert.ok((json.textures?.length ?? 0) >= 6, "aircraft skins must carry painted PBR texture sets");
-    assert.equal(json.asset?.extras?.license, "CC0-1.0");
-    assert.match(json.asset?.extras?.source ?? "", /build-aircraft-models\.mjs$/);
-    const names = sceneNodeNames(json);
-    asset.nodes.forEach((name) => assert.ok(names.has(name), `missing node ${name}`));
-  });
-}

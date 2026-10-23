@@ -1,75 +1,138 @@
 import * as THREE from "three";
-import type { AssetManager } from "../core/AssetManager";
+import type { AnimatedAssetInstance, AssetManager } from "../core/AssetManager";
 import type { OceanSystem } from "../environment/OceanSystem";
-import type { VesselPhysics } from "../vessel/VesselPhysics";
+import { animationInterval, BodyPoint, filterClip, findBone, ProceduralBone } from "./BodyRig";
 import {
-  WHALE_PHASE_DURATION,
-  WHALE_SUBMERGED_FADE_START,
-  WHALE_SURFACE_REVEAL_CLEARANCE,
-  WHALE_TAIL_IMPACT_ARM_CLEARANCE,
-  WHALE_TAIL_SPLASH_INTENSITY,
-  didWhaleFlukeStrike,
-  isWhaleWithinBoatRange,
-  nextWhalePhase,
-  whaleOrbitHeading,
-  whaleSpawnDistance,
-  whaleTailSlapPose,
-  type WhalePhase,
-} from "./WildlifeState";
-import {
-  createAnimatedVisual,
-  isDetailedSwimAsset,
-  moveAngle,
-  setRandomAnimationTime,
-  type AnimatedVisual,
-} from "./WildlifeModel";
+  createWhaleAgent,
+  stepWhale,
+  whalePose,
+  whaleWorldY,
+  WHALE_DORSAL_HEIGHT,
+  type WhaleAgent,
+} from "./WhaleBehavior";
+import { CONTACT_MASS, contactIntensity, SurfacePoint, type MarineWorld, type VesselState, type WaterEffects } from "./WaterContact";
+import { createAnimatedVisual, isDetailedSwimAsset, type AnimatedVisual } from "./WildlifeModel";
 
-type TailJoint = {
-  node: THREE.Object3D;
-  weight: number;
+/**
+ * Renders and animates the whale described by {@link WhaleBehavior}.
+ *
+ * The body is never hidden by a trick: below the surface it is veiled by the
+ * same Beer–Lambert water every submerged material uses, so it reads as a
+ * huge dark shape when shallow and disappears with depth. The tail is bent
+ * procedurally through its three real joints; the authored clip only adds
+ * flipper and eye motion. Splashes, blows, foam trails and ring waves come
+ * from tracked points on the body crossing the rendered wave surface.
+ */
+
+/** Tail joints driven procedurally, from the body toward the flukes. */
+const TAIL_BONES = ["locator4", "locator5", "locator6"] as const;
+/** Tracks the authored clip must not touch: body pitch and the tail belong to the behaviour. */
+const PROCEDURAL_TRACKS = ["locator3", "locator4", "locator5", "locator6"] as const;
+
+type TrackedPoint = {
+  point: BodyPoint;
+  tracker: SurfacePoint;
+  position: THREE.Vector3;
+  previous: THREE.Vector3;
+  velocity: THREE.Vector3;
+  /** Horizontal distance travelled since the last foam trail. */
+  trailDistance: number;
 };
 
 type Whale = {
+  agent: WhaleAgent;
   root: THREE.Group;
   visual: AnimatedVisual;
-  tailJoints: TailJoint[];
-  position: THREE.Vector3;
-  heading: number;
-  speed: number;
-  orbitDirection: number;
-  preferredDistance: number;
-  age: number;
-  phase: WhalePhase;
-  phaseElapsed: number;
-  initialized: boolean;
-  tailSplash: boolean;
-  tailContact?: THREE.Object3D;
-  previousTailClearance: number;
-  impactArmed: boolean;
-  waterFadeMaterials: THREE.MeshStandardMaterial[];
+  secondary?: THREE.AnimationAction;
+  tail: ProceduralBone[];
+  blowhole?: TrackedPoint;
+  back: TrackedPoint[];
+  fluke: TrackedPoint[];
+  animationClock: number;
+  /** One slap per downstroke, however many fluke points cross. */
+  slapDelivered: boolean;
+  shedTime: number;
+  footprintLeft: boolean;
+  materials: THREE.Material[];
 };
 
-const TAIL_JOINTS = [
-  { name: "locator4", weight: 0.26 },
-  { name: "locator5", weight: 0.42 },
-  { name: "locator6", weight: 0.54 },
-] as const;
 
-const TAIL_CONTACT_NODES = ["joint3_08", "Tail_end", "locator6"] as const;
+export type WhaleRig = {
+  root: THREE.Group;
+  visual: AnimatedVisual;
+  secondary?: THREE.AnimationAction;
+  tail: ProceduralBone[];
+  materials: THREE.Material[];
+};
+
+/**
+ * Builds one whale from the rigged asset: normalised model, own materials,
+ * the flipper clip as secondary motion, and the procedural tail joints. Used
+ * for the whale that surfaces near the yacht and for the distant breacher.
+ */
+export function createWhaleRig(group: THREE.Group, asset: AnimatedAssetInstance): WhaleRig {
+  const visual = createAnimatedVisual(asset, { targetSize: 18, measureAxis: "z", castShadow: false }, []);
+  visual.model.name = "Rigged_PBR_Blue_Whale";
+  // The authored swim clip beats the flukes through seven metres; only its
+  // flipper and eye motion is kept, the body and tail are procedural.
+  visual.actions.forEach((action) => action.stop());
+  visual.mixer?.stopAllAction();
+  const swim = visual.clips.find((clip) => /swim/iu.test(clip.name)) ?? visual.clips[0];
+  const secondary = swim && visual.mixer ? visual.mixer.clipAction(filterClip(swim, PROCEDURAL_TRACKS)) : undefined;
+  secondary?.setLoop(THREE.LoopRepeat, Number.POSITIVE_INFINITY);
+  secondary?.play();
+  if (secondary) secondary.time = Math.random() * secondary.getClip().duration;
+
+  const materials: THREE.Material[] = [];
+  visual.model.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const sources = Array.isArray(object.material) ? object.material : [object.material];
+    const cloned = sources.map((source) => {
+      const material = source.clone();
+      material.side = THREE.FrontSide;
+      if (material instanceof THREE.MeshStandardMaterial) {
+        material.metalness = 0;
+        material.roughness = Math.max(0.62, material.roughness);
+      }
+      materials.push(material);
+      return material;
+    });
+    object.material = Array.isArray(object.material) ? cloned : cloned[0]!;
+    if (object instanceof THREE.SkinnedMesh) {
+      // A raised tail reaches beyond the rest-pose bounds.
+      object.computeBoundingSphere();
+      if (object.boundingSphere) object.boundingSphere.radius *= 1.4;
+    }
+  });
+
+  const root = new THREE.Group();
+  root.name = "Whale_Behaviour_Root";
+  root.rotation.order = "YXZ";
+  root.add(visual.model);
+  group.add(root);
+  root.updateMatrixWorld(true);
+
+  const tail = TAIL_BONES.flatMap((name) => {
+    const bone = findBone(visual.model, name);
+    return bone ? [new ProceduralBone(bone, root)] : [];
+  });
+  if (tail.length !== TAIL_BONES.length) console.warn("Whale tail rig is incomplete; the tail cannot lift.");
+
+  return { root, visual, secondary, tail, materials };
+}
 
 export class WhaleController {
   private readonly whale?: Whale;
-  private readonly tailAxis = new THREE.Vector3(1, 0, 0);
-  private readonly tailQuaternion = new THREE.Quaternion();
-  private readonly tailImpact = new THREE.Vector3();
-  private readonly relativeToVessel = new THREE.Vector3();
-  private readonly whaleSurfacePlane = new THREE.Vector4(0, 1, 0, 0);
+  private readonly scratch = new THREE.Vector3();
+  private readonly surfacePoint = new THREE.Vector3();
+  private readonly cameraPosition = new THREE.Vector3();
 
   constructor(
     private readonly group: THREE.Group,
     private readonly ocean: OceanSystem,
+    private readonly world: MarineWorld,
     assets: AssetManager,
-    private readonly onSplash: (position: THREE.Vector3, intensity: number) => void,
+    private readonly effects: WaterEffects,
   ) {
     const asset = assets.animated("whale");
     if (!asset) return;
@@ -77,230 +140,215 @@ export class WhaleController {
       console.warn("Whale asset failed geometry, rig, or animation validation and was omitted.");
       return;
     }
-    const visual = createAnimatedVisual(
-      asset,
-      { targetSize: 18, measureAxis: "z", castShadow: false },
-      [/^swimming$/i, /swim/i],
-    );
-    setRandomAnimationTime(visual, 0.78);
-    visual.model.name = "Rigged_PBR_Blue_Whale_Tail_Slap_v2";
-    // Keep the complete volumetric mesh. The local water-plane fade prevents
-    // translucent ocean water from exposing a submerged body while keeping the
-    // articulated fluke free to clear the waves without a hard clipping slice.
-    const waterFadeMaterials: THREE.MeshStandardMaterial[] = [];
-    visual.model.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) return;
-      const sourceMaterials = Array.isArray(object.material) ? object.material : [object.material];
-      const materials = sourceMaterials.map((source) => {
-        const material = source.clone();
-        material.side = THREE.FrontSide;
-        material.depthTest = true;
-        material.depthWrite = true;
-        material.clippingPlanes = [];
-        if (material instanceof THREE.MeshStandardMaterial) {
-          material.metalness = 0;
-          material.roughness = Math.max(0.68, material.roughness);
-          this.applySubmergedWaterFade(material);
-          waterFadeMaterials.push(material);
-        }
-        material.needsUpdate = true;
-        return material;
-      });
-      object.material = Array.isArray(object.material) ? materials : materials[0]!;
-    });
-    const root = new THREE.Group();
-    root.name = "Whale_State_Root";
-    root.rotation.order = "YXZ";
-    root.add(visual.model);
-    group.add(root);
-    const tailJoints = TAIL_JOINTS.flatMap(({ name, weight }) => {
-      const node = visual.model.getObjectByName(name);
-      return node ? [{ node, weight }] : [];
-    });
-    if (tailJoints.length !== TAIL_JOINTS.length) {
-      console.warn("Whale tail rig is incomplete; the tail-slap motion may be reduced.");
-    }
-    const tailContact = TAIL_CONTACT_NODES
-      .map((name) => visual.model.getObjectByName(name))
-      .find((node): node is THREE.Object3D => Boolean(node));
+    const rig = createWhaleRig(group, asset);
+    const { root, visual, secondary, tail, materials } = rig;
+
+    const track = (boneName: string, x: number, y: number, z: number): TrackedPoint | undefined => {
+      const bone = findBone(visual.model, boneName);
+      if (!bone) return undefined;
+      return {
+        point: new BodyPoint(bone, root, new THREE.Vector3(x, y, z)),
+        tracker: new SurfacePoint(),
+        position: new THREE.Vector3(),
+        previous: new THREE.Vector3(Number.NaN, 0, 0),
+        velocity: new THREE.Vector3(),
+        trailDistance: 0,
+      };
+    };
+    const back = [
+      track("_rootJoint", 0, 2.12, 2.2),
+      track("locator4", 0, 2.02, -0.9),
+      track("locator5", 0, 1.55, -3.5),
+      track("locator5", 0, 0.75, -5.4),
+    ].filter((point): point is TrackedPoint => Boolean(point));
+    const fluke = [
+      track("joint6_07", 0, -1.35, -8.3),
+      track("joint6_07", 2.3, -1.45, -8.6),
+      track("joint6_07", -2.3, -1.45, -8.6),
+      track("joint6_07", 0, -1.6, -9),
+    ].filter((point): point is TrackedPoint => Boolean(point));
+
+    // Start ahead of the scene, hidden at depth, swimming across the view.
+    const start = { x: 0, z: 140 };
+    const agent = createWhaleAgent(start.x + (Math.random() - 0.5) * 60, start.z, Math.PI * (0.6 + Math.random() * 0.8), Math.random);
     this.whale = {
+      agent,
       root,
       visual,
-      tailJoints,
-      position: root.position,
-      heading: 0,
-      speed: 2.25,
-      orbitDirection: Math.random() < 0.5 ? -1 : 1,
-      preferredDistance: 72 + Math.random() * 10,
-      age: 0,
-      phase: "cruise",
-      phaseElapsed: Math.random() * 14,
-      initialized: false,
-      tailSplash: false,
-      tailContact,
-      previousTailClearance: Number.NEGATIVE_INFINITY,
-      impactArmed: false,
-      waterFadeMaterials,
+      secondary,
+      tail,
+      blowhole: track("joint2_01", 0, 1.95, 5.4),
+      back,
+      fluke,
+      animationClock: 0,
+      slapDelivered: false,
+      shedTime: 0,
+      footprintLeft: true,
+      materials,
     };
   }
 
-  update(delta: number, physics: VesselPhysics, animationDelta = delta): void {
+  /** Centre and clearance radius of the whale, for other animals to avoid. */
+  obstacle(): { position: THREE.Vector3; radius: number } | undefined {
+    if (!this.whale) return undefined;
+    return { position: this.whale.root.position, radius: 11 };
+  }
+
+  get phase(): string | undefined {
+    return this.whale?.agent.phase;
+  }
+
+  update(delta: number, vessel: VesselState, camera: THREE.Camera): void {
     const whale = this.whale;
-    if (!whale) return;
-    whale.age += delta;
-    whale.phaseElapsed += delta;
-    // update(0) deliberately reapplies the authored pose between the 30 fps
-    // animation ticks, preventing the procedural tail bend from accumulating.
-    whale.visual.mixer?.update(animationDelta * 0.82);
+    if (!whale || delta <= 0) return;
+    const agent = whale.agent;
+    stepWhale(agent, this.world, vessel, delta, Math.random);
+    if (agent.relocated) {
+      agent.relocated = false;
+      [whale.blowhole, ...whale.back, ...whale.fluke].forEach((tracked) => {
+        if (!tracked) return;
+        tracked.tracker.reset();
+        tracked.previous.set(Number.NaN, 0, 0);
+      });
+    }
 
-    if (!whale.initialized) this.initialize(whale, physics);
-    if (!isWhaleWithinBoatRange(this.horizontalDistanceToVessel(whale, physics))) this.initialize(whale, physics);
-    if (whale.phaseElapsed >= WHALE_PHASE_DURATION[whale.phase]) this.transition(whale, nextWhalePhase(whale.phase));
+    const motion = agent.motion;
+    const pose = whalePose(agent);
+    whale.root.position.set(motion.x, whaleWorldY(agent), motion.z);
+    const bank = THREE.MathUtils.clamp(-motion.yawRate * motion.speed * 2.2, -0.07, 0.07);
+    whale.root.rotation.set(-motion.pitch + pose.bodyAngle, motion.heading, bank, "YXZ");
 
-    this.relativeToVessel.copy(whale.position).sub(physics.position);
-    const desiredHeading = whaleOrbitHeading(
-      this.relativeToVessel.x,
-      this.relativeToVessel.z,
-      whale.orbitDirection,
-      whale.preferredDistance,
-    );
-    const previousHeading = whale.heading;
-    whale.heading = moveAngle(whale.heading, desiredHeading, delta * 0.14);
-    whale.position.x += Math.sin(whale.heading) * whale.speed * delta;
-    whale.position.z += Math.cos(whale.heading) * whale.speed * delta;
-    if (!isWhaleWithinBoatRange(this.horizontalDistanceToVessel(whale, physics))) {
-      this.initialize(whale, physics);
+    // Deep and far, the whale is fully absorbed by the water: skip it.
+    camera.getWorldPosition(this.cameraPosition);
+    const cameraDistance = this.cameraPosition.distanceTo(whale.root.position);
+    const surface = this.ocean.sample(motion.x, motion.z).height;
+    const depth = surface - whale.root.position.y;
+    const visible = depth < 13.5 && cameraDistance < 420;
+    whale.visual.model.visible = visible;
+    if (!visible) {
+      whale.root.updateMatrixWorld(true);
       return;
     }
-    const phaseProgress = THREE.MathUtils.clamp(
-      whale.phaseElapsed / WHALE_PHASE_DURATION[whale.phase],
-      0,
-      1,
-    );
-    const pose = whaleTailSlapPose(whale.phase, phaseProgress);
-    const water = this.ocean.sample(whale.position.x, whale.position.z);
-    const cruiseUndulation = whale.phase === "cruise" ? Math.sin(whale.age * 0.22) * 0.22 : 0;
-    const targetY = water.height + pose.bodyDepth + cruiseUndulation;
-    whale.position.y = THREE.MathUtils.damp(whale.position.y, targetY, 0.75, delta);
-    this.whaleSurfacePlane.set(
-      water.normalX,
-      water.normalY,
-      water.normalZ,
-      -(
-        water.normalX * whale.position.x +
-        water.normalY * water.height +
-        water.normalZ * whale.position.z
-      ),
-    );
 
-    const turn = Math.atan2(Math.sin(whale.heading - previousHeading), Math.cos(whale.heading - previousHeading));
-    whale.root.rotation.y = whale.heading;
-    whale.root.rotation.x = THREE.MathUtils.damp(whale.root.rotation.x, pose.bodyPitch, 1.8, delta);
-    whale.root.rotation.z = THREE.MathUtils.damp(whale.root.rotation.z, -turn * 8, 1.4, delta);
-    this.applyTailFlex(whale, pose.tailFlex);
+    whale.tail.forEach((bone) => bone.restore());
+    whale.animationClock += delta;
+    if (whale.secondary && whale.animationClock >= animationInterval(cameraDistance)) {
+      // Flippers: steering strokes, livelier when turning or slowing.
+      whale.secondary.setEffectiveWeight(Math.min(0.9, pose.secondaryWeight + 0.25 + Math.abs(motion.yawRate) * 4));
+      whale.secondary.timeScale = 0.5 + motion.speed * 0.25;
+      whale.visual.mixer?.update(whale.animationClock);
+      whale.animationClock = 0;
+      whale.tail.forEach((bone) => bone.capture());
+    }
+    whale.tail.forEach((bone, index) => bone.rotate("pitch", pose.bends[index] ?? 0));
+    // In a turn the body follows the curve of its path: the tail trails
+    // toward the inside, more toward the flukes.
+    const curvature = THREE.MathUtils.clamp(motion.yawRate / Math.max(0.6, motion.speed), -0.05, 0.05);
+    whale.tail.forEach((bone, index) => bone.rotate("yaw", -curvature * (2.2 + index * 1.4)));
     whale.root.updateMatrixWorld(true);
-    this.updateTailImpact(whale);
+
+    this.updateContacts(whale, delta, depth);
   }
 
   dispose(): void {
     if (!this.whale) return;
     this.whale.visual.mixer?.stopAllAction();
-    this.whale.waterFadeMaterials.forEach((material) => material.dispose());
+    this.whale.materials.forEach((material) => material.dispose());
     this.group.remove(this.whale.root);
   }
 
-  private initialize(whale: Whale, physics: VesselPhysics): void {
-    const angle = Math.random() * Math.PI * 2;
-    const radius = whaleSpawnDistance(Math.random());
-    const spawnX = physics.position.x + Math.sin(angle) * radius;
-    const spawnZ = physics.position.z + Math.cos(angle) * radius;
-    const water = this.ocean.sample(spawnX, spawnZ);
-    whale.position.set(
-      spawnX,
-      water.height + whaleTailSlapPose("cruise", 0).bodyDepth,
-      spawnZ,
-    );
-    whale.preferredDistance = 72 + Math.random() * 10;
-    whale.orbitDirection = Math.random() < 0.5 ? -1 : 1;
-    whale.heading = whaleOrbitHeading(
-      whale.position.x - physics.position.x,
-      whale.position.z - physics.position.z,
-      whale.orbitDirection,
-      whale.preferredDistance,
-    );
-    whale.root.rotation.y = whale.heading;
-    whale.root.rotation.x = 0;
-    whale.root.rotation.z = 0;
-    whale.phase = "cruise";
-    whale.phaseElapsed = Math.random() * 5;
-    whale.tailSplash = false;
-    whale.impactArmed = false;
-    whale.previousTailClearance = Number.NEGATIVE_INFINITY;
-    whale.initialized = true;
-  }
-
-  private horizontalDistanceToVessel(whale: Whale, physics: VesselPhysics): number {
-    return Math.hypot(
-      whale.position.x - physics.position.x,
-      whale.position.z - physics.position.z,
-    );
-  }
-
-  private applyTailFlex(whale: Whale, flex: number): void {
-    whale.tailJoints.forEach(({ node, weight }) => {
-      this.tailQuaternion.setFromAxisAngle(this.tailAxis, flex * weight);
-      node.quaternion.multiply(this.tailQuaternion);
-    });
-  }
-
-  private applySubmergedWaterFade(material: THREE.MeshStandardMaterial): void {
-    material.transparent = false;
-    material.alphaHash = true;
-    material.onBeforeCompile = (shader) => {
-      shader.uniforms.whaleSurfacePlane = { value: this.whaleSurfacePlane };
-      shader.vertexShader = `varying vec3 vWhaleWorldPosition;\n${shader.vertexShader}`.replace(
-        "#include <skinning_vertex>",
-        "#include <skinning_vertex>\n\tvWhaleWorldPosition = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;",
-      );
-      shader.fragmentShader = `uniform vec4 whaleSurfacePlane;\nvarying vec3 vWhaleWorldPosition;\n${shader.fragmentShader}`.replace(
-        "#include <alphamap_fragment>",
-        `#include <alphamap_fragment>
-\tfloat whaleSurfaceClearance = dot( vec4( vWhaleWorldPosition, 1.0 ), whaleSurfacePlane );
-\tfloat whaleSurfaceAlpha = smoothstep( ${WHALE_SUBMERGED_FADE_START.toFixed(2)}, ${WHALE_SURFACE_REVEAL_CLEARANCE.toFixed(2)}, whaleSurfaceClearance );
-\tdiffuseColor.a *= whaleSurfaceAlpha;`,
-      );
-    };
-    material.customProgramCacheKey = () => "submerged-whale-surface-fade-v1";
-  }
-
-  private updateTailImpact(whale: Whale): void {
-    if (!whale.tailContact || (whale.phase !== "tail_rise" && whale.phase !== "tail_strike")) {
-      whale.previousTailClearance = Number.NEGATIVE_INFINITY;
-      return;
+  private sampleTracked(tracked: TrackedPoint, delta: number): string | null {
+    tracked.point.world(tracked.position);
+    if (Number.isFinite(tracked.previous.x)) {
+      tracked.velocity.copy(tracked.position).sub(tracked.previous).divideScalar(Math.max(delta, 1e-3));
+    } else {
+      tracked.velocity.set(0, 0, 0);
     }
-    whale.tailContact.getWorldPosition(this.tailImpact);
-    const waterHeight = this.ocean.sample(this.tailImpact.x, this.tailImpact.z).height;
-    const clearance = this.tailImpact.y - waterHeight;
-    if (clearance > WHALE_TAIL_IMPACT_ARM_CLEARANCE) whale.impactArmed = true;
-    if (
-      didWhaleFlukeStrike(whale.phase, whale.impactArmed, whale.previousTailClearance, clearance) &&
-      !whale.tailSplash
-    ) {
-      whale.tailSplash = true;
-      whale.impactArmed = false;
-      this.tailImpact.y = waterHeight + 0.1;
-      this.onSplash(this.tailImpact, WHALE_TAIL_SPLASH_INTENSITY);
-    }
-    whale.previousTailClearance = clearance;
+    tracked.previous.copy(tracked.position);
+    const surface = this.ocean.sample(tracked.position.x, tracked.position.z).height;
+    return tracked.tracker.update(tracked.position.y, surface, delta);
   }
 
-  private transition(whale: Whale, phase: WhalePhase): void {
-    whale.phase = phase;
-    whale.phaseElapsed = 0;
-    if (phase === "tail_rise") {
-      whale.tailSplash = false;
-      whale.impactArmed = false;
-      whale.previousTailClearance = Number.NEGATIVE_INFINITY;
+  private onSurface(position: THREE.Vector3): THREE.Vector3 {
+    return this.surfacePoint.set(position.x, this.ocean.sample(position.x, position.z).height, position.z);
+  }
+
+  private updateContacts(whale: Whale, delta: number, depth: number): void {
+    const agent = whale.agent;
+    const nearSurface = depth < WHALE_DORSAL_HEIGHT + 4.5;
+    const tailWork =
+      agent.phase === "prepare_tail_slap" || agent.phase === "tail_slap" || (agent.phase === "submerge" && agent.flukeUp);
+
+    // Blow: the blowhole clearing the water at a breath.
+    if (whale.blowhole) {
+      const crossing = this.sampleTracked(whale.blowhole, delta);
+      if (crossing === "exit" && agent.phase === "surface") {
+        const position = this.onSurface(whale.blowhole.position);
+        this.effects.splash(position, 2.6 + Math.random() * 1.2, "blow");
+        this.effects.splash(position, 0.5, "breath", whale.blowhole.velocity);
+      }
+    }
+
+    // The back rolling through the surface: a little spray, a foam trail and
+    // the slick a moving whale leaves.
+    for (const tracked of whale.back) {
+      const crossing = this.sampleTracked(tracked, delta);
+      if (!nearSurface) continue;
+      if (crossing) {
+        const intensity = contactIntensity(CONTACT_MASS.whaleBack, Math.abs(tracked.tracker.verticalSpeed) + 0.25);
+        this.effects.splash(this.onSurface(tracked.position), Math.min(0.9, intensity), "breath", tracked.velocity);
+      }
+      if (tracked.tracker.clearance > -0.3) {
+        tracked.trailDistance += Math.hypot(tracked.velocity.x, tracked.velocity.z) * delta;
+        if (tracked.trailDistance > 1.4) {
+          tracked.trailDistance = 0;
+          const heading = Math.atan2(tracked.velocity.x, tracked.velocity.z);
+          this.effects.trail(this.onSurface(tracked.position), heading, 0.55, 1.5);
+        }
+      }
+    }
+
+    // Flukes: water pours off as they lift, a slap when they come down.
+    if (agent.phase === "tail_slap" && (agent.stage === "hold" || agent.stage === "relift")) whale.slapDelivered = false;
+    let anyAirborne = false;
+    for (const tracked of whale.fluke) {
+      const crossing = this.sampleTracked(tracked, delta);
+      if (tracked.tracker.clearance > 0) anyAirborne = true;
+      if (!tailWork || !crossing) continue;
+      const verticalSpeed = tracked.tracker.verticalSpeed;
+      if (crossing === "exit") {
+        this.effects.splash(this.onSurface(tracked.position), 0.55, "exit", tracked.velocity);
+        whale.shedTime = 1.6;
+        continue;
+      }
+      const striking =
+        agent.phase === "tail_slap" && (agent.stage === "downstroke" || agent.stage === "follow") && verticalSpeed < -1.2;
+      if (striking && !whale.slapDelivered) {
+        whale.slapDelivered = true;
+        const intensity = THREE.MathUtils.clamp(
+          contactIntensity(CONTACT_MASS.whaleFluke, Math.abs(verticalSpeed)) * agent.slap.force,
+          2.6,
+          6,
+        );
+        this.effects.splash(this.onSurface(tracked.position), intensity, "slap", tracked.velocity);
+      } else if (!striking) {
+        this.effects.splash(this.onSurface(tracked.position), contactIntensity(500, Math.abs(verticalSpeed)), "entry", tracked.velocity);
+      }
+    }
+    if (whale.shedTime > 0 && anyAirborne) {
+      whale.shedTime -= delta;
+      for (const tracked of whale.fluke) {
+        if (tracked.tracker.clearance <= 0.1 || Math.random() > delta * 28) continue;
+        this.effects.shed(tracked.position, tracked.velocity, 2, 0.14);
+      }
+    }
+
+    // A whale sounding from the surface leaves a glassy footprint.
+    if (agent.phase === "surface" || agent.phase === "tail_slap") whale.footprintLeft = false;
+    if (agent.phase === "submerge" && !whale.footprintLeft && depth > 4.2) {
+      whale.footprintLeft = true;
+      this.scratch.copy(whale.root.position);
+      this.effects.ripple(this.onSurface(this.scratch), 2.4);
     }
   }
 }
