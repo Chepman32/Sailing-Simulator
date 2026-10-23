@@ -9,7 +9,10 @@
  * on board would: just behind and above the yacht, looking past her at the
  * subject, so a near subject has the yacht in the foreground and a far one
  * is brought close by the lens. A look-around by the player always wins and
- * keeps the director quiet for a while.
+ * keeps the director quiet for a while. The mainsail and mast stand right
+ * in that line of sight for a subject ahead, so the photographer moves to
+ * one side of the rig, ahead of it, or above it whenever the rig would
+ * hide the subject.
  *
  * Pure numbers; `CameraController.direct` applies the shot.
  */
@@ -61,7 +64,46 @@ export type PhotoShot = {
   target: { x: number; y: number; z: number };
   /** Vertical field of view, degrees. */
   fov: number;
+  /** Which stand-point was taken (see `photoShot`); kept while it stays clear, so the camera does not hop. */
+  slot?: number;
 };
+
+/**
+ * The yacht's rig as an occluder, in world space: a cone around the mast
+ * from the boom up to the masthead, as wide at its foot as the boom is long
+ * (the boom swings to either side, and the jib fills the fore-triangle).
+ */
+export type PhotoRig = {
+  x: number;
+  z: number;
+  bottom: number;
+  top: number;
+  radius: number;
+};
+
+/** Whether the rig hides `to` from `from` (the line of sight passes through the sail cone). */
+export function rigBlocksView(
+  from: { x: number; y: number; z: number },
+  to: { x: number; y: number; z: number },
+  rig: PhotoRig,
+): boolean {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const dz = to.z - from.z;
+  const length = Math.hypot(dx, dy, dz);
+  if (length < 1e-6) return false;
+  // Only the stretch of the sight line that can pass the rig needs checking.
+  const reach = Math.min(length, Math.hypot(rig.x - from.x, rig.z - from.z) + rig.radius + 2);
+  const height = Math.max(1e-3, rig.top - rig.bottom);
+  for (let travelled = 0; travelled <= reach; travelled += 0.4) {
+    const t = travelled / length;
+    const y = from.y + dy * t;
+    if (y < rig.bottom || y > rig.top) continue;
+    const allowed = rig.radius * (1 - (y - rig.bottom) / height) + 0.6;
+    if (Math.hypot(from.x + dx * t - rig.x, from.z + dz * t - rig.z) < allowed) return true;
+  }
+  return false;
+}
 
 export class PhotoDirector {
   enabled = false;
@@ -156,7 +198,15 @@ export class PhotoDirector {
  * a few metres up, and a lens that makes the subject fill about half the
  * height of the frame.
  */
-export function photoShot(subject: PhotoSubject, yachtX: number, yachtY: number, yachtZ: number, out: PhotoShot): PhotoShot {
+export function photoShot(
+  subject: PhotoSubject,
+  yachtX: number,
+  yachtY: number,
+  yachtZ: number,
+  out: PhotoShot,
+  rig?: PhotoRig | null,
+  preferredSlot = 0,
+): PhotoShot {
   let dx = subject.x - yachtX;
   let dz = subject.z - yachtZ;
   const horizontal = Math.hypot(dx, dz);
@@ -170,12 +220,46 @@ export function photoShot(subject: PhotoSubject, yachtX: number, yachtY: number,
   // Close subjects (dolphins at the bow) are seen from a little farther back and higher.
   const back = horizontal < 40 ? 14 : 10;
   const up = 5.5 + Math.min(horizontal * 0.012, 9) + (horizontal < 40 ? 4 : 0);
-  out.position.x = yachtX - dx * back;
-  out.position.y = yachtY + up;
-  out.position.z = yachtZ - dz * back;
   out.target.x = subject.x;
   out.target.y = subject.y + subject.size * 0.12;
   out.target.z = subject.z;
+  // Stand-points, in order of preference: behind the yacht; behind and to
+  // either side of the rig (the subject's side first); ahead of the rig on
+  // the line to the subject; high above the masthead.
+  const side = rig ? rig.radius + 4.5 : 0;
+  const across = rig && (subject.x - rig.x) * dz - (subject.z - rig.z) * dx >= 0 ? 1 : -1;
+  const place = (slot: number): void => {
+    out.position.x = yachtX - dx * back;
+    out.position.y = yachtY + up;
+    out.position.z = yachtZ - dz * back;
+    if (!rig || slot === 0) return;
+    if (slot === 1 || slot === 2) {
+      const sign = slot === 1 ? across : -across;
+      out.position.x += dz * side * sign;
+      out.position.z -= dx * side * sign;
+    } else if (slot === 3) {
+      out.position.x = rig.x + dx * (rig.radius + 3.5);
+      out.position.z = rig.z + dz * (rig.radius + 3.5);
+      out.position.y = yachtY + Math.max(4, up * 0.6);
+    } else {
+      out.position.y = rig.top + 6;
+    }
+  };
+  out.slot = 0;
+  place(0);
+  if (rig) {
+    const order = [preferredSlot, 0, 1, 2, 3, 4];
+    let found = false;
+    for (const slot of order) {
+      place(slot);
+      if (!rigBlocksView(out.position, out.target, rig)) {
+        out.slot = slot;
+        found = true;
+        break;
+      }
+    }
+    if (!found) place(0);
+  }
   const range = Math.hypot(out.target.x - out.position.x, out.target.y - out.position.y, out.target.z - out.position.z);
   const fov = (2 * Math.atan((subject.size * 1.9) / (2 * Math.max(range, 1))) * 180) / Math.PI;
   out.fov = Math.min(58, Math.max(8, fov));

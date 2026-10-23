@@ -542,6 +542,102 @@ input:focus-visible {
   animation: notice-in 220ms ease-out;
 }
 
+/* Photo mode's own buttons: top left, half transparent so they stay out of
+   the picture, solid on hover or focus. In the left-to-right sense on purpose
+   (screen corners, not reading order), and above the faded interface. */
+.photo-toolbar {
+  position: absolute;
+  z-index: 26;
+  top: var(--edge-top);
+  left: var(--edge-left);
+  display: flex;
+  gap: 8px;
+  direction: ltr;
+  animation: notice-in 220ms ease-out;
+}
+
+.photo-tool {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(4, 27, 38, 0.32);
+  opacity: 0.62;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: opacity 160ms ease, background-color 160ms ease, transform 120ms ease;
+}
+
+.photo-tool:hover,
+.photo-tool:focus-visible {
+  opacity: 1;
+  background: rgba(4, 27, 38, 0.6);
+}
+
+.photo-tool:focus-visible {
+  outline: 2px solid var(--accent, #5fe0cf);
+  outline-offset: 2px;
+}
+
+.photo-tool:active { transform: scale(0.94); }
+.photo-tool:disabled { cursor: progress; }
+
+.photo-tool.is-active {
+  border-color: rgba(95, 224, 207, 0.85);
+  color: #b9fff5;
+}
+
+.photo-tool svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.photo-shutter svg { width: 26px; height: 26px; }
+
+/* The shutter: a short white flash over the scene. */
+.photo-flash {
+  position: absolute;
+  z-index: 25;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  animation: photo-flash 380ms ease-out;
+}
+
+@keyframes photo-flash {
+  from { opacity: 0.7; }
+  to { opacity: 0; }
+}
+
+.photo-toolbar-status {
+  position: absolute;
+  z-index: 26;
+  top: calc(var(--edge-top) + 58px);
+  left: var(--edge-left);
+  max-width: min(320px, calc(100vw - 32px));
+  margin: 0;
+  color: #fff;
+  font-size: 12px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .photo-flash { animation-duration: 1ms; }
+}
+
 /* Settings panel */
 .control-panel {
   position: absolute;

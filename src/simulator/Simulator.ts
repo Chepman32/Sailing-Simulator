@@ -6,7 +6,7 @@ import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
 import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
 import { ShipShadows } from "./ships/ShipShadows";
-import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
+import { PhotoDirector, photoShot, type PhotoRig, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
 import { GpuTimer } from "./core/GpuTimer";
 import { GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
@@ -482,14 +482,42 @@ export class Simulator {
 
   /** Photo mode: the camera turns to whatever is worth a picture by itself. */
   setPhotoMode(enabled: boolean): void {
-    this.photo.setEnabled(enabled);
+    this.photoModeOn = enabled;
+    this.photo.setEnabled(enabled && this.photoAutoAim);
     this.photoInteractions = this.camera?.interactions ?? 0;
   }
+
+  /** In photo mode, whether the camera turns to interesting events by itself. */
+  setPhotoAutoAim(enabled: boolean): void {
+    this.photoAutoAim = enabled;
+    this.photo.setEnabled(this.photoModeOn && enabled);
+    this.photoInteractions = this.camera?.interactions ?? 0;
+  }
+
+  /**
+   * The current view as an image file. The frame is drawn again and copied
+   * in the same task, before the browser may clear the drawing buffer.
+   */
+  capturePhoto(): Promise<Blob | null> {
+    if (!this.camera || this.renderer.getContext().isContextLost()) return Promise.resolve(null);
+    this.render();
+    return new Promise((resolve) => {
+      try {
+        this.renderer.domElement.toBlob((blob) => resolve(blob), "image/jpeg", 0.92);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  private photoModeOn = false;
+  private photoAutoAim = true;
 
   private readonly photo = new PhotoDirector();
   private readonly photoSubjects: PhotoSubject[] = [];
   private readonly photoShotState: PhotoShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 50 };
   private photoInteractions = 0;
+  private readonly photoRig: PhotoRig = { x: 0, z: 0, bottom: 0, top: 0, radius: 0 };
 
   private directPhoto(delta: number): void {
     const photo = this.photo;
@@ -501,7 +529,10 @@ export class Simulator {
     const yacht = this.physics.position;
     for (const subject of this.wildlife.collectPhotoSubjects(this.photoSubjects)) photo.offer(subject, yacht.x, yacht.z);
     photo.update(delta);
-    if (photo.subject) photoShot(photo.subject, yacht.x, yacht.y, yacht.z, this.photoShotState);
+    if (photo.subject) {
+      const rig = this.vessel.photoRig(this.photoRig);
+      photoShot(photo.subject, yacht.x, yacht.y, yacht.z, this.photoShotState, rig, this.photoShotState.slot ?? 0);
+    }
     this.camera.direct(this.photoShotState, photo.blend);
   }
 

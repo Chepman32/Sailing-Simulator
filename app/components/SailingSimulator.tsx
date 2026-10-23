@@ -5,6 +5,7 @@ import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
 import type { CameraMode, Discovery, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
 import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
+import { PhotoToolbar } from "./PhotoToolbar";
 import { SoundPrompt } from "./SoundPrompt";
 import { featureText, getFeatureMessages } from "./featureMessages";
 import {
@@ -59,6 +60,25 @@ function isTypingTarget(target: EventTarget | null): boolean {
   if (tag === "TEXTAREA" || tag === "SELECT") return true;
   if (tag === "INPUT") return (target as HTMLInputElement).type !== "range";
   return false;
+}
+
+const PHOTO_AUTO_AIM_KEY = "sailing-simulator-photo-autoaim-v1";
+
+/** Photo mode's auto-aim choice (on unless turned off); storage may be blocked. */
+function readPhotoAutoAim(): boolean {
+  try {
+    return typeof window === "undefined" || window.localStorage.getItem(PHOTO_AUTO_AIM_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function writePhotoAutoAim(enabled: boolean): void {
+  try {
+    window.localStorage.setItem(PHOTO_AUTO_AIM_KEY, enabled ? "on" : "off");
+  } catch {
+    // Remembering it is a convenience only.
+  }
 }
 
 type ControlIconName =
@@ -216,6 +236,7 @@ export function SailingSimulator() {
   const photoModeRef = useRef(false);
   const [photoMode, setPhotoMode] = useState(false);
   const [photoHint, setPhotoHint] = useState(false);
+  const [photoAutoAim, setPhotoAutoAim] = useState(() => readPhotoAutoAim());
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT);
   const [loading, setLoading] = useState<LoadingState>({
     loaded: 0,
@@ -329,9 +350,9 @@ export function SailingSimulator() {
     setPhotoHint(true);
     const hintTimer = window.setTimeout(() => setPhotoHint(false), 3200);
     const onKeyDown = (event: KeyboardEvent) => {
-      // Tab restores the interface as well, so keyboard users cannot end up
-      // navigating invisible controls or trapped on the canvas.
-      if (event.key === "Escape" || event.key === "Tab") {
+      // Tab moves between the canvas and photo mode's own visible buttons;
+      // the hidden interface is inert, so it cannot be reached by mistake.
+      if (event.key === "Escape") {
         event.preventDefault();
         exitPhotoMode();
       }
@@ -624,6 +645,7 @@ export function SailingSimulator() {
     photoModeRef.current = true;
     setPhotoMode(true);
     // The camera now turns by itself to whales, dolphins, sharks, eruptions and ships' horns.
+    simulatorRef.current?.setPhotoAutoAim(photoAutoAim);
     simulatorRef.current?.setPhotoMode(true);
     if (guideStep === 3) finishGuide();
   };
@@ -751,6 +773,25 @@ export function SailingSimulator() {
       />
 
       {photoMode && photoHint && <p className="photo-toast" aria-hidden="true">{messages.photoModeHint}</p>}
+      {photoMode && (
+        <PhotoToolbar
+          messages={voyage}
+          soundLabel={soundLabel}
+          soundOn={snapshot.soundEnabled && snapshot.audioReady}
+          autoAim={photoAutoAim}
+          touch={coarsePointer}
+          onAutoAim={(enabled) => {
+            setPhotoAutoAim(enabled);
+            writePhotoAutoAim(enabled);
+            simulatorRef.current?.setPhotoAutoAim(enabled);
+          }}
+          onSound={() => {
+            if (snapshot.soundEnabled && snapshot.audioReady) simulatorRef.current?.setSoundEnabled(false);
+            else unlockSound();
+          }}
+          capture={() => simulatorRef.current?.capturePhoto() ?? Promise.resolve(null)}
+        />
+      )}
 
       {/* Faded rather than removed, so leaving photo mode is a smooth return;
           inert keeps the hidden controls out of reach meanwhile. */}

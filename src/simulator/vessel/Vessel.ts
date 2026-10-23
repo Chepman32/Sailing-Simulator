@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { PhotoRig } from "../camera/PhotoDirector";
 import type { AssetManager } from "../core/AssetManager";
 import { batchStaticMeshes, coincidentShells } from "../core/StaticBatching";
 import type { EnvironmentPalette } from "../environment/EnvironmentPalette";
@@ -72,6 +73,9 @@ export class Vessel {
   private readonly boom = createBoomState();
   private authoredBoomAngle = 0;
   private hasRig = false;
+  /** Mast foot (x, z), boom height, masthead height and boom length in vessel space, once found. */
+  private rigShape: { x: number; z: number; bottom: number; top: number; boom: number } | null = null;
+  private readonly rigPoint = new THREE.Vector3();
   private pendingSlam = 0;
   private propellerAngularVelocity = 0;
 
@@ -162,6 +166,20 @@ export class Vessel {
   /** Dyes the mainsail (sRGB hex). */
   setSailColor(hex: number): void {
     this.sailSystem.setColor(hex);
+  }
+
+  /** The mast and sails as an occluder for photo mode, in world space; null before the rig is found. */
+  photoRig(out: PhotoRig): PhotoRig | null {
+    const shape = this.rigShape;
+    if (!shape) return null;
+    const foot = this.rigPoint.set(shape.x, shape.bottom, shape.z).applyMatrix4(this.root.matrixWorld);
+    out.x = foot.x;
+    out.z = foot.z;
+    out.bottom = foot.y;
+    out.top = foot.y + (shape.top - shape.bottom);
+    // The boom swings to either side and the jib fills the fore-triangle.
+    out.radius = shape.boom + 0.8;
+    return out;
   }
 
   /** Where the helmsman's eyes are, in vessel space (the helm camera's anchor). */
@@ -341,6 +359,13 @@ export class Vessel {
         : boomPart.bounds.min.x;
     this.authoredBoomAngle = Math.atan2(outboardX - mastX, mastZ - boomPart.bounds.min.z);
     this.boom.angle = this.authoredBoomAngle;
+    this.rigShape = {
+      x: mastX,
+      z: mastZ,
+      bottom: boomPart.bounds.min.y,
+      top: mastBounds.max.y,
+      boom: Math.hypot(outboardX - mastX, mastZ - boomPart.bounds.min.z),
+    };
     this.boomPivot.name = "MainBoomPivot";
     this.boomPivot.position.set(mastX, 0, mastZ);
     this.root.add(this.boomPivot);

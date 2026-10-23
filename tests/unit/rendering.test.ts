@@ -489,3 +489,26 @@ test("a photo shot frames a far subject with a long lens and a near one wide, fr
   photoShot({ kind: "dolphins", x: 6, y: 0.5, z: 8, size: 10 }, 0, 0.5, 0, shot);
   assert.ok(shot.fov > 25, `a wide view for dolphins at the bow (${shot.fov.toFixed(1)}°)`);
 });
+
+test("a photo shot never looks through the sail: it steps beside, ahead of or above the rig", async () => {
+  const { rigBlocksView } = await import("../../src/simulator/camera/PhotoDirector");
+  const rig = { x: 0, z: 0.5, bottom: 2.4, top: 19, radius: 5.5 };
+  const shot: PhotoShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 0 };
+  // The old stand-point, straight behind, looks at dolphins ahead right through the mainsail.
+  photoShot({ kind: "dolphins", x: 0, y: 0.5, z: 30, size: 10 }, 0, 0.5, 0, shot);
+  assert.ok(rigBlocksView(shot.position, shot.target, rig), "the unaware shot is blocked");
+  for (const subject of [
+    { kind: "dolphins" as const, x: 0, y: 0.5, z: 30, size: 10 },
+    { kind: "shark" as const, x: 25, y: 0, z: 10, size: 9 },
+    { kind: "whale" as const, x: -60, y: 1, z: 140, size: 30 },
+    { kind: "breach" as const, x: 0, y: 4, z: 800, size: 34 },
+    { kind: "horn" as const, x: 300, y: 10, z: -200, size: 80 },
+  ]) {
+    photoShot(subject, 0, 0.5, 0, shot, rig);
+    assert.ok(!rigBlocksView(shot.position, shot.target, rig), `${subject.kind} is in clear view (slot ${shot.slot})`);
+    // A clear stand-point is kept on the next frame.
+    const slot = shot.slot;
+    photoShot(subject, 0, 0.5, 0, shot, rig, slot);
+    assert.equal(shot.slot, slot);
+  }
+});
