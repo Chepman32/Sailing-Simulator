@@ -2662,3 +2662,113 @@ input[type="range"]:disabled {
   /* A shorter throttle while it runs, so the dock stays low on the screen. */
   .simulator-shell { --throttle-length: clamp(110px, calc(100dvh - 600px), 170px); }
 }
+
+/* Chart: a round minimap under the controls pill, and the full chart. */
+.minimap {
+  position: absolute;
+  z-index: 19;
+  top: calc(var(--edge-top) + 78px);
+  right: var(--edge-right);
+  width: 124px;
+  height: 124px;
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid rgba(233, 220, 192, 0.75);
+  border-radius: 50%;
+  background: #0b3f59;
+  box-shadow: 0 8px 22px rgba(0, 12, 18, 0.35);
+  cursor: pointer;
+}
+.minimap canvas { display: block; width: 100%; height: 100%; }
+.minimap:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+.chart-overlay {
+  position: absolute;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: calc(var(--edge-top)) var(--edge-right) var(--edge-bottom) var(--edge-left);
+  background: rgba(2, 12, 18, 0.55);
+  animation: notice-in 180ms ease-out;
+}
+
+.chart-sheet {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1100px, 100%);
+  height: min(760px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  color: var(--text);
+  background: rgba(4, 27, 38, 0.96);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.chart-header h2 { flex: 1; margin: 0; font-size: 15px; letter-spacing: 0.08em; text-transform: uppercase; }
+.chart-zoom { display: flex; gap: 6px; }
+.chart-zoom button,
+.chart-close {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(8, 40, 53, 0.9);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.chart-zoom button:disabled { opacity: 0.4; cursor: default; }
+
+.chart-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  min-height: 0;
+}
+.chart-canvas { display: block; width: 100%; height: 100%; min-height: 0; }
+
+.chart-legend {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border-left: 1px solid var(--border);
+  list-style: none;
+  font-size: 12px;
+}
+.chart-legend li { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.legend-icon { width: 20px; height: 20px; flex: none; }
+.legend-swatch { width: 20px; height: 14px; flex: none; border-radius: 3px; }
+.legend-fog { background: rgb(9, 22, 31); border: 1px solid var(--border); }
+
+@media (max-width: 680px), (max-height: 560px) and (orientation: landscape) {
+  .minimap { top: calc(var(--edge-top) + 70px); width: 92px; height: 92px; }
+  .chart-overlay { padding: calc(var(--edge-top) / 2) calc(var(--edge-right) / 2) calc(var(--edge-bottom) / 2) calc(var(--edge-left) / 2); }
+  .chart-sheet { height: 100%; }
+}
+
+@media (max-width: 680px) and (orientation: portrait) {
+  .chart-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+  .chart-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 30dvh; border-left: 0; border-top: 1px solid var(--border); }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .chart-body { grid-template-columns: minmax(0, 1fr) 170px; }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  /* The right edge belongs to the throttle: the minimap sits under the action buttons. */
+  .minimap { top: calc(var(--edge-top) + 112px); right: auto; left: var(--edge-left); width: 84px; height: 84px; }
+  .simulator-shell { --throttle-length: clamp(90px, calc(100dvh - 290px), 150px); }
+}

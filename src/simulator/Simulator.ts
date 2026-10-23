@@ -14,7 +14,8 @@ import { RenderLoop } from "./core/RenderLoop";
 import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
-import { distanceFromWaterline } from "./environment/IslandMath";
+import { distanceFromWaterline, islandsWithin } from "./environment/IslandMath";
+import { ExplorationFog, EXPLORATION_STORAGE_KEY, REVEAL_RADIUS } from "./navigation/Exploration";
 import { OceanReflection } from "./environment/OceanReflection";
 import { OceanSystem } from "./environment/OceanSystem";
 import { setShoalField, significantWaveHeight } from "./environment/OceanMath";
@@ -30,6 +31,8 @@ import { compassBearing } from "./vessel/HelmInstruments";
 import { applyEnginePower, createSimulatorState, type SimulatorState } from "./state";
 import type {
   CameraMode,
+  ChartData,
+  ChartMark,
   LightingMode,
   QualityPreset,
   SimulationSnapshot,
@@ -49,7 +52,8 @@ import { createFlamingo } from "./effects/LootModels";
 import { NEUTRAL_GRADE, RadioSystem, type RadioStationId } from "./audio/RadioSystem";
 import { VolcanoSystem } from "./effects/VolcanoSystem";
 import { PoiSystem } from "./effects/PoiSystem";
-import { DISCOVERY_RANGE, POI_CLEARANCE } from "./effects/PoiMath";
+import { DISCOVERY_RANGE, POI_CLEARANCE, poisAround } from "./effects/PoiMath";
+import { lootAround } from "./effects/LootMath";
 import { findOpenWater, RESCUE_CLEARANCE } from "./vessel/RescueMath";
 
 const STORAGE_KEY = "sailing-simulator-pro-preferences-v2";
@@ -347,6 +351,8 @@ export class Simulator {
           if (!this.options.onSceneDoubleTap?.()) this.camera.recenter();
         },
       });
+      // The chart's fog is stored every few seconds, and when the page goes away.
+      window.addEventListener("pagehide", this.onPageHide);
       this.resizeObserver = new ResizeObserver(this.resize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
       this.resize();
@@ -512,6 +518,78 @@ export class Simulator {
         resolve(null);
       }
     });
+  }
+
+  // --- The chart's fog of war ----------------------------------------------
+  private readonly exploration = ExplorationFog.parse(readStorage(EXPLORATION_STORAGE_KEY));
+  private revealClock = 0;
+  private fogSaveClock = 0;
+  private fogDirty = false;
+
+  /** Reveals the sea around the yacht a few times a second; stores it now and then. */
+  private explore(delta: number): void {
+    this.revealClock -= delta;
+    if (this.revealClock > 0) return;
+    this.revealClock = 0.4;
+    const yacht = this.physics.position;
+    if (this.exploration.reveal(yacht.x, yacht.z, REVEAL_RADIUS) > 0) this.fogDirty = true;
+    this.fogSaveClock += 0.4;
+    if (this.fogDirty && this.fogSaveClock > 15) this.saveExploration();
+  }
+
+  private readonly onPageHide = (): void => this.saveExploration();
+
+  private saveExploration(): void {
+    this.fogSaveClock = 0;
+    if (!this.fogDirty) return;
+    this.fogDirty = false;
+    try {
+      localStorage.setItem(EXPLORATION_STORAGE_KEY, this.exploration.serialize());
+    } catch {
+      // Storage full or blocked: the chart still works for this visit.
+    }
+  }
+
+  /** Whether the chart shows (x, z): has the yacht been near enough to see it. */
+  isExplored(x: number, z: number): boolean {
+    return this.exploration.isExplored(x, z);
+  }
+
+  /**
+   * The chart around the yacht: islands within `radius`, and the places and
+   * finds that lie in explored water (finds only within a nearer range,
+   * since they are small).
+   */
+  chartData(radius: number): ChartData {
+    const yacht = this.physics.position;
+    const islands = islandsWithin(yacht.x, yacht.z, radius).map((island) => ({
+      id: island.id,
+      x: island.centerX,
+      z: island.centerZ,
+      radius: island.beachRadius,
+      scaleZ: island.scaleZ,
+      seed: island.seed,
+      lobe: island.lobe,
+      volcano: Boolean(island.volcano),
+    }));
+    const discovered = this.state.discoveredPlaces;
+    const marks: ChartMark[] = [];
+    for (const island of islands) {
+      if (island.volcano && this.exploration.isExplored(island.x, island.z)) {
+        marks.push({ kind: "volcano", x: island.x, z: island.z, discovered: discovered.includes(`volcano:${island.id}`) });
+      }
+    }
+    const open = (x: number, z: number) => distanceFromWaterline(x, z) > POI_CLEARANCE;
+    for (const poi of poisAround(yacht.x, yacht.z, radius, open)) {
+      if (!this.exploration.isExplored(poi.x, poi.z)) continue;
+      marks.push({ kind: poi.kind, x: poi.x, z: poi.z, discovered: discovered.includes(`${poi.kind}:${poi.id}`) });
+    }
+    const collected = new Set(this.state.collectedLoot);
+    const lootOpen = (x: number, z: number) => distanceFromWaterline(x, z) > LOOT_SHORE_CLEARANCE && this.places.clearance(x, z, this.obstacleNormal) > 40;
+    for (const item of lootAround(yacht.x, yacht.z, Math.min(radius, 1500), collected, lootOpen)) {
+      if (this.exploration.isExplored(item.x, item.z)) marks.push({ kind: item.kind, x: item.x, z: item.z, discovered: false });
+    }
+    return { x: yacht.x, z: yacht.z, heading: this.physics.heading, islands, marks };
   }
 
   private photoModeOn = false;
@@ -816,7 +894,9 @@ export class Simulator {
   }
 
   dispose(): void {
+    if (this.initialized) this.saveExploration();
     this.loop?.dispose();
+    window.removeEventListener("pagehide", this.onPageHide);
     this.resizeObserver?.disconnect();
     this.touch?.dispose();
     this.input?.dispose();
@@ -906,6 +986,7 @@ export class Simulator {
     if (slam > 0) this.audio.boomSlam(slam);
     this.ships.update(delta, this.sampleSurface);
     this.wildlife.update(delta, this.physics, this.camera.camera);
+    this.explore(delta);
     this.aviation.setSky(this.scene.environment, this.environment.lightDirection);
     this.aviation.update(delta, this.physics.position, this.environmentState.nightFactor, this.camera.camera);
     this.wake.update(this.elapsed);
@@ -1306,4 +1387,12 @@ export class Simulator {
     this.nextProbe = this.elapsed + 3;
     this.loop?.start();
   };
+}
+
+function readStorage(key: string): string | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 }

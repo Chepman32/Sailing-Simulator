@@ -6,6 +6,7 @@ import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
 import type { CameraMode, Discovery, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
 import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
 import { swipeToRudder, tiltToRudder } from "@/src/simulator/input/TiltSteering";
+import { NauticalChart } from "./NauticalChart";
 import { PhotoToolbar } from "./PhotoToolbar";
 import { SoundPrompt } from "./SoundPrompt";
 import { featureText, getFeatureMessages } from "./featureMessages";
@@ -264,6 +265,9 @@ export function SailingSimulator() {
   // here cannot cause a hydration mismatch with the server-rendered shell.
   const [tiltAvailable] = useState(supportsTiltSteering);
   const [tiltSteering, setTiltSteering] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const chartSource = useCallback(() => simulatorRef.current, []);
+  const closeMap = useCallback(() => setMapOpen(false), []);
   const [rotateHint, setRotateHint] = useState(
     () => typeof window !== "undefined" && window.matchMedia(PORTRAIT_PHONE_QUERY).matches,
   );
@@ -783,6 +787,9 @@ export function SailingSimulator() {
       }
       case "KeyR":
         recenterCamera();
+        break;
+      case "KeyN":
+        setMapOpen((open) => !open);
         break;
       case "Escape":
         if (!panelMinimized) setPanelMinimized(true);
@@ -1358,6 +1365,17 @@ export function SailingSimulator() {
             </div>
           )}
         </section>
+
+        {ready && (
+          <NauticalChart
+            source={chartSource}
+            messages={messages}
+            voyage={voyage}
+            open={mapOpen && !photoMode}
+            onOpen={() => setMapOpen(true)}
+            onClose={closeMap}
+          />
+        )}
 
         <div className="primary-controls">
           <section className={`rudder-control${guideStep === 2 ? " guide-target" : ""}${tiltSteering ? " is-tilt" : ""}`} aria-label={messages.rudder}>

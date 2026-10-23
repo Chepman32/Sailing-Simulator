@@ -100,3 +100,35 @@ export type SimulatorControls = {
 };
 
 export type Dispose = () => void;
+
+/** An island on the chart: its coast is drawn from `islandEdgeNoise` with this seed and lobe. */
+export type ChartIsland = {
+  id: number;
+  x: number;
+  z: number;
+  radius: number;
+  scaleZ: number;
+  seed: number;
+  lobe: number;
+  volcano: boolean;
+};
+
+export type ChartMarkKind = "barge" | "wreck" | "monolith" | "volcano" | "bottle" | "crate" | "flamingo";
+
+/** A place or a find on the chart; only marks in explored water are listed. */
+export type ChartMark = {
+  kind: ChartMarkKind;
+  x: number;
+  z: number;
+  /** For places: the logbook has it. */
+  discovered: boolean;
+};
+
+/** What the chart shows around the yacht (world metres; +Z north, +X west). */
+export type ChartData = {
+  x: number;
+  z: number;
+  heading: number;
+  islands: ChartIsland[];
+  marks: ChartMark[];
+};
