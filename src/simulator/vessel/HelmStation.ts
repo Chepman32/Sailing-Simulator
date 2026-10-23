@@ -11,6 +11,7 @@ import {
   leverAngle,
   windNeedleAngle,
 } from "./HelmInstruments";
+import { Helmsman } from "./Helmsman";
 
 /**
  * The helm station: a pedestal on the starboard aft deck, as on a
@@ -90,6 +91,12 @@ export type HelmData = {
   night: number;
   /** Whether someone is close enough to read the displays (the helm camera, a close orbit). */
   readable: boolean;
+  /** Hull heel and pitch, radians, which the helmsman leans against. */
+  roll: number;
+  pitch: number;
+  time: number;
+  /** False in the first-person helm view, whose camera is the helmsman's eyes. */
+  helmsmanVisible: boolean;
 };
 
 /** A box with rounded edges (moulded fibreglass and cushions). */
@@ -148,6 +155,7 @@ export class HelmStation {
   readonly group = new THREE.Group();
   private readonly wheel = new THREE.Group();
   private readonly lever = new THREE.Group();
+  private readonly helmsman: Helmsman;
   private readonly card: THREE.Mesh;
   private readonly screenMaterial: THREE.MeshStandardMaterial;
   private readonly canvas: HTMLCanvasElement | null;
@@ -358,7 +366,10 @@ export class HelmStation {
     this.lever.add(leverMesh);
     this.lever.position.set(HELM_X + 0.2, 1.38, -3.48);
 
-    this.group.add(compositeMesh, steelMesh, screenMesh, this.card, dome, wheelMount, this.lever);
+    // The helmsman stands between the seat and the wheel, eyes at `HELM_EYE`.
+    this.helmsman = new Helmsman(new THREE.Vector3(HELM_X, DECK_Y, -4.16), wheelMount, WHEEL_RADIUS);
+
+    this.group.add(compositeMesh, steelMesh, screenMesh, this.card, dome, wheelMount, this.lever, this.helmsman.group);
     this.geometries.push(compositeGeometry, steelGeometry, screens, cardGeometry, dome.geometry, rim, spokeGeometry, leverParts);
     this.paintCard();
   }
@@ -371,6 +382,8 @@ export class HelmStation {
   update(delta: number, data: HelmData): void {
     // Starboard helm turns the wheel clockwise as the helmsman sees it.
     this.wheel.rotation.z = THREE.MathUtils.damp(this.wheel.rotation.z, -data.rudder * WHEEL_LOCK, 14, delta);
+    this.helmsman.setVisible(data.helmsmanVisible);
+    this.helmsman.update(delta, data.time, this.wheel.rotation.z, data.roll, data.pitch, data.rudder);
     this.lever.rotation.x = THREE.MathUtils.damp(this.lever.rotation.x, leverAngle(data.engineRunning ? data.throttle : 0), 10, delta);
     // Compass cards are damped in their bowl and lag a quick turn a little.
     const card = compassCardAngle(data.heading);
@@ -417,6 +430,7 @@ export class HelmStation {
   }
 
   dispose(): void {
+    this.helmsman.dispose();
     this.group.removeFromParent();
     this.geometries.forEach((geometry) => geometry.dispose());
     this.materials.forEach((material) => material.dispose());

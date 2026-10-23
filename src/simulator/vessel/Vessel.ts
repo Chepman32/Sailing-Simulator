@@ -37,6 +37,8 @@ export type VesselLighting = {
   /** For the helm displays: whether the engine runs, and whether anyone is close enough to read them. */
   engineRunning?: boolean;
   helmReadable?: boolean;
+  /** False while the camera looks through the helmsman's eyes. */
+  helmsmanVisible?: boolean;
 };
 
 type HullProfile = {
@@ -226,6 +228,10 @@ export class Vessel {
       rudder: controls.rudder,
       night: nightFactor,
       readable: lighting?.helmReadable ?? false,
+      roll: physics.roll,
+      pitch: physics.pitch,
+      time,
+      helmsmanVisible: lighting?.helmsmanVisible ?? true,
     });
     // Follow the simulated shaft so the screws spool up and down with the
     // engines instead of snapping to the lever position.

@@ -328,9 +328,9 @@ export class EnvironmentSystem {
     // its red-orange survives the tone curve instead of clipping to white.
     const sunRadiance = SUN_DISC_RADIANCE * sunUp * (1 - 0.82 * palette.twilight) * (1 - 0.6 * this.weather.overcast);
     this.sunDisc.value.setRGB(
-      palette.sunColor[0] * sunRadiance,
-      palette.sunColor[1] * sunRadiance,
-      palette.sunColor[2] * sunRadiance,
+      palette.sunDiscColor[0] * sunRadiance,
+      palette.sunDiscColor[1] * sunRadiance,
+      palette.sunDiscColor[2] * sunRadiance,
       THREE.LinearSRGBColorSpace,
     );
     const moonUp = clamp((night - 0.04) / 0.3, 0, 1) * (this.state.moonElevation > -0.02 ? 1 : 0);

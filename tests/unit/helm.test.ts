@@ -121,3 +121,30 @@ test("the helm station stands on the aft deck, not over the water behind the tra
     assert.ok(deck !== null && deck > 0.4, `no deck under (${x.toFixed(2)}, ${z.toFixed(2)}): ${deck}`);
   }
 });
+
+test("the helmsman's arms reach the rim without stretching and bend toward the pole", async () => {
+  const { solveTwoBone } = await import("../../src/simulator/vessel/HelmsmanPose");
+  const elbow = { x: 0, y: 0, z: 0 };
+  const shoulder = { x: 0.19, y: 1.42, z: 0 };
+  const grip = { x: 0.3, y: 1.1, z: 0.5 };
+  solveTwoBone(shoulder, grip, 0.29, 0.35, { x: 0.6, y: 0.9, z: -0.2 }, elbow);
+  const upper = Math.hypot(elbow.x - shoulder.x, elbow.y - shoulder.y, elbow.z - shoulder.z);
+  const lower = Math.hypot(grip.x - elbow.x, grip.y - elbow.y, grip.z - elbow.z);
+  assert.ok(Math.abs(upper - 0.29) < 1e-6 && Math.abs(lower - 0.35) < 1e-6, `${upper} ${lower}`);
+  assert.ok(elbow.x > 0.25, "the elbow bends outward, toward the pole");
+  // Out of reach: the limb straightens toward the target, never stretches.
+  const far = solveTwoBone(shoulder, { x: 0.19, y: 1.42, z: 2 }, 0.29, 0.35, { x: 0.6, y: 0.9, z: 0 }, elbow);
+  assert.ok(far <= 0.64 && Number.isFinite(elbow.x + elbow.y + elbow.z));
+});
+
+test("the helmsman leans against the heel, within limits, and his hands never cross on the rim", async () => {
+  const { gripAngles, helmsmanLean, HELMSMAN_MAX_LEAN } = await import("../../src/simulator/vessel/HelmsmanPose");
+  const heeled = helmsmanLean(0.2, 0, 0);
+  assert.ok(heeled.roll > 0.14 && heeled.roll < 0.2, "most of the heel is countered");
+  assert.ok(Math.abs(helmsmanLean(1.2, -1, 3).roll) <= HELMSMAN_MAX_LEAN);
+  assert.ok(Math.abs(helmsmanLean(1.2, -1, 3).pitch) <= HELMSMAN_MAX_LEAN);
+  for (const wheel of [-3.5, -1, 0, 0.4, 3.5]) {
+    const grips = gripAngles(wheel);
+    assert.ok(grips.left - grips.right > 1.8, `hands ${grips.left} / ${grips.right} at wheel ${wheel}`);
+  }
+});

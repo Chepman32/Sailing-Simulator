@@ -46,8 +46,11 @@ export type ShipSound = {
   length: number;
 };
 
-/** Overall level of the wind and the rigging's whistle (1 = the former mix; 0.35 ≈ −9 dB). */
-export const WIND_LEVEL = 0.35;
+/**
+ * Overall level of the wind bed (1 = the original mix). 0.12 is about −18 dB:
+ * the wind is felt under the water and the boat, never heard as a roar.
+ */
+export const WIND_LEVEL = 0.12;
 
 /** Speed of sound in air, m/s: a distant horn arrives seconds late. */
 const SPEED_OF_SOUND = 343;
@@ -465,8 +468,8 @@ export class AudioSystem {
     const overcast = weather.overcast;
     const breeze = clamp((apparentWind - 2) / 14, 0, 1);
     const gale = clamp((apparentWind - 16) / 14, 0, 1);
-    // The wind is a bed under the water and the boat, not the lead: it sits
-    // about 9 dB below where it was (`WIND_LEVEL`).
+    // The wind is a quiet bed under the water and the boat, not the lead
+    // (`WIND_LEVEL`, about 18 dB below the original mix).
     // A gust is heard coming over the water and swells the wind while it blows.
     const swell = 1 + sailing.gust * 0.9 + sailing.gustApproaching * 0.45;
     this.windGain?.gain.setTargetAtTime((0.018 + breeze * 0.045 + overcast * 0.02 + gale * 0.1) * WIND_LEVEL * swell, now, 0.9);

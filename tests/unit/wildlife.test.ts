@@ -490,7 +490,7 @@ test("a leaping dolphin's body points follow the arc it flies", () => {
 
 // --- Shark -------------------------------------------------------------------
 
-test("a shark stays mostly deep, shows its fin only briefly, and never leaves the water", () => {
+test("a shark regularly shows its fin near the yacht, mostly stays under, and never leaves the water", () => {
   for (const [seed, speed] of [
     [7, 0],
     [19, 2.5],
@@ -525,10 +525,11 @@ test("a shark stays mostly deep, shows its fin only briefly, and never leaves th
         shallowUnderYacht += 1;
       }
     }
-    assert.ok(deep / samples > 0.85, `seed ${seed}: shallow ${((1 - deep / samples) * 100).toFixed(0)}% of the time`);
-    assert.ok((time.fin_show ?? 0) < 600 * 0.15, "the fin is a rare sight");
-    assert.ok(highestBody < -0.4, `seed ${seed}: the body rose to ${highestBody.toFixed(2)} m`);
-    assert.ok(highestFin < 0.6, `seed ${seed}: the fin stood ${highestFin.toFixed(2)} m out`);
+    assert.ok(deep / samples > 0.35, `seed ${seed}: shallow ${((1 - deep / samples) * 100).toFixed(0)}% of the time`);
+    const finSeconds = time.fin_show ?? 0;
+    assert.ok(finSeconds > 600 * 0.15 && finSeconds < 600 * 0.5, `seed ${seed}: fin up ${finSeconds.toFixed(0)} s of 600`);
+    assert.ok(highestBody < -0.25, `seed ${seed}: the body rose to ${highestBody.toFixed(2)} m`);
+    assert.ok(highestFin > 0.3 && highestFin < 0.95, `seed ${seed}: the fin stood ${highestFin.toFixed(2)} m out`);
     assert.ok(slowest > 0.8, "a shark never stops swimming");
     assert.equal(shallowUnderYacht, 0, `seed ${seed}: the shark grazed the keels`);
   }

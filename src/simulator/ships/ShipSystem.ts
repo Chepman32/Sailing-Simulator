@@ -14,6 +14,7 @@ import {
   SHIP_KINDS,
   shipContact,
   nearestHullClearance,
+  HornGate,
   shipHornSignal,
   shipOutOfRange,
   stepShip,
@@ -103,6 +104,7 @@ export class ShipSystem {
   private readonly normal = { x: 0, z: 0 };
   private readonly world: ShipWorld;
   private readonly horns: ShipHornEvent[] = [];
+  private readonly hornGate = new HornGate();
   /** A ship answering the yacht's horn: which, and in how many seconds. */
   private reply: { ship: Ship; delay: number } | null = null;
   private readonly sources: ShipSoundSource[] = [];
@@ -170,8 +172,10 @@ export class ShipSystem {
       // A slot that found no clear passage tries again a few seconds later.
       if (this.retry[slot]! <= 0 && shipOutOfRange(ship, yacht.x, yacht.z)) this.place(ship, slot, yacht, false);
       stepShip(ship, this.ships, this.world, delta);
-      const signal = shipHornSignal(ship, yacht.x, yacht.z, this.random);
-      if (signal) {
+      // Horns are rationed across all ships (`MIN_HORN_GAP`): a ship only
+      // considers a signal while the shared gate is open.
+      const signal = this.hornGate.wait(time) > 0 ? null : shipHornSignal(ship, yacht.x, yacht.z, this.random);
+      if (signal && this.hornGate.sound(time)) {
         this.horns.push({
           position: new THREE.Vector3(ship.x, 22, ship.z),
           signal,
@@ -181,10 +185,12 @@ export class ShipSystem {
     });
     if (this.reply) {
       this.reply.delay -= delta;
-      if (this.reply.delay <= 0) {
+      // An answer to the yacht's horn waits for the shared gate rather than
+      // sounding over another ship's blast.
+      if (this.reply.delay <= 0 && this.hornGate.wait(time) <= 0) {
         const ship = this.reply.ship;
         this.reply = null;
-        if (ship.active) this.horns.push({ position: new THREE.Vector3(ship.x, 22, ship.z), signal: "prolonged", length: ship.halfLength * 2 });
+        if (ship.active && this.hornGate.sound(time)) this.horns.push({ position: new THREE.Vector3(ship.x, 22, ship.z), signal: "prolonged", length: ship.halfLength * 2 });
       }
     }
     writeShipUniforms(this.ships, yacht.x, yacht.z);

@@ -18,8 +18,9 @@ const shallows = createShallowsSteering();
  * A shark is mostly a shape under the water: it patrols wide circles, cruises
  * with slow changes of course, comes in to look at the yacht and turns away,
  * and drops into the deep where it disappears. Rarely it passes right under
- * the hulls, sometimes followed by a sudden burst of speed; occasionally it
- * rises until its dorsal fin cuts the surface for a few seconds. It never
+ * the hulls, sometimes followed by a sudden burst of speed. Every minute or
+ * so it rises until its dorsal fin cuts the surface and circles the yacht for
+ * twenty seconds or more, the classic "Jaws" sight. It never
  * jumps, never chases the yacht for long, never turns on the spot.
  *
  *   cruise ⇄ patrol → investigate → approach → accelerate → retreat → deep_swim → cruise
@@ -42,14 +43,20 @@ export const SHARK_DORSAL_TIP = { y: 0.98, z: 0.05 } as const;
 export const SHARK_CAUDAL_TIP = { y: 0.76, z: -2.75 } as const;
 export const SHARK_BELLY = 0.9;
 
-/** Depth of the body centre while showing the dorsal fin. */
-export const SHARK_FIN_SHOW_DEPTH = 0.62;
+/** Depth of the body centre while showing the dorsal fin (the fin then stands about half a metre clear). */
+export const SHARK_FIN_SHOW_DEPTH = 0.5;
+/** Seconds between two fin displays of one shark, and before its first. */
+export const SHARK_FIN_SHOW_INTERVAL = { min: 35, max: 65 } as const;
+export const SHARK_FIRST_FIN_SHOW = { min: 12, max: 25 } as const;
+/** How long the fin stays up once the shark has risen, s. */
+export const SHARK_FIN_SHOW_SECONDS = { min: 16, max: 26 } as const;
+/** A fin display only starts this close to the yacht, m. */
+export const SHARK_FIN_SHOW_RANGE = 140;
 /** Below this the hulls and keels can never be touched. */
 export const SHARK_UNDER_KEEL_DEPTH = 3.8;
 export const SHARK_DEEP_DEPTH = { min: 7.5, max: 10 } as const;
-/** Minimum seconds between two close passes and two fin displays. */
+/** Minimum seconds between two close passes. */
 export const SHARK_CLOSE_PASS_COOLDOWN = 80;
-export const SHARK_FIN_SHOW_COOLDOWN = 30;
 export const SHARK_HIDE_DISTANCE = 110;
 
 export const SHARK_LIMITS: Swimmer3DLimits = {
@@ -96,6 +103,8 @@ export type SharkAgent = {
   wander: number;
   sinceClosePass: number;
   sinceFinShow: number;
+  /** `sinceFinShow` at which the next fin display is due. */
+  nextFinShow: number;
   boldness: number;
   /** Tail beat, and how hard it is working (0–1). */
   strokePhase: number;
@@ -139,7 +148,8 @@ export function createSharkAgent(
     passOffset: 0,
     wander: random() * 100,
     sinceClosePass: 40,
-    sinceFinShow: 30,
+    sinceFinShow: 0,
+    nextFinShow: between(random, SHARK_FIRST_FIN_SHOW.min, SHARK_FIRST_FIN_SHOW.max),
     boldness: between(random, 0.35, 0.85),
     strokePhase: random() * Math.PI * 2,
     strokeEffort: 0.5,
@@ -160,12 +170,8 @@ function enter(agent: SharkAgent, phase: SharkPhase, duration: number): void {
 /** Picks what to do next after a calm phase ends. */
 function nextCalmPhase(agent: SharkAgent, vessel: VesselState, random: RandomSource, distance: number): void {
   const canPass = agent.sinceClosePass > SHARK_CLOSE_PASS_COOLDOWN && distance < 70;
-  const canShowFin =
-    agent.sinceFinShow > SHARK_FIN_SHOW_COOLDOWN && distance > 18 && distance < 110 && -agent.motion.y < 6;
   const roll = random();
-  if (canShowFin && roll < 0.4) {
-    beginFinShow(agent, vessel, random);
-  } else if (canPass && roll < 0.4 + 0.12 * agent.boldness) {
+  if (canPass && roll < 0.4 + 0.12 * agent.boldness) {
     beginInvestigate(agent, random);
   } else if (roll < 0.42) {
     beginPatrol(agent, vessel, random);
@@ -201,14 +207,21 @@ function beginInvestigate(agent: SharkAgent, random: RandomSource): void {
 
 function beginFinShow(agent: SharkAgent, vessel: VesselState, random: RandomSource): void {
   agent.sinceFinShow = 0;
+  agent.nextFinShow = between(random, SHARK_FIN_SHOW_INTERVAL.min, SHARK_FIN_SHOW_INTERVAL.max);
   agent.direction = random() < 0.5 ? -1 : 1;
   agent.depth = SHARK_FIN_SHOW_DEPTH;
   agent.centreX = vessel.x;
   agent.centreZ = vessel.z;
-  agent.radius = between(random, 24, 40);
-  // The time it takes to come up at a calm pace, then a few seconds of fin.
+  agent.radius = between(random, 18, 32);
+  // The time it takes to come up at a calm pace, then the fin circling.
   const rise = Math.max(0, -agent.motion.y - SHARK_FIN_SHOW_DEPTH) / 0.45;
-  enter(agent, "fin_show", rise + between(random, 8, 14));
+  enter(agent, "fin_show", rise + between(random, SHARK_FIN_SHOW_SECONDS.min, SHARK_FIN_SHOW_SECONDS.max));
+}
+
+/** Whether a calm shark should now rise and show its fin. */
+export function finShowDue(agent: SharkAgent, distance: number): boolean {
+  const calm = agent.phase === "cruise" || agent.phase === "patrol" || agent.phase === "deep_swim" || agent.phase === "investigate" || agent.phase === "retreat";
+  return calm && agent.sinceFinShow >= agent.nextFinShow && distance > 14 && distance < SHARK_FIN_SHOW_RANGE;
 }
 
 /** Points the pass at where the yacht will be, a little to one side of her centreline. */
@@ -247,7 +260,8 @@ export function stepShark(
   agent.elapsed += dt;
   agent.wander += dt;
   agent.sinceClosePass += dt;
-  agent.sinceFinShow += dt;
+  // The interval between fin displays counts from the end of the last one.
+  if (agent.phase !== "fin_show") agent.sinceFinShow += dt;
   const toVesselX = vessel.x - motion.x;
   const toVesselZ = vessel.z - motion.z;
   const distance = Math.hypot(toVesselX, toVesselZ);
@@ -260,6 +274,9 @@ export function stepShark(
   }
 
   // --- Phase logic ---------------------------------------------------------
+  // The fin display is on a schedule of its own, so it is a regular sight
+  // rather than a lucky roll at the end of some calm phase.
+  if (finShowDue(agent, distance)) beginFinShow(agent, vessel, random);
   switch (agent.phase) {
     case "cruise":
     case "patrol":
@@ -323,8 +340,8 @@ export function stepShark(
     case "fin_show": {
       if (agent.phase === "fin_show") {
         // The circle drifts with the yacht so the fin stays in view.
-        agent.centreX += (vessel.x - agent.centreX) * (1 - Math.exp(-0.2 * dt));
-        agent.centreZ += (vessel.z - agent.centreZ) * (1 - Math.exp(-0.2 * dt));
+        agent.centreX += (vessel.x - agent.centreX) * (1 - Math.exp(-0.35 * dt));
+        agent.centreZ += (vessel.z - agent.centreZ) * (1 - Math.exp(-0.35 * dt));
       }
       const dx = motion.x - agent.centreX;
       const dz = motion.z - agent.centreZ;
@@ -333,7 +350,8 @@ export function stepShark(
       const tangentZ = (-dx / radial) * agent.direction;
       const correction = clamp((agent.radius - radial) / 10, -0.8, 0.8);
       desiredHeading = Math.atan2(tangentX + (dx / radial) * correction, tangentZ + (dz / radial) * correction);
-      desiredSpeed = agent.phase === "fin_show" ? 1.5 : 1.25 + Math.sin(agent.wander * 0.11) * 0.15;
+      // Showing its fin, the shark keeps pace with a yacht under way.
+      desiredSpeed = agent.phase === "fin_show" ? clamp(1.6 + vessel.speed * 0.9, 1.6, 4.5) : 1.25 + Math.sin(agent.wander * 0.11) * 0.15;
       break;
     }
     case "investigate": {

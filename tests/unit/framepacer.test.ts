@@ -28,3 +28,17 @@ test("frame pacer: resynchronises after a stall without a burst of frames", () =
   assert.ok(pacer.shouldRender(5000, 60), "first frame after a long stall renders");
   assert.ok(!pacer.shouldRender(5004, 60), "and the next callback right behind it does not");
 });
+
+test("adaptive quality keeps its detail as long as the scene holds 30 fps", async () => {
+  const budget = await import("../../src/simulator/core/RenderBudget");
+  const judge = new budget.FpsJudge(budget.SLOW_FPS);
+  for (let index = 0; index < budget.FPS_WARMUP_WINDOWS; index += 1) judge.observe(10, 60);
+  assert.equal(judge.observe(31, 60), "neutral", "31 fps is acceptable, not slow");
+  assert.equal(judge.observe(24, 60), "slow");
+  // A GPU frame of 20 ms (50 fps) must not lower the render scale.
+  const governor = new budget.GpuGovernor();
+  let verdict = "steady";
+  for (let time = 0; time < 20; time += 0.1) verdict = governor.observe(20, time, 0.1);
+  assert.equal(governor.scale, 1);
+  assert.notEqual(verdict, "overloaded");
+});

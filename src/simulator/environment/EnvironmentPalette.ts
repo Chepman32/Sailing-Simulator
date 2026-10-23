@@ -16,8 +16,17 @@ export type Rgb = [number, number, number];
 export type EnvironmentPalette = {
   zenith: Rgb;
   horizon: Rgb;
-  /** Tint of the solar disc and the scattering around it. */
+  /** Tint of the sunlight itself (the key light); near white at noon. */
   sunColor: Rgb;
+  /**
+   * Tint of the visible solar disc. A tropical sun is seen as a blazing
+   * golden-yellow ball: the disc is drawn far brighter than white, so only a
+   * strongly yellow tint (little blue) survives the tone curve as yellow
+   * instead of clipping to white.
+   */
+  sunDiscColor: Rgb;
+  /** Tint of the bright scattering glow around the disc. */
+  sunGlowColor: Rgb;
   /** Irradiance of the dominant light (sun by day, moon by night). */
   lightColor: Rgb;
   /** Sky irradiance reaching horizontal surfaces such as water and foam. */
@@ -48,6 +57,8 @@ const DUSK_ZENITH: Rgb = [0.07, 0.13, 0.36];
 
 const NOON_SUN: Rgb = [1.0, 0.935, 0.79];
 const DUSK_SUN: Rgb = [1.0, 0.5, 0.2];
+export const TROPICAL_SUN_DISC: Rgb = [1.0, 0.8, 0.06];
+const TROPICAL_SUN_GLOW: Rgb = [1.0, 0.8, 0.42];
 const MOONLIGHT: Rgb = [0.56, 0.69, 1.0];
 
 const DAY_AMBIENT: Rgb = [0.46, 0.52, 0.6];
@@ -100,6 +111,8 @@ export function deriveEnvironmentPalette(state: TimeOfDayState, weather: Weather
     1 - storm * 0.45,
   );
   const sunColor = mix(NOON_SUN, DUSK_SUN, clamp(twilight * 1.1, 0, 1));
+  const sunDiscColor = mix(TROPICAL_SUN_DISC, DUSK_SUN, clamp(twilight * 1.1, 0, 1));
+  const sunGlowColor = mix(TROPICAL_SUN_GLOW, DUSK_SUN, clamp(twilight * 1.1, 0, 1));
 
   const sunLight = scale(sunColor, SUN_IRRADIANCE * sunUp);
   const moonLight = scale(MOONLIGHT, MOON_IRRADIANCE * smoothstep(0.02, 0.4, state.moonElevation));
@@ -125,6 +138,8 @@ export function deriveEnvironmentPalette(state: TimeOfDayState, weather: Weather
     zenith,
     horizon,
     sunColor,
+    sunDiscColor,
+    sunGlowColor,
     lightColor,
     ambientColor,
     cloudLit,

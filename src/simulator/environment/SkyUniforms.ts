@@ -55,7 +55,7 @@ export function setLinearColor(target: THREE.Color, source: Rgb): THREE.Color {
 export function applySkyPalette(uniforms: SkyUniforms, palette: EnvironmentPalette, night: number): void {
   setLinearColor(uniforms.uZenith.value, palette.zenith);
   setLinearColor(uniforms.uHorizon.value, palette.horizon);
-  setLinearColor(uniforms.uSunColor.value, palette.sunColor);
+  setLinearColor(uniforms.uSunColor.value, palette.sunGlowColor);
   setLinearColor(uniforms.uCloudLit.value, palette.cloudLit);
   setLinearColor(uniforms.uCloudShade.value, palette.cloudShade);
   uniforms.uNight.value = night;

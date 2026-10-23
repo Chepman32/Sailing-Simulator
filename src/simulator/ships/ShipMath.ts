@@ -464,6 +464,34 @@ export function shipOutOfRange(ship: Ship, yachtX: number, yachtZ: number): bool
 
 export type HornSignal = "danger" | "prolonged" | null;
 
+/** Shortest time between any two ship horns, from whichever ships, s. */
+export const MIN_HORN_GAP = 30;
+
+/**
+ * One gate shared by every ship: whatever ship blows and for whatever reason
+ * (a danger signal, a prolonged blast, an answer to the yacht's horn), the
+ * next horn may only sound `MIN_HORN_GAP` seconds later.
+ */
+export class HornGate {
+  private last = Number.NEGATIVE_INFINITY;
+
+  /** Seconds until a horn may sound (0 when it may sound now). */
+  wait(time: number): number {
+    return Math.max(0, this.last + MIN_HORN_GAP - time);
+  }
+
+  /** Records a horn at `time`; returns false (and records nothing) if it is too soon. */
+  sound(time: number): boolean {
+    if (this.wait(time) > 0) return false;
+    this.last = time;
+    return true;
+  }
+
+  reset(): void {
+    this.last = Number.NEGATIVE_INFINITY;
+  }
+}
+
 /**
  * Sound signals: five short blasts when the yacht stands into the ship's
  * path close ahead; now and then one prolonged blast as she passes.

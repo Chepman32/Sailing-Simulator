@@ -16,8 +16,21 @@
  * Everything here is pure; `GpuTimer` supplies the measurements.
  */
 
-/** GPU time a frame may take, ms: about half of a 60 Hz frame. */
-export const GPU_TARGET_MS = 8.5;
+/**
+ * Frame rate the player is content with. 30 fps is smooth enough for a
+ * sailing scene, so detail is only taken away when the frame rate falls
+ * below this (with a little slack), never merely to reach 60.
+ */
+export const ACCEPTABLE_FPS = 30;
+/** Frame-rate windows below this count as slow for the preset fallback. */
+export const SLOW_FPS = ACCEPTABLE_FPS - 2;
+
+/**
+ * GPU time a frame may take, ms: most of a 30 fps frame. The governor only
+ * lowers the render scale when the GPU could no longer hold 30 fps, so a
+ * scene that renders at 40 fps keeps its full resolution.
+ */
+export const GPU_TARGET_MS = 26;
 /** Lowest render scale the governor uses before handing over to the presets. */
 export const MIN_RENDER_SCALE = 0.7;
 /** Shortest time between two resolution changes, s (targets are reallocated). */

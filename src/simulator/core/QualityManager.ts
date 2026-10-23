@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { QualityPreset } from "../types";
-import { budgetPixelRatio, FpsJudge, type GovernorVerdict } from "./RenderBudget";
+import { budgetPixelRatio, FpsJudge, SLOW_FPS, type GovernorVerdict } from "./RenderBudget";
 
 export type QualitySettings = {
   maxDpr: number;
@@ -94,7 +94,8 @@ export class QualityManager {
   private gpuMeasured = false;
   private fastWindows = 0;
   private readonly coarseDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
-  private readonly fpsJudge = new FpsJudge(this.coarseDevice ? 44 : 36);
+  // Phones and desktops alike keep their detail down to 30 fps (`SLOW_FPS`).
+  private readonly fpsJudge = new FpsJudge(SLOW_FPS);
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,

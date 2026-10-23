@@ -1087,3 +1087,16 @@ test("a helmsman already turning clear of an island keeps the helm", () => {
     assert.ok(engaged < 30, `bearing ${bearing}: the guard took the helm for ${(engaged / 60).toFixed(1)} s from a helmsman who was already clearing`);
   }
 });
+
+test("the noon sun reads as a golden-yellow tropical disc, not a white one", async () => {
+  const { deriveEnvironmentPalette } = await import("../../src/simulator/environment/EnvironmentPalette");
+  const { deriveTimeOfDay } = await import("../../src/simulator/environment/EnvironmentMath");
+  const noon = deriveEnvironmentPalette(deriveTimeOfDay(0));
+  const [red, green, blue] = noon.sunDiscColor;
+  // ACES maps the 9x-bright disc to white unless blue stays low.
+  assert.ok(blue / red < 0.12, `disc blue/red ${blue / red}`);
+  assert.ok(green / red > 0.65 && green / red < 0.9, "yellow, not orange");
+  assert.ok(noon.sunGlowColor[2] < noon.sunGlowColor[0] * 0.6, "the glow around it is warm too");
+  // The light it casts stays near white so the scene is not tinted yellow.
+  assert.ok(noon.sunColor[2] / noon.sunColor[0] > 0.7);
+});

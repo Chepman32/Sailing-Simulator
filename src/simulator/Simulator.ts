@@ -860,6 +860,7 @@ export class Simulator {
       palette: this.environment.current.palette,
       engineRunning: this.state.engineRunning,
       // The displays are only redrawn while someone could read them.
+      helmsmanVisible: this.state.cameraMode !== "helm",
       helmReadable:
         this.state.cameraMode === "helm" ||
         this.camera.camera.position.distanceToSquared(this.vessel.worldPoint(this.vessel.helmEye, this.helmPoint)) < 64,

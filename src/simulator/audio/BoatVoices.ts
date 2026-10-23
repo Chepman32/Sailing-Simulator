@@ -3,6 +3,9 @@ import { boatSoundLevels, sailFillCrack, type BoatSoundState } from "./BoatSound
 
 type NoiseFactory = (duration: number, color: "brown" | "pink" | "white") => AudioBuffer;
 
+/** The shrouds' whistle sits well under the water (about −8 dB from the original mix). */
+export const RIGGING_LEVEL = 0.4;
+
 /**
  * The yacht's own voices, layered (levels from `boatSoundLevels`):
  *
@@ -123,7 +126,7 @@ export class BoatVoices {
     this.lastLevels = levels;
     this.rushGain.gain.setTargetAtTime(levels.rush * 0.34, now, 0.35);
     this.rushTone.frequency.setTargetAtTime(levels.rushTone, now, 0.5);
-    this.riggingGain.gain.setTargetAtTime(levels.rigging * 0.05, now, 0.8);
+    this.riggingGain.gain.setTargetAtTime(levels.rigging * 0.05 * RIGGING_LEVEL, now, 0.8);
     this.riggingBands.forEach((band, index) =>
       band.frequency.setTargetAtTime(levels.riggingPitch * [1, 1.51, 2.03][index]!, now, 1.2),
     );

@@ -422,3 +422,17 @@ test("every listed ship model is shipped, credited and fits its type", async () 
     }
   }
 });
+
+test("ship horns are spaced at least 30 seconds apart across all ships", async () => {
+  const { HornGate, MIN_HORN_GAP } = await import("../../src/simulator/ships/ShipMath");
+  assert.equal(MIN_HORN_GAP, 30);
+  const gate = new HornGate();
+  const sounded: number[] = [];
+  // Ships want to blow every 4 s; the gate lets through only one per 30 s.
+  for (let time = 0; time < 300; time += 4) if (gate.sound(time)) sounded.push(time);
+  for (let index = 1; index < sounded.length; index += 1) {
+    assert.ok(sounded[index]! - sounded[index - 1]! >= MIN_HORN_GAP);
+  }
+  assert.ok(sounded.length >= 9, "the gate rations horns, it does not silence them");
+  assert.ok(gate.wait(sounded.at(-1)! + 10) > 0);
+});
