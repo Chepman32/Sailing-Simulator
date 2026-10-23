@@ -5,6 +5,7 @@ import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
 import type { CameraMode, Discovery, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
 import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
+import { swipeToRudder, tiltToRudder } from "@/src/simulator/input/TiltSteering";
 import { PhotoToolbar } from "./PhotoToolbar";
 import { SoundPrompt } from "./SoundPrompt";
 import { featureText, getFeatureMessages } from "./featureMessages";
@@ -81,7 +82,17 @@ function writePhotoAutoAim(enabled: boolean): void {
   }
 }
 
+const PORTRAIT_PHONE_QUERY = "(max-width: 680px) and (orientation: portrait) and (pointer: coarse)";
+
+type OrientationPermission = { requestPermission?: () => Promise<"granted" | "denied"> };
+
+function supportsTiltSteering(): boolean {
+  return typeof window !== "undefined" && "DeviceOrientationEvent" in window && window.matchMedia("(pointer: coarse)").matches;
+}
+
 type ControlIconName =
+  | "tilt"
+  | "rotate"
   | "sun"
   | "moon"
   | "power"
@@ -108,6 +119,18 @@ function ControlIcon({ name }: { name: ControlIconName }) {
   return (
     <svg className="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       {name === "reset" && <path d="M4 10a8 8 0 1 1 1 7M4 4v6h6" />}
+      {name === "tilt" && (
+        <>
+          <rect x="7" y="3.5" width="10" height="17" rx="2" transform="rotate(18 12 12)" />
+          <path d="M3 8.5a10 10 0 0 0 0 7M21 8.5a10 10 0 0 1 0 7" />
+        </>
+      )}
+      {name === "rotate" && (
+        <>
+          <rect x="3" y="8" width="18" height="10" rx="2" />
+          <path d="M7 4.5h6.5a3 3 0 0 1 3 3V8M14.5 6l2 2 2-2" />
+        </>
+      )}
       {name === "photo" && (
         <>
           <path d="M4 6h4l2-3h4l2 3h4a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Z" />
@@ -237,6 +260,14 @@ export function SailingSimulator() {
   const [photoMode, setPhotoMode] = useState(false);
   const [photoHint, setPhotoHint] = useState(false);
   const [photoAutoAim, setPhotoAutoAim] = useState(() => readPhotoAutoAim());
+  // Both are shown only after loading completes, so reading the browser
+  // here cannot cause a hydration mismatch with the server-rendered shell.
+  const [tiltAvailable] = useState(supportsTiltSteering);
+  const [tiltSteering, setTiltSteering] = useState(false);
+  const [rotateHint, setRotateHint] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(PORTRAIT_PHONE_QUERY).matches,
+  );
+  const swipeStart = useRef<{ pointerId: number; x: number; rudder: number; width: number } | null>(null);
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT);
   const [loading, setLoading] = useState<LoadingState>({
     loaded: 0,
@@ -438,8 +469,38 @@ export function SailingSimulator() {
   }, []);
 
   useEffect(() => {
-    if (!rudderDragging.current) setRudderInput(Math.round(snapshot.rudderDegrees / 35 * 100));
-  }, [snapshot.rudderDegrees]);
+    if (!rudderDragging.current && !tiltSteering) setRudderInput(Math.round(snapshot.rudderDegrees / 35 * 100));
+  }, [snapshot.rudderDegrees, tiltSteering]);
+
+  useEffect(() => {
+    // Phones held upright get a one-time suggestion to turn sideways; it goes
+    // away on rotation, on dismissal, or after a few seconds.
+    if (!loading.ready) return;
+    const portraitPhone = window.matchMedia(PORTRAIT_PHONE_QUERY);
+    const sync = () => setRotateHint((visible) => visible && portraitPhone.matches);
+    portraitPhone.addEventListener("change", sync);
+    // Counted from the moment the scene is on screen, not from page load.
+    const timer = window.setTimeout(() => setRotateHint(false), 12000);
+    return () => {
+      portraitPhone.removeEventListener("change", sync);
+      window.clearTimeout(timer);
+    };
+  }, [loading.ready]);
+
+  useEffect(() => {
+    if (!tiltSteering) return;
+    let lastValue = Number.NaN;
+    const onOrientation = (event: DeviceOrientationEvent) => {
+      const angle = window.screen.orientation?.angle ?? 0;
+      const value = Math.round(tiltToRudder(event.beta, event.gamma, angle) * 100);
+      if (value === lastValue) return;
+      lastValue = value;
+      setRudderInput(value);
+      simulatorRef.current?.setRudder(value / 100);
+    };
+    window.addEventListener("deviceorientation", onOrientation);
+    return () => window.removeEventListener("deviceorientation", onOrientation);
+  }, [tiltSteering]);
 
   useEffect(() => {
     if (!throttleDragging.current) setThrottleInput(Math.round(snapshot.throttle * 100));
@@ -639,6 +700,30 @@ export function SailingSimulator() {
     simulatorRef.current?.setSailColor(color);
     showNotice(`${voyage.sailColor}: ${featureText(voyage, `sail_${color}`)}`);
   };
+  const applyRudder = (value: number) => {
+    setRudderInput(value);
+    setShowHelp(false);
+    simulatorRef.current?.setRudder(value / 100);
+  };
+
+  const toggleTiltSteering = async () => {
+    if (tiltSteering) {
+      setTiltSteering(false);
+      simulatorRef.current?.releaseRudder();
+      return;
+    }
+    // iOS asks for permission, and only from inside a user gesture.
+    const permission = (window.DeviceOrientationEvent as unknown as OrientationPermission).requestPermission;
+    if (permission) {
+      try {
+        if ((await permission()) !== "granted") return;
+      } catch {
+        return;
+      }
+    }
+    setTiltSteering(true);
+  };
+
   const enterPhotoMode = () => {
     photoModeRef.current = true;
     setPhotoMode(true);
@@ -773,6 +858,13 @@ export function SailingSimulator() {
       />
 
       {photoMode && photoHint && <p className="photo-toast" aria-hidden="true">{messages.photoModeHint}</p>}
+      {rotateHint && loading.ready && !error && !photoMode && (
+        <div className="rotate-hint" role="status">
+          <ControlIcon name="rotate" />
+          <span>{messages.rotateHint}</span>
+          <button type="button" aria-label={messages.dismiss} title={messages.dismiss} onClick={() => setRotateHint(false)}>×</button>
+        </div>
+      )}
       {photoMode && (
         <PhotoToolbar
           messages={voyage}
@@ -1268,7 +1360,41 @@ export function SailingSimulator() {
         </section>
 
         <div className="primary-controls">
-          <section className={`rudder-control${guideStep === 2 ? " guide-target" : ""}`} aria-label={messages.rudder}>
+          <section className={`rudder-control${guideStep === 2 ? " guide-target" : ""}${tiltSteering ? " is-tilt" : ""}`} aria-label={messages.rudder}>
+            {/* On phones this row is the steering control: swipe across it
+                (or tilt the phone); the range input stays for keyboards. */}
+            <div
+              className="rudder-swipe"
+              title={messages.swipeToSteer}
+              onPointerDown={(event) => {
+                if (tiltSteering) return;
+                event.currentTarget.setPointerCapture(event.pointerId);
+                rudderDragging.current = true;
+                swipeStart.current = {
+                  pointerId: event.pointerId,
+                  x: event.clientX,
+                  rudder: rudderInput / 100,
+                  width: event.currentTarget.getBoundingClientRect().width,
+                };
+              }}
+              onPointerMove={(event) => {
+                const start = swipeStart.current;
+                if (!start || start.pointerId !== event.pointerId) return;
+                // Right-to-left layouts still steer by physical direction.
+                applyRudder(Math.round(swipeToRudder(start.rudder, event.clientX - start.x, start.width) * 100));
+              }}
+              onPointerUp={() => {
+                if (!swipeStart.current) return;
+                swipeStart.current = null;
+                rudderDragging.current = false;
+                simulatorRef.current?.releaseRudder();
+              }}
+              onPointerCancel={() => {
+                swipeStart.current = null;
+                rudderDragging.current = false;
+                simulatorRef.current?.releaseRudder();
+              }}
+            >
             <div className="helm-wheel" aria-hidden="true">
               <svg viewBox="0 0 100 100">
                 <g transform={`rotate(${wheelRotation} 50 50)`}>
@@ -1290,7 +1416,21 @@ export function SailingSimulator() {
               ) : (
                 <strong>{displayedRudderDegrees < -0.5 ? messages.port : displayedRudderDegrees > 0.5 ? messages.starboard : messages.center} {Math.abs(displayedRudderDegrees).toFixed(0)}°</strong>
               )}
+              <small className="swipe-hint">{tiltSteering ? messages.tiltSteering : messages.swipeToSteer}</small>
             </div>
+            </div>
+            {tiltAvailable && loading.ready && (
+              <button
+                type="button"
+                className="tilt-button"
+                aria-pressed={tiltSteering}
+                aria-label={messages.tiltSteering}
+                title={messages.tiltSteering}
+                onClick={() => void toggleTiltSteering()}
+              >
+                <ControlIcon name="tilt" />
+              </button>
+            )}
             <div className="rudder-track-wrap">
               <span>{messages.port}</span>
               <input
@@ -1313,12 +1453,8 @@ export function SailingSimulator() {
                   simulatorRef.current?.releaseRudder();
                 }}
                 onBlur={() => { rudderDragging.current = false; }}
-                onChange={(event) => {
-                  const value = Number(event.target.value);
-                  setRudderInput(value);
-                  setShowHelp(false);
-                  simulatorRef.current?.setRudder(value / 100);
-                }}
+                disabled={tiltSteering}
+                onChange={(event) => applyRudder(Number(event.target.value))}
               />
               <span>{messages.starboard}</span>
             </div>
@@ -1326,6 +1462,7 @@ export function SailingSimulator() {
               type="button"
               className="center-button"
               onClick={() => {
+                setTiltSteering(false);
                 setRudderInput(0);
                 simulatorRef.current?.centerRudder();
               }}

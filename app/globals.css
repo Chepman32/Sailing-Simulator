@@ -2527,3 +2527,138 @@ input[type="range"]:disabled {
 
   .discovery-icon { display: none; }
 }
+
+/* Swipe and tilt steering. On wider screens the swipe pad is only a wrapper
+   (the wheel and heading keep their grid places); on phones it is the
+   steering control, one row with the tilt toggle and the centre button. */
+.rudder-swipe { display: contents; }
+.swipe-hint,
+.tilt-button { display: none; }
+
+.rotate-hint {
+  position: absolute;
+  z-index: 22;
+  top: calc(var(--edge-top) + 120px);
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 40px);
+  min-height: 44px;
+  padding: 0 4px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(4, 27, 38, 0.9);
+  font-size: 12px;
+  font-weight: 700;
+  transform: translateX(-50%);
+  animation: notice-in 220ms ease-out;
+}
+
+.rotate-hint .control-icon { flex: none; }
+
+.rotate-hint button {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text);
+  background: transparent;
+  font-size: 22px;
+  cursor: pointer;
+}
+
+@media (max-width: 680px), (max-height: 560px) and (orientation: landscape) {
+  .rudder-control {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: "swipe tilt center";
+    gap: 8px;
+    padding: 6px;
+  }
+
+  .rudder-swipe {
+    grid-area: swipe;
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 52px;
+    padding: 0 8px 0 2px;
+    border: 1px dashed rgba(151, 231, 238, 0.24);
+    border-radius: 14px;
+    cursor: ew-resize;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .rudder-control.is-tilt .rudder-swipe { cursor: default; border-style: solid; }
+
+  .rudder-swipe .helm-wheel { grid-area: auto; }
+  .rudder-swipe .control-heading {
+    grid-area: auto;
+    display: grid;
+    gap: 1px;
+    justify-items: start;
+    min-width: 0;
+    text-align: start;
+  }
+  .rudder-swipe .control-heading strong { white-space: nowrap; }
+
+  .swipe-hint {
+    display: block;
+    overflow: hidden;
+    max-width: 100%;
+    color: var(--muted, rgba(220, 240, 245, 0.7));
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-overflow: ellipsis;
+    text-transform: none;
+    white-space: nowrap;
+  }
+
+  .tilt-button {
+    grid-area: tilt;
+    display: grid;
+    place-items: center;
+    width: 48px;
+    min-height: 48px;
+    padding: 0;
+    border: 1px solid rgba(151, 231, 238, 0.24);
+    border-radius: 12px;
+    color: var(--text);
+    background: rgba(4, 29, 40, 0.6);
+    cursor: pointer;
+  }
+  .tilt-button[aria-pressed="true"] {
+    border-color: var(--accent);
+    color: var(--accent-strong);
+    background: rgba(101, 226, 214, 0.16);
+  }
+
+  .rudder-control .center-button { grid-area: center; }
+
+  /* The range input stays focusable for keyboards and screen readers; the
+     visible phone control is the swipe pad (or tilt), which saves height. */
+  .rudder-control .rudder-track-wrap {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* Engine off: the throttle card is just the engine switch. */
+  .throttle-control.is-off { min-height: 0; padding: 6px; }
+  .throttle-control.is-off .vertical-heading,
+  .throttle-control.is-off .throttle-layout { display: none; }
+  .throttle-control.is-off .engine-toggle { margin: 0; }
+}
+
+@media (max-width: 680px) and (orientation: portrait) {
+  /* A shorter throttle while it runs, so the dock stays low on the screen. */
+  .simulator-shell { --throttle-length: clamp(110px, calc(100dvh - 600px), 170px); }
+}
