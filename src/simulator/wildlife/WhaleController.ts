@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
 import type { OceanSystem } from "../environment/OceanSystem";
+import type { InterestPoint } from "../camera/PhotoDirector";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
 import {
   WHALE_PHASE_DURATION,
@@ -142,6 +143,13 @@ export class WhaleController {
       impactArmed: false,
       waterFadeMaterials,
     };
+  }
+
+  /** The tail slap is the whale's photographic moment. */
+  collectInterest(points: InterestPoint[]): void {
+    const whale = this.whale;
+    if (!whale || whale.phase === "cruise" || whale.phase === "dive") return;
+    points.push({ kind: "whale", position: whale.position, radius: 9, priority: 7, lookHeight: 0.15 });
   }
 
   update(delta: number, physics: VesselPhysics, animationDelta = delta): void {

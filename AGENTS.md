@@ -60,7 +60,10 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `app/page.tsx` | Top-level route; renders the simulator component |
 | `app/layout.tsx` | Document metadata and root layout |
 | `app/components/SailingSimulator.tsx` | Canvas lifecycle, responsive HUD, controls, settings, sound-unlock affordance, simulator bridge |
-| `app/components/i18n.ts` | Thirty language definitions, system-language resolution, aliases, RTL helpers |
+| `app/components/i18n.ts` | Thirty language definitions (core + feature tables), system-language resolution, aliases, RTL helpers |
+| `app/components/NavigationMap.tsx` | Minimap and full chart canvases with fog of war |
+| `app/components/ControlIcon.tsx` | Line icons for dense controls |
+| `app/components/steering.ts` | Tilt/swipe steering math and iOS motion permission |
 | `app/globals.css` | Full-screen layout, mobile breakpoints, safe areas, control sizing, UI states |
 | `app/chatgpt-auth.ts` | Sites/ChatGPT runtime integration; do not remove without understanding the host contract |
 
@@ -84,7 +87,23 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/OceanSystem.ts` | GPU-displaced ocean, material shading, transparency, sun/moon glints, vessel shadow |
 | `src/simulator/environment/EnvironmentMath.ts` | Pure day/night state derivation |
 | `src/simulator/environment/EnvironmentSystem.ts` | Sky, fog, exposure, sun, moon, stars, ambient/directional lighting |
-| `src/simulator/environment/IslandSystem.ts` | Terrain, palms, seabed, bathymetry, collision, avoidance, shore direction |
+| `src/simulator/environment/IslandSystem.ts` | Island terrain meshes, instanced palms and rocks, pier/hut/lighthouse, galleon reef, seabed, bathymetry, collision, avoidance, shore direction, lava emission |
+| `src/simulator/environment/VolcanoState.ts` | Pure eruption cycle and activity envelope |
+| `src/simulator/environment/VolcanoSystem.ts` | Lit ash/steam plume (sorted instanced billboards), lava bombs, crater fountain glow |
+
+### World, traffic, and effects
+
+| Path | Responsibility |
+| --- | --- |
+| `src/simulator/world/WorldLayout.ts` | Single source of truth for islands, reef, places, floating finds, land-clearance helpers |
+| `src/simulator/world/IslandTerrain.ts` | Pure island relief, shoreline, lava mask, terrain height queries, seeded randomness |
+| `src/simulator/world/IslandStructures.ts` | Merged pier, stilt hut, lighthouse, lantern and beam geometry |
+| `src/simulator/world/PointsOfInterestSystem.ts` | Sunken galleon, monolith, floating party with dancers, bottles and crates |
+| `src/simulator/world/Discovery.ts` | Fog-of-war grid, discovered places, spotted/collected finds, persistence |
+| `src/simulator/traffic/ShipTraffic.ts` | Pure ship spacing, route selection, closest approach, global horn scheduler |
+| `src/simulator/traffic/ShipModels.ts` | Procedural LNG carrier, container ship, tanker and cruise liner |
+| `src/simulator/traffic/ShipTrafficSystem.ts` | Ship render pass, fitted ship shadow light, environment map, wakes, horns, hull collision |
+| `src/simulator/effects/FlareMath.ts`, `FlareSystem.ts` | Parachute signal flare timeline, visuals, red light, smoke trail, positional sounds |
 
 ### Vessel
 
@@ -92,7 +111,10 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | --- | --- |
 | `src/simulator/vessel/Vessel.ts` | Detailed yacht GLB normalization, materials, transform, nav lights, visual pose |
 | `src/simulator/vessel/VesselPhysics.ts` | Propeller and sail forces, drag, rudder torque, buoyancy, heave, pitch, roll, island collision |
-| `src/simulator/vessel/SailSystem.ts` | Sail material and wind/trim deformation |
+| `src/simulator/vessel/SailAerodynamics.ts` | Pure combined main + jib force, sheet angles, camber, twist, luffing |
+| `src/simulator/vessel/SailSystem.ts` | Procedural cloth mainsail and staysail (CPU-deformed, real normals), boom pivot |
+| `src/simulator/vessel/HumanFigure.ts` | Single-draw-call articulated human (rigid skinning) with two-bone IK |
+| `src/simulator/vessel/Helmsman.ts` | Seated skipper: hands on the turning wheel, planted feet, counter-heel balance spring, flare pose |
 | `src/simulator/vessel/WakeSystem.ts` | Twin hull tracks, prop wash, bow droplets, wildlife splash rings and foam patches |
 
 ### Wildlife
@@ -101,12 +123,12 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | --- | --- |
 | `src/simulator/wildlife/WildlifeSystem.ts` | Owns wildlife controllers and throttles animation mixers to approximately 30 Hz |
 | `DolphinController.ts` | Dolphin group movement and gated breach state machine |
-| `SharkController.ts` | Forward-only shark cruise behavior |
+| `SharkController.ts` | Forward-only shark cruise with periodic surface "fin passes" around the yacht |
 | `WhaleController.ts` | Submerged whale cruise, articulated fluke rise/strike, physical water-contact splash |
 | `FishSchoolController.ts` | Local animated tropical fish group |
 | `GullFlockController.ts` | Animated aerial flock behavior |
 | `SwimmerDynamics.ts` | Shared bounded speed, acceleration, yaw-rate, pitch, bank, and vertical dynamics |
-| `WildlifeState.ts` | Pure dolphin and whale states, durations, transitions, tail-slap pose |
+| `WildlifeState.ts` | Pure dolphin, whale and shark states, durations, transitions, tail-slap pose, fin depth |
 | `WildlifeModel.ts` | GLB normalization, animation selection, asset validation, heading helpers |
 
 ### Input, camera, audio, and HUD
@@ -115,8 +137,10 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | --- | --- |
 | `src/simulator/input/InputController.ts` | Keyboard, gamepad, rudder/throttle setters, dead zones |
 | `src/simulator/input/TouchControls.ts` | Camera-only pointer orbit, pinch zoom, double-tap recenter |
-| `src/simulator/camera/CameraController.ts` | Chase, helm, orbit, drone framing; damping; FOV; water-floor guard |
-| `src/simulator/audio/AudioSystem.ts` | Web Audio lifecycle, buses, engine synthesis, waves, wind, hull noise, splash cues |
+| `src/simulator/camera/CameraController.ts` | Chase, helm, orbit, drone framing; damping; FOV; water-floor guard; directed photo shots |
+| `src/simulator/camera/PhotoDirector.ts` | Photo-mode subject selection and sail-free, terrain-free framing |
+| `src/simulator/audio/AudioSystem.ts` | Web Audio lifecycle, buses, engine synthesis, waves, wind, hull noise, camera-relative spatial effects (bell, horns, flares, volcano, party), reverb |
+| `src/simulator/audio/AudioMath.ts` | Horn profiles, bell partials, distance and air-absorption helpers |
 | `src/simulator/ui/HudController.ts` | Snapshot throttling between simulator and React |
 
 ### Build, hosting, and tests
@@ -132,6 +156,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `tests/unit/simulator.test.ts` | Environment, engine, wake, physics, wildlife, and stability invariants |
 | `tests/unit/assets.test.ts` | GLB quality/rig/animation/weight constraints and island geometry constraint |
 | `tests/unit/i18n.test.ts` | Language coverage, aliases, fallback, and preference semantics |
+| `tests/unit/features.test.ts` | Auto quality, ship spacing/horns, spatial audio, steering, shark fin, volcano, flare, photo occlusion, discovery, terrain, sails, rudder/heel/compass signs |
 | `tests/rendered-html.test.mjs` | Built-route smoke test |
 
 Generated folders such as `dist`, `.next`, `.sites-runtime`, and `node_modules` are not source. Never hand-edit or commit their generated contents unless the hosting tool explicitly owns a required metadata change.
@@ -140,8 +165,9 @@ Generated folders such as `dist`, `.next`, `.sites-runtime`, and `node_modules` 
 
 - World up is `+Y`.
 - Simulation forward/bow is `+Z`.
-- Simulation starboard/right is `+X`.
-- Heading zero points along `+Z`; heading increases toward `+X`.
+- three.js is right-handed: looking along the bow (`+Z`) with `+Y` up, the viewer's **right (starboard) is `-X`** and port is `+X`. Earlier documentation called `+X` starboard; that mirrored the controls (a starboard rudder turned the boat to the screen's left), the heel (toward windward) and the navigation lights. All three are corrected.
+- Heading zero points along `+Z` (north); heading increases toward `+X` (west, counter-clockwise from above). A starboard rudder therefore yaws negatively, and the compass shows `compassBearingDegrees(heading) = -heading` so starboard turns increase the bearing.
+- Positive `roll` lowers the `+X` side (`Vessel` applies `rotation.z = -roll`); the yacht heels toward leeward, the side the apparent air flows toward.
 - Distances are treated as meters.
 - Speeds in physics are meters per second. HUD knots use the factor `1.943844`.
 - Rudder control state is normalized to `[-1, 1]`; the HUD maps that range to `[-35°, 35°]`.
@@ -160,17 +186,22 @@ When introducing a model, document its native axis, units, expected bounding dim
 2. load seven local GLB definitions through `AssetManager`;
 3. create the GPU ocean;
 4. create the unified environment and current light mode;
-5. create islands and bathymetry;
-6. create vessel physics;
-7. create the yacht visual and sail system;
-8. create wake, foam, and particle pools;
-9. create wildlife controllers from loaded assets;
-10. create and configure the camera;
-11. attach keyboard/gamepad input;
-12. attach canvas camera gestures;
-13. install resize observation;
-14. construct and start the render loop;
-15. emit the first running snapshot.
+5. create islands, structures, reef and bathymetry;
+6. create the volcano effects;
+7. create points of interest (galleon, monolith, party, floating finds);
+8. create vessel physics;
+9. create the yacht visual, sails and skipper;
+10. create wake, foam, and particle pools;
+11. create wildlife controllers from loaded assets;
+12. create ship traffic (its own render scene) and the flare system;
+13. create and configure the camera;
+14. attach keyboard/gamepad input;
+15. attach canvas camera gestures;
+16. install resize observation;
+17. construct and start the render loop;
+18. emit the first running snapshot.
+
+Discovery state is restored from `sailing-simulator-discovery-v1` in the constructor.
 
 `AudioSystem` is constructed earlier, in the `Simulator` constructor, so gesture listeners exist while assets are loading. This is intentional for iOS/WebKit, where a user may tap the loading screen before `init()` finishes.
 
@@ -186,22 +217,30 @@ The order of each simulation frame is an invariant.
 2. apply keyboard/gamepad input;
 3. force throttle to neutral if the engine is stopped;
 4. integrate vessel forces, collision, and buoyancy;
-5. sample and advance wake, spray, splash decals, and droplets.
+5. advance ship traffic (routes, recycling, horns) and push the yacht out of any hull;
+6. sample and advance wake, spray, splash decals, and droplets.
 
 The loop clamps a long frame to 50 ms, caps the accumulator at five fixed steps, and performs no more than five catch-up steps. That prevents a backgrounded or stalled tab from creating a spiral of death.
 
 ### Variable-rate update
 
 1. refresh ocean focus/uniforms;
-2. animate palms;
-3. interpolate yacht and sails;
+2. animate palms, lighthouse and seabed follow;
+3. interpolate yacht, sails, wheel and skipper;
 4. update wildlife movement and animation mixers;
 5. rebuild visible wake instances at a throttled rate;
-6. update camera spring and FOV;
-7. derive and apply environment state;
-8. automate audio parameters;
-9. publish HUD state on its own cadence;
-10. render once.
+6. update the flare;
+7. update floating finds, the party, discovery and persistence;
+8. run the photo director (photo mode + auto-target only);
+9. update camera spring and FOV;
+10. derive and apply environment state;
+11. update ship poses, wakes, lights and the fitted ship shadow;
+12. update the volcano and its lava emission;
+13. move the audio listener to the camera and automate audio parameters;
+14. publish HUD state on its own cadence;
+15. render once: clear, ship scene, then the main scene (both share depth).
+
+`renderer.autoClear` is false and the main scene has no `scene.background` (the sky dome covers the frame and the clear colour is the horizon colour); a Color background would force a clear and erase the ship pass.
 
 Do not run physics from React renders, HUD timers, GLB animation clip events, or arbitrary pointer event frequency.
 
@@ -221,7 +260,9 @@ The persistence key is `sailing-simulator-pro-preferences-v2`. Persisted fields 
 
 An explicit engine start clears a stale persisted engine-mute value, selects slow ahead when the throttle is near neutral, and persists the corrected mute preference. The user may mute the running engine again afterward. This prevents an old hidden setting from making the primary engine switch appear broken.
 
-On coarse input devices the simulator starts at low quality. Saved high quality is not blindly restored on mobile. Treat this as a safety guard.
+The default quality preset is `auto`. Saved presets are restored, except that a saved `high` becomes `medium` on coarse (touch) devices. Treat this as a safety guard.
+
+Discovery (explored fog-of-war cells, discovered places, spotted and collected finds) persists under `sailing-simulator-discovery-v1`, saved at most every four seconds when it changed and on dispose. Photo-mode state and auto-targeting are session-only. The tilt-steering choice persists under `sailing-simulator-steering-v1`; the rotate-to-landscape hint is dismissed per session.
 
 React receives immutable `SimulationSnapshot` values. A UI control must invoke a public `Simulator` method; it must not mutate physics objects, system internals, or a stale snapshot.
 
@@ -295,6 +336,12 @@ Rules for yacht work:
 - keep propellers/rudders tied to engine/rudder state if the asset exposes suitable nodes;
 - validate close camera framing after any scale, pivot, or bounding-box change.
 
+Sails: the GLB's single mainsail mesh (material `cloth`) is hidden and replaced by two procedural cloth surfaces owned by `SailSystem`: a mainsail (luff on the mast, foot on the boom, roach and headboard) and a staysail/jib on the forestay. Both are rebuilt on the CPU each frame from `computeSailState()` — the same numbers the physics uses — with a belly whose maximum draft sits near 42% chord, upper-leech twist, and flogging while luffing; vertex normals are recomputed so the belly is lit correctly. The boom is re-pivoted at the gooseneck and swings with the main sheet angle; signed angles pass smoothly through zero during tacks and gybes. The physics keeps one combined force from `MAINSAIL_AREA + JIB_AREA` (72 m²).
+
+Helm and crew: the GLB wheel (`Torus_17`, hub and spokes) turns about its axle by `HELM_WHEEL_TRAVEL × rudder`, clockwise (from the helm) for starboard. `Helmsman` seats a procedural skipper (one skinned mesh, rigid weights) on the helm seat with both hands on the rim through two-bone IK, feet planted on the cockpit sole, a damped counter-heel balance spring, head scanning, and a raised flare-pistol pose when a flare is fired. The ship's bell hangs on the forward face of the mast and swings when rung.
+
+Navigation lights are always in the scene; their intensity follows the night factor. Do not toggle light visibility — that changes the light count and recompiles every material.
+
 ## 12. Wake, footprint, foam, and splash
 
 The wake is intentionally divided into separate effects:
@@ -323,7 +370,9 @@ A wildlife splash position must be an actual world-space water-contact position,
 
 ## 13. Islands and bathymetry
 
-Three island definitions provide center, beach radius, and elliptical Z scale. `IslandSystem.depthAt()` derives a shallow-water profile near each beach and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint, and direction back toward open water.
+`WorldLayout.ISLANDS` defines five islands of different kinds — `hill` (forested hill, pier and stilt hut), `rocky` (ridged rock with a cliff face and the lighthouse), `atoll` (low sand and palms), `volcano` and `islet` (the monolith) — each with center, beach radius, elliptical Z scale, peak height and a seed. Relief comes from pure functions in `IslandTerrain.ts`; meshes, palm and rock placement, the photo director's line-of-sight tests and the chart all sample them. `IslandSystem.depthAt()` derives a shallow-water profile near each beach, the galleon reef, and deep-water variation elsewhere. The same definitions support soft avoidance, collision constraint (plus capsule obstacles for piers), and direction back toward open water.
+
+Palms are individual instances of the five GLB variants with their own lean (seaward), height and heading, placed on the terrain surface and avoiding steep slopes and structures; wind sway runs in the vertex shader per instance. Rocks are one instanced, noise-displaced mesh. Terrain materials add world-space colour breakup in the fragment shader; the volcano material adds animated lava emission from a per-vertex lava mask, driven by `VolcanoSystem`.
 
 The rendered island uses irregular radial geometry and a short submerged apron. The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
 
@@ -336,7 +385,22 @@ Island constraints:
 - keep beach color warm muted yellow, not pure white or neon yellow;
 - maintain a plausible transition from beach to shallow blue water;
 - if bathymetry changes, update collision and HUD depth behavior together;
-- avoid adding high-detail palm geometry to every distant island without LOD or instancing.
+- avoid adding high-detail palm geometry to every distant island without LOD or instancing;
+- keep floating finds and places clear of every shoreline (tested), and ship routes at least `SHIP_LAND_CLEARANCE` from land.
+
+### Volcano
+
+`VolcanoState` cycles `quiet → rumble → eruption → waning → quiet`; the first eruption comes about 30 s after loading. The plume is a bounded pool of instanced billboards (`smokeParticles` per quality) with per-puff sphere lighting from the sun in view space, wind shear with height, incandescent undersides near the vent, manual exponential fog, and back-to-front sorting at ~8 Hz. Lava bombs are a bounded `Points` pool that dies on terrain contact. Explosions call positional audio. Do not add point lights for the eruption.
+
+### Places and finds
+
+The sunken galleon sits on a sand-and-coral reef 6–7 m down so it is visible through the translucent water; the black monolith stands on its islet; the floating party bobs with the swell and has dancers (procedural figures), string lights and positional music. Bottles and crates float on the sampled surface and are collected within `COLLECT_RADIUS`.
+
+### Ship traffic
+
+Four procedural ships (LNG carrier, container ship, tanker, cruise liner) are kept 1.5–3 km apart (`isValidShipSpacing`), spawned 1.2–2.6 km from the yacht on courses that pass it at 280–650 m and stay clear of land, recycled beyond 3.6 km, and quietly re-spawned if two drift within 1.5 km while unseen. A global `HornScheduler` guarantees at least 30 s between any two horn blasts (approach, warning when the yacht stands into a ship's path, and occasional casual blasts).
+
+Ships render in their own scene before the main scene. That scene mirrors the environment lighting and owns a directional light whose orthographic shadow camera is fitted around the nearest ship only, giving crisp self-shadowing at a fixed texel density (`shipShadowMapSize`). A small PMREM sky environment map plus clear-coated LNG tank material give small, bright sun highlights. Wakes live in the main scene after the ocean. The yacht is pushed out of any hull in the fixed step.
 
 ## 14. Unified day and night environment
 
@@ -393,6 +457,8 @@ Each phase has a finite duration, continuous position, continuous velocity, and 
 
 Sharks cruise below the surface with positive speed, limited turn rate, gradual bank, and gentle depth corrections. Do not use the authored bite clip as a locomotion substitute. A shark may pass the yacht at a safe distance but must not reverse or pivot in place.
 
+The shark cycles `patrol → approach → fin → dive → patrol`. During the fin pass it circles the yacht at about 16 m with only the dorsal fin (measured from the model's bounds) clearing the water by `SHARK_FIN_EXPOSURE`, almost no bank, and a light foam trail; the fin rises and sinks smoothly. The first pass comes within ~10 s of loading.
+
 ### Whales
 
 Whales remain submerged. The normal behavior is a slow cruise followed by an articulated tail sequence:
@@ -412,9 +478,15 @@ The current audio implementation is procedural Web Audio. There are no runtime a
 ```text
 Master → DynamicsCompressor → destination
   EngineBus → low/high engine oscillators + start cue
-  EnvironmentBus → wave noise + wind noise + hull-water noise
-  WildlifeBus → one-shot splash noise
+  EnvironmentBus → wave noise + wind noise (half level) + hull-water noise
+  WildlifeBus → one-shot splash noise (positional when a position is given)
+  EffectsBus → positional bell, horns, flare launch/hiss/burst/burn, eruption, ambient loops (party, volcano, monolith)
+  ReverbSend → synthetic open-water convolution → Master
 ```
+
+Spatial audio: `Simulator` moves the Web Audio listener to the camera every frame (position and forward). Every effect that has a place in the world — bell, horns, flares, splashes, volcano, party — goes through an HRTF `PannerNode` with an inverse distance model and an air-absorption low-pass based on its distance from the camera, so the same bell is loud and close in the helm view and distant in the drone view. Moving sources (rocket hiss, burning flare) update their panner position each frame.
+
+Horns are synthesized as low detuned sawtooth chords with an air-horn pitch rise, tremolo, soft saturation, a brassy formant around 460 Hz and presence around 1.1 kHz so they carry on phone speakers, plus breath noise and reverb. The bell uses inharmonic partials (`BELL_PARTIALS`) with a clapper transient, struck twice. The flare launch is a loud cartridge bang with a low thump, followed by a rising hiss, a burst at apogee and a crackling burn. Ambient loops are created lazily when their source is near and faded by distance. Wind sits at `WIND_LEVEL = 0.5` of its former gain.
 
 The master sound setting and audio readiness are different states:
 
@@ -461,6 +533,8 @@ Rudder and throttle inputs are React controls outside the canvas. Their events m
 
 The camera may not pass below the sampled water surface. Portrait devices receive increased follow distance so the yacht remains framed. Camera motion is damped; avoid hard teleports after ordinary mode input.
 
+Photo mode: React calls `setPhotoMode`. With auto-targeting on, systems publish `InterestPoint`s (dolphin breach, whale tail slap, shark fin pass, nearby ships, eruption, burning flare, party, monolith) and `PhotoDirector` picks one by priority with minimum and maximum hold times and per-kind cooldowns, falling back to a slow hero orbit of the yacht. Each shot samples sixteen azimuths around the subject and rejects camera positions whose sight line crosses the yacht's sail/rig box (`YACHT_OCCLUDER_MIN/MAX`) or island terrain, preferring front-lit angles and continuity; airborne subjects are shot from low over the water looking up. Dragging the camera pauses auto-targeting for eight seconds. `capturePhoto()` reads the canvas with `toBlob` immediately after a render (no `preserveDrawingBuffer`); the UI is never part of the canvas.
+
 ## 18. Interface, mobile behavior, and accessibility
 
 The main settings panel is minimized by default on all devices, especially phones. Its collapsed form must still identify the controls and expose a large expand button. The persistent primary controls contain:
@@ -490,6 +564,19 @@ UI requirements:
 
 The compact help prompt may disappear after successful interaction, but critical state such as engine running, throttle, speed, and rudder angle must remain observable.
 
+Phone layout (≤ 680 px wide, or landscape ≤ 560 px tall):
+
+- speed, depth and apparent wind are all shown in one compact strip with their units; it must never be covered by the collapsed "Controls" tile;
+- scene actions (reset, photo, map, bell, flare) are a slim column of 44 px icon buttons in portrait and a row along the top edge in landscape; labels stay in `aria-label`/`title`;
+- while the engine is off, the throttle card collapses to the engine switch alone; the vertical throttle appears when the engine runs;
+- the rudder card is compact: wheel indicator, heading, tilt toggle and center button on one row, the full-width track below;
+- the wheel indicator is a swipe target (`touch-action: none`) for steering; the optional tilt steering requests iOS motion permission from the tap, calibrates its neutral pose when enabled and disables the slider while active;
+- a dismissible hint suggests turning the phone sideways in portrait.
+
+Chart: the minimap (top right) opens a full map dialog (`M`, `Escape` closes, focus returns to the map button). Islands and places are drawn from the same layout data the simulator uses; uncharted cells stay under a smoothed fog; spotted finds, discovered places, nearby ships (as AIS-style contacts) and the yacht are shown north-up.
+
+Photo mode shows exactly three translucent buttons at the top-left: auto-target toggle (`aria-pressed`), take photo (share sheet on touch devices, download elsewhere) and sound toggle. `Escape` or a double tap on the scene leaves photo mode.
+
 ## 19. Localization
 
 `app/components/i18n.ts` contains thirty languages:
@@ -510,13 +597,13 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 
 ## 20. Quality and performance
 
-| Preset | Max DPR | Ocean segments | Shadow map | Foam density | Wildlife multiplier/count |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Low | 1.0 | 96 | 512 | 0.45 | 1 |
-| Medium | 1.25 | 144 | 1024 | 0.70 | 2 |
-| High | 1.75 | 224 | 2048 | 0.90 | 2 |
+| Level | Max DPR | Ocean segments | Yacht shadows | Shadow map | Ship shadow map | Foam density | Wildlife count | Plume puffs |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| Low | 1.0 | 96 | off | 512 | 1024 | 0.45 | 1 | 56 |
+| Medium | 1.25 | 144 | on | 1024 | 2048 | 0.70 | 2 | 96 |
+| High | 1.75 | 224 | on | 2048 | 2048 | 0.90 | 2 | 140 |
 
-Coarse devices start low. Adaptive quality observes FPS windows, steps down quickly when slow, and requires a long stable period above 58 FPS before stepping up. Coarse devices never automatically step to high.
+The user chooses a preset: `auto`, `low`, `medium` or `high`. **Only `auto` changes the level at runtime.** A fixed preset is never lowered or raised behind the user's back. Auto starts at low on coarse devices, medium on compact viewports and high otherwise; it steps down one level after three FPS windows below ~27 FPS (target 30 FPS), steps up only after a long period above 50 FPS, waits out a cooldown after any downgrade, and never promotes a coarse device to high (`stepAutoQuality`, tested). The HUD shows "Auto · <level>". The renderer's shadow map stays enabled so the ship pass can always cast its fitted shadows; the yacht sun's `castShadow` follows the level.
 
 Important implementation caveats:
 
@@ -524,6 +611,7 @@ Important implementation caveats:
 - shadows can change with quality;
 - wake pool and wildlife counts are currently sized at construction and do not rebuild after a preset change;
 - `reflectionSize` is reserved in settings but the custom ocean does not currently allocate a reflection render target;
+- the volcano plume capacity is sized at construction;
 - animation mixers are advanced at approximately 30 Hz while movement remains per-frame;
 - wake instance transforms are refreshed at approximately 30 Hz;
 - the render loop and Web Audio suspend when the document is hidden.
@@ -823,7 +911,13 @@ Never knowingly ship any of these regressions:
 - a new translated string exists in only some languages;
 - low FPS causes unlimited fixed-step catch-up or unbounded allocations;
 - hidden tabs continue rendering and consuming audio resources;
-- a change passes local TypeScript while production Sites build is broken.
+- a change passes local TypeScript while production Sites build is broken;
+- a fixed quality preset changes by itself, or Auto oscillates between levels;
+- two ship horns sound less than 30 s apart, or ships bunch up closer than 1.5 km while unseen;
+- a starboard rudder turns the bow to the screen's left, the compass counts backwards, or the yacht heels to windward;
+- positional sounds (bell, horn, flare) ignore the camera position;
+- photo auto-targeting frames a subject through the sails;
+- the phone layout covers the wind instrument or keeps the full throttle visible while the engine is off.
 
 ## 30. Definition of done
 

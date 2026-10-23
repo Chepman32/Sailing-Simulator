@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
-import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
-import type { CameraMode, LightingMode, LoadingState, QualityPreset } from "@/src/simulator/types";
+import type { MapState, Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
+import type { CameraMode, LightingMode, LoadingState, PointOfInterestKind, QualityPreset } from "@/src/simulator/types";
+import { ControlIcon } from "./ControlIcon";
 import {
   getMessages,
   isLanguageCode,
@@ -14,101 +15,31 @@ import {
   type LanguageCode,
   type Messages,
 } from "./i18n";
+import { FullMap, MiniMap } from "./NavigationMap";
+import {
+  requestTiltPermission,
+  screenRollDegrees,
+  STEERING_STORAGE_KEY,
+  swipeToRudder,
+  tiltToRudder,
+} from "./steering";
 
 const ASSET_LOAD_TOTAL = 7;
+const ROTATE_HINT_KEY = "sailing-simulator-rotate-hint-dismissed";
 
-type ControlIconName =
-  | "sun"
-  | "moon"
-  | "power"
-  | "sound-on"
-  | "sound-off"
-  | "engine-sound"
-  | "engine-muted"
-  | "chase"
-  | "helm"
-  | "orbit"
-  | "drone"
-  | "reset"
-  | "photo";
-
-function ControlIcon({ name }: { name: ControlIconName }) {
-  return (
-    <svg className="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      {name === "reset" && <path d="M4 10a8 8 0 1 1 1 7M4 4v6h6" />}
-      {name === "photo" && (
-        <>
-          <path d="M4 6h4l2-3h4l2 3h4a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Z" />
-          <circle cx="12" cy="13" r="4" />
-        </>
-      )}
-      {name === "sun" && (
-        <>
-          <circle cx="12" cy="12" r="3.4" />
-          <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4" />
-        </>
-      )}
-      {name === "moon" && <path d="M20.2 15.1A8.2 8.2 0 0 1 8.9 3.8 8.3 8.3 0 1 0 20.2 15.1Z" />}
-      {name === "power" && (
-        <>
-          <path d="M12 2.8v8.1" />
-          <path d="M7.2 5.8a8 8 0 1 0 9.6 0" />
-        </>
-      )}
-      {(name === "sound-on" || name === "sound-off") && (
-        <>
-          <path d="M4 10h3.1l4.2-3.6v11.2L7.1 14H4Z" />
-          {name === "sound-on" ? (
-            <path d="M15 9a4.4 4.4 0 0 1 0 6M17.8 6.5a7.8 7.8 0 0 1 0 11" />
-          ) : (
-            <path d="m15.3 10 4 4M19.3 10l-4 4" />
-          )}
-        </>
-      )}
-      {(name === "engine-sound" || name === "engine-muted") && (
-        <>
-          <path d="M3 10h2.2l1.7-2.4h6.9l1.7 2.4H18v7H6.2l-1.4-2H3Z" />
-          <path d="M8.2 7.6V5.2h4.3M18 11.2h2M20 9.5v5" />
-          {name === "engine-sound" ? <path d="M8.5 12.2h3.4M8.5 14.8h5.4" /> : <path d="M5 5l14 14" />}
-        </>
-      )}
-      {name === "chase" && (
-        <>
-          <path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4" />
-          <path d="m8 14 4-6 4 6-4 2Z" />
-        </>
-      )}
-      {name === "helm" && (
-        <>
-          <circle cx="12" cy="12" r="7.5" />
-          <circle cx="12" cy="12" r="2" />
-          <path d="M12 4.5v5.5M12 14v5.5M4.5 12H10M14 12h5.5M6.7 6.7l3.9 3.9M13.4 13.4l3.9 3.9M17.3 6.7l-3.9 3.9M10.6 13.4l-3.9 3.9" />
-        </>
-      )}
-      {name === "orbit" && (
-        <>
-          <circle cx="12" cy="12" r="2.4" />
-          <path d="M4.3 10A8 8 0 0 1 18 6.5l1.5 1.2M19.7 14A8 8 0 0 1 6 17.5l-1.5-1.2" />
-          <path d="m19.7 4.5-.2 3.2-3.2-.2M4.3 19.5l.2-3.2 3.2.2" />
-        </>
-      )}
-      {name === "drone" && (
-        <>
-          <rect x="9" y="9" width="6" height="6" rx="1.5" />
-          <path d="M9.4 9.4 6.5 6.5M14.6 9.4l2.9-2.9M9.4 14.6l-2.9 2.9M14.6 14.6l2.9 2.9" />
-          <circle cx="5" cy="5" r="2" /><circle cx="19" cy="5" r="2" />
-          <circle cx="5" cy="19" r="2" /><circle cx="19" cy="19" r="2" />
-        </>
-      )}
-    </svg>
-  );
-}
-
-function readStoredLanguage(): string | null {
+function readStorage(storage: "local" | "session", key: string): string | null {
   try {
-    return window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    return (storage === "local" ? window.localStorage : window.sessionStorage).getItem(key);
   } catch {
     return null;
+  }
+}
+
+function writeStorage(storage: "local" | "session", key: string, value: string): void {
+  try {
+    (storage === "local" ? window.localStorage : window.sessionStorage).setItem(key, value);
+  } catch {
+    // The current session keeps working when storage is blocked.
   }
 }
 
@@ -122,13 +53,50 @@ function throttleLabel(value: number, messages: Messages): string {
   return messages.neutral;
 }
 
+function placeLabel(kind: PointOfInterestKind, messages: Messages): string {
+  return messages[kind];
+}
+
+function photoFileName(): string {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `sailing-simulator-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.jpg`;
+}
+
+/** Save a photo: the share sheet on touch devices (Save to Photos), a download elsewhere. */
+async function savePhoto(blob: Blob): Promise<void> {
+  const name = photoFileName();
+  const file = typeof File !== "undefined" ? new File([blob], name, { type: "image/jpeg" }) : null;
+  const coarse = window.matchMedia("(pointer: coarse)").matches;
+  if (coarse && file && navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+      return;
+    } catch {
+      // Cancelled or blocked: fall back to a download link.
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
 export function SailingSimulator() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const simulatorRef = useRef<SimulatorInstance | null>(null);
   const photoButtonRef = useRef<HTMLButtonElement>(null);
+  const photoToolbarRef = useRef<HTMLDivElement>(null);
+  const mapButtonRef = useRef<HTMLButtonElement>(null);
   const photoModeRef = useRef(false);
   const [photoMode, setPhotoMode] = useState(false);
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT);
+  const [mapState, setMapState] = useState<MapState | null>(null);
+  const [mapOpen, setMapOpen] = useState(false);
   const [loading, setLoading] = useState<LoadingState>({
     loaded: 0,
     total: ASSET_LOAD_TOTAL,
@@ -143,24 +111,39 @@ export function SailingSimulator() {
   const [engineInput, setEngineInput] = useState(false);
   const [engineNotice, setEngineNotice] = useState("");
   const [language, setLanguage] = useState<LanguageCode>("en");
+  const [toast, setToast] = useState<{ text: string; serial: number } | null>(null);
+  const [photoNotice, setPhotoNotice] = useState(false);
+  const [photoFlash, setPhotoFlash] = useState(0);
+  const [tiltSteering, setTiltSteering] = useState(false);
+  const [portraitPhone, setPortraitPhone] = useState(false);
+  const [rotateHintDismissed, setRotateHintDismissed] = useState(true);
   const rudderDragging = useRef(false);
   const throttleDragging = useRef(false);
+  const wheelSwipe = useRef<{ pointerId: number; startX: number; startRudder: number } | null>(null);
+  const tiltNeutral = useRef<number | null>(null);
   const soundReadyAtPress = useRef(false);
   const engineNoticeTimer = useRef<number | undefined>(undefined);
+  const lastDiscoverySerial = useRef(0);
 
   const exitPhotoMode = useCallback(() => {
     photoModeRef.current = false;
     setPhotoMode(false);
+    simulatorRef.current?.setPhotoMode(false);
   }, []);
+
+  const enterPhotoMode = () => {
+    photoModeRef.current = true;
+    setPhotoMode(true);
+    setMapOpen(false);
+    simulatorRef.current?.setPhotoMode(true);
+  };
 
   useEffect(() => {
     if (!photoMode) return;
     const photoButton = photoButtonRef.current;
-    canvasRef.current?.focus({ preventScroll: true });
+    photoToolbarRef.current?.querySelector("button")?.focus({ preventScroll: true });
     const onKeyDown = (event: KeyboardEvent) => {
-      // Tab restores the interface as well, so keyboard users cannot end up
-      // navigating invisible controls or trapped on the canvas.
-      if (event.key === "Escape" || event.key === "Tab") {
+      if (event.key === "Escape") {
         event.preventDefault();
         exitPhotoMode();
       }
@@ -180,6 +163,7 @@ export function SailingSimulator() {
     drone: messages.drone,
   }), [messages]);
   const qualityLabels = useMemo<Record<QualityPreset, string>>(() => ({
+    auto: messages.auto,
     low: messages.low,
     medium: messages.medium,
     high: messages.high,
@@ -187,7 +171,7 @@ export function SailingSimulator() {
 
   useEffect(() => {
     const applyPreferredLanguage = () => {
-      const stored = readStoredLanguage();
+      const stored = readStorage("local", LANGUAGE_STORAGE_KEY);
       const systemLanguages = [
         ...(navigator.languages ?? []),
         navigator.language,
@@ -199,18 +183,47 @@ export function SailingSimulator() {
       document.documentElement.dir = isRtlLanguage(nextLanguage) ? "rtl" : "ltr";
     };
     applyPreferredLanguage();
-    const followsSystemLanguage = !isLanguageCode(readStoredLanguage() ?? "");
+    const followsSystemLanguage = !isLanguageCode(readStorage("local", LANGUAGE_STORAGE_KEY) ?? "");
     if (followsSystemLanguage) window.addEventListener("languagechange", applyPreferredLanguage);
     return () => window.removeEventListener("languagechange", applyPreferredLanguage);
   }, []);
 
+  // Phone-in-portrait detection for the rotate hint; restore steering mode.
   useEffect(() => {
-    if (!rudderDragging.current) setRudderInput(Math.round(snapshot.rudderDegrees / 35 * 100));
+    const query = window.matchMedia("(max-width: 680px) and (orientation: portrait)");
+    const update = () => setPortraitPhone(query.matches);
+    // Browser-only preferences are read after hydration to match the server render.
+    const restorePreferences = () => {
+      setRotateHintDismissed(readStorage("session", ROTATE_HINT_KEY) === "1");
+      setTiltSteering(readStorage("local", STEERING_STORAGE_KEY) === "tilt" && window.matchMedia("(pointer: coarse)").matches);
+    };
+    update();
+    restorePreferences();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!rudderDragging.current && !wheelSwipe.current) setRudderInput(Math.round(snapshot.rudderDegrees / 35 * 100));
   }, [snapshot.rudderDegrees]);
 
   useEffect(() => {
     if (!throttleDragging.current) setThrottleInput(Math.round(snapshot.throttle * 100));
   }, [snapshot.throttle]);
+
+  // Discovery and pickup toasts.
+  useEffect(() => {
+    const discovery = snapshot.lastDiscovery;
+    if (!discovery || discovery.serial === lastDiscoverySerial.current) return;
+    lastDiscoverySerial.current = discovery.serial;
+    const collectible = discovery.kind === "bottle" || discovery.kind === "crate";
+    const text = collectible
+      ? `${messages.found}: ${placeLabel(discovery.kind, messages)} · ${snapshot.collected}/${snapshot.collectibleTotal}`
+      : `${messages.discovered}: ${placeLabel(discovery.kind, messages)}`;
+    setToast({ text, serial: discovery.serial });
+    const timer = window.setTimeout(() => setToast((current) => (current?.serial === discovery.serial ? null : current)), 3800);
+    return () => window.clearTimeout(timer);
+  }, [snapshot.lastDiscovery, snapshot.collected, snapshot.collectibleTotal, messages]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -230,6 +243,7 @@ export function SailingSimulator() {
           onSnapshot: (nextSnapshot) => {
             setSnapshot(nextSnapshot);
             setEngineInput(nextSnapshot.engineRunning);
+            if (nextSnapshot.status !== "loading" && simulator) setMapState(simulator.getMapState());
           },
           onLoading: setLoading,
           onError: (message) => {
@@ -243,6 +257,7 @@ export function SailingSimulator() {
           },
         });
         simulatorRef.current = simulator;
+        if (process.env.NODE_ENV !== "production") (window as unknown as { __sailingSimulator?: unknown }).__sailingSimulator = simulator;
         await simulator.init();
       } catch (reason: unknown) {
         if (!disposed) {
@@ -259,17 +274,61 @@ export function SailingSimulator() {
     };
   }, [exitPhotoMode]);
 
+  // Keyboard shortcuts: M map, B bell, F flare.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) return;
+      if (photoModeRef.current || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.code === "KeyM") setMapOpen((open) => !open);
+      if (event.code === "KeyB") simulatorRef.current?.ringBell();
+      if (event.code === "KeyF") simulatorRef.current?.fireFlare();
+      if (event.code === "Escape") setMapOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!mapOpen) return;
+    const mapButton = mapButtonRef.current;
+    return () => mapButton?.focus({ preventScroll: true });
+  }, [mapOpen]);
+
+  // Tilt steering: device roll relative to the pose captured when enabled.
+  useEffect(() => {
+    if (!tiltSteering) return;
+    tiltNeutral.current = null;
+    let lastSent = 0;
+    const onOrientation = (event: DeviceOrientationEvent) => {
+      const angle = screen.orientation?.angle ?? 0;
+      const roll = screenRollDegrees({ beta: event.beta, gamma: event.gamma }, angle);
+      if (tiltNeutral.current === null) tiltNeutral.current = roll;
+      const rudder = tiltToRudder(roll, tiltNeutral.current);
+      const now = performance.now();
+      if (now - lastSent < 40) return;
+      lastSent = now;
+      simulatorRef.current?.setRudder(rudder);
+      setRudderInput(Math.round(rudder * 100));
+    };
+    window.addEventListener("deviceorientation", onOrientation);
+    return () => window.removeEventListener("deviceorientation", onOrientation);
+  }, [tiltSteering]);
+
   const progress = loading.total > 0 ? Math.round((loading.loaded / loading.total) * 100) : 0;
   const compass = useMemo(() => `${snapshot.headingDegrees.toFixed(0).padStart(3, "0")}°`, [snapshot.headingDegrees]);
   const displayedRudderDegrees = rudderInput * 0.35;
   const displayedThrottle = throttleInput / 100;
   const wheelRotation = rudderInput * 2.7;
+  const ready = loading.ready && !error;
+  const qualityStatus = snapshot.quality === "auto" ? `${messages.auto} · ${qualityLabels[snapshot.qualityLevel]}` : qualityLabels[snapshot.quality];
+  const rudderText = `${displayedRudderDegrees < -0.5 ? messages.port : displayedRudderDegrees > 0.5 ? messages.starboard : messages.center} ${Math.abs(displayedRudderDegrees).toFixed(0)}°`;
 
   const setLighting = (mode: LightingMode) => simulatorRef.current?.setLightingMode(mode);
   const setCamera = (mode: CameraMode) => simulatorRef.current?.setCameraMode(mode);
   const setQuality = (preset: QualityPreset) => simulatorRef.current?.setQuality(preset);
   const resetScene = () => {
-    if (!loading.ready || error) return;
+    if (!ready) return;
     rudderDragging.current = false;
     throttleDragging.current = false;
     setRudderInput(0);
@@ -319,20 +378,75 @@ export function SailingSimulator() {
     simulator.resumeAudioFromGesture();
   };
 
+  const ringBell = () => {
+    simulatorRef.current?.resumeAudioFromGesture();
+    simulatorRef.current?.ringBell();
+  };
+
+  const fireFlare = () => {
+    simulatorRef.current?.resumeAudioFromGesture();
+    simulatorRef.current?.fireFlare();
+  };
+
+  const takePhoto = async () => {
+    const simulator = simulatorRef.current;
+    if (!simulator) return;
+    setPhotoFlash((value) => value + 1);
+    navigator.vibrate?.(12);
+    const blob = await simulator.capturePhoto();
+    if (!blob) return;
+    await savePhoto(blob);
+    setPhotoNotice(true);
+    window.setTimeout(() => setPhotoNotice(false), 2200);
+  };
+
+  const toggleTilt = async () => {
+    if (tiltSteering) {
+      setTiltSteering(false);
+      writeStorage("local", STEERING_STORAGE_KEY, "slider");
+      return;
+    }
+    // The permission prompt must come straight from this tap on iOS.
+    if (!(await requestTiltPermission())) return;
+    setTiltSteering(true);
+    writeStorage("local", STEERING_STORAGE_KEY, "tilt");
+  };
+
+  const onWheelPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (tiltSteering) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    wheelSwipe.current = { pointerId: event.pointerId, startX: event.clientX, startRudder: rudderInput / 100 };
+  };
+  const onWheelPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const swipe = wheelSwipe.current;
+    if (!swipe || swipe.pointerId !== event.pointerId) return;
+    const rudder = swipeToRudder(swipe.startRudder, event.clientX - swipe.startX);
+    setRudderInput(Math.round(rudder * 100));
+    setShowHelp(false);
+    simulatorRef.current?.setRudder(rudder);
+  };
+  const endWheelSwipe = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (wheelSwipe.current?.pointerId === event.pointerId) wheelSwipe.current = null;
+  };
+
   const changeLanguage = (nextLanguage: LanguageCode) => {
     setLanguage(nextLanguage);
-    try {
-      window.localStorage.setItem(LANGUAGE_STORAGE_KEY, nextLanguage);
-    } catch {
-      // The active session still changes language when storage is blocked.
-    }
+    writeStorage("local", LANGUAGE_STORAGE_KEY, nextLanguage);
     document.documentElement.lang = nextLanguage;
     document.documentElement.dir = isRtlLanguage(nextLanguage) ? "rtl" : "ltr";
   };
 
+  const dismissRotateHint = () => {
+    setRotateHintDismissed(true);
+    writeStorage("session", ROTATE_HINT_KEY, "1");
+  };
+
+  const soundLabel = snapshot.soundEnabled ? (snapshot.audioReady ? `${messages.sound}: ${messages.on}` : messages.tapSound) : `${messages.sound}: ${messages.off}`;
+  const mapTick = Math.round(snapshot.positionX * 2) * 7919 + Math.round(snapshot.positionZ * 2) + Math.round(snapshot.headingDegrees);
+
   return (
     <main
-      className={`simulator-shell ${panelMinimized ? "" : "settings-open"}`}
+      className={`simulator-shell ${panelMinimized ? "" : "settings-open"} ${engineInput ? "engine-on" : "engine-off"}`}
       aria-label={`Sailing Simulator Pro · ${messages.sailingControls}`}
       dir={isRtlLanguage(language) ? "rtl" : "ltr"}
       onPointerDownCapture={() => simulatorRef.current?.resumeAudioFromGesture()}
@@ -343,6 +457,46 @@ export function SailingSimulator() {
         tabIndex={photoMode ? 0 : -1}
         aria-label={photoMode ? `${messages.photoMode}. ${messages.photoModeHint}` : messages.sailingControls}
       />
+
+      {photoMode && (
+        <div ref={photoToolbarRef} className="photo-toolbar" role="toolbar" aria-label={`${messages.photoMode}. ${messages.photoModeHint}`}>
+          <button
+            type="button"
+            className="photo-tool"
+            aria-pressed={snapshot.photoAutoTarget}
+            aria-label={messages.autoTarget}
+            title={messages.autoTarget}
+            onClick={() => simulatorRef.current?.setPhotoAutoTarget(!snapshot.photoAutoTarget)}
+          >
+            <ControlIcon name="target" />
+          </button>
+          <button
+            type="button"
+            className="photo-tool photo-shutter"
+            aria-label={messages.takePhoto}
+            title={messages.takePhoto}
+            onClick={() => void takePhoto()}
+          >
+            <ControlIcon name="shutter" />
+          </button>
+          <button
+            type="button"
+            className="photo-tool"
+            aria-pressed={snapshot.soundEnabled && snapshot.audioReady}
+            aria-label={soundLabel}
+            title={soundLabel}
+            onPointerDown={() => {
+              soundReadyAtPress.current = snapshot.audioReady;
+              simulatorRef.current?.resumeAudioFromGesture();
+            }}
+            onClick={toggleSound}
+          >
+            <ControlIcon name={snapshot.soundEnabled && snapshot.audioReady ? "sound-on" : "sound-off"} />
+          </button>
+          {photoNotice && <span className="photo-saved" role="status">{messages.photoSaved}</span>}
+        </div>
+      )}
+      {photoFlash > 0 && <div key={photoFlash} className="photo-flash" aria-hidden="true" />}
 
       <div className="simulator-interface" hidden={photoMode}>
 
@@ -381,7 +535,7 @@ export function SailingSimulator() {
         )}
 
         <div className="scene-actions">
-          <button type="button" className="scene-action" disabled={!loading.ready || Boolean(error)} onClick={resetScene}>
+          <button type="button" className="scene-action" disabled={!ready} onClick={resetScene} aria-label={messages.reset} title={messages.reset}>
             <ControlIcon name="reset" />
             <span>{messages.reset}</span>
           </button>
@@ -389,16 +543,43 @@ export function SailingSimulator() {
             ref={photoButtonRef}
             type="button"
             className="scene-action"
-            disabled={!loading.ready || Boolean(error)}
+            disabled={!ready}
             title={`${messages.photoMode}. ${messages.photoModeHint}`}
+            aria-label={messages.photoMode}
             aria-describedby="photo-mode-hint"
-            onClick={() => {
-              photoModeRef.current = true;
-              setPhotoMode(true);
-            }}
+            onClick={enterPhotoMode}
           >
             <ControlIcon name="photo" />
             <span>{messages.photoMode}</span>
+          </button>
+          <button
+            ref={mapButtonRef}
+            type="button"
+            className="scene-action"
+            disabled={!ready}
+            aria-label={messages.openMap}
+            aria-expanded={mapOpen}
+            aria-controls="navigation-map"
+            title={`${messages.openMap} (M)`}
+            onClick={() => setMapOpen(true)}
+          >
+            <ControlIcon name="map" />
+            <span>{messages.map}</span>
+          </button>
+          <button type="button" className="scene-action" disabled={!ready} onClick={ringBell} aria-label={messages.bell} title={`${messages.bell} (B)`}>
+            <ControlIcon name="bell" />
+            <span>{messages.bell}</span>
+          </button>
+          <button
+            type="button"
+            className="scene-action flare-action"
+            disabled={!ready || !snapshot.flareReady}
+            onClick={fireFlare}
+            aria-label={snapshot.flareReady ? messages.flare : messages.flareReloading}
+            title={`${snapshot.flareReady ? messages.flare : messages.flareReloading} (F)`}
+          >
+            <ControlIcon name="flare" />
+            <span>{snapshot.flareReady ? messages.flare : messages.flareReloading}</span>
           </button>
           <p id="photo-mode-hint" className="photo-mode-hint">{messages.photoModeHint}</p>
         </div>
@@ -408,7 +589,7 @@ export function SailingSimulator() {
           <div className="instrument"><span>{messages.depth}</span><strong>{snapshot.depthMeters.toFixed(1)}</strong><small>m</small></div>
           <div className="instrument wind-instrument">
             <span>{messages.apparentWind}</span><strong>{snapshot.apparentWindKnots.toFixed(1)}</strong>
-            <small>kn · {Math.abs(snapshot.apparentWindAngle).toFixed(0)}°</small>
+            <small>kn<span className="wind-angle"> · {Math.abs(snapshot.apparentWindAngle).toFixed(0)}°</span></small>
           </div>
         </section>
 
@@ -416,6 +597,45 @@ export function SailingSimulator() {
           <span className={`status-dot ${snapshot.status}`} />
           <strong>{compass}</strong><span>{messages.heading}</span>
         </section>
+
+        {ready && (
+          <button
+            type="button"
+            className="minimap"
+            aria-label={`${messages.openMap} · ${messages.places} ${snapshot.discovered}/${snapshot.discoverableTotal}`}
+            title={`${messages.openMap} (M)`}
+            onClick={() => setMapOpen(true)}
+          >
+            <MiniMap state={mapState} revision={snapshot.mapRevision} tick={mapTick} messages={messages} />
+            <span className="minimap-heading" aria-hidden="true">{compass}</span>
+          </button>
+        )}
+
+        {mapOpen && (
+          <section id="navigation-map" className="map-overlay" role="dialog" aria-modal="true" aria-label={messages.map}>
+            <div className="map-card">
+              <header>
+                <div>
+                  <p className="eyebrow">{messages.map}</p>
+                  <span>
+                    {messages.places} {snapshot.discovered}/{snapshot.discoverableTotal} · {messages.finds} {snapshot.collected}/{snapshot.collectibleTotal}
+                  </span>
+                </div>
+                <button type="button" className="icon-button" aria-label={messages.closeMap} title={messages.closeMap} onClick={() => setMapOpen(false)} autoFocus>
+                  <ControlIcon name="close" />
+                </button>
+              </header>
+              <FullMap state={mapState} revision={snapshot.mapRevision} tick={mapTick} messages={messages} />
+              <ul className="map-legend">
+                <li><span className="legend-swatch legend-you" />{messages.you}</li>
+                <li><span className="legend-swatch legend-ship" />{messages.ship}</li>
+                <li><span className="legend-swatch legend-bottle" />{messages.bottle}</li>
+                <li><span className="legend-swatch legend-crate" />{messages.crate}</li>
+                <li><span className="legend-swatch legend-fog" />{messages.unexplored}</li>
+              </ul>
+            </div>
+          </section>
+        )}
 
         {!panelMinimized && (
           <button
@@ -444,7 +664,7 @@ export function SailingSimulator() {
               )}
               {!panelMinimized && (
                 <span>
-                  {snapshot.fps.toFixed(0)} FPS · {qualityLabels[snapshot.quality]} ·{" "}
+                  {snapshot.fps.toFixed(0)} FPS · {qualityStatus} ·{" "}
                   <a className="model-credits" href="/models/README.md" target="_blank" rel="noreferrer">{messages.credits}</a>
                 </span>
               )}
@@ -458,7 +678,6 @@ export function SailingSimulator() {
               onClick={() => setPanelMinimized((value) => !value)}
             >{panelMinimized ? "≡" : "×"}</button>
           </header>
-
 
           {!panelMinimized && (
             <div className="panel-body">
@@ -491,8 +710,8 @@ export function SailingSimulator() {
                 <button
                   type="button"
                   className="quiet-button icon-control"
-                  aria-label={snapshot.soundEnabled ? (snapshot.audioReady ? `${messages.sound}: ${messages.on}` : messages.tapSound) : `${messages.sound}: ${messages.off}`}
-                  title={snapshot.soundEnabled ? (snapshot.audioReady ? `${messages.sound}: ${messages.on}` : messages.tapSound) : `${messages.sound}: ${messages.off}`}
+                  aria-label={soundLabel}
+                  title={soundLabel}
                   aria-pressed={snapshot.soundEnabled && snapshot.audioReady}
                   onPointerDown={() => {
                     soundReadyAtPress.current = snapshot.audioReady;
@@ -545,7 +764,10 @@ export function SailingSimulator() {
                 <label>
                   <span>{messages.quality}</span>
                   <select value={snapshot.quality} onChange={(event) => setQuality(event.target.value as QualityPreset)}>
-                    <option value="low">{messages.low}</option><option value="medium">{messages.medium}</option><option value="high">{messages.high}</option>
+                    <option value="auto">{snapshot.quality === "auto" ? qualityStatus : messages.auto}</option>
+                    <option value="low">{messages.low}</option>
+                    <option value="medium">{messages.medium}</option>
+                    <option value="high">{messages.high}</option>
                   </select>
                 </label>
                 <label className="language-picker">
@@ -566,9 +788,17 @@ export function SailingSimulator() {
         </section>
 
         <div className="primary-controls">
-          <section className="rudder-control" aria-label={messages.rudder}>
-            <div className="helm-wheel" aria-hidden="true">
-              <svg viewBox="0 0 100 100">
+          <section className={`rudder-control ${tiltSteering ? "is-tilt" : ""}`} aria-label={messages.rudder}>
+            <div
+              className="helm-wheel"
+              role="presentation"
+              title={messages.swipeHint}
+              onPointerDown={onWheelPointerDown}
+              onPointerMove={onWheelPointerMove}
+              onPointerUp={endWheelSwipe}
+              onPointerCancel={endWheelSwipe}
+            >
+              <svg viewBox="0 0 100 100" aria-hidden="true">
                 <g transform={`rotate(${wheelRotation} 50 50)`}>
                   <circle className="helm-wheel-rim" cx="50" cy="50" r="35" />
                   <line x1="50" y1="5" x2="50" y2="95" />
@@ -581,18 +811,43 @@ export function SailingSimulator() {
             </div>
             <div className="control-heading">
               <span>{messages.rudder}</span>
-              <strong>{displayedRudderDegrees < -0.5 ? messages.port : displayedRudderDegrees > 0.5 ? messages.starboard : messages.center} {Math.abs(displayedRudderDegrees).toFixed(0)}°</strong>
+              <strong>{rudderText}</strong>
+            </div>
+            <div className="rudder-buttons">
+              <button
+                type="button"
+                className="tilt-button"
+                aria-pressed={tiltSteering}
+                aria-label={messages.tiltSteering}
+                title={messages.tiltSteering}
+                onClick={() => void toggleTilt()}
+              >
+                <ControlIcon name="tilt" />
+              </button>
+              <button
+                type="button"
+                className="center-button"
+                onClick={() => {
+                  setRudderInput(0);
+                  tiltNeutral.current = null;
+                  simulatorRef.current?.centerRudder();
+                }}
+              >
+                <span className="full-center-label">{messages.centerRudder}</span>
+                <span className="mobile-center-label">{messages.center}</span>
+              </button>
             </div>
             <div className="rudder-track-wrap">
               <span>{messages.port}</span>
               <input
                 aria-label={messages.rudder}
-                aria-valuetext={`${displayedRudderDegrees < -0.5 ? messages.port : displayedRudderDegrees > 0.5 ? messages.starboard : messages.center} ${Math.abs(displayedRudderDegrees).toFixed(0)}°`}
+                aria-valuetext={rudderText}
                 className="rudder-slider"
                 type="range"
                 min="-100"
                 max="100"
                 value={rudderInput}
+                disabled={tiltSteering}
                 style={{ "--rudder-progress": `${(rudderInput + 100) / 2}%` } as CSSProperties}
                 onPointerDown={() => { rudderDragging.current = true; }}
                 onPointerUp={() => { rudderDragging.current = false; }}
@@ -607,17 +862,6 @@ export function SailingSimulator() {
               />
               <span>{messages.starboard}</span>
             </div>
-            <button
-              type="button"
-              className="center-button"
-              onClick={() => {
-                setRudderInput(0);
-                simulatorRef.current?.centerRudder();
-              }}
-            >
-              <span className="full-center-label">{messages.centerRudder}</span>
-              <span className="mobile-center-label">{messages.center}</span>
-            </button>
           </section>
 
           <section className={`throttle-control ${engineInput ? "" : "is-off"}`} aria-label={`${messages.engine} · ${messages.throttle}`}>
@@ -670,8 +914,19 @@ export function SailingSimulator() {
         </div>
 
         {engineNotice && <div className="engine-notice" role="status">{engineNotice}</div>}
+        {toast && <div className="discovery-toast" role="status">{toast.text}</div>}
 
-        {showHelp && loading.ready && !error && (
+        {ready && portraitPhone && !rotateHintDismissed && (
+          <div className="rotate-hint" role="note">
+            <span className="rotate-hint-icon" aria-hidden="true" />
+            <p>{messages.rotateHint}</p>
+            <button type="button" className="icon-button" aria-label={messages.dismiss} title={messages.dismiss} onClick={dismissRotateHint}>
+              <ControlIcon name="close" />
+            </button>
+          </div>
+        )}
+
+        {showHelp && ready && (
           <button type="button" className="help-toast" onClick={() => setShowHelp(false)}>
             {messages.help}
           </button>

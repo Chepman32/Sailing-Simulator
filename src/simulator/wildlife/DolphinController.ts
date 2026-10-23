@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
 import type { OceanSystem } from "../environment/OceanSystem";
 import { clamp, damp } from "../math";
+import type { InterestPoint } from "../camera/PhotoDirector";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
 import {
   forwardBiasedHeading,
@@ -66,6 +67,14 @@ export class DolphinController {
   ) {
     for (let index = 0; index < count; index += 1) {
       this.dolphins.push(this.createDolphin(assets, index));
+    }
+  }
+
+  /** A breaching dolphin is a top photo subject from the approach onward. */
+  collectInterest(points: InterestPoint[]): void {
+    for (const dolphin of this.dolphins) {
+      if (dolphin.state === "swim" || dolphin.state === "dive") continue;
+      points.push({ kind: "dolphin", position: dolphin.root.position, radius: 3.2, priority: 6, lookHeight: 0.3 });
     }
   }
 

@@ -22,3 +22,12 @@ export function smoothstep(edge0: number, edge1: number, value: number): number 
   const x = clamp((value - edge0) / (edge1 - edge0), 0, 1);
   return x * x * (3 - 2 * x);
 }
+
+/**
+ * Compass bearing for a simulator heading. Heading grows toward +X, which is
+ * west/port in three.js' right-handed frame (north = +Z), so bearings run the
+ * other way: a starboard turn increases the bearing.
+ */
+export function compassBearingDegrees(heading: number): number {
+  return wrapDegrees((-heading * 180) / Math.PI);
+}

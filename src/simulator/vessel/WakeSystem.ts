@@ -328,6 +328,20 @@ export class WakeSystem {
     this.updateInstances(this.propWake, this.propSamples, time, true);
   }
 
+  /** One small, short-lived foam patch with no droplets (e.g. behind a dorsal fin). */
+  foamTrail(position: THREE.Vector3, radius = 0.9): void {
+    const patch = this.nextSplashDecal(this.foamPatches);
+    if (!patch) return;
+    patch.active = true;
+    patch.position.copy(position);
+    patch.life = 0;
+    patch.delay = 0;
+    patch.maxLife = 1.6 + Math.random() * 0.6;
+    patch.startRadius = radius * 0.35;
+    patch.endRadius = radius;
+    patch.brightness = 0.55 + Math.random() * 0.15;
+  }
+
   splash(position: THREE.Vector3, intensity = 1): void {
     const profile = calculateSplashProfile(intensity);
     for (let index = 0; index < profile.dropletCount; index += 1) {

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { InterestPoint } from "../camera/PhotoDirector";
 import type { AssetManager } from "../core/AssetManager";
 import type { OceanSystem } from "../environment/OceanSystem";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
@@ -23,11 +24,12 @@ export class WildlifeSystem {
     assets: AssetManager,
     count: number,
     onSplash: (position: THREE.Vector3, intensity: number) => void,
+    onFinWake?: (position: THREE.Vector3) => void,
   ) {
     this.group.name = "External_GLTF_Wildlife_System";
     scene.add(this.group);
     this.dolphins = new DolphinController(this.group, ocean, assets, count, onSplash);
-    this.sharks = new SharkController(this.group, ocean, assets);
+    this.sharks = new SharkController(this.group, ocean, assets, onFinWake);
     this.whales = new WhaleController(this.group, ocean, assets, onSplash);
     this.fish = new FishSchoolController(this.group, ocean, assets, count);
     this.gulls = new GullFlockController(this.group, assets, count);
@@ -42,6 +44,12 @@ export class WildlifeSystem {
     this.whales.update(delta, physics, animationDelta);
     this.fish.update(delta, physics, animationDelta);
     this.gulls.update(delta, physics, animationDelta);
+  }
+
+  collectInterest(points: InterestPoint[]): void {
+    this.dolphins.collectInterest(points);
+    this.sharks.collectInterest(points);
+    this.whales.collectInterest(points);
   }
 
   dispose(): void {

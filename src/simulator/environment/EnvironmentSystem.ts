@@ -25,8 +25,15 @@ const skyFragmentShader = /* glsl */ `
     vec3 direction = normalize(vWorldDirection);
     float vertical = smoothstep(-0.18, 0.82, direction.y);
     vec3 sky = mix(uHorizon, uZenith, pow(vertical, 0.62));
-    float sunScatter = pow(max(dot(direction, normalize(uSunDirection)), 0.0), 10.0);
-    sky += sunScatter * mix(vec3(1.0, 0.54, 0.22), vec3(0.14, 0.21, 0.38), uNight) * (1.0 - uNight) * 0.28;
+    float sunAlignment = max(dot(direction, normalize(uSunDirection)), 0.0);
+    float sunScatter = pow(sunAlignment, 10.0);
+    // A warm, golden aureole around the tropical sun.
+    float aureole = pow(sunAlignment, 42.0);
+    // Mix toward gold rather than adding light: adding warm light to a blue
+    // sky sums to white and made the tropical sun read as a white disc.
+    sky = mix(sky, vec3(1.0, 0.9, 0.64), sunScatter * 0.32 * (1.0 - uNight));
+    sky = mix(sky, vec3(1.0, 0.82, 0.38), aureole * 0.78 * (1.0 - uNight));
+    sky += sunScatter * vec3(0.14, 0.21, 0.38) * uNight * 0.1;
     float lowerHaze = smoothstep(0.18, -0.12, abs(direction.y));
     sky = mix(sky, uHorizon, lowerHaze * 0.3);
     gl_FragColor = vec4(sky, 1.0);
@@ -41,9 +48,10 @@ function radialTexture(size = 128): THREE.CanvasTexture {
   if (!context) return new THREE.CanvasTexture(canvas);
   const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
   gradient.addColorStop(0, "rgba(255,255,255,1)");
-  gradient.addColorStop(0.16, "rgba(255,248,211,.95)");
-  gradient.addColorStop(0.5, "rgba(255,221,145,.24)");
-  gradient.addColorStop(1, "rgba(255,210,120,0)");
+  gradient.addColorStop(0.12, "rgba(255,255,255,.82)");
+  gradient.addColorStop(0.36, "rgba(255,255,255,.22)");
+  gradient.addColorStop(0.7, "rgba(255,255,255,.05)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
   context.fillStyle = gradient;
   context.fillRect(0, 0, size, size);
   const texture = new THREE.CanvasTexture(canvas);
@@ -73,6 +81,7 @@ export class EnvironmentSystem {
   private readonly stars: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial>;
   private readonly sunCore: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   private readonly sunHalo: THREE.Sprite;
+  private readonly sunCorona: THREE.Sprite;
   private readonly moon: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   private readonly moonHalo: THREE.Sprite;
   private readonly sunLight: THREE.DirectionalLight;
@@ -92,6 +101,9 @@ export class EnvironmentSystem {
   private readonly nightAmbientColor = new THREE.Color(0x789bc8);
   private readonly glowTexture = radialTexture();
   private readonly starsTexture = starTexture();
+  // Linear values: these output as a saturated golden yellow in sRGB.
+  private readonly sunCoreDay = new THREE.Color(1, 0.66, 0.12);
+  private readonly sunCoreSet = new THREE.Color(1, 0.55, 0.22);
   private mode: LightingMode = "day";
   private nightFactor = 0;
   private state: TimeOfDayState = deriveTimeOfDay(0);
@@ -108,7 +120,8 @@ export class EnvironmentSystem {
       uNight: { value: 0 },
     };
     this.sky = new THREE.Mesh(
-      new THREE.SphereGeometry(920, 48, 24),
+      // Large enough that ships and the volcano beyond 1 km stay in front of it.
+      new THREE.SphereGeometry(2400, 48, 24),
       new THREE.ShaderMaterial({
         vertexShader: skyVertexShader,
         fragmentShader: skyFragmentShader,
@@ -157,9 +170,12 @@ export class EnvironmentSystem {
     this.stars.renderOrder = -80;
     scene.add(this.stars);
 
+    // The tropical sun is a saturated golden disc. It bypasses tone mapping and
+    // fog (which used to wash it out to white) but still writes depth, so a
+    // sail or mast in front of it occludes the disc and both glows.
     this.sunCore = new THREE.Mesh(
-      new THREE.SphereGeometry(13, 32, 20),
-      new THREE.MeshBasicMaterial({ color: 0xfff0b0, depthTest: true, depthWrite: true }),
+      new THREE.SphereGeometry(15, 32, 20),
+      new THREE.MeshBasicMaterial({ color: this.sunCoreDay, depthTest: true, depthWrite: true, fog: false, toneMapped: false }),
     );
     this.sunCore.name = "DepthCorrectSunCore";
     scene.add(this.sunCore);
@@ -167,17 +183,36 @@ export class EnvironmentSystem {
     this.sunHalo = new THREE.Sprite(
       new THREE.SpriteMaterial({
         map: this.glowTexture,
-        color: 0xffd98d,
+        color: 0xffd23c,
         transparent: true,
-        opacity: 0.54,
+        opacity: 0.8,
         depthTest: true,
         depthWrite: false,
+        fog: false,
+        toneMapped: false,
+        // Normal blending keeps the glow golden; additive saturated it to white.
         blending: THREE.NormalBlending,
       }),
     );
-    this.sunHalo.scale.set(92, 92, 1);
+    this.sunHalo.scale.set(105, 105, 1);
     this.sunHalo.name = "OccludedSunGlow";
     scene.add(this.sunHalo);
+    this.sunCorona = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.glowTexture,
+        color: 0xffb03a,
+        transparent: true,
+        opacity: 0.16,
+        depthTest: true,
+        depthWrite: false,
+        fog: false,
+        toneMapped: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    );
+    this.sunCorona.scale.set(420, 420, 1);
+    this.sunCorona.name = "OccludedSunCorona";
+    scene.add(this.sunCorona);
 
     this.moon = new THREE.Mesh(
       new THREE.SphereGeometry(12, 40, 24),
@@ -201,7 +236,7 @@ export class EnvironmentSystem {
     this.moonHalo.name = "MoonHalo";
     scene.add(this.moonHalo);
 
-    this.sunLight = new THREE.DirectionalLight(0xfff2d2, 3.2);
+    this.sunLight = new THREE.DirectionalLight(0xfff0c8, 3.2);
     this.sunLight.castShadow = true;
     this.sunLight.shadow.camera.left = -55;
     this.sunLight.shadow.camera.right = 55;
@@ -210,6 +245,7 @@ export class EnvironmentSystem {
     this.sunLight.shadow.camera.near = 1;
     this.sunLight.shadow.camera.far = 260;
     this.sunLight.shadow.bias = -0.00018;
+    this.sunLight.shadow.normalBias = 0.02;
     scene.add(this.sunLight, this.sunLight.target);
     this.hemisphere = new THREE.HemisphereLight(0xbfeaff, 0x275960, 1.25);
     this.ambient = new THREE.AmbientLight(0x9bc5da, 0.32);
@@ -250,13 +286,15 @@ export class EnvironmentSystem {
     this.stars.position.copy(camera.position);
     this.sunCore.position.copy(camera.position).addScaledVector(this.sunDirection, 730);
     this.sunHalo.position.copy(this.sunCore.position);
+    this.sunCorona.position.copy(this.sunCore.position);
     this.moon.position.copy(camera.position).addScaledVector(this.moonDirection, 710);
     this.moonHalo.position.copy(this.moon.position);
 
     const sunOpacity = 1 - Math.pow(night, 0.65);
     this.sunCore.visible = sunOpacity > 0.025;
-    this.sunCore.material.color.set(0xfff0b0).lerp(this.sunsetColor, night * 0.45);
-    (this.sunHalo.material as THREE.SpriteMaterial).opacity = sunOpacity * 0.54;
+    this.sunCore.material.color.copy(this.sunCoreDay).lerp(this.sunCoreSet, Math.min(1, night * 1.6));
+    (this.sunHalo.material as THREE.SpriteMaterial).opacity = sunOpacity * 0.8;
+    (this.sunCorona.material as THREE.SpriteMaterial).opacity = sunOpacity * 0.16;
     this.moon.visible = night > 0.04;
     (this.moonHalo.material as THREE.SpriteMaterial).opacity = this.state.starVisibility * 0.72;
     this.stars.material.opacity = this.state.starVisibility * 0.94;
@@ -264,7 +302,7 @@ export class EnvironmentSystem {
     this.sunLight.position.copy(focus).addScaledVector(this.celestialLightDirection, 110);
     this.sunLight.target.position.copy(focus);
     this.sunLight.intensity = THREE.MathUtils.lerp(3.2, 1.25, night);
-    this.sunLight.color.set(0xfff2d2).lerp(this.moonlightColor, night);
+    this.sunLight.color.set(0xfff0c8).lerp(this.moonlightColor, night);
     this.hemisphere.intensity = THREE.MathUtils.lerp(1.25, 0.78, night);
     this.hemisphere.color.set(0xbfeaff).lerp(this.nightHemisphereColor, night);
     this.hemisphere.groundColor.set(0x275960).lerp(this.nightGroundColor, night);
@@ -276,9 +314,38 @@ export class EnvironmentSystem {
       this.scene.fog.color.copy(this.horizonColor);
       this.scene.fog.density = 0.00115 + night * 0.0001;
     }
-    this.scene.background = this.skyColor;
+    // The sky dome covers the frame. A clear colour (instead of
+    // scene.background) lets the ship pass render first without being wiped.
+    this.renderer.setClearColor(this.horizonColor, 1);
     this.ocean.setEnvironment(night, this.celestialLightDirection, this.horizonColor);
     return this.state;
+  }
+
+  /** Lighting the separate ship render pass mirrors each frame. */
+  get lighting(): {
+    sunDirection: THREE.Vector3;
+    sunColor: THREE.Color;
+    sunIntensity: number;
+    hemisphere: THREE.HemisphereLight;
+    ambient: THREE.AmbientLight;
+    nightFactor: number;
+    skyColor: THREE.Color;
+    horizonColor: THREE.Color;
+  } {
+    return {
+      sunDirection: this.celestialLightDirection,
+      sunColor: this.sunLight.color,
+      sunIntensity: this.sunLight.intensity,
+      hemisphere: this.hemisphere,
+      ambient: this.ambient,
+      nightFactor: this.state.nightFactor,
+      skyColor: this.skyColor,
+      horizonColor: this.horizonColor,
+    };
+  }
+
+  setShadowsEnabled(enabled: boolean): void {
+    this.sunLight.castShadow = enabled;
   }
 
   setShadowMapSize(size: number): void {
@@ -293,6 +360,7 @@ export class EnvironmentSystem {
       this.stars,
       this.sunCore,
       this.sunHalo,
+      this.sunCorona,
       this.moon,
       this.moonHalo,
       this.sunLight,
@@ -310,6 +378,7 @@ export class EnvironmentSystem {
     this.moon.geometry.dispose();
     this.moon.material.dispose();
     (this.sunHalo.material as THREE.SpriteMaterial).dispose();
+    (this.sunCorona.material as THREE.SpriteMaterial).dispose();
     (this.moonHalo.material as THREE.SpriteMaterial).dispose();
     this.glowTexture.dispose();
     this.starsTexture.dispose();

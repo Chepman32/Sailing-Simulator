@@ -118,7 +118,7 @@ const fragmentShader = /* glsl */ `
     vec2 directionC = normalize(vec2(0.68, -0.73));
     microSlope += directionA * cos(dot(vWorldPosition.xz, directionA) * 2.4 + uTime * 1.72) * 0.034;
     microSlope += directionB * cos(dot(vWorldPosition.xz, directionB) * 4.9 - uTime * 2.18) * 0.021;
-    microSlope += directionC * cos(dot(vWorldPosition.xz, directionC) * 9.2 + uTime * 2.86) * 0.009 * smoothstep(0.45, 0.9, uDetail);
+    microSlope += directionC * cos(dot(vWorldPosition.xz, directionC) * 9.2 + uTime * 2.86) * 0.006 * smoothstep(0.45, 0.9, uDetail);
     vec3 normal = normalize(geometricNormal + vec3(-microSlope.x, 0.0, -microSlope.y));
 
     vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
@@ -143,11 +143,18 @@ const fragmentShader = /* glsl */ `
     float crestLight = smoothstep(0.08, 0.36, vWaveHeight) * max(dot(normalize(uSunDirection), normal), 0.0);
     color += mix(vec3(0.10, 0.22, 0.20), vec3(0.04, 0.08, 0.16), uNight) * crestLight * 0.24;
 
-    vec3 halfDirection = normalize(viewDirection + normalize(uSunDirection));
+    vec3 sunDirection = normalize(uSunDirection);
+    vec3 halfDirection = normalize(viewDirection + sunDirection);
     float nDotH = max(dot(normal, halfDirection), 0.0);
-    float broadGlint = pow(nDotH, mix(72.0, 42.0, uNight)) * 0.22;
-    float sharpGlint = pow(nDotH, mix(420.0, 180.0, uNight)) * 1.08;
-    color += (broadGlint + sharpGlint) * mix(vec3(1.0, 0.88, 0.64), vec3(0.56, 0.72, 1.0), uNight);
+    // Confine daytime glitter to the sun's path: only where the smooth wave
+    // surface already reflects toward the sun may micro-ripples sparkle.
+    // Elsewhere the noon sea stays satin instead of plastic-looking.
+    vec3 geometricReflection = reflect(-viewDirection, geometricNormal);
+    float sunPath = smoothstep(0.8, 0.985, dot(geometricReflection, sunDirection));
+    float glintMask = mix(mix(0.07, 1.0, sunPath), 1.0, uNight);
+    float broadGlint = pow(nDotH, mix(72.0, 42.0, uNight)) * mix(0.16, 0.22, uNight);
+    float sharpGlint = pow(nDotH, mix(520.0, 180.0, uNight)) * mix(0.95, 1.08, uNight);
+    color += (broadGlint + sharpGlint) * glintMask * mix(vec3(1.0, 0.88, 0.6), vec3(0.56, 0.72, 1.0), uNight);
 
     // A broken, wave-driven moon path extending from the viewer toward the moon.
     // This is deliberately broader than the high-frequency Blinn glints above:

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { clamp, damp, lerpAngle } from "../math";
 import type { OceanSample } from "../environment/OceanMath";
 import type { SimulatorControls } from "../types";
+import { computeSailState } from "./SailAerodynamics";
 
 export type OceanSampler = {
   sample: (x: number, z: number) => OceanSample;
@@ -88,12 +89,10 @@ export class VesselPhysics {
     const propellerForce = throttle * (throttle < 0 ? 41000 : 76000);
     this.force.addScaledVector(this.forward, propellerForce);
 
-    const windAngle = Math.abs(apparentWindAngle);
-    const noGo = smoothNoGo(windAngle);
-    const sailEfficiency = Math.sin(Math.min(Math.PI, windAngle)) * noGo * clamp(controls.sailTrim, 0.2, 1);
-    const sailForce = 0.5 * 1.225 * 72 * apparentWindSpeed * apparentWindSpeed * sailEfficiency * 0.88;
+    const sails = computeSailState(apparentWindAngle, apparentWindSpeed, controls.sailTrim);
+    const sailForce = sails.force;
     this.force.addScaledVector(this.forward, sailForce);
-    this.force.addScaledVector(this.right, Math.sign(apparentRight || 1) * sailForce * 0.11);
+    this.force.addScaledVector(this.right, sails.lateralForce);
 
     const forwardDrag = -Math.sign(forwardSpeed) * forwardSpeed * forwardSpeed * 44;
     const lateralDrag = -lateralSpeed * Math.abs(lateralSpeed) * 980 - lateralSpeed * 1750;
@@ -105,8 +104,12 @@ export class VesselPhysics {
     this.velocity.addScaledVector(this.force, delta / this.mass);
 
     const rudderEffect = clamp(Math.abs(forwardSpeed) / 2.2, 0, 1);
-    const rudderTorque = controls.rudder * forwardSpeed * Math.abs(forwardSpeed) * 510 * rudderEffect;
-    const avoidanceYaw = this.forward.x * this.avoidance.z - this.forward.z * this.avoidance.x;
+    // three.js is right-handed: with the bow on +Z and +Y up, starboard (the
+    // viewer's right) is -X. Heading grows toward +X (port), so a starboard
+    // rudder must produce negative yaw.
+    const rudderTorque = -controls.rudder * forwardSpeed * Math.abs(forwardSpeed) * 510 * rudderEffect;
+    // Positive yaw swings the bow toward +X; steer toward the escape direction.
+    const avoidanceYaw = this.forward.z * this.avoidance.x - this.forward.x * this.avoidance.z;
     this.yawRate += (rudderTorque / this.yawInertia + avoidanceYaw * 0.72 - this.yawRate * 1.42) * delta;
     this.yawRate = clamp(this.yawRate, -0.72, 0.72);
     this.heading += this.yawRate * delta;
@@ -122,8 +125,11 @@ export class VesselPhysics {
 
     this.updateBuoyancy(delta, Math.abs(forwardSpeed));
     const speed = this.velocity.length();
+    // Positive roll lowers the +X side (Vessel applies rotation.z = -roll), so
+    // the yacht heels toward leeward, the side the apparent air flows toward.
+    // A turn heels the catamaran outward, away from the turn.
     const heelTarget = clamp(
-      -Math.sign(apparentRight || 1) * sailForce / 27000 - controls.rudder * forwardSpeed * 0.008,
+      Math.sign(apparentRight || 1) * sailForce / 27000 + controls.rudder * forwardSpeed * 0.008,
       -0.26,
       0.26,
     );
@@ -199,11 +205,4 @@ export class VesselPhysics {
     this.waveRollTarget = clamp(-Math.atan2(starboardHeight - portHeight, 3.1), -0.18, 0.18);
     this.pitch = damp(this.pitch, pitchTarget, 4.1, delta);
   }
-}
-
-function smoothNoGo(angle: number): number {
-  const low = 0.32;
-  const high = 0.76;
-  const t = clamp((angle - low) / (high - low), 0, 1);
-  return t * t * (3 - 2 * t);
 }

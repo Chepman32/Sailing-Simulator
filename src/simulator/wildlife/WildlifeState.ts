@@ -170,3 +170,65 @@ export function nextWhalePhase(phase: WhalePhase): WhalePhase {
       return "cruise";
   }
 }
+
+/**
+ * Shark cycle: a submerged patrol, a deliberate approach toward the yacht, a
+ * slow "Jaws" pass with only the dorsal fin cutting the surface, then a dive.
+ */
+export type SharkPhase = "patrol" | "approach" | "fin" | "dive";
+
+/** [minimum, maximum] seconds per phase; approach is a timeout. */
+export const SHARK_PHASE_DURATION: Record<SharkPhase, readonly [number, number]> = {
+  patrol: [16, 30],
+  approach: [22, 22],
+  fin: [24, 34],
+  dive: [5, 5],
+};
+
+/** Metres of dorsal fin that clear the water during the fin pass. */
+export const SHARK_FIN_EXPOSURE = 0.42;
+/** The approach becomes a fin pass once the shark is this close to the yacht. */
+export const SHARK_FIN_START_DISTANCE = 28;
+export const SHARK_FIN_ORBIT_RADIUS = 16;
+
+export function nextSharkPhase(phase: SharkPhase): SharkPhase {
+  switch (phase) {
+    case "patrol":
+      return "approach";
+    case "approach":
+      return "fin";
+    case "fin":
+      return "dive";
+    case "dive":
+      return "patrol";
+  }
+}
+
+export function sharkPhaseDuration(phase: SharkPhase, randomUnit: number): number {
+  const [minimum, maximum] = SHARK_PHASE_DURATION[phase];
+  return minimum + (maximum - minimum) * Math.max(0, Math.min(1, randomUnit));
+}
+
+/**
+ * Depth of the shark's root below the local water surface. `finTop` is the
+ * height of the dorsal fin tip above the root. Transitions are eased so the
+ * fin rises and sinks instead of popping.
+ */
+export function sharkRootDepth(phase: SharkPhase, progress: number, finTop: number): number {
+  const submerged = finTop + 0.9;
+  const finPass = finTop - SHARK_FIN_EXPOSURE;
+  const t = Math.max(0, Math.min(1, progress));
+  const ease = t * t * (3 - 2 * t);
+  switch (phase) {
+    case "patrol":
+    case "approach":
+      return submerged;
+    case "fin": {
+      // Rise during the first 15% of the pass.
+      const rise = Math.min(1, t / 0.15);
+      return submerged + (finPass - submerged) * rise * rise * (3 - 2 * rise);
+    }
+    case "dive":
+      return finPass + (submerged + 0.7 - finPass) * ease;
+  }
+}

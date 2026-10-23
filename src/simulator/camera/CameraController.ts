@@ -3,6 +3,7 @@ import type { OceanSystem } from "../environment/OceanSystem";
 import { clamp, damp } from "../math";
 import type { CameraMode } from "../types";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
+import type { DirectedShot } from "./PhotoDirector";
 
 export class CameraController {
   readonly camera: THREE.PerspectiveCamera;
@@ -10,10 +11,15 @@ export class CameraController {
   private readonly lookTarget = new THREE.Vector3();
   private readonly smoothedTarget = new THREE.Vector3();
   private readonly viewDirection = new THREE.Vector3();
+  private readonly directedPosition = new THREE.Vector3();
+  private readonly directedLook = new THREE.Vector3();
+  private directedFov = 50;
   private yawOffset = 0;
   private pitch = 0.1;
   private distance = 17;
   private mode: CameraMode = "chase";
+  private directed: DirectedShot | null = null;
+  private directedBlend = 0;
 
   constructor(
     aspect: number,
@@ -29,6 +35,14 @@ export class CameraController {
     if (mode === "chase") this.distance = 17;
     if (mode === "orbit") this.distance = 24;
     if (mode === "drone") this.distance = 42;
+  }
+
+  /**
+   * Photo-mode auto targeting. While a shot is set the camera glides to it on a
+   * slow spring; clearing it blends back to the normal follow camera.
+   */
+  setDirectedShot(shot: DirectedShot | null): void {
+    this.directed = shot;
   }
 
   orbit(deltaX: number, deltaY: number): void {
@@ -81,9 +95,33 @@ export class CameraController {
       this.lookTarget.y += clamp(-this.pitch - 0.02, 0, 0.22) * distance * 0.9;
       this.smoothedTarget.lerp(this.lookTarget, 1 - Math.exp(-5.5 * delta));
     }
+    let targetFov = this.mode === "helm" ? 64 : 50 + Math.min(10, Math.abs(physics.telemetry.forwardSpeed) * 0.28);
+    this.directedBlend = damp(this.directedBlend, this.directed ? 1 : 0, 1.6, delta);
+    if (this.directed) {
+      // Glide toward the directed shot; the subject may move, so keep following.
+      // A new subject far away is a cut rather than a long fly-through.
+      if (this.directedPosition.distanceTo(this.directed.position) > 350) {
+        this.directedPosition.copy(this.directed.position);
+        this.directedLook.copy(this.directed.lookAt);
+        this.directedFov = this.directed.fov;
+      }
+      this.directedPosition.lerp(this.directed.position, 1 - Math.exp(-1.4 * delta));
+      this.directedLook.lerp(this.directed.lookAt, 1 - Math.exp(-2.6 * delta));
+      this.directedFov = damp(this.directedFov, this.directed.fov, 1.5, delta);
+    } else {
+      this.directedPosition.copy(this.camera.position);
+      this.directedLook.copy(this.smoothedTarget);
+      this.directedFov = this.camera.fov;
+    }
+    if (this.directedBlend > 0.001) {
+      this.camera.position.lerp(this.directedPosition, this.directedBlend);
+      this.smoothedTarget.lerp(this.directedLook, this.directedBlend);
+      targetFov = THREE.MathUtils.lerp(targetFov, this.directedFov, this.directedBlend);
+      const water = this.ocean.sample(this.camera.position.x, this.camera.position.z).height;
+      this.camera.position.y = Math.max(this.camera.position.y, water + 0.9);
+    }
     this.camera.lookAt(this.smoothedTarget);
-    const targetFov = this.mode === "helm" ? 64 : 50 + Math.min(10, Math.abs(physics.telemetry.forwardSpeed) * 0.28);
-    this.camera.fov = damp(this.camera.fov, targetFov, 2.6, delta);
+    this.camera.fov = this.directed ? targetFov : damp(this.camera.fov, targetFov, 2.6, delta);
     this.camera.updateProjectionMatrix();
   }
 
