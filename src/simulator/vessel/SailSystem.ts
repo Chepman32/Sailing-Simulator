@@ -81,6 +81,11 @@ export class SailSystem {
   private readonly clothMaterials: THREE.MeshStandardMaterial[] = [];
   private readonly shape: SailShape = { draft: 0, twist: 0, flutter: 0, wrinkle: 0 };
 
+  /** The main's current (damped) shape; the jib takes the same wind. */
+  get currentShape(): Readonly<SailShape> {
+    return this.shape;
+  }
+
   constructor(model: THREE.Object3D) {
     model.updateMatrixWorld(true);
     model.traverse((object) => {

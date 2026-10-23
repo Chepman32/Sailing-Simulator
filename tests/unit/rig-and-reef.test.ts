@@ -222,3 +222,19 @@ test("reef fish numbers scale with the quality preset", () => {
   const fullSchool = REEF_FISH_SPECIES.reduce((total, species) => total + species.count, 0);
   assert.ok(fullSchool >= 100 && fullSchool <= 400, "enough fish to read as a reef, few enough to be cheap");
 });
+
+test("the jib is sheeted to the boom's side, a little tighter, with its belly a third aft", async () => {
+  const { jibCamber, jibRig, jibSheetAngle } = await import("../../src/simulator/vessel/JibSail");
+  for (const boom of [0.05, 0.3, 0.8, 1.3]) {
+    assert.ok(jibSheetAngle(boom) > 0 && jibSheetAngle(-boom) < 0, "same side as the boom");
+    assert.ok(Math.abs(jibSheetAngle(boom)) <= 1.0);
+  }
+  assert.ok(jibSheetAngle(0.8) < 0.8, "sheeted tighter than a well-eased main");
+  assert.equal(jibCamber(0), 0);
+  assert.ok(Math.abs(jibCamber(1)) < 1e-9);
+  assert.ok(Math.abs(jibCamber(1 / 3) - 1) < 1e-9, "deepest a third of the way aft");
+  const rig = jibRig(0, 1.74, 1.83, 8.2, 4.7);
+  assert.ok(rig.tack.z > 4 && rig.tack.y < 1.2, "tack on the bows' crossbeam");
+  assert.ok(rig.head.y > 5.5 && rig.head.y < 8.2, "a fractional rig: the head below the masthead");
+  assert.ok(rig.tack.z - rig.foot > 1.74, "the clew stays forward of the mast");
+});

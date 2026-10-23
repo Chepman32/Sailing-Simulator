@@ -13,6 +13,7 @@ import {
 } from "./Appendages";
 import { HELM_EYE, HelmStation, type HelmTraffic } from "./HelmStation";
 import { boomPivotPose, boomTarget, createBoomState, stepBoom } from "./BoomDynamics";
+import { JibSail, jibRig } from "./JibSail";
 import { SailSystem } from "./SailSystem";
 import type { VesselPhysics } from "./VesselPhysics";
 import { YachtShading } from "./YachtShading";
@@ -76,6 +77,7 @@ export class Vessel {
   /** Mast foot (x, z), boom height, masthead height and boom length in vessel space, once found. */
   private rigShape: { x: number; z: number; bottom: number; top: number; boom: number } | null = null;
   private readonly rigPoint = new THREE.Vector3();
+  private jib: JibSail | null = null;
   private pendingSlam = 0;
   private propellerAngularVelocity = 0;
 
@@ -157,6 +159,13 @@ export class Vessel {
     this.root.updateMatrixWorld(true);
     this.sailSystem = new SailSystem(this.model);
     this.classifyParts();
+    // The model has a forestay but no jib: set one on it.
+    if (this.rigShape && this.hulls.length > 0) {
+      const rig = this.rigShape;
+      const bow = Math.max(...this.hulls.map((hull) => hull.maxZ));
+      this.jib = new JibSail(jibRig(rig.x, rig.z, rig.bottom, rig.top, bow));
+      this.root.add(this.jib.mesh);
+    }
     this.batchStaticParts();
     this.createAppendages();
     this.createNavigationLights();
@@ -227,6 +236,7 @@ export class Vessel {
       const pose = boomPivotPose(this.boom.angle, this.authoredBoomAngle);
       this.boomPivot.rotation.y = pose.rotationY;
       this.boomPivot.scale.x = pose.mirror;
+      this.jib?.update(time, delta, this.boom.angle, this.sailSystem.currentShape);
     }
     this.rudders.forEach((rudder) => {
       rudder.rotation.y = -controls.rudder * MAX_RUDDER_ANGLE;
@@ -299,6 +309,7 @@ export class Vessel {
     });
     this.generatedGeometries.forEach((geometry) => geometry.dispose());
     this.helm.dispose();
+    this.jib?.dispose();
   }
 
   /**
