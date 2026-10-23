@@ -113,7 +113,7 @@ export type ChartIsland = {
   volcano: boolean;
 };
 
-export type ChartMarkKind = "barge" | "wreck" | "monolith" | "volcano" | "bottle" | "crate" | "flamingo";
+export type ChartMarkKind = "barge" | "wreck" | "monolith" | "volcano" | "lighthouse" | "pier" | "bottle" | "crate" | "flamingo";
 
 /** A place or a find on the chart; only marks in explored water are listed. */
 export type ChartMark = {

@@ -40,9 +40,11 @@ function project(data: ChartData, scale: number, cx: number, cy: number, x: numb
   return [cx - (x - data.x) * scale, cy - (z - data.z) * scale];
 }
 
-const MARK_ORDER: ChartMarkKind[] = ["volcano", "barge", "wreck", "monolith", "bottle", "crate", "flamingo"];
+const MARK_ORDER: ChartMarkKind[] = ["volcano", "lighthouse", "pier", "barge", "wreck", "monolith", "bottle", "crate", "flamingo"];
 
-function markLabel(kind: ChartMarkKind, voyage: FeatureMessages): string {
+function markLabel(kind: ChartMarkKind, voyage: FeatureMessages, messages: Messages): string {
+  if (kind === "lighthouse") return messages.lighthouse;
+  if (kind === "pier") return messages.pier;
   return voyage[kind];
 }
 
@@ -83,6 +85,28 @@ function drawMark(context: CanvasRenderingContext2D, mark: ChartMark, sx: number
       context.moveTo(0, -size * 0.1);
       context.lineTo(size * 0.15, -size);
       context.stroke();
+      break;
+    case "lighthouse":
+      context.fillStyle = "#f2efe6";
+      context.beginPath();
+      context.moveTo(-size * 0.32, size * 0.9);
+      context.lineTo(-size * 0.2, -size * 0.6);
+      context.lineTo(size * 0.2, -size * 0.6);
+      context.lineTo(size * 0.32, size * 0.9);
+      context.closePath();
+      context.fill();
+      context.stroke();
+      context.fillStyle = "#c4322a";
+      context.fillRect(-size * 0.27, -size * 0.05, size * 0.54, size * 0.35);
+      context.fillStyle = "#ffe48a";
+      context.beginPath();
+      context.arc(0, -size * 0.8, size * 0.24, 0, Math.PI * 2);
+      context.fill();
+      break;
+    case "pier":
+      context.fillStyle = "#a07a55";
+      context.fillRect(-size * 0.2, -size * 0.9, size * 0.4, size * 1.8);
+      context.strokeRect(-size * 0.2, -size * 0.9, size * 0.4, size * 1.8);
       break;
     case "monolith":
       context.fillStyle = "#101114";
@@ -125,7 +149,7 @@ function drawMark(context: CanvasRenderingContext2D, mark: ChartMark, sx: number
   context.restore();
 }
 
-type DrawOptions = { radius: number; labels: boolean; voyage: FeatureMessages; scaleBar: boolean };
+type DrawOptions = { radius: number; labels: boolean; voyage: FeatureMessages; messages: Messages; scaleBar: boolean };
 
 function drawChart(canvas: HTMLCanvasElement, chart: ChartSource, options: DrawOptions): void {
   const context = canvas.getContext("2d");
@@ -235,10 +259,10 @@ function drawChart(canvas: HTMLCanvasElement, chart: ChartSource, options: DrawO
   for (const mark of sorted) {
     const [sx, sy] = project(data, scale, cx, cy, mark.x, mark.z);
     if (sx < -20 || sy < -20 || sx > width + 20 || sy > height + 20) continue;
-    const big = mark.kind === "volcano" || mark.kind === "barge" || mark.kind === "wreck" || mark.kind === "monolith";
+    const big = mark.kind !== "bottle" && mark.kind !== "crate" && mark.kind !== "flamingo";
     drawMark(context, mark, sx, sy, big ? markSize : markSize * 0.75);
     if (options.labels && big) {
-      const label = markLabel(mark.kind, options.voyage);
+      const label = markLabel(mark.kind, options.voyage, options.messages);
       context.lineWidth = 3;
       context.strokeStyle = "rgba(4, 20, 28, 0.85)";
       context.strokeText(label, sx + markSize + 4, sy);
@@ -306,9 +330,9 @@ export function NauticalChart({ source, messages, voyage, open, onOpen, onClose 
   const redraw = useCallback(() => {
     const chart = source();
     if (!chart) return;
-    if (miniRef.current) drawChart(miniRef.current, chart, { radius: MINIMAP_RADIUS, labels: false, voyage, scaleBar: false });
-    if (open && fullRef.current) drawChart(fullRef.current, chart, { radius: CHART_RADII[zoom], labels: true, voyage, scaleBar: true });
-  }, [source, open, zoom, voyage]);
+    if (miniRef.current) drawChart(miniRef.current, chart, { radius: MINIMAP_RADIUS, labels: false, voyage, messages, scaleBar: false });
+    if (open && fullRef.current) drawChart(fullRef.current, chart, { radius: CHART_RADII[zoom], labels: true, voyage, messages, scaleBar: true });
+  }, [source, open, zoom, voyage, messages]);
 
   useEffect(() => {
     redraw();
@@ -334,7 +358,7 @@ export function NauticalChart({ source, messages, voyage, open, onOpen, onClose 
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [open, onClose]);
 
-  const legend: ChartMarkKind[] = ["volcano", "barge", "wreck", "monolith", "bottle", "crate", "flamingo"];
+  const legend: ChartMarkKind[] = ["volcano", "lighthouse", "pier", "barge", "wreck", "monolith", "bottle", "crate", "flamingo"];
   return (
     <>
       <button type="button" className="minimap" aria-label={messages.openMap} title={`${messages.openMap} (N)`} onClick={onOpen}>
@@ -357,7 +381,7 @@ export function NauticalChart({ source, messages, voyage, open, onOpen, onClose 
                 {legend.map((kind) => (
                   <li key={kind}>
                     <LegendIcon kind={kind} />
-                    {markLabel(kind, voyage)}
+                    {markLabel(kind, voyage, messages)}
                   </li>
                 ))}
                 <li><span className="legend-swatch legend-fog" aria-hidden="true" />{messages.uncharted}</li>

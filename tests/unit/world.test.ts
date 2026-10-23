@@ -436,3 +436,32 @@ test("ship horns are spaced at least 30 seconds apart across all ships", async (
   assert.ok(sounded.length >= 9, "the gate rations horns, it does not silence them");
   assert.ok(gate.wait(sounded.at(-1)! + 10) > 0);
 });
+
+test("islands carry landmarks: a lighthouse and a pier with a hut near the start, boulders everywhere", async () => {
+  const { islandLandmarks, pierClearance, pierLine } = await import("../../src/simulator/environment/IslandLandmarkMath");
+  const { islandsWithin: within, distanceFromWaterline: waterline } = await import("../../src/simulator/environment/IslandMath");
+  const start = within(0, 0, 320);
+  assert.ok(start.some((island) => islandLandmarks(island).lighthouse), "a lighthouse in sight from the start");
+  assert.ok(start.some((island) => islandLandmarks(island).pier), "a pier in sight from the start");
+  let lighthouses = 0;
+  let piers = 0;
+  const far = within(20000, -15000, 6000);
+  for (const island of far) {
+    const plan = islandLandmarks(island);
+    assert.deepEqual(islandLandmarks(island), plan, "the same island always has the same landmarks");
+    if (plan.lighthouse) lighthouses += 1;
+    if (plan.pier) {
+      piers += 1;
+      assert.ok(!island.volcano);
+      // The pier runs from the beach out over open water.
+      const line = pierLine(island, plan.pier);
+      assert.ok(waterline(line.x0, line.z0) < 2, "its root is at the shore");
+      assert.ok(waterline(line.x1, line.z1) > 8, "its end is out in the water");
+      const normal = { x: 0, z: 0 };
+      assert.ok(pierClearance(line, (line.x0 + line.x1) / 2, (line.z0 + line.z1) / 2, normal) < 0, "the planking is an obstacle");
+    }
+    assert.ok(plan.rocks.length >= 1 && plan.rocks.length <= 14);
+  }
+  assert.ok(far.length > 20 && lighthouses > 0 && piers > 0, `${far.length} islands, ${lighthouses} lighthouses, ${piers} piers`);
+  assert.ok(lighthouses < far.length * 0.4 && piers < far.length * 0.4, "landmarks stay special");
+});

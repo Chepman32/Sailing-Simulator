@@ -13,6 +13,8 @@ import { GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
 import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
+import { IslandLandmarks } from "./environment/IslandLandmarks";
+import { islandLandmarks, islandSpot, pierLine } from "./environment/IslandLandmarkMath";
 import { IslandSystem } from "./environment/IslandSystem";
 import { distanceFromWaterline, islandsWithin } from "./environment/IslandMath";
 import { ExplorationFog, EXPLORATION_STORAGE_KEY, REVEAL_RADIUS } from "./navigation/Exploration";
@@ -96,6 +98,7 @@ export class Simulator {
   private wake!: WakeSystem;
   private wildlife!: WildlifeSystem;
   private aviation!: AviationSystem;
+  private landmarks!: IslandLandmarks;
   private ships!: ShipSystem;
   private shipShadows?: ShipShadows;
   private readonly shipImpact = new THREE.Vector3();
@@ -271,14 +274,24 @@ export class Simulator {
         (x, z) => distanceFromWaterline(x, z) > POI_CLEARANCE,
         new Set(this.state.discoveredPlaces),
       );
-      // Ships' sides and the places' footprints are obstacles the guard steers round.
+      // Lighthouses, piers with stilt huts, and boulders on the islands near the yacht.
+      this.landmarks = new IslandLandmarks(this.scene, (island, radial, angle) => this.islands.terrainSurfaceHeight(island, radial, angle));
+      // Ships' sides, the places' footprints and the piers are obstacles the guard steers round.
       this.physics.hullClearance = (x, z, normal) => {
-        const ship = this.ships.hullClearance(x, z, normal);
+        let best = this.ships.hullClearance(x, z, normal);
         const place = this.places.clearance(x, z, this.obstacleNormal);
-        if (place >= ship) return ship;
-        normal.x = this.obstacleNormal.x;
-        normal.z = this.obstacleNormal.z;
-        return place;
+        if (place < best) {
+          best = place;
+          normal.x = this.obstacleNormal.x;
+          normal.z = this.obstacleNormal.z;
+        }
+        const pier = this.landmarks.clearance(x, z, this.obstacleNormal);
+        if (pier < best) {
+          best = pier;
+          normal.x = this.obstacleNormal.x;
+          normal.z = this.obstacleNormal.z;
+        }
+        return best;
       };
       this.ocean.setShips(this.ships.ships);
       this.vessel = new Vessel(this.scene, this.assets, this.underwater);
@@ -574,9 +587,17 @@ export class Simulator {
     }));
     const discovered = this.state.discoveredPlaces;
     const marks: ChartMark[] = [];
-    for (const island of islands) {
-      if (island.volcano && this.exploration.isExplored(island.x, island.z)) {
-        marks.push({ kind: "volcano", x: island.x, z: island.z, discovered: discovered.includes(`volcano:${island.id}`) });
+    for (const island of islandsWithin(yacht.x, yacht.z, radius)) {
+      if (!this.exploration.isExplored(island.centerX, island.centerZ)) continue;
+      if (island.volcano) marks.push({ kind: "volcano", x: island.centerX, z: island.centerZ, discovered: discovered.includes(`volcano:${island.id}`) });
+      const plan = islandLandmarks(island);
+      if (plan.lighthouse) {
+        const spot = islandSpot(island, plan.lighthouse.radial, plan.lighthouse.angle);
+        marks.push({ kind: "lighthouse", x: spot.x, z: spot.z, discovered: true });
+      }
+      if (plan.pier) {
+        const line = pierLine(island, plan.pier);
+        marks.push({ kind: "pier", x: line.x1, z: line.z1, discovered: true });
       }
     }
     const open = (x: number, z: number) => distanceFromWaterline(x, z) > POI_CLEARANCE;
@@ -904,6 +925,7 @@ export class Simulator {
     this.audio?.dispose();
     this.wildlife?.dispose();
     this.aviation?.dispose();
+    this.landmarks?.dispose();
     this.ships?.dispose();
     this.post?.dispose();
     this.reflection?.dispose();
@@ -971,6 +993,7 @@ export class Simulator {
     this.frameDelta = delta;
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.islands.update(this.elapsed, this.environment.currentWeather.wind, this.physics.position.x, this.physics.position.z);
+    this.landmarks.update(delta, this.physics.position.x, this.physics.position.z, this.environmentState.nightFactor);
     this.vessel.update(this.physics, this.physics.guard.output, this.elapsed, delta, this.environmentState.nightFactor, {
       camera: this.camera.camera,
       lightDirection: this.environment.lightDirection,
