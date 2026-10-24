@@ -2521,34 +2521,6 @@ input[type="range"]:disabled {
 
 .engine-switch-track span { transition: transform 160ms ease; }
 
-.rotate-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 40px;
-  padding: 6px 14px;
-  border: 1px solid var(--border);
-  border-radius: 99px;
-  color: var(--text);
-  background: var(--glass-strong);
-  font-size: 12px;
-  font-weight: 750;
-  cursor: pointer;
-  animation: pop-in 220ms ease;
-}
-
-.rotate-icon {
-  display: inline-block;
-  color: var(--accent);
-  font-size: 18px;
-  animation: rotate-nudge 2.4s ease-in-out infinite;
-}
-
-@keyframes rotate-nudge {
-  0%, 60%, 100% { transform: rotate(0deg); }
-  30% { transform: rotate(-90deg); }
-}
-
 /* ---- The chart: minimap and full-screen chart ---------------------------- */
 
 .minimap {
@@ -2831,4 +2803,141 @@ input[type="range"]:disabled {
 /* Short screens: the chart's compass beside the close button, clear of the zoom tools. */
 @media (max-height: 560px) {
   .chart-compass { top: var(--edge-top); right: calc(var(--edge-right) + 54px); width: 46px; height: 46px; }
+}
+
+/* Photo mode toolbar */
+.photo-toolbar {
+  position: absolute;
+  z-index: 30;
+  top: max(14px, env(safe-area-inset-top));
+  left: max(14px, env(safe-area-inset-left));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.photo-tool {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 50%;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.26);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+}
+
+.photo-tool .control-icon { width: 24px; height: 24px; }
+.photo-tool:hover { background: rgba(0, 0, 0, 0.4); }
+.photo-tool[aria-pressed="true"] {
+  border-color: rgba(130, 255, 240, 0.85);
+  color: var(--accent-strong);
+  background: rgba(4, 40, 46, 0.42);
+}
+
+.photo-tool[aria-pressed="false"] { opacity: 0.78; }
+.photo-shutter { width: 60px; height: 60px; border-width: 2px; }
+
+.photo-saved {
+  padding: 7px 12px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.42);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.photo-flash {
+  position: absolute;
+  z-index: 29;
+  inset: 0;
+  background: #ffffff;
+  pointer-events: none;
+  animation: photo-flash 380ms ease-out forwards;
+}
+
+@keyframes photo-flash {
+  from { opacity: 0.75; }
+  to { opacity: 0; }
+}
+
+
+/* Steering helpers */
+.rudder-buttons {
+  grid-area: center;
+  display: flex;
+  align-self: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rudder-buttons .center-button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tilt-button {
+  flex: 0 0 48px;
+  display: grid;
+  place-items: center;
+  min-width: 48px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(101, 226, 214, 0.08);
+}
+
+@media (pointer: fine) {
+  /* Device tilt only exists on handheld devices. */
+  .tilt-button { display: none; }
+}
+
+.helm-wheel {
+  cursor: grab;
+  touch-action: none;
+}
+
+.helm-wheel:active { cursor: grabbing; }
+.rudder-control.is-tilt .rudder-track-wrap { opacity: 0.62; }
+.rudder-control.is-tilt .helm-wheel { cursor: default; }
+
+
+.rotate-hint {
+  position: absolute;
+  z-index: 27;
+  top: 38%;
+  left: 50%;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 10px;
+  width: min(330px, calc(100vw - 32px));
+  padding: 10px 10px 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--glass-strong);
+  box-shadow: 0 16px 40px rgba(0, 12, 18, 0.35);
+  transform: translateX(-50%);
+}
+
+.rotate-hint p { margin: 0; font-size: 13px; line-height: 1.35; }
+
+.rotate-hint-icon {
+  width: 22px;
+  height: 36px;
+  margin: auto;
+  border: 2px solid var(--accent-strong);
+  border-radius: 5px;
+  animation: rotate-phone 2.4s ease-in-out infinite;
+}
+
+@keyframes rotate-phone {
+  0%, 25% { transform: rotate(0deg); }
+  55%, 100% { transform: rotate(-90deg); }
 }

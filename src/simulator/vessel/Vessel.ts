@@ -10,7 +10,7 @@ import {
   createSaildriveGeometry,
   RUDDER_SPAN,
 } from "./Appendages";
-import { HELM_EYE, HELM_X, HelmStation, WHEEL_RADIUS, type HelmTraffic } from "./HelmStation";
+import { HELM_EYE, HelmStation, type HelmTraffic } from "./HelmStation";
 import { Skipper } from "./Skipper";
 import { boomPivotPose, boomTarget, createBoomState, stepBoom } from "./BoomDynamics";
 import { SailSystem } from "./SailSystem";
@@ -61,7 +61,6 @@ export class Vessel {
   private readonly model: THREE.Group;
   private readonly sailSystem: SailSystem;
   private readonly jib = new JibSail();
-  private readonly skipper: Skipper;
   private readonly shading = new YachtShading();
   private readonly rudders: THREE.Object3D[] = [];
   private readonly propellers: THREE.Mesh[] = [];
@@ -72,6 +71,7 @@ export class Vessel {
   private readonly hulls: HullProfile[] = [];
   private readonly boomPivot = new THREE.Group();
   private readonly helm = new HelmStation();
+  private skipper?: Skipper;
   /** Parts left out of the planar mirror (see `batchStaticParts`). */
   readonly mirrorSkipped: THREE.Object3D[] = [];
   private readonly boom = createBoomState();
@@ -163,9 +163,17 @@ export class Vessel {
     this.createNavigationLights();
     this.root.add(this.helm.group);
     this.root.add(this.jib.group);
-    // The skipper stands where the helm camera's eyes are, on the helm station's deck.
-    this.skipper = new Skipper(new THREE.Vector3(HELM_X, 0.62, HELM_EYE.z - 0.04), this.helm.wheelMount, WHEEL_RADIUS);
-    this.root.add(this.skipper.group);
+    this.skipper = new Skipper(this.root, {
+      feet: HelmStation.STAND_FEET,
+      eyeHeight: HELM_EYE.y - HelmStation.STAND_FEET.y,
+      rimPoint: (angle, target) => this.helm.rimPoint(angle, target),
+      wheelAngle: () => this.helm.wheelAngle,
+    });
+  }
+
+  /** The skipper is hidden from his own eyes (the helm camera). */
+  setCrewVisible(visible: boolean): void {
+    if (this.skipper) this.skipper.visible = visible;
   }
 
   /** Dyes the mainsail (sRGB hex). */
@@ -174,10 +182,6 @@ export class Vessel {
     this.jib.setColor(hex);
   }
 
-  /** Hides the skipper (the helm camera looks out through his eyes). */
-  setSkipperVisible(visible: boolean): void {
-    this.skipper.group.visible = visible;
-  }
 
   /** Where the helmsman's eyes are, in vessel space (the helm camera's anchor). */
   get helmEye(): THREE.Vector3 {
@@ -234,7 +238,6 @@ export class Vessel {
       this.boomPivot.rotation.y = pose.rotationY;
       this.boomPivot.scale.x = pose.mirror;
     }
-    if (this.skipper.group.visible) this.skipper.update(time, delta, physics.roll, physics.pitch, this.helm.wheelTurn);
     this.rudders.forEach((rudder) => {
       rudder.rotation.y = -controls.rudder * MAX_RUDDER_ANGLE;
     });
@@ -254,6 +257,7 @@ export class Vessel {
       night: nightFactor,
       readable: lighting?.helmReadable ?? false,
     });
+    this.skipper?.update(time, delta, physics.roll, physics.pitch, physics.yawRate, physics.telemetry.forwardSpeed);
     // Follow the simulated shaft so the screws spool up and down with the
     // engines instead of snapping to the lever position.
     const shaft = physics.engineShaft;
@@ -301,9 +305,9 @@ export class Vessel {
       materials.forEach((material) => material.dispose());
     });
     this.generatedGeometries.forEach((geometry) => geometry.dispose());
+    this.skipper?.dispose();
     this.helm.dispose();
     this.jib.dispose();
-    this.skipper.dispose();
   }
 
   /**

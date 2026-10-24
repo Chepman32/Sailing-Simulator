@@ -481,17 +481,11 @@ test("an event that is over is let go; a horn is held for its full time", () => 
   assert.equal(subjectKind(director), "horn");
 });
 
-test("a photo shot keeps the lens and stands clear of the yacht's rig, on the side asked for", () => {
+test("a photo shot keeps the camera's own lens: no zoom on a far subject or a near one", () => {
   const shot: PhotoShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 0 };
-  photoShot({ kind: "breach", x: 0, y: 4, z: 800, size: 34 }, 0, 0.5, 0, shot, 1, 0);
-  assert.ok(Number.isNaN(shot.fov), "no zoom: the camera keeps its own field of view");
-  assert.ok(shot.position.z < 0 && shot.position.y > 4, "a little behind and above the yacht");
-  assert.ok(shot.position.x > 10, "well to the side asked for");
-  // The line of sight passes the mast (at the yacht) by several metres.
-  const along = (0 - shot.position.z) / (800 - shot.position.z);
-  const passX = shot.position.x + (0 - shot.position.x) * along;
-  assert.ok(Math.abs(passX) > 8, `the sight line clears the rig (${passX.toFixed(1)} m)`);
-  photoShot({ kind: "dolphins", x: 6, y: 0.5, z: 8, size: 10 }, 0, 0.5, 0, shot, -1, 0);
-  assert.ok(Number.isNaN(shot.fov));
-  assert.ok(Math.hypot(shot.position.x, shot.position.z) > 10, "dolphins at the bow are framed from clear of the boat");
+  photoShot({ kind: "breach", x: 0, y: 4, z: 800, size: 34 }, 0, 0.5, 0, shot, 0);
+  assert.ok(Number.isNaN(shot.fov), "a far breach is not zoomed in");
+  assert.ok(shot.position.y > 4, "above the yacht");
+  photoShot({ kind: "dolphins", x: 6, y: 0.5, z: 8, size: 10 }, 0, 0.5, 0, shot, 0);
+  assert.ok(Number.isNaN(shot.fov), "nor dolphins at the bow");
 });

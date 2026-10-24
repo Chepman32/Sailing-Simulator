@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { QualityPreset } from "../types";
-import { budgetPixelRatio, FpsJudge, type GovernorVerdict } from "./RenderBudget";
+import { AUTO_SLOW_FPS, budgetPixelRatio, FpsJudge, type GovernorVerdict } from "./RenderBudget";
 
 export type QualitySettings = {
   maxDpr: number;
@@ -94,7 +94,9 @@ export class QualityManager {
   private gpuMeasured = false;
   private fastWindows = 0;
   private readonly coarseDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
-  private readonly fpsJudge = new FpsJudge(this.coarseDevice ? 44 : 36);
+  private readonly fpsJudge = new FpsJudge(AUTO_SLOW_FPS);
+  /** Only automatic mode changes the level by itself; a chosen preset is never lowered or raised. */
+  private adaptive = true;
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -103,6 +105,17 @@ export class QualityManager {
   ) {
     this.preset = this.coarseDevice && initialPreset === "high" ? "medium" : initialPreset;
     this.apply(this.preset, false);
+  }
+
+  get isAdaptive(): boolean {
+    return this.adaptive;
+  }
+
+  setAdaptive(adaptive: boolean): void {
+    this.adaptive = adaptive;
+    this.slowWindows = 0;
+    this.fastWindows = 0;
+    this.fpsJudge.reset();
   }
 
   get current(): QualityPreset {
@@ -131,6 +144,7 @@ export class QualityManager {
    * the lowest render scale steps down; long idle at full scale steps up.
    */
   observeGpu(verdict: GovernorVerdict): void {
+    if (!this.adaptive) return;
     this.gpuMeasured = true;
     if (verdict === "overloaded" && this.preset !== "low") {
       this.apply(this.preset === "high" ? "medium" : "low", true);
@@ -142,6 +156,7 @@ export class QualityManager {
 
   /** @param frameCap the most frames per second the pacer allows right now (30 while unfocused). */
   observeFps(fps: number, frameCap = 60): void {
+    if (!this.adaptive) return;
     const reading = this.fpsJudge.observe(fps, frameCap);
     if (reading === "ignored") return;
     if (reading === "slow") {

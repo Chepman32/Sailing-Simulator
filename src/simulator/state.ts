@@ -95,6 +95,7 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   waveHeight: 0.9,
   trueWindKnots: 15,
   quality: "high",
+  qualityChoice: "auto",
   soundEnabled: true,
   audioReady: false,
   engineRunning: false,
@@ -112,6 +113,9 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   stuck: false,
   radioStation: null,
   radioBuffering: false,
+  positionX: 0,
+  positionZ: 0,
+  photoAutoTarget: true,
   fps: 60,
   status: "loading",
 };

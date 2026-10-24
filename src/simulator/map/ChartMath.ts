@@ -76,6 +76,14 @@ export class ExploredSea {
     return added;
   }
 
+  /** Marks the cell holding (x, z) as seen. */
+  markPoint(x: number, z: number): void {
+    const key = cellKey(fogCell(x), fogCell(z));
+    if (this.cells.has(key) || this.cells.size >= MAX_EXPLORED) return;
+    this.cells.add(key);
+    this.revision += 1;
+  }
+
   has(column: number, row: number): boolean {
     return this.cells.has(cellKey(column, row));
   }

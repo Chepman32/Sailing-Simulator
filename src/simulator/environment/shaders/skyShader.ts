@@ -96,6 +96,8 @@ export const SKY_FUNCTIONS = /* glsl */ `
       pow(sunAmount, 140.0) * 0.55 +
       pow(sunAmount, 700.0) * 1.05
     );
+    // Tropical gold: the glow around the sun is warm, not white.
+    sunGlow *= vec3(1.0, 0.72, 0.3);
     // Low suns redden the haze beneath them.
     float lowSun = (1.0 - smoothstep(0.0, 0.45, uSunDirection.y)) * exp(-height * 6.0);
     sunGlow += uSunColor * vec3(1.0, 0.52, 0.2) * pow(sunAmount, 3.0) * lowSun * 0.42;
@@ -179,7 +181,7 @@ const CELESTIAL_FUNCTIONS = /* glsl */ `
   uniform float uStars;
   uniform float uCelestial;
 
-  const float SUN_RADIUS = 0.0125;
+  const float SUN_RADIUS = 0.021;
   const float MOON_RADIUS = 0.0155;
 
   // Angular position of a direction in a body's own tangent frame, in radians.

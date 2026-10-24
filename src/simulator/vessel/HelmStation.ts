@@ -45,8 +45,7 @@ export const HULL_TRANSOM_Z = -4.0;
 /** After edge of the helm seat once the station is in place (vessel space). */
 export const HELM_SEAT_AFT_Z = -4.47 - 0.17 + HELM_STATION_SHIFT;
 const WHEEL_CENTRE = new THREE.Vector3(HELM_X, 1.42, -3.62);
-/** The rim's radius (the skipper's hands are on it). */
-export const WHEEL_RADIUS = 0.36;
+const WHEEL_RADIUS = 0.36;
 /** The wheel's top leans forward, like a pedestal wheel. */
 const WHEEL_TILT = -0.24;
 /** How far the wheel turns at full rudder, radians. */
@@ -148,13 +147,7 @@ function screenPlane(width: number, height: number, region: Region): THREE.Plane
 export class HelmStation {
   readonly group = new THREE.Group();
   private readonly wheel = new THREE.Group();
-  /** How far the wheel is turned about its axis, radians. */
-  get wheelTurn(): number {
-    return this.wheel.rotation.z;
-  }
-
-  /** The wheel's mount: its local XY plane is the rim's, and it does not turn. */
-  readonly wheelMount = new THREE.Group();
+  private readonly wheelMount = new THREE.Group();
   private readonly lever = new THREE.Group();
   private readonly card: THREE.Mesh;
   private readonly screenMaterial: THREE.MeshStandardMaterial;
@@ -370,6 +363,21 @@ export class HelmStation {
     this.geometries.push(compositeGeometry, steelGeometry, screens, cardGeometry, dome.geometry, rim, spokeGeometry, leverParts);
     this.paintCard();
   }
+
+  /** A point on the wheel's rim at `angle` in the mount's frame (not turning with the spokes), in the world. */
+  rimPoint(angle: number, target: THREE.Vector3): THREE.Vector3 {
+    this.group.updateWorldMatrix(true, true);
+    target.set(Math.cos(angle) * WHEEL_RADIUS, Math.sin(angle) * WHEEL_RADIUS, 0);
+    return this.wheelMount.localToWorld(target);
+  }
+
+  /** Current turn of the wheel, radians. */
+  get wheelAngle(): number {
+    return this.wheel.rotation.z;
+  }
+
+  /** Where the skipper's feet are: on the deck behind the wheel (vessel space). */
+  static readonly STAND_FEET = new THREE.Vector3(HELM_X, DECK_Y, HELM_EYE.z);
 
   /** Ships for the chart plotter's targets (shared by reference). */
   setTraffic(traffic: readonly HelmTraffic[]): void {
