@@ -1,0 +1,122 @@
+import * as THREE from "three";
+
+/**
+ * Incandescent fragments drawn as motion-blurred streaks: each is a quad
+ * from where the ember is now back along its velocity, a white-hot head
+ * fading into an orange-red tail, the width turned toward the camera. This
+ * is what a lava fountain looks like on any real photograph, where a short
+ * exposure turns each bomb into a glowing arc. Additive, brighter than white
+ * (the bloom spreads it). One draw call for all of them.
+ */
+
+const vertexShader = /* glsl */ `
+  attribute vec3 aHead;
+  attribute vec3 aTail;
+  attribute vec2 aShape;
+  varying vec2 vUv;
+  varying float vHeat;
+  #include <fog_pars_vertex>
+  void main() {
+    vec4 head = viewMatrix * vec4(aHead, 1.0);
+    vec4 tail = viewMatrix * vec4(aTail, 1.0);
+    vec3 along = head.xyz - tail.xyz;
+    float length = max(length(along), 1.0e-3);
+    vec3 axis = along / length;
+    vec3 across = normalize(cross(axis, normalize(head.xyz + tail.xyz)));
+    // position.x: 0 tail … 1 head; position.y: −0.5 … 0.5 across.
+    vec3 point = mix(tail.xyz, head.xyz, position.x) + across * position.y * aShape.x;
+    // A little beyond the head, round.
+    point += axis * (position.x - 0.5) * aShape.x * 0.5;
+    vec4 mvPosition = vec4(point, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
+    vUv = position.xy + vec2(0.0, 0.5);
+    vHeat = aShape.y;
+    #include <fog_vertex>
+  }
+`;
+
+const fragmentShader = /* glsl */ `
+  varying vec2 vUv;
+  varying float vHeat;
+  #include <fog_pars_fragment>
+  void main() {
+    float across = 1.0 - abs(vUv.y * 2.0 - 1.0);
+    float core = pow(across, 2.2);
+    float along = pow(vUv.x, 1.5);
+    // Hot: white-yellow head; cooler: deep orange; the tail always redder.
+    vec3 hot = vec3(7.0, 4.6, 1.8);
+    vec3 warm = vec3(3.6, 0.95, 0.18);
+    vec3 cold = vec3(0.9, 0.12, 0.03);
+    vec3 color = mix(cold, mix(warm, hot, vHeat), along) * vHeat * vHeat;
+    gl_FragColor = vec4(color * core * (0.2 + 0.8 * along), 1.0);
+    #include <fog_fragment>
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }
+`;
+
+export class EmberStreaks {
+  readonly mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial>;
+  private readonly head: THREE.InstancedBufferAttribute;
+  private readonly tail: THREE.InstancedBufferAttribute;
+  private readonly shape: THREE.InstancedBufferAttribute;
+  private count = 0;
+
+  constructor(readonly capacity: number) {
+    const geometry = new THREE.InstancedBufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute([0, -0.5, 0, 1, -0.5, 0, 1, 0.5, 0, 0, 0.5, 0], 3));
+    geometry.setIndex([0, 1, 2, 0, 2, 3]);
+    this.head = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
+    this.tail = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
+    this.shape = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2).setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute("aHead", this.head);
+    geometry.setAttribute("aTail", this.tail);
+    geometry.setAttribute("aShape", this.shape);
+    geometry.instanceCount = 0;
+    this.mesh = new THREE.Mesh(
+      geometry,
+      new THREE.ShaderMaterial({
+        name: "EmberStreaks",
+        vertexShader,
+        fragmentShader,
+        uniforms: THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: true,
+      }),
+    );
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 6;
+    this.mesh.visible = false;
+    this.mesh.name = "EmberStreaks";
+  }
+
+  begin(): void {
+    this.count = 0;
+  }
+
+  /** An ember from `tail` to `head` (m), `width` m wide, heat 0 (dull) … 1 (white-hot). */
+  push(hx: number, hy: number, hz: number, tx: number, ty: number, tz: number, width: number, heat: number): void {
+    if (this.count >= this.capacity || heat <= 0.02) return;
+    const index = this.count;
+    this.head.setXYZ(index, hx, hy, hz);
+    this.tail.setXYZ(index, tx, ty, tz);
+    this.shape.setXY(index, width, Math.min(1, heat));
+    this.count += 1;
+  }
+
+  end(): void {
+    this.head.needsUpdate = true;
+    this.tail.needsUpdate = true;
+    this.shape.needsUpdate = true;
+    this.mesh.geometry.instanceCount = this.count;
+    this.mesh.visible = this.count > 0;
+  }
+
+  dispose(): void {
+    this.mesh.geometry.dispose();
+    this.mesh.material.dispose();
+    this.mesh.removeFromParent();
+  }
+}
