@@ -138,7 +138,7 @@ export class CameraController {
     // An Object3D looks down its +Z; a camera down −Z: aim from the target back.
     this.aim.lookAt(2 * camera.position.x - shot.target.x, 2 * camera.position.y - shot.target.y, 2 * camera.position.z - shot.target.z);
     camera.quaternion.slerp(this.aim.quaternion, blend);
-    camera.fov = camera.fov + (shot.fov - camera.fov) * blend;
+    if (Number.isFinite(shot.fov)) camera.fov = camera.fov + (shot.fov - camera.fov) * blend;
     camera.near = NEAR_PLANE_OUTSIDE;
     camera.updateProjectionMatrix();
   }

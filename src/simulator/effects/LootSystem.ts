@@ -168,6 +168,11 @@ export class LootSystem {
     }
   }
 
+  /** The finds afloat within range of the yacht (for the chart). */
+  get items(): readonly LootItem[] {
+    return this.inRange.filter((item) => !this.collected.has(item.key));
+  }
+
   dispose(): void {
     this.geometries.forEach((geometry) => geometry.dispose());
     this.materials.all.forEach((material) => material.dispose());

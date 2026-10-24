@@ -214,15 +214,26 @@ export class WhaleController {
 
     const motion = agent.motion;
     const pose = whalePose(agent);
-    whale.root.position.set(motion.x, whaleWorldY(agent), motion.z);
+    // Depths are measured from the mean sea level; near the top the whale
+    // rides the swell with the water around it (in a storm the waves are
+    // metres high, and a whale held at the mean level would hang in the air
+    // over every trough), deep down the waves no longer reach it.
+    const meanY = whaleWorldY(agent);
+    const riding = 1 - THREE.MathUtils.smoothstep(-meanY, 4, 12);
+    const forwardX = Math.sin(motion.heading);
+    const forwardZ = Math.cos(motion.heading);
+    const waterHere = this.ocean.sample(motion.x, motion.z).height;
+    const waterAhead = this.ocean.sample(motion.x + forwardX * 6, motion.z + forwardZ * 6).height;
+    const waterBehind = this.ocean.sample(motion.x - forwardX * 6, motion.z - forwardZ * 6).height;
+    const swellPitch = Math.atan((waterAhead - waterBehind) / 12) * riding * 0.8;
+    whale.root.position.set(motion.x, meanY + waterHere * riding, motion.z);
     const bank = THREE.MathUtils.clamp(-motion.yawRate * motion.speed * 2.2, -0.07, 0.07);
-    whale.root.rotation.set(-motion.pitch + pose.bodyAngle, motion.heading, bank, "YXZ");
+    whale.root.rotation.set(-motion.pitch - swellPitch + pose.bodyAngle, motion.heading, bank, "YXZ");
 
     // Deep and far, the whale is fully absorbed by the water: skip it.
     camera.getWorldPosition(this.cameraPosition);
     const cameraDistance = this.cameraPosition.distanceTo(whale.root.position);
-    const surface = this.ocean.sample(motion.x, motion.z).height;
-    const depth = surface - whale.root.position.y;
+    const depth = waterHere - whale.root.position.y;
     const visible = depth < 13.5 && cameraDistance < 420;
     whale.visual.model.visible = visible;
     if (!visible) {

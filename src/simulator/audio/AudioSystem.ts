@@ -270,6 +270,248 @@ export class AudioSystem {
     this.monolithPosition.z = position.z;
   }
 
+  private roarVoice?: { gain: GainNode; tone: BiquadFilterNode; panner: PannerNode };
+  private roarLevel = 0;
+  private roarDistance = Infinity;
+  private readonly roarPosition = { x: 0, y: 0, z: 0 };
+
+  /**
+   * An erupting volcano `distance` metres away: a deep, ragged roar like a
+   * jet engine heard through the ground, as long as the fountain plays
+   * (`level` 0…1). Far off only the lowest part of it arrives.
+   */
+  setEruptionRoar(distance: number, level: number, position: { x: number; y: number; z: number }): void {
+    this.roarDistance = distance;
+    this.roarLevel = level;
+    this.roarPosition.x = position.x;
+    this.roarPosition.y = position.y;
+    this.roarPosition.z = position.z;
+  }
+
+  private updateRoar(): void {
+    const context = this.context;
+    if (!context || !this.environmentBus) return;
+    const audible = this.enabled && this.roarLevel > 0.01 && this.roarDistance < 4000;
+    if (!audible && !this.roarVoice) return;
+    if (!this.roarVoice) {
+      const source = context.createBufferSource();
+      source.buffer = this.createNoiseBuffer(6.3, "brown");
+      source.loop = true;
+      const tone = context.createBiquadFilter();
+      tone.type = "lowpass";
+      tone.frequency.value = 260;
+      tone.Q.value = 0.7;
+      const body = context.createBiquadFilter();
+      body.type = "peaking";
+      body.frequency.value = 70;
+      body.gain.value = 9;
+      // Ragged: the roar surges as the fountain pulses.
+      const surge = context.createGain();
+      surge.gain.value = 0.8;
+      const lfo = context.createOscillator();
+      lfo.frequency.value = 1.7;
+      const depth = context.createGain();
+      depth.gain.value = 0.35;
+      lfo.connect(depth).connect(surge.gain);
+      lfo.start();
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      const panner = context.createPanner();
+      panner.panningModel = "equalpower";
+      panner.distanceModel = "linear";
+      panner.rolloffFactor = 0;
+      source.connect(body).connect(tone).connect(surge).connect(gain).connect(panner).connect(this.environmentBus);
+      source.start();
+      this.roarVoice = { gain, tone, panner };
+    }
+    const now = context.currentTime;
+    const voice = this.roarVoice;
+    const distance = Math.max(50, this.roarDistance);
+    voice.gain.gain.setTargetAtTime(audible ? this.roarLevel * 0.9 * (600 / (600 + distance)) : 0, now, 0.5);
+    voice.tone.frequency.setTargetAtTime(clamp(420 * Math.pow(400 / distance, 0.6), 110, 520), now, 0.8);
+    if (voice.panner.positionX) {
+      voice.panner.positionX.setTargetAtTime(this.roarPosition.x, now, 0.1);
+      voice.panner.positionY.setTargetAtTime(this.roarPosition.y, now, 0.1);
+      voice.panner.positionZ.setTargetAtTime(this.roarPosition.z, now, 0.1);
+    }
+  }
+
+  private planeVoice?: {
+    oscillators: OscillatorNode[];
+    bases: number[];
+    gain: GainNode;
+    air: BiquadFilterNode;
+    echo: DelayNode;
+    panner: PannerNode;
+    echoPanner: PannerNode;
+  };
+  private readonly planeHistory: { time: number; x: number; y: number; z: number; vx: number; vy: number; vz: number }[] = [];
+  private planeActive = false;
+  private planeClock = 0;
+  private jetVoice?: { gain: GainNode; tone: BiquadFilterNode; panner: PannerNode };
+  private jetActive = false;
+  private jetDistance = Infinity;
+  private readonly jetPosition = { x: 0, y: 0, z: 0 };
+
+  /**
+   * The low floatplane: where it is now and how fast it moves. It is heard
+   * where it was when the sound left it (distance / 343 m/s ago), with the
+   * Doppler shift of that moment, the air's absorption of its highs, and the
+   * sweeping comb of its echo off the sea.
+   */
+  setLowPlane(active: boolean, position: { x: number; y: number; z: number }, velocity: { x: number; y: number; z: number }, delta: number): void {
+    this.planeClock += delta;
+    this.planeActive = active;
+    if (!active) {
+      this.planeHistory.length = 0;
+      return;
+    }
+    this.planeHistory.push({ time: this.planeClock, x: position.x, y: position.y, z: position.z, vx: velocity.x, vy: velocity.y, vz: velocity.z });
+    while (this.planeHistory.length > 2 && this.planeClock - this.planeHistory[0]!.time > 12) this.planeHistory.shift();
+  }
+
+  /** The nearest airliner, heard as a faint, low roar from where it was. */
+  setAirliner(active: boolean, position: { x: number; y: number; z: number }, distance: number): void {
+    this.jetActive = active;
+    this.jetDistance = distance;
+    this.jetPosition.x = position.x;
+    this.jetPosition.y = position.y;
+    this.jetPosition.z = position.z;
+  }
+
+  private updateAircraft(): void {
+    const context = this.context;
+    if (!context || !this.environmentBus) return;
+    const now = context.currentTime;
+    const place = (panner: PannerNode, x: number, y: number, z: number) => {
+      if (panner.positionX) {
+        panner.positionX.setTargetAtTime(x, now, 0.08);
+        panner.positionY.setTargetAtTime(y, now, 0.08);
+        panner.positionZ.setTargetAtTime(z, now, 0.08);
+      } else {
+        panner.setPosition(x, y, z);
+      }
+    };
+    const makePanner = () => {
+      const panner = context.createPanner();
+      panner.panningModel = "equalpower";
+      panner.distanceModel = "linear";
+      panner.rolloffFactor = 0;
+      return panner;
+    };
+
+    // --- The floatplane -------------------------------------------------------
+    if (this.planeActive && this.enabled && !this.planeVoice) {
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      const air = context.createBiquadFilter();
+      air.type = "lowpass";
+      air.Q.value = 0.6;
+      const panner = makePanner();
+      const echoPanner = makePanner();
+      const echo = context.createDelay(0.5);
+      const echoGain = context.createGain();
+      echoGain.gain.value = 0.55;
+      air.connect(gain);
+      gain.connect(panner).connect(this.environmentBus);
+      gain.connect(echo).connect(echoGain).connect(echoPanner).connect(this.environmentBus);
+      // Propeller blade-pass tone and its harmonics, the engine's firing
+      // pulses, and the broadband rush of air and exhaust.
+      const bases = [80, 160, 240, 120, 360];
+      const levels = [0.5, 0.32, 0.18, 0.28, 0.08];
+      const types: OscillatorType[] = ["sawtooth", "sawtooth", "triangle", "square", "sawtooth"];
+      const oscillators = bases.map((frequency, index) => {
+        const oscillator = context.createOscillator();
+        oscillator.type = types[index]!;
+        oscillator.frequency.value = frequency;
+        const level = context.createGain();
+        level.gain.value = levels[index]! * 0.12;
+        oscillator.connect(level).connect(air);
+        oscillator.start();
+        return oscillator;
+      });
+      const rush = context.createBufferSource();
+      rush.buffer = this.createNoiseBuffer(3.1, "pink");
+      rush.loop = true;
+      const rushBand = context.createBiquadFilter();
+      rushBand.type = "bandpass";
+      rushBand.frequency.value = 900;
+      rushBand.Q.value = 0.5;
+      const rushLevel = context.createGain();
+      rushLevel.gain.value = 0.09;
+      rush.connect(rushBand).connect(rushLevel).connect(air);
+      rush.start();
+      this.planeVoice = { oscillators: [...oscillators], bases, gain, air, echo, panner, echoPanner };
+      // Keep the noise source with the oscillators so it stops with them.
+      (this.planeVoice.oscillators as unknown as AudioScheduledSourceNode[]).push(rush);
+    }
+    const voice = this.planeVoice;
+    if (voice) {
+      const history = this.planeHistory;
+      if (!this.planeActive || !this.enabled || history.length === 0) {
+        voice.gain.gain.setTargetAtTime(0, now, 0.3);
+        if (!this.planeActive && history.length === 0) {
+          // Fully faded: free the voice.
+          window.setTimeout(() => {
+            if (this.planeVoice !== voice || this.planeActive) return;
+            voice.oscillators.forEach((oscillator) => oscillator.stop());
+            voice.gain.disconnect();
+            this.planeVoice = undefined;
+          }, 1500);
+        }
+        return;
+      }
+      // Where the sound we hear now left the plane.
+      let sample = history[history.length - 1]!;
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const entry = history[index]!;
+        const distance = Math.hypot(entry.x - this.listenerX, entry.y - this.listenerY, entry.z - this.listenerZ);
+        sample = entry;
+        if (this.planeClock - entry.time >= distance / SPEED_OF_SOUND) break;
+      }
+      const dx = this.listenerX - sample.x;
+      const dy = this.listenerY - sample.y;
+      const dz = this.listenerZ - sample.z;
+      const distance = Math.max(1, Math.hypot(dx, dy, dz));
+      const approach = (sample.vx * dx + sample.vy * dy + sample.vz * dz) / distance;
+      const doppler = SPEED_OF_SOUND / Math.max(150, SPEED_OF_SOUND - approach);
+      voice.oscillators.forEach((oscillator, index) => {
+        if (index < voice.bases.length) oscillator.frequency.setTargetAtTime(voice.bases[index]! * doppler * (1 + 0.004 * Math.sin(now * 3.1 + index)), now, 0.12);
+      });
+      voice.gain.gain.setTargetAtTime(1.1 * (140 / (140 + distance)), now, 0.15);
+      voice.air.frequency.setTargetAtTime(clamp(9000 * Math.pow(220 / (220 + distance), 0.85), 380, 9000), now, 0.2);
+      // The echo off the sea arrives later by the difference of the two paths.
+      const horizontal = Math.hypot(dx, dz);
+      const reflected = Math.hypot(horizontal, sample.y + Math.max(0.5, this.listenerY));
+      voice.echo.delayTime.setTargetAtTime(clamp((reflected - distance) / SPEED_OF_SOUND, 0, 0.45), now, 0.05);
+      place(voice.panner, sample.x, sample.y, sample.z);
+      place(voice.echoPanner, sample.x, -sample.y, sample.z);
+    }
+
+    // --- The airliner ---------------------------------------------------------
+    const jetAudible = this.jetActive && this.enabled && this.jetDistance < 30000;
+    if (jetAudible && !this.jetVoice) {
+      const source = context.createBufferSource();
+      source.buffer = this.createNoiseBuffer(7.7, "brown");
+      source.loop = true;
+      const tone = context.createBiquadFilter();
+      tone.type = "lowpass";
+      tone.frequency.value = 160;
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      const panner = makePanner();
+      source.connect(tone).connect(gain).connect(panner).connect(this.environmentBus);
+      source.start();
+      this.jetVoice = { gain, tone, panner };
+    }
+    if (this.jetVoice) {
+      const level = jetAudible ? 0.22 * clamp(11000 / this.jetDistance, 0, 1.4) ** 2 : 0;
+      this.jetVoice.gain.gain.setTargetAtTime(level, now, 1.5);
+      this.jetVoice.tone.frequency.setTargetAtTime(120 + 80 * clamp(11000 / this.jetDistance, 0, 1), now, 1.5);
+      place(this.jetVoice.panner, this.jetPosition.x, this.jetPosition.y, this.jetPosition.z);
+    }
+  }
+
   private updateHum(): void {
     const context = this.context;
     if (!context || !this.musicBus) return;
@@ -478,6 +720,8 @@ export class AudioSystem {
     this.syncShanty();
     this.updateParty();
     this.updateHum();
+    this.updateRoar();
+    this.updateAircraft();
     // The yacht's own layers: slap at rest, the bow wave's rush, spray at
     // speed, the rigging, the flogging sail, the winches (see BoatVoices).
     this.boat?.update(step, {
@@ -966,6 +1210,10 @@ export class AudioSystem {
     this.party = undefined;
     this.hum?.oscillators.forEach((oscillator) => oscillator.stop());
     this.hum = undefined;
+    this.roarVoice = undefined;
+    this.planeVoice?.oscillators.forEach((oscillator) => oscillator.stop());
+    this.planeVoice = undefined;
+    this.jetVoice = undefined;
     try {
       this.context = new AudioContextConstructor({ latencyHint: "interactive" });
     } catch {

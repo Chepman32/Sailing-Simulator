@@ -2431,3 +2431,404 @@ input[type="range"]:disabled {
 
   .discovery-icon { display: none; }
 }
+
+/* ------------------------------------------------------------------------ */
+/* Phones: a compact dock (portrait and landscape)                          */
+/* ------------------------------------------------------------------------ */
+
+.rudder-swipe { display: none; }
+
+@media (max-width: 680px) and (orientation: portrait), (max-height: 560px) and (orientation: landscape) {
+  /* The rudder is one slim strip: wheel, a track you swipe anywhere along, centre. */
+  .rudder-control {
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-areas: "wheel track center";
+    gap: 8px;
+    padding: 7px 9px;
+  }
+
+  .helm-wheel { width: 44px; height: 44px; }
+  .helm-wheel svg { width: 40px; height: 40px; }
+
+  /* Its readout only while the shore guard holds the helm, as a tag above it. */
+  .rudder-control > .control-heading { display: none; }
+  .rudder-control > .control-heading:has(.rudder-guard) {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    display: flex;
+    padding: 4px 10px;
+    border-radius: 10px;
+    background: rgba(4, 29, 40, 0.92);
+    font-size: 11px;
+  }
+  .rudder-control > .control-heading:has(.rudder-guard) > span { display: none; }
+
+  .rudder-track-wrap {
+    position: relative;
+    grid-template-rows: 46px;
+  }
+
+  .rudder-track-wrap > span { display: none; }
+  .rudder-track-wrap input { grid-row: 1; }
+  .rudder-slider { height: 46px !important; }
+  .rudder-slider::-webkit-slider-runnable-track { height: 16px; }
+  .rudder-slider::-webkit-slider-thumb { width: 38px; height: 38px; margin-top: -13px; }
+  .rudder-slider::-moz-range-thumb { width: 34px; height: 34px; }
+
+  .rudder-swipe {
+    display: block;
+    grid-row: 1;
+    grid-column: 1 / -1;
+    z-index: 1;
+    touch-action: none;
+    cursor: grab;
+  }
+
+  .center-button { min-width: 0; min-height: 44px; padding: 0 12px; }
+  .full-center-label { display: none; }
+  .mobile-center-label { display: inline; }
+
+  /* Tilt steering: the strip only shows where the helm is. */
+  .rudder-control.is-tilt .rudder-swipe { display: none; }
+  .rudder-control.is-tilt .rudder-slider { pointer-events: none; opacity: 0.7; }
+
+  /* Engine off: only its switch; the throttle appears when it runs. */
+  .throttle-control.is-off { padding: 6px; }
+  .throttle-control.is-off .control-heading,
+  .throttle-control.is-off .throttle-layout { display: none; }
+  .throttle-control.is-off .engine-toggle { min-height: 64px; margin-bottom: 0; gap: 4px; padding: 6px; }
+  .throttle-control .engine-toggle { min-height: 64px; gap: 4px; padding: 6px; }
+  .throttle-control .engine-switch-track { width: 48px; height: 28px; }
+
+  /* The collapsed settings: just the button, so the instruments keep their room. */
+  .control-panel.is-minimized header > div { display: none; }
+  .control-panel.is-minimized header { min-height: 0; padding: 4px; }
+  .control-panel.is-minimized { width: auto; max-width: none; }
+}
+
+@media (max-width: 680px) and (orientation: portrait) {
+  .simulator-shell { --throttle-length: clamp(120px, calc(100dvh - 590px), 190px); }
+  .quick-start,
+  .discovery-card,
+  .stuck-chip { bottom: calc(var(--edge-bottom) + 76px); }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .simulator-shell { --throttle-length: clamp(100px, calc(100dvh - 250px), 170px); }
+  .rudder-control { width: clamp(240px, 40vw, 360px); }
+}
+
+.engine-switch-track span { transition: transform 160ms ease; }
+
+.rotate-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  color: var(--text);
+  background: var(--glass-strong);
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+  animation: pop-in 220ms ease;
+}
+
+.rotate-icon {
+  display: inline-block;
+  color: var(--accent);
+  font-size: 18px;
+  animation: rotate-nudge 2.4s ease-in-out infinite;
+}
+
+@keyframes rotate-nudge {
+  0%, 60%, 100% { transform: rotate(0deg); }
+  30% { transform: rotate(-90deg); }
+}
+
+/* ---- The chart: minimap and full-screen chart ---------------------------- */
+
+.minimap {
+  position: absolute;
+  z-index: 12;
+  top: calc(var(--edge-top) + var(--top-bar) + 12px);
+  right: var(--edge-right);
+  width: var(--minimap-size, clamp(118px, 22vh, 164px));
+  height: var(--minimap-size, clamp(118px, 22vh, 164px));
+  padding: 0;
+  border: 2px solid rgba(151, 231, 238, 0.42);
+  border-radius: 50%;
+  overflow: visible;
+  background: #0b344c;
+  box-shadow: 0 10px 30px rgba(0, 12, 20, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.minimap:hover { transform: scale(1.03); border-color: var(--accent); }
+.minimap:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+.minimap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+/* A glass rim over the picture, like a ship's scope. */
+.minimap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, transparent 62%, rgba(2, 16, 24, 0.5) 100%);
+  pointer-events: none;
+}
+
+.minimap-north {
+  position: absolute;
+  z-index: 1;
+  top: -9px;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  transform: translateX(-50%);
+  background: #ff6b5a;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+@media (max-width: 680px) and (orientation: portrait), (max-height: 560px) and (orientation: landscape) {
+  .minimap {
+    --minimap-size: clamp(66px, calc(100vw - 304px), 84px);
+    top: calc(var(--edge-top) + 2px);
+    right: calc(var(--edge-right) + 60px);
+    border-width: 1.5px;
+  }
+  .minimap-north { top: -6px; width: 15px; height: 15px; font-size: 9px; }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .minimap { --minimap-size: 80px; }
+}
+
+.chart-overlay {
+  position: fixed;
+  z-index: 70;
+  inset: 0;
+  background: #082231;
+  color: var(--text);
+  animation: chart-in 220ms ease-out;
+}
+
+@keyframes chart-in {
+  from { opacity: 0; transform: scale(1.02); }
+  to { opacity: 1; transform: none; }
+}
+
+.chart-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+.chart-canvas:active { cursor: grabbing; }
+
+.chart-header {
+  position: absolute;
+  top: var(--edge-top);
+  left: var(--edge-left);
+  right: var(--edge-right);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.chart-title {
+  display: grid;
+  gap: 2px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  pointer-events: auto;
+}
+
+.chart-title strong {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.chart-title span { font-size: 13px; color: rgba(239, 253, 255, 0.82); }
+
+.chart-close,
+.chart-tools button {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--glass-strong);
+  color: var(--text);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.chart-close:hover,
+.chart-tools button:hover { border-color: var(--accent); background: rgba(10, 52, 66, 0.95); }
+.chart-close:focus-visible,
+.chart-tools button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.chart-tools {
+  position: absolute;
+  top: 50%;
+  right: var(--edge-right);
+  display: grid;
+  gap: 8px;
+  transform: translateY(-50%);
+}
+
+.chart-tools svg { width: 22px; height: 22px; color: var(--accent); }
+
+.chart-compass {
+  position: absolute;
+  top: calc(var(--edge-top) + 58px);
+  right: var(--edge-right);
+  width: 58px;
+  height: 58px;
+  pointer-events: none;
+}
+
+.chart-footer {
+  position: absolute;
+  left: var(--edge-left);
+  right: var(--edge-right);
+  bottom: var(--edge-bottom);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  max-width: min(560px, 70vw);
+  margin: 0;
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  list-style: none;
+  font-size: 12px;
+  color: rgba(239, 253, 255, 0.85);
+}
+
+.chart-legend li { display: inline-flex; align-items: center; gap: 7px; }
+.chart-legend i { display: inline-block; flex: none; }
+.legend-yacht {
+  width: 10px;
+  height: 13px;
+  background: #fff;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  filter: drop-shadow(0 0 3px var(--accent));
+}
+.legend-track { width: 20px; border-top: 2px dashed rgba(255, 255, 255, 0.7); }
+.legend-find { width: 8px; height: 8px; border-radius: 50%; background: #ffd666; box-shadow: 0 0 6px #ffc14d; }
+.legend-fog { width: 16px; height: 12px; border-radius: 4px; background: linear-gradient(135deg, #2c4859, #6a8a9b); }
+
+.chart-scale {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--glass);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-scale span {
+  display: block;
+  height: 6px;
+  border: 2px solid rgba(239, 253, 255, 0.85);
+  border-top: 0;
+}
+
+.chart-hint {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--edge-bottom) + 64px);
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: rgba(4, 22, 31, 0.6);
+  color: rgba(239, 253, 255, 0.7);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: chart-hint-out 6s ease forwards;
+}
+
+@keyframes chart-hint-out {
+  0%, 75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (max-width: 680px), (max-height: 560px) {
+  .chart-title { padding: 8px 12px; }
+  .chart-title span { font-size: 12px; }
+  .chart-legend { display: none; }
+  .chart-hint { white-space: normal; width: max-content; max-width: calc(100vw - 32px); text-align: center; }
+  .chart-close, .chart-tools button { width: 42px; height: 42px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-overlay, .chart-hint { animation: none; }
+}
+
+/* Compact dock: "ДВИГАТЕЛЬ", "MOTEUR"… fit the narrow switch card without an ellipsis. */
+@media (max-width: 680px) and (orientation: portrait), (max-height: 560px) and (orientation: landscape) {
+  .throttle-control .engine-toggle-copy small { font-size: 8.5px; letter-spacing: 0.02em; }
+}
+
+/* Portrait phones: the minimap stands in the right column under the ≡ button, clear of the instruments. */
+@media (max-width: 680px) and (orientation: portrait) {
+  .minimap {
+    --minimap-size: 76px;
+    top: calc(var(--edge-top) + 62px);
+    right: var(--edge-right);
+  }
+}
+
+/* Short screens: the chart's compass beside the close button, clear of the zoom tools. */
+@media (max-height: 560px) {
+  .chart-compass { top: var(--edge-top); right: calc(var(--edge-right) + 54px); width: 46px; height: 46px; }
+}

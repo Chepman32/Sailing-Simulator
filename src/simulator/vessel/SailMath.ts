@@ -17,7 +17,7 @@ export type SailShape = {
 };
 
 /** Deepest belly of a drawing sail, fraction of the chord. */
-export const MAX_DRAFT = 0.17;
+export const MAX_DRAFT = 0.2;
 
 /**
  * The cloth's shape from the pressure on it. A drawing sail bellies in
@@ -32,7 +32,7 @@ export function sailShape(apparentWindSpeed: number, luff: number, trim: number)
   const pressure = Math.min(1, wind / 11);
   const fullness = 0.3 + 0.7 * power;
   return {
-    draft: -MAX_DRAFT * Math.min(1, 0.25 + pressure) * fullness * drawing,
+    draft: -MAX_DRAFT * Math.min(1, 0.4 + pressure) * fullness * drawing,
     twist: 0.05 * (1 - power) + 0.07 * Math.max(0, pressure - 0.55) * drawing,
     flutter: (0.012 + 0.07 * Math.min(1, wind / 8)) * (luff * 0.9 + (1 - power) * 0.25 * drawing),
     wrinkle: Math.min(1, luff * 1.2 + (1 - power) * 0.25),

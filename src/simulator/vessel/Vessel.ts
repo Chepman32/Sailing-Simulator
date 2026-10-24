@@ -10,9 +10,11 @@ import {
   createSaildriveGeometry,
   RUDDER_SPAN,
 } from "./Appendages";
-import { HELM_EYE, HelmStation, type HelmTraffic } from "./HelmStation";
+import { HELM_EYE, HELM_X, HelmStation, WHEEL_RADIUS, type HelmTraffic } from "./HelmStation";
+import { Skipper } from "./Skipper";
 import { boomPivotPose, boomTarget, createBoomState, stepBoom } from "./BoomDynamics";
 import { SailSystem } from "./SailSystem";
+import { JibSail } from "./JibSail";
 import type { VesselPhysics } from "./VesselPhysics";
 import { YachtShading } from "./YachtShading";
 
@@ -21,8 +23,11 @@ const MIN_ACTIVE_PROPELLER_RPM = 220;
 const PROPELLER_RESPONSE = 7.5;
 /** Matches the physics: the HUD maps full helm to 35 degrees. */
 const MAX_RUDDER_ANGLE = 0.61;
-/** Night-light intensities; lights stay in the scene by day at zero. */
-const NAVIGATION_LIGHT_INTENSITY = [0.9, 0.9, 0.72] as const;
+/**
+ * Night-light intensities (candela): port, starboard, stern, the cockpit
+ * lantern and the masthead light. They stay in the scene by day at zero.
+ */
+const NAVIGATION_LIGHT_INTENSITY = [6, 6, 5, 24, 8] as const;
 
 export function propellerRpmForThrottle(throttle: number): number {
   const magnitude = THREE.MathUtils.clamp(Math.abs(throttle), 0, 1);
@@ -55,6 +60,8 @@ export class Vessel {
   readonly root = new THREE.Group();
   private readonly model: THREE.Group;
   private readonly sailSystem: SailSystem;
+  private readonly jib = new JibSail();
+  private readonly skipper: Skipper;
   private readonly shading = new YachtShading();
   private readonly rudders: THREE.Object3D[] = [];
   private readonly propellers: THREE.Mesh[] = [];
@@ -155,11 +162,21 @@ export class Vessel {
     this.createAppendages();
     this.createNavigationLights();
     this.root.add(this.helm.group);
+    this.root.add(this.jib.group);
+    // The skipper stands where the helm camera's eyes are, on the helm station's deck.
+    this.skipper = new Skipper(new THREE.Vector3(HELM_X, 0.62, HELM_EYE.z - 0.04), this.helm.wheelMount, WHEEL_RADIUS);
+    this.root.add(this.skipper.group);
   }
 
   /** Dyes the mainsail (sRGB hex). */
   setSailColor(hex: number): void {
     this.sailSystem.setColor(hex);
+    this.jib.setColor(hex);
+  }
+
+  /** Hides the skipper (the helm camera looks out through his eyes). */
+  setSkipperVisible(visible: boolean): void {
+    this.skipper.group.visible = visible;
   }
 
   /** Where the helmsman's eyes are, in vessel space (the helm camera's anchor). */
@@ -190,6 +207,15 @@ export class Vessel {
       controls.sailTrim,
       delta,
     );
+    this.jib.update(
+      time,
+      delta,
+      physics.telemetry.sheetAngle,
+      physics.telemetry.leewardSide,
+      physics.telemetry.sailLuff,
+      physics.telemetry.apparentWindSpeed,
+      controls.sailTrim,
+    );
     if (this.hasRig) {
       const target = boomTarget(
         physics.telemetry.sheetAngle,
@@ -208,6 +234,7 @@ export class Vessel {
       this.boomPivot.rotation.y = pose.rotationY;
       this.boomPivot.scale.x = pose.mirror;
     }
+    if (this.skipper.group.visible) this.skipper.update(time, delta, physics.roll, physics.pitch, this.helm.wheelTurn);
     this.rudders.forEach((rudder) => {
       rudder.rotation.y = -controls.rudder * MAX_RUDDER_ANGLE;
     });
@@ -275,6 +302,8 @@ export class Vessel {
     });
     this.generatedGeometries.forEach((geometry) => geometry.dispose());
     this.helm.dispose();
+    this.jib.dispose();
+    this.skipper.dispose();
   }
 
   /**
@@ -479,34 +508,51 @@ export class Vessel {
   }
 
   private createNavigationLights(): void {
-    const red = new THREE.PointLight(0xff233d, 0, 13, 2);
+    const red = new THREE.PointLight(0xff233d, 0, 22, 2);
     // Red to port, green to starboard. As the view shows her, local +X is
     // her port side (see the frame note in AGENTS.md), so red goes on +X.
     red.position.set(2.05, 1.75, 0.65);
-    const green = new THREE.PointLight(0x38ffb1, 0, 13, 2);
+    const green = new THREE.PointLight(0x38ffb1, 0, 22, 2);
     green.position.set(-2.05, 1.75, 0.65);
-    const stern = new THREE.PointLight(0xd7ecff, 0, 10, 2);
+    const stern = new THREE.PointLight(0xd7ecff, 0, 18, 2);
     stern.position.set(0, 1.35, -4.5);
-    this.navigationLights.push(red, green, stern);
-    this.root.add(red, green, stern);
+    // A warm lantern hung under the cockpit roof: it lights the deck, the
+    // skipper and the foot of the sail, and glows across the water.
+    const lantern = new THREE.PointLight(0xffb764, 0, 26, 2);
+    lantern.position.set(0.35, 2.12, -1.35);
+    // The all-round white light at the masthead, seen for miles.
+    const masthead = new THREE.PointLight(0xfff4e0, 0, 30, 2);
+    masthead.position.set(0, 8.3, 1.7);
+    this.navigationLights.push(red, green, stern, lantern, masthead);
+    this.root.add(red, green, stern, lantern, masthead);
 
-    // Visible lamp lenses. Their colours are brighter than white so the
-    // bloom pass gives each one a small coloured halo.
-    const lampGeometry = new THREE.SphereGeometry(0.055, 12, 8);
-    this.generatedGeometries.push(lampGeometry);
-    const lamps: Array<[THREE.PointLight, number, number, number]> = [
-      [red, 4.2, 0.16, 0.24],
-      [green, 0.22, 3.8, 1.2],
-      [stern, 2.6, 2.9, 3.3],
+    // Visible lamp lenses. Their colours are far brighter than white so the
+    // bloom pass gives each one a coloured halo.
+    const lampGeometry = new THREE.SphereGeometry(0.075, 14, 10);
+    const lanternGeometry = new THREE.CylinderGeometry(0.075, 0.09, 0.2, 12);
+    const capGeometry = new THREE.ConeGeometry(0.12, 0.08, 12);
+    capGeometry.translate(0, 0.14, 0);
+    this.generatedGeometries.push(lampGeometry, lanternGeometry, capGeometry);
+    const lamps: Array<[THREE.PointLight, THREE.BufferGeometry, number, number, number]> = [
+      [red, lampGeometry, 9, 0.35, 0.5],
+      [green, lampGeometry, 0.45, 8, 2.6],
+      [stern, lampGeometry, 6, 6.6, 7.4],
+      [lantern, lanternGeometry, 9, 5.4, 2.1],
+      [masthead, lampGeometry, 8, 7.6, 6.6],
     ];
-    lamps.forEach(([light, r, g, b]) => {
+    lamps.forEach(([light, geometry, r, g, b]) => {
       const material = new THREE.MeshBasicMaterial({ fog: false });
       material.color.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
-      const lamp = new THREE.Mesh(lampGeometry, material);
+      const lamp = new THREE.Mesh(geometry, material);
       lamp.position.copy(light.position);
       this.navigationLamps.add(lamp);
       this.generatedMeshes.push(lamp);
     });
+    // The lantern's brass cap stays by day too.
+    const cap = new THREE.Mesh(capGeometry, new THREE.MeshStandardMaterial({ color: 0x9a7a3c, metalness: 1, roughness: 0.35 }));
+    cap.position.copy(lantern.position);
+    this.root.add(cap);
+    this.generatedMeshes.push(cap);
     this.navigationLamps.visible = false;
     this.root.add(this.navigationLamps);
   }

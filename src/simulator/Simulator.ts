@@ -13,7 +13,7 @@ import { RenderLoop } from "./core/RenderLoop";
 import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
-import { distanceFromWaterline } from "./environment/IslandMath";
+import { distanceFromWaterline, islandsInCell, worldCell } from "./environment/IslandMath";
 import { OceanReflection } from "./environment/OceanReflection";
 import { OceanSystem } from "./environment/OceanSystem";
 import { setShoalField, significantWaveHeight } from "./environment/OceanMath";
@@ -50,14 +50,48 @@ import { VolcanoSystem } from "./effects/VolcanoSystem";
 import { PoiSystem } from "./effects/PoiSystem";
 import { DISCOVERY_RANGE, POI_CLEARANCE } from "./effects/PoiMath";
 import { findOpenWater, RESCUE_CLEARANCE } from "./vessel/RescueMath";
+import { AircraftSystem } from "./aircraft/AircraftSystem";
+import { ExploredSea, Track } from "./map/ChartMath";
+import { poiInCell, poisAround, POI_CELL, type PlaceKind, type Poi } from "./effects/PoiMath";
+import type { LootKind } from "./effects/LootMath";
 
 const STORAGE_KEY = "sailing-simulator-pro-preferences-v2";
+/** The explored sea is saved apart from the preferences: it changes often and grows. */
+const CHART_KEY = "sailing-simulator-chart-v1";
+/** Discoveries remembered (the logbook and the chart's marks). */
+const MAX_DISCOVERIES = 256;
+
+export type ChartIsland = {
+  id: number;
+  x: number;
+  z: number;
+  radius: number;
+  scaleZ: number;
+  seed: number;
+  lobe: number;
+  height: number;
+  volcano: boolean;
+};
+export type ChartPlace = { key: string; kind: PlaceKind; x: number; z: number; discovered: boolean };
+/** What the chart shows of the sea within a rectangle (see `Simulator.chart`). */
+export type ChartFeatures = {
+  yacht: { x: number; z: number; heading: number };
+  wind: { x: number; z: number };
+  islands: ChartIsland[];
+  places: ChartPlace[];
+  loot: { kind: LootKind; x: number; z: number }[];
+  explored: ExploredSea;
+  track: Track;
+  night: number;
+};
 /** Picked-up things remembered across visits (the oldest are forgotten and float again). */
 const MAX_REMEMBERED_LOOT = 400;
 /** Things afloat nearer than this are pointed out in the interface, metres. */
 const NEAREST_LOOT_RANGE = 340;
 /** Held fast this long, she is offered a tow. */
 const STUCK_SECONDS = 6;
+/** Colour of an eruption's light on the scene (linear). */
+const ERUPTION_RGB = [1, 0.36, 0.09] as const;
 
 function isCoarseInputDevice(): boolean {
   return navigator.maxTouchPoints > 0 || window.matchMedia("(pointer: coarse)").matches;
@@ -105,7 +139,14 @@ export class Simulator {
   private loot!: LootSystem;
   private radio?: RadioSystem;
   private volcanoes!: VolcanoSystem;
+  private aircraft!: AircraftSystem;
   private places!: PoiSystem;
+  /** The chart: the sea seen so far, and the yacht's track. */
+  readonly explored = new ExploredSea();
+  readonly track = new Track();
+  private chartDirty = false;
+  private chartSavedAt = 0;
+  private readonly chartPoiCache = new Map<string, Poi | null>();
   private readonly obstacleNormal = { x: 0, z: 1 };
   private readonly listenerPoint = new THREE.Vector3();
   /** The image's mood grade as it eases toward the station's. */
@@ -153,6 +194,7 @@ export class Simulator {
     private readonly options: SimulatorOptions = {},
   ) {
     this.state = this.loadState();
+    this.loadChart();
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       // The HDR pipeline renders into its own multisampled target, so a
@@ -267,12 +309,21 @@ export class Simulator {
       );
       // Ships' sides and the places' footprints are obstacles the guard steers round.
       this.physics.hullClearance = (x, z, normal) => {
-        const ship = this.ships.hullClearance(x, z, normal);
+        let nearest = this.ships.hullClearance(x, z, normal);
         const place = this.places.clearance(x, z, this.obstacleNormal);
-        if (place >= ship) return ship;
-        normal.x = this.obstacleNormal.x;
-        normal.z = this.obstacleNormal.z;
-        return place;
+        if (place < nearest) {
+          nearest = place;
+          normal.x = this.obstacleNormal.x;
+          normal.z = this.obstacleNormal.z;
+        }
+        // Piers off the islands' beaches.
+        const pier = this.islands.structureClearance(x, z, this.obstacleNormal);
+        if (pier < nearest) {
+          nearest = pier;
+          normal.x = this.obstacleNormal.x;
+          normal.z = this.obstacleNormal.z;
+        }
+        return nearest;
       };
       this.ocean.setShips(this.ships.ships);
       this.vessel = new Vessel(this.scene, this.assets, this.underwater);
@@ -307,6 +358,7 @@ export class Simulator {
       this.reflection = new OceanReflection(this.quality.settings.reflectionScale);
       this.rain = new RainSystem(this.scene, this.quality.settings.rainDrops);
       this.flares = new FlareSystem(this.scene);
+      this.aircraft = new AircraftSystem(this.scene);
       this.loot = new LootSystem(
         this.scene,
         this.ocean,
@@ -501,7 +553,12 @@ export class Simulator {
     const yacht = this.physics.position;
     for (const subject of this.wildlife.collectPhotoSubjects(this.photoSubjects)) photo.offer(subject, yacht.x, yacht.z);
     photo.update(delta);
-    if (photo.subject) photoShot(photo.subject, yacht.x, yacht.y, yacht.z, this.photoShotState);
+    if (photo.subject) {
+      // Stand on her windward side: the sail fills to leeward.
+      const heading = this.physics.heading;
+      const leeward = this.physics.telemetry.leewardSide;
+      photoShot(photo.subject, yacht.x, yacht.y, yacht.z, this.photoShotState, -leeward * Math.cos(heading), leeward * Math.sin(heading));
+    }
     this.camera.direct(this.photoShotState, photo.blend);
   }
 
@@ -649,8 +706,19 @@ export class Simulator {
     const wind = this.physics.wind;
     const night = this.environmentState.nightFactor;
     const camera = this.camera.camera;
-    const pixelScale = this.renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
-    this.volcanoes.update(this.elapsed, delta, yacht.x, yacht.z, wind.x, wind.z, this.environment.current.palette.ambientColor, night, pixelScale);
+    this.volcanoes.update(
+      this.elapsed,
+      yacht.x,
+      yacht.z,
+      wind.x,
+      wind.z,
+      this.environment.current.palette,
+      this.environment.lightDirection,
+      night,
+      camera.position,
+    );
+    const roar = this.volcanoes.roar;
+    this.audio.setEruptionRoar(roar ? camera.position.distanceTo(roar.position) : Infinity, roar?.level ?? 0, roar?.position ?? camera.position);
     for (const eruption of this.volcanoes.consumeEruptions()) {
       // The boom arrives at the speed of sound; the photographer turns to it.
       const distance = camera.position.distanceTo(this.listenerPoint.set(eruption.x, eruption.y, eruption.z));
@@ -697,9 +765,137 @@ export class Simulator {
     if (wasStuck !== this.stuckTime > STUCK_SECONDS) this.hud.emit(this.snapshot());
   }
 
+  /** Lifts the fog around the yacht and lays her track; saves the chart now and then. */
+  private updateChart(): void {
+    const yacht = this.physics.position;
+    if (this.explored.reveal(yacht.x, yacht.z)) this.chartDirty = true;
+    this.track.add(yacht.x, yacht.z);
+    if (this.chartDirty && this.elapsed - this.chartSavedAt > 6) this.saveChart();
+  }
+
+  private saveChart(): void {
+    this.chartDirty = false;
+    this.chartSavedAt = this.elapsed;
+    try {
+      localStorage.setItem(CHART_KEY, this.explored.serialize());
+    } catch {
+      // Storage full or blocked: the chart still works for this visit.
+    }
+  }
+
+  private loadChart(): void {
+    try {
+      this.explored.restore(localStorage.getItem(CHART_KEY));
+    } catch {
+      this.explored.restore(null);
+    }
+  }
+
+  /** The yacht's position on the chart, once the voyage is running. */
+  chartCentre(): { x: number; z: number } | null {
+    return this.initialized ? { x: this.physics.position.x, z: this.physics.position.z } : null;
+  }
+
+  /** How many places the logbook holds. */
+  get discoveredCount(): number {
+    return this.state.discoveredPlaces.length;
+  }
+
+  /**
+   * Everything the chart draws within the rectangle [x0, x1] × [z0, z1]
+   * (metres, world): the islands, the places (with whether each was found),
+   * the floating finds near the yacht, the explored sea and her track.
+   */
+  chart(x0: number, z0: number, x1: number, z1: number): ChartFeatures | null {
+    if (!this.initialized) return null;
+    const yacht = this.physics.position;
+    const discovered = new Set(this.state.discoveredPlaces);
+    const islands: ChartIsland[] = [];
+    const places: ChartPlace[] = [];
+    // At most 48 × 48 cells (58 km): the chart never shows more than that.
+    const c0 = Math.max(worldCell(x0) - 1, worldCell((x0 + x1) / 2) - 24);
+    const c1 = Math.min(worldCell(x1) + 1, worldCell((x0 + x1) / 2) + 24);
+    const r0 = Math.max(worldCell(z0) - 1, worldCell((z0 + z1) / 2) - 24);
+    const r1 = Math.min(worldCell(z1) + 1, worldCell((z0 + z1) / 2) + 24);
+    for (let row = r0; row <= r1; row += 1) {
+      for (let column = c0; column <= c1; column += 1) {
+        for (const island of islandsInCell(column, row)) {
+          const reach = island.beachRadius * Math.max(1, island.scaleZ) * 1.3;
+          if (island.centerX + reach < x0 || island.centerX - reach > x1 || island.centerZ + reach < z0 || island.centerZ - reach > z1) continue;
+          islands.push({
+            id: island.id,
+            x: island.centerX,
+            z: island.centerZ,
+            radius: island.beachRadius,
+            scaleZ: island.scaleZ,
+            seed: island.seed,
+            lobe: island.lobe,
+            height: island.height,
+            volcano: Boolean(island.volcano),
+          });
+          if (island.volcano) {
+            const key = `volcano:${island.id}`;
+            places.push({ key, kind: "volcano", x: island.centerX, z: island.centerZ, discovered: discovered.has(key) });
+          }
+        }
+      }
+    }
+    const isOpen = (x: number, z: number) => distanceFromWaterline(x, z) > POI_CLEARANCE;
+    const consider = (poi: Poi | null) => {
+      if (!poi || poi.x < x0 - 50 || poi.x > x1 + 50 || poi.z < z0 - 50 || poi.z > z1 + 50) return;
+      const key = `${poi.kind}:${poi.id}`;
+      places.push({ key, kind: poi.kind, x: poi.x, z: poi.z, discovered: discovered.has(key) });
+    };
+    if (!this.chartPoiCache.has("home")) {
+      for (const poi of poisAround(0, 0, 1200, isOpen).filter((entry) => entry.id.startsWith("home-"))) this.chartPoiCache.set(poi.id, poi);
+      this.chartPoiCache.set("home", null);
+    }
+    for (const [id, poi] of this.chartPoiCache) if (id.startsWith("home-")) consider(poi);
+    const half = 12;
+    const pc = Math.floor(((x0 + x1) / 2) / POI_CELL + 0.5);
+    const pr = Math.floor(((z0 + z1) / 2) / POI_CELL + 0.5);
+    for (let row = Math.max(Math.floor(z0 / POI_CELL + 0.5), pr - half); row <= Math.min(Math.floor(z1 / POI_CELL + 0.5), pr + half); row += 1) {
+      for (let column = Math.max(Math.floor(x0 / POI_CELL + 0.5), pc - half); column <= Math.min(Math.floor(x1 / POI_CELL + 0.5), pc + half); column += 1) {
+        const id = `${column}:${row}`;
+        let poi = this.chartPoiCache.get(id);
+        if (poi === undefined) {
+          poi = poiInCell(column, row, isOpen);
+          if (this.chartPoiCache.size > 4000) this.chartPoiCache.clear();
+          this.chartPoiCache.set(id, poi);
+        }
+        consider(poi);
+      }
+    }
+    return {
+      yacht: { x: yacht.x, z: yacht.z, heading: this.physics.heading },
+      wind: { x: this.physics.wind.x, z: this.physics.wind.z },
+      islands,
+      places,
+      loot: this.loot.items.map((item) => ({ kind: item.kind, x: item.x, z: item.z })),
+      explored: this.explored,
+      track: this.track,
+      night: this.environmentState.nightFactor,
+    };
+  }
+
+  /** The floatplane and the airliners: their flight, their sound, the photographer. */
+  private updateAircraft(delta: number): void {
+    const yacht = this.physics.position;
+    const camera = this.camera.camera;
+    const pixelAngle = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / Math.max(1, this.renderer.domElement.height);
+    this.aircraft.update(this.elapsed, delta, yacht.x, yacht.z, camera.position, this.environment.current.palette, this.environmentState.nightFactor, pixelAngle);
+    const low = this.aircraft.lowPlane;
+    this.audio.setLowPlane(low.active, low.position, low.velocity, delta);
+    const jet = this.aircraft.airlinerSound;
+    this.audio.setAirliner(jet.active, jet.position, jet.distance);
+    if (low.active && low.position.distanceTo(yacht) < 1100) {
+      this.photo.offer({ kind: "plane", x: low.position.x, y: low.position.y, z: low.position.z, size: low.kind === "banner" ? 60 : 24 }, yacht.x, yacht.z);
+    }
+  }
+
   private discover(key: string, kind: string): void {
     if (this.state.discoveredPlaces.includes(key)) return;
-    this.state.discoveredPlaces = [...this.state.discoveredPlaces, key].slice(-64);
+    this.state.discoveredPlaces = [...this.state.discoveredPlaces, key].slice(-MAX_DISCOVERIES);
     this.audio.chime();
     this.options.onDiscovery?.({ kind: "poi", key: kind, first: !this.state.discoveredPlaces.some((entry) => entry !== key && entry.startsWith(`${kind}:`)) });
     this.persistState();
@@ -780,6 +976,7 @@ export class Simulator {
   }
 
   dispose(): void {
+    if (this.chartDirty) this.saveChart();
     this.loop?.dispose();
     this.resizeObserver?.disconnect();
     this.touch?.dispose();
@@ -797,6 +994,7 @@ export class Simulator {
     this.flares?.dispose();
     this.loot?.dispose();
     this.volcanoes?.dispose();
+    this.aircraft?.dispose();
     this.places?.dispose();
     this.wake?.dispose();
     this.vessel?.dispose();
@@ -853,7 +1051,13 @@ export class Simulator {
   private updateFrame(delta: number): void {
     this.frameDelta = delta;
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
+    this.islands.setNight(this.environmentState.nightFactor);
     this.islands.update(this.elapsed, this.environment.currentWeather.wind, this.physics.position.x, this.physics.position.z);
+    // The helm camera looks out through the skipper's eyes: he steps out of its way.
+    this.vessel.setSkipperVisible(
+      this.state.cameraMode !== "helm" &&
+        this.camera.camera.position.distanceToSquared(this.vessel.worldPoint(this.vessel.helmEye, this.helmPoint)) > 1.2,
+    );
     this.vessel.update(this.physics, this.physics.guard.output, this.elapsed, delta, this.environmentState.nightFactor, {
       camera: this.camera.camera,
       lightDirection: this.environment.lightDirection,
@@ -872,9 +1076,13 @@ export class Simulator {
     this.camera.update(delta, this.physics, { root: this.vessel.root, eye: this.vessel.helmEye });
     this.directPhoto(delta);
     this.environment.setWeatherKind(this.currentWeatherKind());
-    // The brightest flare in the air lights the scene (see EnvironmentSystem.setFlare).
+    // The brightest flare in the air lights the scene; failing that, an
+    // erupting volcano does (an orange light from its crater).
     const flare = this.flares.brightest();
-    this.environment.setFlare(flare?.position ?? null, flare?.brightness ?? 0, flare?.rgb ?? [0, 0, 0]);
+    const eruptionLight = flare ? null : this.volcanoes.eruptionLight;
+    if (flare) this.environment.setFlare(flare.position, flare.brightness, flare.rgb);
+    else if (eruptionLight) this.environment.setFlare(eruptionLight.position, eruptionLight.brightness, ERUPTION_RGB);
+    else this.environment.setFlare(null, 0, ERUPTION_RGB);
     this.environmentState = this.environment.update(
       delta,
       this.camera.camera,
@@ -910,6 +1118,8 @@ export class Simulator {
       this.nearestLoot = this.loot.nearest(yacht.x, yacht.z, this.physics.heading, NEAREST_LOOT_RANGE);
     }
     this.updatePlaces(delta);
+    this.updateChart();
+    this.updateAircraft(delta);
     this.watchStuck(delta);
     // Palm shadows on the sand follow the sun, softer under the moon.
     this.islands.updateShadows(
@@ -1188,7 +1398,7 @@ export class Simulator {
       if (isSailColor(saved.sailColor) && base.unlockedSails.includes(saved.sailColor)) base.sailColor = saved.sailColor;
       if (typeof saved.doubloons === "number" && Number.isFinite(saved.doubloons)) base.doubloons = Math.max(0, Math.floor(saved.doubloons));
       if (typeof saved.flamingos === "number" && Number.isFinite(saved.flamingos)) base.flamingos = Math.max(0, Math.floor(saved.flamingos));
-      base.discoveredPlaces = strings(saved.discoveredPlaces, 32);
+      base.discoveredPlaces = strings(saved.discoveredPlaces, MAX_DISCOVERIES);
       base.collectedLoot = strings(saved.collectedLoot, MAX_REMEMBERED_LOOT);
     } catch {
       localStorage.removeItem(STORAGE_KEY);

@@ -45,7 +45,8 @@ export const HULL_TRANSOM_Z = -4.0;
 /** After edge of the helm seat once the station is in place (vessel space). */
 export const HELM_SEAT_AFT_Z = -4.47 - 0.17 + HELM_STATION_SHIFT;
 const WHEEL_CENTRE = new THREE.Vector3(HELM_X, 1.42, -3.62);
-const WHEEL_RADIUS = 0.36;
+/** The rim's radius (the skipper's hands are on it). */
+export const WHEEL_RADIUS = 0.36;
 /** The wheel's top leans forward, like a pedestal wheel. */
 const WHEEL_TILT = -0.24;
 /** How far the wheel turns at full rudder, radians. */
@@ -147,6 +148,13 @@ function screenPlane(width: number, height: number, region: Region): THREE.Plane
 export class HelmStation {
   readonly group = new THREE.Group();
   private readonly wheel = new THREE.Group();
+  /** How far the wheel is turned about its axis, radians. */
+  get wheelTurn(): number {
+    return this.wheel.rotation.z;
+  }
+
+  /** The wheel's mount: its local XY plane is the rim's, and it does not turn. */
+  readonly wheelMount = new THREE.Group();
   private readonly lever = new THREE.Group();
   private readonly card: THREE.Mesh;
   private readonly screenMaterial: THREE.MeshStandardMaterial;
@@ -343,7 +351,7 @@ export class HelmStation {
     rimMesh.castShadow = true;
     spokeMesh.castShadow = true;
     this.wheel.add(rimMesh, spokeMesh);
-    const wheelMount = new THREE.Group();
+    const wheelMount = this.wheelMount;
     wheelMount.position.copy(WHEEL_CENTRE);
     wheelMount.rotation.order = "YXZ";
     wheelMount.rotation.set(WHEEL_TILT, Math.PI, 0);

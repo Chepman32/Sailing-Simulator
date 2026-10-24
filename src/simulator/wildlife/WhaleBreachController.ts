@@ -106,7 +106,9 @@ export class WhaleBreachController {
     rig.root.visible = active;
     if (!active) return;
 
-    rig.root.position.set(state.x, state.y, state.z);
+    // The leap is relative to the sea it leaves: on a storm swell the whale
+    // rides up and down with the water instead of hanging over a trough.
+    rig.root.position.set(state.x, state.y + this.ocean.sample(state.x, state.z).height, state.z);
     rig.root.rotation.set(-state.pitch, state.heading, state.roll, "YXZ");
 
     camera.getWorldPosition(this.cameraPosition);

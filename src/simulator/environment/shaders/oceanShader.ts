@@ -672,7 +672,12 @@ ${detailCalls}
     float sheen = sheenAlpha2 / (OCEAN_PI * sheenDenominator * sheenDenominator) * specularFresnel * visibility * nDotL;
     // Under a storm's cloud the sun is only a pale patch: the glitter path fades.
     float sunVeil = 1.0 - 0.88 * gale;
-    color += sunLit * (specular + min(sheen, 5.0) * 0.1) * sunVeil;
+    // The glitter path: where calm water would mirror the sun. Away from it
+    // only the steepest facets can catch the sun, so the high-noon sea does
+    // not sparkle evenly from the bow to the horizon like wet plastic.
+    float pathAlign = max(dot(reflect(-viewDirection, vec3(0.0, 1.0, 0.0)), uLightDirection), 0.0);
+    float sunPath = smoothstep(0.42, 0.94, pathAlign);
+    color += sunLit * (specular * mix(0.28, 1.0, sunPath) + min(sheen, 5.0) * 0.1 * mix(0.5, 1.0, sunPath)) * sunVeil;
 
     // --- A signal flare overhead -------------------------------------------
     // A point of light a hundred and more metres up: it lays its own glitter
@@ -712,6 +717,8 @@ ${detailCalls}
       float glint = smoothstep(0.9965, 0.9993, facetAlign) * smoothstep(0.52, 0.72, sparkleA * sparkleB * 1.9);
       // Below a pixel the flashes would only shimmer; let the GGX lobe carry them.
       glint *= (1.0 - smoothstep(0.12, 0.45, footprint)) * smoothstep(0.0, 0.08, nDotL);
+      // Points of light belong to the glitter path; elsewhere a rare few.
+      glint *= mix(0.1, 1.0, sunPath * sunPath);
       color += sunLit * glint * 7.0 * sunVeil;
     }
 

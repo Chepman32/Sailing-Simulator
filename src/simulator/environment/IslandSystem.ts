@@ -25,6 +25,16 @@ import {
   type IslandDefinition,
 } from "./IslandMath";
 import { ISLAND_SLOT_UNIFORMS } from "./SurfMath";
+import {
+  furnishIsland,
+  hillHeight,
+  inClearing,
+  islandClearings,
+  islandProfile,
+  pierClearance,
+  type IslandProfile,
+  type PierFootprint,
+} from "./IslandProps";
 
 type PalmWindUniform = { value: number };
 
@@ -36,7 +46,16 @@ type IslandVisual = {
   lod: THREE.LOD;
   batches: THREE.Mesh[];
   trunks: THREE.Vector4[];
+  /** Boulders, scrub, pier, hut, lighthouse (see IslandProps), and what glows at night. */
+  furniture: THREE.Mesh[];
+  pier: PierFootprint | null;
+  beam: THREE.Group | null;
 };
+
+/** Furniture (boulders, scrub, huts) beyond this is not drawn; a lighthouse is seen as far as its island. */
+const FURNITURE_DRAW_DISTANCE = 1100;
+/** Turns per second of a lighthouse's light (one flash each way every ten seconds). */
+const BEAM_SPEED = (Math.PI * 2) / 20;
 
 export const MAX_VISIBLE_TERRAIN_RADIUS_SCALE = 1.06;
 
@@ -66,6 +85,7 @@ const GOLDEN_ANGLE = 2.399963229728653;
 
 export class IslandSystem {
   private readonly shoreNormal = { x: 0, z: 1 };
+  private readonly structureNormal = { x: 0, z: 1 };
   private readonly group = new THREE.Group();
   private readonly palmWind: PalmWindUniform = { value: 0 };
   /** Weather's wind relative to the trade wind: how far the crowns lean and how fast they flutter. */
@@ -86,6 +106,15 @@ export class IslandSystem {
   readonly farFromMirror: THREE.Object3D[] = [];
   private groves: THREE.Mesh[] = [];
   private readonly terrainMaterial: THREE.MeshStandardMaterial;
+  /** Shared by every island's furniture: vertex-coloured solids, glowing windows, the beams. */
+  private readonly furnitureMaterial: THREE.MeshStandardMaterial;
+  private readonly glowMaterial: THREE.MeshBasicMaterial;
+  private readonly beamMaterial: THREE.MeshBasicMaterial;
+  private readonly beamGeometry: THREE.BufferGeometry;
+  private readonly lampGeometry: THREE.SphereGeometry;
+  private readonly lampMaterial: THREE.MeshBasicMaterial;
+  private readonly profiles = new Map<number, IslandProfile>();
+  private night = 0;
   private seabed!: THREE.Mesh;
 
   constructor(
@@ -112,6 +141,37 @@ export class IslandSystem {
     this.underwater.apply(this.terrainMaterial);
     // Sand grain, wet sand, the swash and the palms' shadows.
     applyIslandSurface(this.terrainMaterial, this.surface, this.sky);
+    this.furnitureMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0 });
+    // Piles stand in the water like the terrain's apron.
+    this.underwater.apply(this.furnitureMaterial);
+    this.glowMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, color: 0x1e1c1a });
+    this.beamGeometry = createBeamGeometry();
+    this.beamMaterial = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    // A beam is a cone of lit haze: brightest seen through its middle, fading
+    // to nothing at its silhouette, so it has no hard edges.
+    this.beamMaterial.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying float vBeamFacing;")
+        .replace(
+          "#include <project_vertex>",
+          `#include <project_vertex>
+           vec3 beamNormal = normalize(normalMatrix * normal);
+           vBeamFacing = abs(dot(beamNormal, normalize(-mvPosition.xyz)));`,
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nvarying float vBeamFacing;")
+        .replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.a *= pow(vBeamFacing, 1.8);");
+    };
+    this.beamMaterial.customProgramCacheKey = () => "lighthouse-beam-v1";
+    this.lampGeometry = new THREE.SphereGeometry(0.55, 14, 10);
+    this.lampMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(6, 4.6, 2.4), transparent: true, opacity: 0, depthWrite: false });
     this.palmShadows = new PalmShadowMap(scene, this.surface, shadowMapSize);
     // Everything around the start is built before the first frame.
     this.stream(0, 0, Number.POSITIVE_INFINITY);
@@ -184,6 +244,7 @@ export class IslandSystem {
    */
   update(time: number, wind = 1, focusX = 0, focusZ = 0): void {
     this.palmWind.value = time;
+    for (const visual of this.built.values()) if (visual.beam) visual.beam.rotation.y = time * BEAM_SPEED + visual.definition.id * 0.7;
     this.palmStrength.value = Math.min(3.2, Math.max(0.4, wind));
     this.surface.uSurfTime.value = time;
     selectIslandSlots(focusX, focusZ, ISLAND_SLOT_UNIFORMS.uIslandShape.value, ISLAND_SLOT_UNIFORMS.uIslandFrame.value);
@@ -200,6 +261,18 @@ export class IslandSystem {
       lod.visible = gap < ISLAND_DRAW_DISTANCE * this.drawScale;
       if (lod.visible && gap > MIRROR_DISTANCE) this.farFromMirror.push(lod);
     });
+    for (const visual of this.built.values()) {
+      for (const mesh of visual.furniture) {
+        const sphere = mesh.geometry.boundingSphere;
+        if (!sphere) continue;
+        const island = visual.group.position;
+        const gap = Math.max(0, Math.hypot(island.x + sphere.center.x - focusX, island.z + sphere.center.z - focusZ) - sphere.radius);
+        const reach = mesh.userData.farSeen ? ISLAND_DRAW_DISTANCE : FURNITURE_DRAW_DISTANCE;
+        mesh.visible = gap < reach * this.drawScale;
+        if (mesh.visible && gap > MIRROR_DISTANCE) this.farFromMirror.push(mesh);
+      }
+      if (visual.beam) visual.beam.visible = this.night > 0.05 && visual.lod.visible;
+    }
     for (const mesh of this.groves) {
       const sphere = mesh.geometry.boundingSphere;
       if (!sphere) continue;
@@ -215,6 +288,46 @@ export class IslandSystem {
    */
   updateShadows(renderer: THREE.WebGLRenderer, lightDirection: THREE.Vector3, strength: number, focusX = 0, focusZ = 0): void {
     if (this.palmShadows.update(renderer, lightDirection, strength, focusX, focusZ)) this.fillTrunkSlots(focusX, focusZ);
+  }
+
+  /** Lights the hut windows and the lighthouses at dusk; 0 by day, 1 at night. */
+  setNight(night: number): void {
+    this.night = night;
+    const lit = smoothstep(0.12, 0.45, night);
+    this.glowMaterial.color.setRGB(0.12 + lit * 2.6, 0.11 + lit * 2.3, 0.1 + lit * 1.7);
+    this.beamMaterial.opacity = lit * 0.32;
+    this.lampMaterial.opacity = lit;
+  }
+
+  /**
+   * Distance from (x, z) to the nearest pier's footprint (negative inside) and
+   * its outward normal in `normal`: the shore guard keeps the yacht off piers.
+   */
+  structureClearance(x: number, z: number, normal: { x: number; z: number }): number {
+    let best = Number.POSITIVE_INFINITY;
+    const scratch = this.structureNormal;
+    for (const visual of this.built.values()) {
+      const pier = visual.pier;
+      if (!pier || Math.abs(pier.x - x) > pier.length + 80 || Math.abs(pier.z - z) > pier.length + 80) continue;
+      const distance = pierClearance(pier, x, z, scratch);
+      if (distance < best) {
+        best = distance;
+        normal.x = scratch.x;
+        normal.z = scratch.z;
+      }
+    }
+    return best;
+  }
+
+  /** The island's character, hills and buildings (cached: decided from its id). */
+  profile(island: IslandDefinition): IslandProfile {
+    let profile = this.profiles.get(island.id);
+    if (!profile) {
+      if (this.profiles.size > 2048) this.profiles.clear();
+      profile = islandProfile(island);
+      this.profiles.set(island.id, profile);
+    }
+    return profile;
   }
 
   /** Shortens how far islands and groves are drawn (1 = full distance). */
@@ -359,7 +472,47 @@ export class IslandSystem {
     holder.name = `PalmGrove_${island.id}`;
     this.group.add(holder);
     const batches = this.mergeGrove(islandGroup, holder, palmParts, island.id);
-    return { definition: island, group: islandGroup, holder, lod, batches, trunks };
+
+    // Boulders, scrub and buildings, merged into a solid mesh and a glowing one.
+    const furniture: THREE.Mesh[] = [];
+    const profile = this.profile(island);
+    const built = furnishIsland(island, profile, (radial, angle) => this.terrainSurfaceHeight(island, radial, angle));
+    if (built.solid) {
+      const mesh = new THREE.Mesh(built.solid, this.furnitureMaterial);
+      mesh.name = `IslandFurniture_${island.id}`;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.farSeen = profile.lighthouseAngle !== null;
+      islandGroup.add(mesh);
+      furniture.push(mesh);
+    }
+    if (built.glow) {
+      const mesh = new THREE.Mesh(built.glow, this.glowMaterial);
+      mesh.name = `IslandLights_${island.id}`;
+      mesh.userData.farSeen = true;
+      islandGroup.add(mesh);
+      furniture.push(mesh);
+    }
+    let beam: THREE.Group | null = null;
+    if (built.lamp) {
+      // Two beams back to back, turning, and the lamp itself.
+      beam = new THREE.Group();
+      beam.name = `LighthouseBeam_${island.id}`;
+      beam.position.copy(built.lamp);
+      for (const turn of [0, Math.PI]) {
+        const ray = new THREE.Mesh(this.beamGeometry, this.beamMaterial);
+        ray.rotation.y = turn;
+        ray.frustumCulled = false;
+        ray.renderOrder = 4;
+        beam.add(ray);
+      }
+      const lamp = new THREE.Mesh(this.lampGeometry, this.lampMaterial);
+      lamp.renderOrder = 4;
+      beam.add(lamp);
+      beam.visible = false;
+      islandGroup.add(beam);
+    }
+    return { definition: island, group: islandGroup, holder, lod, batches, trunks, furniture, pier: built.pier, beam };
   }
 
   /**
@@ -375,6 +528,8 @@ export class IslandSystem {
     });
     visual.batches.forEach((batch) => batch.geometry.dispose());
     visual.batches.length = 0;
+    visual.furniture.forEach((mesh) => mesh.geometry.dispose());
+    visual.furniture.length = 0;
     visual.trunks.length = 0;
   }
 
@@ -396,8 +551,11 @@ export class IslandSystem {
     if (variants.length === 0) return;
 
     const seed = island.seed;
+    const profile = this.profile(island);
+    const clearings = islandClearings(island, profile);
     // A volcano has only a fringe of palms between the black beach and the lava slopes.
-    const count = island.volcano ? 9 : palmsForIsland(island.beachRadius);
+    const baseCount = island.volcano ? 9 : palmsForIsland(island.beachRadius);
+    const count = profile.character === "lush" ? Math.round(baseCount * 1.35) : profile.character === "rocky" ? Math.round(baseCount * 0.7) : baseCount;
     for (let palmIndex = 0; palmIndex < count; palmIndex += 1) {
       const tree = variants[(palmIndex + seed) % variants.length].clone(true);
       // Remove the tree's slot in the source row, keep its upright rotation.
@@ -413,18 +571,33 @@ export class IslandSystem {
         : 0.1 + Math.sqrt(spread) * (PALM_MAX_RADIAL - 0.1);
       const angle = palmIndex * GOLDEN_ANGLE + seed * 1.3;
       const radius = island.beachRadius * radial * islandEdgeNoise(angle, island);
-      const size = 0.78 + terrainNoise(palmIndex * 3.7 + seed * 11.1, palmIndex * 1.9) * 0.5;
+      const px = Math.cos(angle) * radius;
+      const pz = Math.sin(angle) * radius * island.scaleZ;
+      // Nothing grows on the hut's or the lighthouse's ground.
+      if (inClearing(clearings, px, pz, 1)) continue;
+      // Young palms and old giants side by side.
+      const grain = terrainNoise(palmIndex * 3.7 + seed * 11.1, palmIndex * 1.9);
+      const size = 0.62 + grain * grain * 0.55 + terrainNoise(palmIndex * 7.3, seed * 2.9 + 4.1) * 0.28;
 
       const palm = new THREE.Group();
       palm.name = `GLB_Palm_${island.id}_${palmIndex + 1}`;
       palm.add(tree);
       palm.scale.setScalar(((11 + (seed % 3) * 1.2) * size) / height);
-      palm.rotation.y = palmIndex * 1.94 + seed;
+      // Coconut palms lean, most of all near the beach, out over the sand
+      // toward the light; inland they stand straighter. Each its own way.
+      const leanNoise = terrainNoise(palmIndex * 5.3 + seed * 1.7, seed * 3.3 + palmIndex);
+      const lean = THREE.MathUtils.degToRad(3 + leanNoise * 9 + smoothstep(0.3, 0.66, radial) * (6 + leanNoise * 14));
+      const leanToward = angle + (terrainNoise(palmIndex * 2.9, seed + 7.7) - 0.5) * 1.6;
+      // Tilt about the horizontal axis square to the direction of the lean (outward is +X·cos, +Z·sin).
+      const tiltAxis = new THREE.Vector3(Math.sin(leanToward), 0, -Math.cos(leanToward));
+      palm.quaternion
+        .setFromAxisAngle(tiltAxis, lean)
+        .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), palmIndex * 1.94 + seed));
       palm.position.set(
-        Math.cos(angle) * radius,
+        px,
         // Roots sit slightly below the surface so no trunk floats on a dune.
         this.terrainSurfaceHeight(island, radial, angle) - 0.35,
-        Math.sin(angle) * radius * island.scaleZ,
+        pz,
       );
       // Each trunk darkens the sand around its foot (contact shading).
       trunks.push(
@@ -594,6 +767,8 @@ export class IslandSystem {
           colors.push(color.r, color.g, color.b, alpha);
           continue;
         }
+        const profile = this.profile(island);
+        const bump = hillHeight(profile, x, z, radial);
         const vegetationEdge = 0.7 + (patch - 0.5) * 0.16;
         sandMask.push(smoothstep(vegetationEdge - 0.04, vegetationEdge + 0.12, radial));
         if (radial < vegetationEdge - 0.08) {
@@ -602,6 +777,11 @@ export class IslandSystem {
             const summit = 1 - smoothstep(0.05, 0.45, radial);
             color.lerp(forest, highland * smoothstep(0.2, 0.7, fine) * 0.7);
             color.lerp(rock, highland * summit * smoothstep(0.45, 0.75, patch) * 0.8);
+          }
+          // Hills: forest on their flanks, bare granite on a rocky island's tops.
+          if (bump > 0.5) {
+            color.lerp(forest, smoothstep(0.5, 3, bump) * (1 - profile.rockiness) * 0.6);
+            color.lerp(rock, profile.rockiness * smoothstep(1.5, 4.5, bump) * (0.55 + 0.45 * fine));
           }
         } else if (radial < vegetationEdge + 0.12) {
           color
@@ -664,7 +844,8 @@ export class IslandSystem {
     const highland = smoothstep(3, 10, island.height);
     return (
       this.islandTerrainHeight(radial, angle, island.seed, island.height) +
-      (patch - 0.5) * (0.5 + highland * 1.6) * (1 - smoothstep(0.7, 0.95, radial))
+      (patch - 0.5) * (0.5 + highland * 1.6) * (1 - smoothstep(0.7, 0.95, radial)) +
+      hillHeight(this.profile(island), x, z, radial)
     );
   }
 
@@ -688,4 +869,27 @@ export class IslandSystem {
     return THREE.MathUtils.lerp(-0.08, -0.42, smoothstep(1, MAX_VISIBLE_TERRAIN_RADIUS_SCALE, radial));
   }
 
+}
+
+/**
+ * A lighthouse's beam: a long cone along +X from the lamp, brightest at the
+ * lamp and fading with distance and toward its edges (vertex alpha).
+ */
+function createBeamGeometry(): THREE.BufferGeometry {
+  const length = 150;
+  const geometry = new THREE.CylinderGeometry(0.5, 9, length, 20, 12, true);
+  geometry.translate(0, -length / 2, 0);
+  geometry.rotateZ(Math.PI / 2);
+  const position = geometry.getAttribute("position");
+  const colors = new Float32Array(position.count * 4);
+  for (let index = 0; index < position.count; index += 1) {
+    const t = Math.min(1, Math.max(0, position.getX(index) / length));
+    const fade = Math.pow(1 - t, 1.6) * (0.35 + 0.65 * Math.exp(-t * 6));
+    colors[index * 4] = 1;
+    colors[index * 4 + 1] = 0.9;
+    colors[index * 4 + 2] = 0.68;
+    colors[index * 4 + 3] = fade;
+  }
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 4));
+  return geometry;
 }

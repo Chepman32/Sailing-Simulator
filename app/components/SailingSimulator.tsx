@@ -7,6 +7,7 @@ import type { CameraMode, Discovery, LightingMode, LoadingState, QualityPreset }
 import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
 import { SoundPrompt } from "./SoundPrompt";
 import { featureText, getFeatureMessages } from "./featureMessages";
+import { ChartView } from "./ChartView";
 import {
   DiscoveryCard,
   LootChip,
@@ -225,6 +226,7 @@ export function SailingSimulator() {
   });
   const [error, setError] = useState("");
   const [panelMinimized, setPanelMinimized] = useState(true);
+  const [chartOpen, setChartOpen] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
   // Any press outside the open control panel closes it (the press still does
   // what it does: steer, look around, press another control).
@@ -246,6 +248,12 @@ export function SailingSimulator() {
   const [noticeKey, setNoticeKey] = useState(0);
   const [language, setLanguage] = useState<LanguageCode>("en");
   const rudderDragging = useRef(false);
+  const swipeStart = useRef<{ x: number; value: number; width: number } | null>(null);
+  // Steering by tilting the phone (a setting; off by default).
+  const [tiltSteer, setTiltSteer] = useState(false);
+  const tiltZero = useRef<number | null>(null);
+  const tiltValue = useRef(0);
+  const [rotateHint, setRotateHint] = useState(false);
   const throttleDragging = useRef(false);
   const soundReadyAtPress = useRef(false);
   const soundDockRef = useRef<HTMLButtonElement>(null);
@@ -384,6 +392,7 @@ export function SailingSimulator() {
 
   const messages = useMemo(() => getMessages(language), [language]);
   const voyage = useMemo(() => getFeatureMessages(language), [language]);
+  const closeChart = useCallback(() => setChartOpen(false), []);
   // Callbacks the simulator holds for its lifetime reach the current render through this.
   type LatestHandlers = { keyAction: (action: string) => void; discovery: (discovery: Discovery) => void; radioFailed: (station: string) => void };
   const latest = useRef<LatestHandlers>({ keyAction: () => {}, discovery: () => {}, radioFailed: () => {} });
@@ -620,6 +629,101 @@ export function SailingSimulator() {
     simulatorRef.current?.setSailColor(color);
     showNotice(`${voyage.sailColor}: ${featureText(voyage, `sail_${color}`)}`);
   };
+  /**
+   * Tilt steering: the phone is a wheel. The roll of gravity in the screen's
+   * plane, measured from where the phone was held when it was switched on
+   * (re-zeroed when the screen turns), sets the helm: 30° either way is hard
+   * over, with a small dead zone so a steady hand holds a straight course.
+   */
+  const toggleTiltSteer = async () => {
+    if (tiltSteer) {
+      setTiltSteer(false);
+      showNotice(`${voyage.tiltSteer}: ${messages.off}`);
+      return;
+    }
+    type MotionPermission = { requestPermission?: () => Promise<"granted" | "denied"> };
+    const motion = (window as unknown as { DeviceMotionEvent?: MotionPermission }).DeviceMotionEvent;
+    try {
+      if (motion?.requestPermission && (await motion.requestPermission()) !== "granted") {
+        showNotice(voyage.tiltDenied);
+        return;
+      }
+    } catch {
+      showNotice(voyage.tiltDenied);
+      return;
+    }
+    tiltZero.current = null;
+    setTiltSteer(true);
+    showNotice(`${voyage.tiltSteer}: ${messages.on}`);
+  };
+  useEffect(() => {
+    if (!tiltSteer) return;
+    let smoothed = 0;
+    const onMotion = (event: DeviceMotionEvent) => {
+      const gravity = event.accelerationIncludingGravity;
+      if (!gravity || gravity.x == null || gravity.y == null) return;
+      // Too flat to tell which way is down in the screen's plane.
+      if (Math.hypot(gravity.x, gravity.y) < 2.5) return;
+      const angle = Math.atan2(gravity.x, gravity.y);
+      if (tiltZero.current === null) tiltZero.current = angle;
+      let roll = angle - tiltZero.current;
+      roll = Math.atan2(Math.sin(roll), Math.cos(roll));
+      const degrees = (-roll * 180) / Math.PI;
+      const live = Math.abs(degrees) < 3 ? 0 : degrees - Math.sign(degrees) * 3;
+      const target = Math.max(-1, Math.min(1, live / 27));
+      smoothed += (target - smoothed) * 0.25;
+      if (Math.abs(smoothed - tiltValue.current) < 0.01) return;
+      tiltValue.current = smoothed;
+      simulatorRef.current?.setRudder(smoothed);
+      setRudderInput(Math.round(smoothed * 100));
+    };
+    const rezero = () => {
+      tiltZero.current = null;
+    };
+    window.addEventListener("devicemotion", onMotion);
+    window.addEventListener("orientationchange", rezero);
+    screen.orientation?.addEventListener?.("change", rezero);
+    return () => {
+      window.removeEventListener("devicemotion", onMotion);
+      window.removeEventListener("orientationchange", rezero);
+      screen.orientation?.removeEventListener?.("change", rezero);
+      simulatorRef.current?.releaseRudder();
+    };
+  }, [tiltSteer]);
+
+  // On a phone held upright, suggest turning it once: the sea needs the width.
+  useEffect(() => {
+    if (!ready || !coarsePointer || guideStep !== 0) return;
+    let shown = false;
+    try {
+      shown = window.sessionStorage.getItem("sailing-rotate-hint") === "1";
+    } catch {
+      shown = false;
+    }
+    if (shown) return;
+    const portrait = window.matchMedia("(orientation: portrait) and (max-width: 680px)");
+    if (!portrait.matches) return;
+    const timer = window.setTimeout(() => {
+      if (!portrait.matches) return;
+      setRotateHint(true);
+      try {
+        window.sessionStorage.setItem("sailing-rotate-hint", "1");
+      } catch {
+        // Shown again next time.
+      }
+    }, 4000);
+    const hide = window.setTimeout(() => setRotateHint(false), 14000);
+    const onChange = () => {
+      if (!portrait.matches) setRotateHint(false);
+    };
+    portrait.addEventListener("change", onChange);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(hide);
+      portrait.removeEventListener("change", onChange);
+    };
+  }, [ready, coarsePointer, guideStep]);
+
   const enterPhotoMode = () => {
     photoModeRef.current = true;
     setPhotoMode(true);
@@ -648,7 +752,11 @@ export function SailingSimulator() {
     if (isTypingTarget(event.target)) return;
     switch (event.code) {
       case "KeyP":
+        setChartOpen(false);
         enterPhotoMode();
+        break;
+      case "KeyN":
+        setChartOpen((value) => !value);
         break;
       case "KeyH":
         playSignal("horn");
@@ -801,6 +909,12 @@ export function SailingSimulator() {
             }} />
           )}
           {ready && snapshot.stuck && <StuckChip messages={voyage} onRescue={rescueBoat} />}
+          {ready && rotateHint && (
+            <button type="button" className="rotate-hint" onClick={() => setRotateHint(false)}>
+              <span className="rotate-icon" aria-hidden="true">⟳</span>
+              {voyage.rotateHint}
+            </button>
+          )}
           {ready && !discoveries.length && guideStep === 0 && <LootChip loot={snapshot.nearestLoot} messages={voyage} />}
         </div>
 
@@ -899,6 +1013,19 @@ export function SailingSimulator() {
           <span className={`status-dot ${snapshot.status}`} />
           <strong>{compass}</strong><span>{messages.heading}</span>
         </section>
+
+        <ChartView
+          simulatorRef={simulatorRef}
+          messages={voyage}
+          open={chartOpen}
+          onOpen={() => {
+            setPanelMinimized(true);
+            setChartOpen(true);
+          }}
+          onClose={closeChart}
+          hideMini={!panelMinimized}
+          ready={ready}
+        />
 
         {!panelMinimized && (
           <button
@@ -1138,6 +1265,12 @@ export function SailingSimulator() {
                   />
                   <span>{voyage.steadyView}</span>
                 </label>
+                {coarsePointer && (
+                  <label className="toggle-row">
+                    <input type="checkbox" checked={tiltSteer} onChange={() => void toggleTiltSteer()} />
+                    <span>{voyage.tiltSteer}</span>
+                  </label>
+                )}
               </div>
 
               <div className="panel-section sail-colours">
@@ -1227,7 +1360,7 @@ export function SailingSimulator() {
         </section>
 
         <div className="primary-controls">
-          <section className={`rudder-control${guideStep === 2 ? " guide-target" : ""}`} aria-label={messages.rudder}>
+          <section className={`rudder-control${guideStep === 2 ? " guide-target" : ""}${tiltSteer ? " is-tilt" : ""}`} aria-label={messages.rudder}>
             <div className="helm-wheel" aria-hidden="true">
               <svg viewBox="0 0 100 100">
                 <g transform={`rotate(${wheelRotation} 50 50)`}>
@@ -1280,6 +1413,38 @@ export function SailingSimulator() {
                 }}
               />
               <span>{messages.starboard}</span>
+              {/* Touch: swipe anywhere along the strip; the helm moves by how far
+                  the finger travels, not to where it lands. */}
+              {coarsePointer && (
+                <div
+                  className="rudder-swipe"
+                  aria-hidden="true"
+                  onPointerDown={(event) => {
+                    const strip = event.currentTarget;
+                    strip.setPointerCapture(event.pointerId);
+                    swipeStart.current = { x: event.clientX, value: rudderInput, width: strip.getBoundingClientRect().width };
+                    rudderDragging.current = true;
+                    setShowHelp(false);
+                  }}
+                  onPointerMove={(event) => {
+                    const start = swipeStart.current;
+                    if (!start) return;
+                    const value = Math.round(Math.max(-100, Math.min(100, start.value + ((event.clientX - start.x) / Math.max(120, start.width)) * 230)));
+                    setRudderInput(value);
+                    simulatorRef.current?.setRudder(value / 100);
+                  }}
+                  onPointerUp={() => {
+                    swipeStart.current = null;
+                    rudderDragging.current = false;
+                    simulatorRef.current?.releaseRudder();
+                  }}
+                  onPointerCancel={() => {
+                    swipeStart.current = null;
+                    rudderDragging.current = false;
+                    simulatorRef.current?.releaseRudder();
+                  }}
+                />
+              )}
             </div>
             <button
               type="button"

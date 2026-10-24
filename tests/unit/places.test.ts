@@ -11,7 +11,7 @@ import {
   type LootItem,
 } from "../../src/simulator/effects/LootMath";
 import { DISCOVERY_RANGE, nearestPoiClearance, POI_CLEARANCE, poiClearance, poisAround, type Poi } from "../../src/simulator/effects/PoiMath";
-import { bombFlight, craterGlow, ERUPTION_SLOT, eruptionAt, plumePuff } from "../../src/simulator/effects/VolcanoMath";
+import { ashPuff, bombFlight, COLUMN_LIFE, craterGlow, ERUPTION_SLOT, eruptionAt, fountainActivity, plumePuff } from "../../src/simulator/effects/VolcanoMath";
 import { findOpenWater, RESCUE_CLEARANCE } from "../../src/simulator/vessel/RescueMath";
 import { composeJig, drunkenSailor } from "../../src/simulator/audio/MusicMath";
 import { RADIO_STATIONS } from "../../src/simulator/audio/RadioSystem";
@@ -66,15 +66,32 @@ test("a volcano smokes east of the start; its cone rises to a crater", () => {
   assert.ok(rim > flank && flank > volcanoHeight(VOLCANO_FOOT, 0, volcano.height, volcano.seed));
   assert.ok(crater < rim - 5, "a crater, not a peak");
   let erupting = 0;
+  let columns = 0;
   const state = { age: -1, strength: 0, slot: 0 };
-  for (let time = 0; time < ERUPTION_SLOT * 40; time += 1) if (eruptionAt(time, volcano.seed, state).age >= 0) erupting += 1;
+  for (let time = 0; time < ERUPTION_SLOT * 40; time += 1) {
+    eruptionAt(time, volcano.seed, state);
+    if (state.age >= 0) columns += 1;
+    if (fountainActivity(state) > 0.05) erupting += 1;
+  }
   const share = erupting / (ERUPTION_SLOT * 40);
-  assert.ok(share > 0.12 && share < 0.4, `erupts now and then (${share.toFixed(2)} of the time)`);
-  assert.ok(craterGlow(10, { age: 1, strength: 1, slot: 0 }) > craterGlow(10, { age: -1, strength: 0, slot: 0 }) * 1.5);
+  assert.ok(share > 0.08 && share < 0.3, `the fountain plays now and then (${share.toFixed(2)} of the time)`);
+  assert.ok(columns / (ERUPTION_SLOT * 40) < COLUMN_LIFE / ERUPTION_SLOT + 0.01, "one column at a time");
+  assert.ok(craterGlow(10, { age: 2, strength: 1, slot: 0 }) > craterGlow(10, { age: -1, strength: 0, slot: 0 }) * 1.5);
   const point = { x: 0, y: 0, z: 0, radius: 0, opacity: 0 };
   plumePuff(60, 0.3, 5, 0, point);
   assert.ok(point.y > 150 && point.x > 150, "the plume rises and leans downwind");
-  assert.ok(bombFlight(2, 3, 7, point) && point.y > 20, "bombs fly up out of the crater");
+  // The ash column climbs hundreds of metres, widening, and the wind takes its top.
+  const ash = { x: 0, y: 0, z: 0, radius: 0, opacity: 0, fresh: 0 };
+  ashPuff(30, 10, 3, 1, 6, 0, ash);
+  assert.ok(ash.y > 350 && ash.radius > 50, `ash column (${ash.y.toFixed(0)} m, r ${ash.radius.toFixed(0)})`);
+  // Each puff spreads its own way in the umbrella; the cloud as a whole goes downwind.
+  let downwind = 0;
+  for (let index = 0; index < 40; index += 1) downwind += ashPuff(30, index, 3, 1, 6, 0, ash).x / 40;
+  assert.ok(downwind > 60, `the ash cloud drifts downwind (${downwind.toFixed(0)} m)`);
+  const ember = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, t: 0 };
+  assert.ok(bombFlight(9, 3, 7, ember) && ember.t >= 0, "bombs fly up out of the crater");
+  bombFlight(1e3, 3, 7, ember);
+  assert.ok(ember.vy + 9.81 * ember.t > 30, "at tens of metres a second");
 });
 
 test("the barge, the wreck and the monolith lie in open water near the start and are obstacles", () => {

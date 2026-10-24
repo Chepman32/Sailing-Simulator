@@ -14,7 +14,7 @@
  * Pure numbers; `CameraController.direct` applies the shot.
  */
 
-export type PhotoSubjectKind = "eruption" | "breach" | "whale" | "horn" | "shark" | "dolphins";
+export type PhotoSubjectKind = "eruption" | "breach" | "whale" | "plane" | "horn" | "shark" | "dolphins";
 
 export type PhotoSubject = {
   kind: PhotoSubjectKind;
@@ -29,6 +29,7 @@ export type PhotoSubject = {
 export const PHOTO_PRIORITY: Record<PhotoSubjectKind, number> = {
   eruption: 6,
   breach: 5,
+  plane: 4,
   whale: 4,
   horn: 3,
   shark: 2,
@@ -39,6 +40,7 @@ export const PHOTO_PRIORITY: Record<PhotoSubjectKind, number> = {
 export const PHOTO_HOLD: Record<PhotoSubjectKind, number> = {
   eruption: 10,
   breach: 9,
+  plane: 8,
   whale: 9,
   horn: 6,
   shark: 7,
@@ -59,7 +61,7 @@ export const ERUPTION_PHOTO_RANGE = 2600;
 export type PhotoShot = {
   position: { x: number; y: number; z: number };
   target: { x: number; y: number; z: number };
-  /** Vertical field of view, degrees. */
+  /** Vertical field of view, degrees; NaN keeps the camera's own (no zoom). */
   fov: number;
 };
 
@@ -150,13 +152,27 @@ export class PhotoDirector {
   }
 }
 
+/** How far to the side of the line from the yacht to the subject the camera stands, metres. */
+export const PHOTO_SIDE_OFFSET = 15;
+
 /**
  * Where to stand and what to look at for `subject`, from a yacht at
- * (yachtX, yachtY, yachtZ): just behind her on the line to the subject,
- * a few metres up, and a lens that makes the subject fill about half the
- * height of the frame.
+ * (yachtX, yachtY, yachtZ). The lens stays as it is (no zoom: a far
+ * subject is seen as far as it is). The camera stands well to one side of
+ * the line from the yacht to the subject, a little behind and above her, so
+ * her sail and mast are never between the lens and what it looks at; it
+ * takes the side `sideX, sideZ` points to (her windward side, away from the
+ * sail) when given.
  */
-export function photoShot(subject: PhotoSubject, yachtX: number, yachtY: number, yachtZ: number, out: PhotoShot): PhotoShot {
+export function photoShot(
+  subject: PhotoSubject,
+  yachtX: number,
+  yachtY: number,
+  yachtZ: number,
+  out: PhotoShot,
+  sideX = 0,
+  sideZ = 0,
+): PhotoShot {
   let dx = subject.x - yachtX;
   let dz = subject.z - yachtZ;
   const horizontal = Math.hypot(dx, dz);
@@ -167,17 +183,22 @@ export function photoShot(subject: PhotoSubject, yachtX: number, yachtY: number,
     dx /= horizontal;
     dz /= horizontal;
   }
-  // Close subjects (dolphins at the bow) are seen from a little farther back and higher.
-  const back = horizontal < 40 ? 14 : 10;
-  const up = 5.5 + Math.min(horizontal * 0.012, 9) + (horizontal < 40 ? 4 : 0);
-  out.position.x = yachtX - dx * back;
+  // Square to the line of sight, on the side asked for.
+  let px = -dz;
+  let pz = dx;
+  if (px * sideX + pz * sideZ < 0) {
+    px = -px;
+    pz = -pz;
+  }
+  const near = horizontal < 40;
+  const back = near ? 8 : 5;
+  const up = 4.5 + Math.min(horizontal * 0.006, 5) + (near ? 3 : 0);
+  out.position.x = yachtX - dx * back + px * PHOTO_SIDE_OFFSET;
   out.position.y = yachtY + up;
-  out.position.z = yachtZ - dz * back;
+  out.position.z = yachtZ - dz * back + pz * PHOTO_SIDE_OFFSET;
   out.target.x = subject.x;
   out.target.y = subject.y + subject.size * 0.12;
   out.target.z = subject.z;
-  const range = Math.hypot(out.target.x - out.position.x, out.target.y - out.position.y, out.target.z - out.position.z);
-  const fov = (2 * Math.atan((subject.size * 1.9) / (2 * Math.max(range, 1))) * 180) / Math.PI;
-  out.fov = Math.min(58, Math.max(8, fov));
+  out.fov = Number.NaN;
   return out;
 }
