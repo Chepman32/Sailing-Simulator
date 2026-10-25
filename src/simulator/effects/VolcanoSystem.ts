@@ -179,8 +179,10 @@ export class VolcanoSystem {
       );
       glow.renderOrder = 4;
       glow.visible = false;
+      // Laid over the sky rather than added to it, so by day it stays orange
+      // instead of bleaching the blue behind it to pink.
       const jet = new THREE.Sprite(
-        new THREE.SpriteMaterial({ map: this.glowMap, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: false }),
+        new THREE.SpriteMaterial({ map: this.glowMap, blending: THREE.NormalBlending, transparent: true, depthWrite: false, fog: false }),
       );
       jet.renderOrder = 4;
       jet.visible = false;
@@ -319,7 +321,7 @@ export class VolcanoSystem {
         visual.jet.scale.set(20 + 14 * fountain, height, 1);
         const heat = fountain * flicker * (0.55 + 0.45 * night);
         visual.jet.material.color.setRGB(3.4 * heat, 1.25 * heat, 0.28 * heat, THREE.LinearSRGBColorSpace);
-        visual.jet.material.opacity = 0.75;
+        visual.jet.material.opacity = 0.9;
       }
 
       // The steady plume: whitish steam and gas, thinning as it drifts off.

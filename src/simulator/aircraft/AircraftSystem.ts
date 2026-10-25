@@ -341,7 +341,7 @@ export class AircraftSystem {
       if (!(age >= 0 && age < SMOKE_LIFE)) continue;
       const t = age / SMOKE_LIFE;
       // Leaves the exhaust as a tight cord, billows out, then spreads and fades.
-      const size = 1.6 + 7.5 * Math.sqrt(age) + 1.4 * age;
+      const size = 1.4 + 3.4 * Math.sqrt(age) + 0.7 * age;
       const opacity = smoothstep(0, 0.12, age) * Math.pow(1 - t, 1.5) * 0.9;
       smoke.push(puff.x + age * 1.4, puff.y - age * 0.35, puff.z - age * 0.6, size, 0.92, 0.92, 0.94, opacity, 0, 0, 0, (index * 0.618) % 1);
     }

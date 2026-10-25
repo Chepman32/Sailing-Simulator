@@ -1,5 +1,5 @@
 import { clamp, smoothstep } from "../math";
-import { FLARE_APEX, FLARE_RISE, FLARE_SINK, flarePosition, type FlareLaunch, type FlarePoint } from "../effects/FlareMath";
+import { FLARE_RISE, FLARE_SINK, flarePosition, type FlareLaunch, type FlarePoint } from "../effects/FlareMath";
 import type { PhotoShot } from "./PhotoDirector";
 
 /**
@@ -27,8 +27,15 @@ export const FLARE_SHOT_PULL = 1.4;
 export const FLARE_SHOT_DESCENT = 14;
 /** Seconds the camera takes to return. */
 export const FLARE_SHOT_RETURN = 1.8;
-/** Field of view, degrees: wide enough for the apex from 70–95 m out. */
-export const FLARE_SHOT_FOV = 62;
+/** Field of view, degrees: wide, so the climb, the smoke and the sea all fit. */
+export const FLARE_SHOT_FOV = 68;
+/**
+ * Where the flare sits in the frame: this fraction of the half field of view
+ * above the centre. The camera tilts only as far as it must, so while the
+ * rocket is low the yacht and the horizon stay in the picture, and at the
+ * apex the star is high in the frame with its smoke trail below it.
+ */
+export const FLARE_SHOT_FRAMING = 0.6;
 
 /** Age of the flare at which the shot starts its return. */
 export const FLARE_SHOT_HOLD = FLARE_RISE + FLARE_SHOT_DESCENT / FLARE_SINK;
@@ -77,10 +84,10 @@ export class FlareCamera {
     }
     this.sideX = sideX;
     this.sideZ = sideZ;
-    this.aim.x = launch.x;
-    this.aim.y = launch.y + 6;
-    this.aim.z = launch.z;
+    this.aimSet = false;
   }
+
+  private aimSet = false;
 
   /** The player took the camera (a drag or a zoom): hand it back now. */
   cancel(): void {
@@ -117,15 +124,27 @@ export class FlareCamera {
     this.shot.position.z = z;
     this.shot.position.y = waterHeight(x, z) + FLARE_SHOT_HEIGHT;
 
-    // Aim: the launch first (the rocket leaving the cockpit), then the flare,
-    // never quite as fast as it climbs, and a little below it near the apex
-    // so the star sits high in the frame with its smoke trail under it.
-    const leaving = smoothstep(0.05, 0.6, this.age);
-    const lead = smoothstep(FLARE_RISE * 0.5, FLARE_RISE, this.age) * 0.06 * FLARE_APEX;
-    const goalX = launch.x + (flare.x - launch.x) * leaving;
-    const goalY = launch.y + 6 + (flare.y - launch.y - 6) * leaving - lead;
-    const goalZ = launch.z + (flare.z - launch.z) * leaving;
-    const follow = 1 - Math.exp(-dt * 6);
+    // Aim: toward the flare in azimuth; in elevation only as high as needed
+    // to keep the flare in the upper part of the frame (`FLARE_SHOT_FRAMING`),
+    // and never below the horizon line just above the water.
+    const dx = flare.x - x;
+    const dz = flare.z - z;
+    const across = Math.hypot(dx, dz) || 1;
+    const flareElevation = Math.atan2(flare.y - this.shot.position.y, across);
+    const halfFov = ((FLARE_SHOT_FOV / 2) * Math.PI) / 180;
+    const elevation = Math.max(0.08, flareElevation - FLARE_SHOT_FRAMING * halfFov);
+    const reach = 100;
+    const goalX = x + (dx / across) * reach * Math.cos(elevation);
+    const goalY = this.shot.position.y + reach * Math.sin(elevation);
+    const goalZ = z + (dz / across) * reach * Math.cos(elevation);
+    // A camera operator's lag: smooth, never quite as fast as the rocket.
+    if (!this.aimSet) {
+      this.aim.x = goalX;
+      this.aim.y = goalY;
+      this.aim.z = goalZ;
+      this.aimSet = true;
+    }
+    const follow = 1 - Math.exp(-dt * 5);
     this.aim.x += (goalX - this.aim.x) * follow;
     this.aim.y += (goalY - this.aim.y) * follow;
     this.aim.z += (goalZ - this.aim.z) * follow;

@@ -253,7 +253,8 @@ export class AudioSystem {
     const context = this.context;
     if (!context || !this.isReady() || !this.enabled) return;
     const spec = this.yachtHornSpec();
-    const input = this.onboardInput(this.hornPoint, 6, hornLength(spec) + 3.5);
+    // A horn is loud: full level anywhere on board and from the chase camera, fading beyond.
+    const input = this.onboardInput(this.hornPoint, 14, hornLength(spec) + 3.5);
     if (input) playHorn(context, input, context.currentTime + 0.02, spec);
   }
 

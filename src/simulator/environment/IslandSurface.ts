@@ -65,6 +65,7 @@ const SAND_DECLARATIONS = /* glsl */ `
   uniform vec4 uPalmTrunks[${MAX_PALM_TRUNKS}];
   varying vec3 vSandWorld;
   varying float vSandMask;
+  varying float vRockMask;
   ${SKY_FUNCTIONS}
   ${SURF_GLSL}
 

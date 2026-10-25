@@ -3,7 +3,7 @@ import test from "node:test";
 import { onboardLevel, onboardWet } from "../../src/simulator/audio/AudioSystem";
 import { approachValue, hornHarmonic, hornLength } from "../../src/simulator/audio/HornSynth";
 import { BELL_PRIME } from "../../src/simulator/audio/BellSynth";
-import { FlareCamera, FLARE_SHOT_DISTANCE, FLARE_SHOT_HOLD, FLARE_SHOT_RETURN } from "../../src/simulator/camera/FlareCamera";
+import { FlareCamera, FLARE_SHOT_DISTANCE, FLARE_SHOT_FOV, FLARE_SHOT_HOLD, FLARE_SHOT_RETURN } from "../../src/simulator/camera/FlareCamera";
 import { FLARE_APEX, FLARE_RISE, flarePosition, type FlareLaunch } from "../../src/simulator/effects/FlareMath";
 import { LOW_PASS_HALF, lowPassPose, planLowPass, seeded, STUNT_ROLL, stuntRollAngle, stuntSmokeOn, type AircraftPose } from "../../src/simulator/aircraft/AircraftMath";
 import { angleDifference, gravityRollDegrees, wheelToRudder } from "../../app/components/steering";
@@ -95,11 +95,13 @@ test("the camera pulls back 70–95 m to show a flare climb to its apex and sink
       // Looking up at the flare: the aim follows it to within a few degrees.
       const flare = flarePosition(launch, time, { x: 0, y: 0, z: 0 });
       apexSeen ||= flare.y - launch.y > FLARE_APEX * 0.95;
+      // The flare is in the frame, in its upper part.
       const aim = shot.shot.target;
       const eye = shot.shot.position;
       const toFlare = Math.atan2(flare.y - eye.y, Math.hypot(flare.x - eye.x, flare.z - eye.z));
       const toAim = Math.atan2(aim.y - eye.y, Math.hypot(aim.x - eye.x, aim.z - eye.z));
-      assert.ok(Math.abs(toFlare - toAim) < 0.3, `aim off by ${(toFlare - toAim).toFixed(2)} rad at ${time.toFixed(1)} s`);
+      const half = (FLARE_SHOT_FOV / 2) * (Math.PI / 180);
+      assert.ok(toFlare - toAim < half * 0.92 && toFlare - toAim > -0.1, `flare ${(toFlare - toAim).toFixed(2)} rad off centre at ${time.toFixed(1)} s`);
     }
   }
   assert.ok(apexSeen, "the shot holds through the apex");

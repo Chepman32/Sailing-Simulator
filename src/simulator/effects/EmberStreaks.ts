@@ -5,8 +5,9 @@ import * as THREE from "three";
  * from where the ember is now back along its velocity, a white-hot head
  * fading into an orange-red tail, the width turned toward the camera. This
  * is what a lava fountain looks like on any real photograph, where a short
- * exposure turns each bomb into a glowing arc. Additive, brighter than white
- * (the bloom spreads it). One draw call for all of them.
+ * exposure turns each bomb into a glowing arc. Blended over the scene (not
+ * added: over a blue sky that bleached it white), hot cores brighter than
+ * white so the bloom spreads them. One draw call for all of them.
  */
 
 const vertexShader = /* glsl */ `
@@ -47,13 +48,16 @@ const fragmentShader = /* glsl */ `
     float core = pow(across, 1.6);
     float fade = pow(along, 2.2);
     // Saturated incandescence: yellow-orange when hot, orange-red as it
-    // cools, the tail always redder. Kept below the white point so the tone
-    // curve leaves it coloured (a white-hot streak read as a white dash).
+    // cools, the tail always redder; a cooled bomb is dark rock. Drawn over
+    // what is behind it, not added to it: added to a blue sky, orange turned
+    // into a white dash.
     vec3 hot = vec3(3.4, 1.35, 0.24);
     vec3 warm = vec3(1.9, 0.42, 0.06);
     vec3 cold = vec3(0.7, 0.08, 0.02);
-    vec3 color = mix(cold, mix(warm, hot, vHeat), fade) * vHeat * vHeat;
-    gl_FragColor = vec4(color * core * (0.12 + 0.88 * fade), 1.0);
+    vec3 glow = mix(cold, mix(warm, hot, vHeat), fade) * (0.35 + 0.65 * vHeat);
+    vec3 color = mix(vec3(0.045, 0.04, 0.038), glow, smoothstep(0.0, 0.3, vHeat));
+    float alpha = core * (0.15 + 0.85 * fade);
+    gl_FragColor = vec4(color, alpha);
     #include <fog_fragment>
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -87,7 +91,7 @@ export class EmberStreaks {
         uniforms: THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
         transparent: true,
         depthWrite: false,
-        blending: THREE.AdditiveBlending,
+        blending: THREE.NormalBlending,
         fog: true,
       }),
     );
