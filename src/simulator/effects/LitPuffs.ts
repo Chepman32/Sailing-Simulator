@@ -20,6 +20,7 @@ const vertexShader = /* glsl */ `
   attribute vec3 aGlow;
   attribute float aSeed;
   uniform vec3 uLightDirection;
+  uniform float uFogScale;
   varying vec2 vUv;
   varying vec4 vAlbedo;
   varying vec3 vGlow;
@@ -50,7 +51,7 @@ const vertexShader = /* glsl */ `
     #include <fog_vertex>
     #ifdef USE_FOG
       // Smoke is denser than the haze between: it keeps its shape farther off.
-      vFogDepth *= 0.62;
+      vFogDepth *= uFogScale;
     #endif
   }
 `;
@@ -91,7 +92,7 @@ const fragmentShader = /* glsl */ `
     // Sunlit tops bright, the shadowed side dark: smoke is optically thick.
     float sun = clamp(facing, 0.0, 1.0) * 0.85 + clamp(facing + 0.35, 0.0, 1.0) * 0.15;
     // Deep in a billow it is darker (light scattered away before it got there).
-    float cavity = 0.45 + 0.55 * smoothstep(0.2, 0.8, billow);
+    float cavity = 0.35 + 0.65 * smoothstep(0.18, 0.82, billow);
     vec3 color = vAlbedo.rgb * (uAmbient * 0.55 + uSun * sun) * cavity;
     // Silver lining: thin edges glow when the sun is behind the smoke.
     float rim = pow(1.0 - clamp(normal.z, 0.0, 1.0), 2.0) * (1.0 - density * 0.6);
@@ -168,7 +169,7 @@ export class LitPuffs {
   private readonly glow: THREE.InstancedBufferAttribute;
   private readonly seed: THREE.InstancedBufferAttribute;
 
-  constructor(readonly capacity: number, options: { name?: string; softness?: number; renderOrder?: number } = {}) {
+  constructor(readonly capacity: number, options: { name?: string; softness?: number; renderOrder?: number; fogScale?: number } = {}) {
     sharedNoise ??= noiseTexture();
     noiseUsers += 1;
     this.entries = Array.from({ length: capacity }, () => ({ x: 0, y: 0, z: 0, size: 0, r: 0, g: 0, b: 0, a: 0, gr: 0, gg: 0, gb: 0, seed: 0, depth: 0 }));
@@ -202,6 +203,7 @@ export class LitPuffs {
           uSun: { value: new THREE.Color(1, 1, 1) },
           uAmbient: { value: new THREE.Color(0.4, 0.45, 0.5) },
           uSoftness: { value: options.softness ?? 0.2 },
+          uFogScale: { value: options.fogScale ?? 0.62 },
         },
       ]),
       transparent: true,

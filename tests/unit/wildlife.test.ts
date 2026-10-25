@@ -20,6 +20,7 @@ import {
 import {
   createSharkAgent,
   SHARK_DORSAL_TIP,
+  SHARK_FIN_SHOW_CLEARANCE,
   SHARK_LIMITS,
   SHARK_UNDER_KEEL_DEPTH,
   stepShark,
@@ -490,11 +491,12 @@ test("a leaping dolphin's body points follow the arc it flies", () => {
 
 // --- Shark -------------------------------------------------------------------
 
-test("a shark stays mostly deep, shows its fin only briefly, and never leaves the water", () => {
+test("a shark keeps below the surface but shows its fin near the yacht every minute or so, and never leaves the water", () => {
   for (const [seed, speed] of [
     [7, 0],
     [19, 2.5],
     [23, 0.8],
+    [31, 4.4],
   ] as const) {
     const random = seeded(seed);
     const { world, clock } = liveWorld();
@@ -507,6 +509,11 @@ test("a shark stays mostly deep, shows its fin only briefly, and never leaves th
     let highestBody = -Infinity;
     let shallowUnderYacht = 0;
     let slowest = Infinity;
+    // Seconds with the fin out of the water within 45 m of the yacht, and how many separate showings.
+    let finNear = 0;
+    let showings = 0;
+    let finWasOut = false;
+    let closestFin = Infinity;
     const delta = 1 / 30;
     for (let step = 0; step < 30 * 60 * 10; step += 1) {
       clock.time += delta;
@@ -519,14 +526,24 @@ test("a shark stays mostly deep, shows its fin only briefly, and never leaves th
       highestBody = Math.max(highestBody, centre - surface);
       highestFin = Math.max(highestFin, centre + SHARK_DORSAL_TIP.y - surface);
       if (surface - centre > 1.5) deep += 1;
+      const finOut = centre + SHARK_DORSAL_TIP.y - surface > 0.12;
+      const range = Math.hypot(motion.x - vessel.x, motion.z - vessel.z);
+      if (finOut && range < 45) finNear += delta;
+      if (finOut) closestFin = Math.min(closestFin, range);
+      if (finOut && !finWasOut && range < 60) showings += 1;
+      finWasOut = finOut;
       samples += 1;
       slowest = Math.min(slowest, motion.speed);
       if (Math.hypot(motion.x - vessel.x, motion.z - vessel.z) < 6 && surface - centre < SHARK_UNDER_KEEL_DEPTH - 1.2) {
         shallowUnderYacht += 1;
       }
     }
-    assert.ok(deep / samples > 0.85, `seed ${seed}: shallow ${((1 - deep / samples) * 100).toFixed(0)}% of the time`);
-    assert.ok((time.fin_show ?? 0) < 600 * 0.15, "the fin is a rare sight");
+    assert.ok(deep / samples > 0.5, `seed ${seed}: shallow ${((1 - deep / samples) * 100).toFixed(0)}% of the time`);
+    assert.ok((time.fin_show ?? 0) < 600 * 0.5, `seed ${seed}: the fin show must end and come round again`);
+    // Ten minutes: the fin comes up near the yacht several times and stays up a while each time.
+    assert.ok(finNear > 60, `seed ${seed}: the fin was out near the yacht for only ${finNear.toFixed(0)} s`);
+    assert.ok(showings >= 4, `seed ${seed}: the fin came up ${showings} times in ten minutes`);
+    assert.ok(closestFin > SHARK_FIN_SHOW_CLEARANCE - 3, `seed ${seed}: the fin came to ${closestFin.toFixed(1)} m`);
     assert.ok(highestBody < -0.4, `seed ${seed}: the body rose to ${highestBody.toFixed(2)} m`);
     assert.ok(highestFin < 0.6, `seed ${seed}: the fin stood ${highestFin.toFixed(2)} m out`);
     assert.ok(slowest > 0.8, "a shark never stops swimming");

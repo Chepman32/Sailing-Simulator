@@ -63,6 +63,8 @@ type Visual = {
   ash: LitPuffs;
   embers: EmberStreaks;
   glow: THREE.Sprite;
+  /** The lava fountain's glare over the vent while it plays. */
+  jet: THREE.Sprite;
   flows: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial> | null;
   /** The slot of the last eruption reported (so each booms once). */
   lastSlot: number;
@@ -177,13 +179,20 @@ export class VolcanoSystem {
       );
       glow.renderOrder = 4;
       glow.visible = false;
+      const jet = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: this.glowMap, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: false }),
+      );
+      jet.renderOrder = 4;
+      jet.visible = false;
       const visual: Visual = {
         island: null,
         crater: new THREE.Vector3(),
         plume: new LitPuffs(PLUME_PUFFS, { name: "VolcanoPlume", softness: 0.15 }),
-        ash: new LitPuffs(ASH_PUFFS + COLLAPSE_PUFFS + SHOCK_PUFFS, { name: "VolcanoAsh", softness: 0.7 }),
+        // Ash is opaque and dark: it keeps its shape through more of the haze than steam does.
+        ash: new LitPuffs(ASH_PUFFS + COLLAPSE_PUFFS + SHOCK_PUFFS, { name: "VolcanoAsh", softness: 0.55, fogScale: 0.36 }),
         embers: new EmberStreaks(BOMBS + SPARKS),
         glow,
+        jet,
         flows: null,
         lastSlot: Number.NaN,
         landing: new Float32Array(BOMBS + SPARKS),
@@ -191,7 +200,7 @@ export class VolcanoSystem {
         light: 0,
         roar: 0,
       };
-      this.group.add(visual.plume.mesh, visual.ash.mesh, visual.embers.mesh, glow);
+      this.group.add(visual.plume.mesh, visual.ash.mesh, visual.embers.mesh, glow, jet);
       this.visuals.push(visual);
     }
     scene.add(this.group);
@@ -292,12 +301,26 @@ export class VolcanoSystem {
       visual.plume.setLight(lightDirection, sunLight, ambient);
       visual.ash.setLight(lightDirection, sunLight, ambient);
 
-      // Crater glow: orange light on the steam above the vent.
+      // Crater glow: a low, wide orange light on the steam just above the vent
+      // (flattened: it is the lit underside of the plume, not a ball of fire).
+      // By day only a hint of it shows against the bright sky.
       visual.glow.visible = true;
-      visual.glow.position.set(crater.x, crater.y + 8, crater.z);
-      visual.glow.scale.setScalar(island.beachRadius * (0.3 + 0.14 * Math.min(glow, 3)));
-      visual.glow.material.color.setRGB(2.6 * glow, 0.72 * glow, 0.15 * glow, THREE.LinearSRGBColorSpace);
-      visual.glow.material.opacity = 0.45 + 0.55 * night;
+      visual.glow.position.set(crater.x, crater.y + 5, crater.z);
+      const glowSize = island.beachRadius * (0.16 + 0.08 * Math.min(glow, 3));
+      visual.glow.scale.set(glowSize * 1.5, glowSize * 0.7, 1);
+      visual.glow.material.color.setRGB(2.4 * glow, 0.62 * glow, 0.1 * glow, THREE.LinearSRGBColorSpace);
+      visual.glow.material.opacity = 0.18 + 0.8 * night;
+      // The fountain: a tall, narrow glare of incandescent spray over the vent.
+      visual.jet.visible = fountain > 0.02;
+      if (visual.jet.visible) {
+        const flicker = 0.82 + 0.18 * Math.sin(time * 23.1) * Math.sin(time * 9.7 + 1.3);
+        const height = 70 + 90 * fountain;
+        visual.jet.position.set(crater.x, crater.y + height * 0.42, crater.z);
+        visual.jet.scale.set(20 + 14 * fountain, height, 1);
+        const heat = fountain * flicker * (0.55 + 0.45 * night);
+        visual.jet.material.color.setRGB(3.4 * heat, 1.25 * heat, 0.28 * heat, THREE.LinearSRGBColorSpace);
+        visual.jet.material.opacity = 0.75;
+      }
 
       // The steady plume: whitish steam and gas, thinning as it drifts off.
       const plume = visual.plume;
@@ -334,25 +357,27 @@ export class VolcanoSystem {
         if (eruption.age < 1.4) {
           for (let index = 0; index < SHOCK_PUFFS; index += 1) {
             const p = shockPuff(eruption.age, index, this.point);
-            ash.push(crater.x + p.x, crater.y + p.y, crater.z + p.z, p.radius * 2, 0.9, 0.9, 0.92, p.opacity * eruption.strength, 0, 0, 0, index / SHOCK_PUFFS);
+            ash.push(crater.x + p.x, crater.y + p.y, crater.z + p.z, p.radius * 2, 0.9, 0.9, 0.92, p.opacity * eruption.strength * 0.7, 0, 0, 0, index / SHOCK_PUFFS);
           }
         }
         // The ash column: dark, dense billows, glowing from below near the vent.
         for (let index = 0; index < ASH_PUFFS; index += 1) {
           const p = ashPuff(eruption.age, index, eruption.slot, eruption.strength, driftX, driftZ, this.ashPoint);
           if (p.opacity <= 0) continue;
-          const fire = glow * Math.exp(-p.y / 90) * p.fresh * fireReach;
-          // Fresh ash is near-black brown; old, dilute ash a lighter grey.
-          const albedo = 0.17 + 0.15 * (1 - p.fresh);
+          // Lit from below by the fountain: plain to see at night, only a warm
+          // tinge low in the column by day.
+          const fire = glow * Math.exp(-p.y / 70) * p.fresh * (0.07 + 0.93 * night);
+          // Fresh ash is near-black brown; old, dilute ash a lighter grey-brown.
+          const albedo = 0.08 + 0.17 * (1 - p.fresh);
           ash.push(
             crater.x + p.x,
             crater.y + 6 + p.y,
             crater.z + p.z,
             p.radius * 2,
-            albedo * 1.04,
+            albedo * 1.1,
             albedo,
-            albedo * 0.96,
-            p.opacity * (0.8 + 0.15 * p.fresh),
+            albedo * 0.88,
+            p.opacity * (0.82 + 0.16 * p.fresh),
             2.6 * fire,
             0.7 * fire,
             0.16 * fire,
@@ -367,8 +392,9 @@ export class VolcanoSystem {
           const px = crater.x + Math.cos(p.z) * p.x;
           const pz = crater.z + Math.sin(p.z) * p.x * island.scaleZ;
           const ground = this.terrainHeight(island, Math.min(radial, 1.02), p.z);
-          const heat = Math.exp(-p.x / 160) * fireReach;
-          ash.push(px, ground + p.radius * 0.55, pz, p.radius * 2, 0.26, 0.24, 0.22, p.opacity * 0.8, 1.6 * heat, 0.42 * heat, 0.1 * heat, 0.37 + index * 0.031);
+          // A pyroclastic flow is grey-brown ash; only at night does its hot core show.
+          const heat = Math.exp(-p.x / 120) * fireReach * night * 0.7;
+          ash.push(px, ground + p.radius * 0.5, pz, p.radius * 2, 0.36, 0.33, 0.29, p.opacity * 0.85, 1.4 * heat, 0.38 * heat, 0.08 * heat, (0.37 + index * 0.031) % 1);
         }
         // The fountain: bombs streaking up and tumbling down the cone; sparks.
         if (visual.landingSlot !== eruption.slot) this.planLandings(visual, island, eruption);
@@ -463,6 +489,7 @@ export class VolcanoSystem {
       visual.ash.dispose();
       visual.embers.dispose();
       visual.glow.material.dispose();
+      visual.jet.material.dispose();
       if (visual.flows) {
         visual.flows.geometry.dispose();
         visual.flows.material.dispose();
@@ -491,6 +518,7 @@ export class VolcanoSystem {
   private release(visual: Visual): void {
     visual.island = null;
     visual.glow.visible = false;
+    visual.jet.visible = false;
     visual.plume.mesh.visible = false;
     visual.ash.mesh.visible = false;
     visual.embers.mesh.visible = false;

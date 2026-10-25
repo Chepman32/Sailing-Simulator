@@ -13,6 +13,9 @@ import { SKY_FUNCTIONS, SKY_UNIFORM_DECLARATIONS } from "./shaders/skyShader";
  * - **Swash**: the thin sheet each wave runs up the beach, its lacy foam
  *   edge, and the sand it leaves wet for a few seconds (`SurfMath`, shared
  *   with the ocean shader, so the sea and the sand agree on every wave);
+ * - **Volcanic rock** (`rockMask`): cinder and scoria grain, lava-flow relief
+ *   and ash streaks down the slope, in the colour and in the normal, so a
+ *   cone reads as rough black rock rather than a smooth painted shell;
  * - **Palm shadows**: a dedicated shadow map of the groves, rendered from the
  *   sun (or moon) only when it moves, sampled with a soft Poisson filter;
  *   plus contact darkening around each trunk.
@@ -109,10 +112,10 @@ export function applyIslandSurface(
     shader.vertexShader = injectAfter(
       shader.vertexShader.replace(
         "#include <common>",
-        "#include <common>\nattribute float sandMask;\nvarying vec3 vSandWorld;\nvarying float vSandMask;",
+        "#include <common>\nattribute float sandMask;\nattribute float rockMask;\nvarying vec3 vSandWorld;\nvarying float vSandMask;\nvarying float vRockMask;",
       ),
       "project_vertex",
-      "vSandWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvSandMask = sandMask;",
+      "vSandWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvSandMask = sandMask;\nvRockMask = rockMask;",
     );
     let fragment = injectAfter(shader.fragmentShader, "packing", SAND_DECLARATIONS);
     // Surface state shared by the colour, roughness and normal stages.
@@ -131,6 +134,11 @@ export function applyIslandSurface(
       float submerged = smoothstep(0.02, -0.12, vSandWorld.y);
       sandWet *= vSandMask * (1.0 - submerged);
       float sheet = swash.y * vSandMask;
+      // Volcanic rock: a relief field shared by the colour and the normal.
+      vec2 rockPosition = vSandWorld.xz;
+      float rockResolved = 1.0 - smoothstep(0.08, 0.6, sandFootprint);
+      float rockBroad = skyFbm3(rockPosition * 0.045);
+      float rockMid = skyFbm3(rockPosition * 0.19 + 7.3);
       `,
     );
     fragment = injectAfter(
@@ -158,13 +166,26 @@ export function applyIslandSurface(
         sand = mix(sand, vec3(0.86, 0.9, 0.92), sandFoam * 0.9);
         diffuseColor.rgb = mix(diffuseColor.rgb, sand, vSandMask);
       }
+      if (vRockMask > 0.01) {
+        // Cinder and scoria: blotches of darker and rustier rock, fine grain
+        // where it can be resolved, pale ash lying in the hollows and in
+        // streaks down the fall line.
+        vec3 rockColor = diffuseColor.rgb;
+        float cinder = mix(0.5, skyHash(floor(rockPosition * 6.0)), rockResolved);
+        rockColor *= 0.7 + (rockBroad - 0.5) * 0.55 + (rockMid - 0.5) * 0.35 + (cinder - 0.5) * 0.22;
+        rockColor = mix(rockColor, rockColor * vec3(1.35, 0.92, 0.7), smoothstep(0.62, 0.8, rockMid) * 0.45);
+        float fall = skyFbm3(vec2(atan(vSandWorld.z, vSandWorld.x) * 30.0, length(rockPosition) * 0.03));
+        float ashLie = smoothstep(0.55, 0.85, fall) * smoothstep(0.35, 0.7, rockBroad);
+        rockColor = mix(rockColor, vec3(0.32, 0.3, 0.28), ashLie * 0.55);
+        diffuseColor.rgb = mix(diffuseColor.rgb, rockColor, vRockMask);
+      }
       `,
     );
     fragment = injectAfter(
       fragment,
       "roughnessmap_fragment",
       // Dry sand is matte, wet sand glossy, the swash sheet a mirror.
-      "roughnessFactor = mix(roughnessFactor, mix(roughnessFactor, 0.32, sandWet), vSandMask);\nroughnessFactor = mix(roughnessFactor, 0.16, smoothstep(0.0, 0.03, sheet));",
+      "roughnessFactor = mix(roughnessFactor, mix(roughnessFactor, 0.32, sandWet), vSandMask);\nroughnessFactor = mix(roughnessFactor, 0.16, smoothstep(0.0, 0.03, sheet));\nroughnessFactor = mix(roughnessFactor, 0.97, vRockMask);",
     );
     fragment = injectAfter(
       fragment,
@@ -187,6 +208,21 @@ export function applyIslandSurface(
           * 0.35 * rippleResolved * vSandMask;
         vec3 bumpView = (viewMatrix * vec4(-bump.x, 0.0, -bump.y, 0.0)).xyz;
         normal = normalize(normal + bumpView);
+      }
+      if (vRockMask > 0.01) {
+        // Lava relief: the slope of the rock field bends the normal, broad
+        // lobes and ridges from afar, rubble up close.
+        float e = 0.6;
+        vec2 rockSlope = vec2(
+          skyFbm3((rockPosition + vec2(e, 0.0)) * 0.19 + 7.3) - rockMid,
+          skyFbm3((rockPosition + vec2(0.0, e)) * 0.19 + 7.3) - rockMid
+        ) * 2.6;
+        rockSlope += vec2(
+          skyFbm3((rockPosition + vec2(e * 4.0, 0.0)) * 0.045) - rockBroad,
+          skyFbm3((rockPosition + vec2(0.0, e * 4.0)) * 0.045) - rockBroad
+        ) * 3.2;
+        vec3 rockBump = (viewMatrix * vec4(-rockSlope.x, 0.0, -rockSlope.y, 0.0)).xyz;
+        normal = normalize(normal + rockBump * vRockMask);
       }
       `,
     );

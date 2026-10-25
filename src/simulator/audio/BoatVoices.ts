@@ -17,7 +17,8 @@ type NoiseFactory = (duration: number, color: "brown" | "pink" | "white") => Aud
  *   crack when it fills on the new tack;
  * - **winch**: the ratchet clicking while the sheet comes in, and the soft
  *   zip of an eased sheet;
- * - the yacht's air horn and the ship's bell, on request.
+ * - the flare launcher and the pick-up chime, on request (the horn and the
+ *   bell are positional: `HornSynth`, `BellSynth`).
  */
 export class BoatVoices {
   private readonly slapBuffer: AudioBuffer;
@@ -173,63 +174,6 @@ export class BoatVoices {
   /** Current levels (for diagnostics and tests in the browser). */
   get levels(): Readonly<ReturnType<typeof boatSoundLevels>> {
     return this.lastLevels;
-  }
-
-  /** The yacht's air horn: a short two-tone blast. */
-  airHorn(): void {
-    const context = this.context;
-    const start = context.currentTime + 0.01;
-    const length = 1.25;
-    const output = context.createGain();
-    output.gain.setValueAtTime(0.0001, start);
-    output.gain.exponentialRampToValueAtTime(0.32, start + 0.04);
-    output.gain.setValueAtTime(0.32, start + length - 0.12);
-    output.gain.exponentialRampToValueAtTime(0.0001, start + length);
-    const tone = context.createBiquadFilter();
-    tone.type = "bandpass";
-    tone.frequency.value = 900;
-    tone.Q.value = 0.7;
-    const body = context.createBiquadFilter();
-    body.type = "lowpass";
-    body.frequency.value = 3200;
-    tone.connect(body).connect(output).connect(this.bus);
-    for (const frequency of [415, 523]) {
-      const reed = context.createOscillator();
-      reed.type = "sawtooth";
-      reed.frequency.setValueAtTime(frequency * 0.97, start);
-      reed.frequency.exponentialRampToValueAtTime(frequency, start + 0.08);
-      const level = context.createGain();
-      level.gain.value = 0.5;
-      reed.connect(level).connect(tone);
-      reed.start(start);
-      reed.stop(start + length + 0.05);
-    }
-  }
-
-  /** The ship's bell: two strokes, a bronze tone with its inharmonic partials. */
-  bell(): void {
-    const context = this.context;
-    const base = 740;
-    for (const offset of [0, 0.42]) {
-      const start = context.currentTime + 0.01 + offset;
-      const output = context.createGain();
-      output.gain.value = 1;
-      output.connect(this.bus);
-      for (const [ratio, level, decay] of [[1, 0.26, 3.4], [2.76, 0.12, 1.9], [5.4, 0.06, 0.9], [8.93, 0.03, 0.45], [0.5, 0.05, 4.2]] as const) {
-        const partial = context.createOscillator();
-        partial.type = "sine";
-        partial.frequency.value = base * ratio * (1 + (Math.random() - 0.5) * 0.002);
-        const gain = context.createGain();
-        gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.exponentialRampToValueAtTime(level, start + 0.004);
-        gain.gain.exponentialRampToValueAtTime(0.0001, start + decay);
-        partial.connect(gain).connect(output);
-        partial.start(start);
-        partial.stop(start + decay + 0.05);
-      }
-      // The clapper's strike.
-      this.burst(this.sprayBuffer, start, 0.03, 0.05, "bandpass", 3200, 2);
-    }
   }
 
   /** A flare leaving its launcher: a pop and a rising hiss. */

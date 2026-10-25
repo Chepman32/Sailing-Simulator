@@ -12,6 +12,7 @@ import {
 } from "./Appendages";
 import { HELM_EYE, HelmStation, type HelmTraffic } from "./HelmStation";
 import { Skipper } from "./Skipper";
+import { ShipBell } from "./ShipBell";
 import { boomPivotPose, boomTarget, createBoomState, stepBoom } from "./BoomDynamics";
 import { SailSystem } from "./SailSystem";
 import { JibSail } from "./JibSail";
@@ -72,6 +73,12 @@ export class Vessel {
   private readonly boomPivot = new THREE.Group();
   private readonly helm = new HelmStation();
   private skipper?: Skipper;
+  private bell?: ShipBell;
+  /** The mast's forward face at its foot (vessel space) and the cabin top there; set by `classifyParts`. */
+  private readonly mastFront = new THREE.Vector3(0, 0, 1.9);
+  private mastFootY = 1.3;
+  /** Where the horns are: on the mast's forward face below the spreaders (vessel space). */
+  private readonly hornLocal = new THREE.Vector3(0, 4.6, 1.95);
   /** Parts left out of the planar mirror (see `batchStaticParts`). */
   readonly mirrorSkipped: THREE.Object3D[] = [];
   private readonly boom = createBoomState();
@@ -163,12 +170,26 @@ export class Vessel {
     this.createNavigationLights();
     this.root.add(this.helm.group);
     this.root.add(this.jib.group);
+    this.bell = new ShipBell(this.mastFront, this.mastFootY);
+    this.root.add(this.bell.group);
     this.skipper = new Skipper(this.root, {
       feet: HelmStation.STAND_FEET,
       eyeHeight: HELM_EYE.y - HelmStation.STAND_FEET.y,
       rimPoint: (angle, target) => this.helm.rimPoint(angle, target),
       wheelAngle: () => this.helm.wheelAngle,
     });
+  }
+
+  /** The bell's clapper strikes (the sound itself is `AudioSystem.bell`). */
+  strikeBell(): void {
+    this.bell?.strike(1);
+    window.setTimeout(() => this.bell?.strike(0.86), 460);
+  }
+
+  /** Where the bell and the horns are now, in the world. */
+  signalPoints(bell: THREE.Vector3, horn: THREE.Vector3): void {
+    bell.copy(this.bell?.soundPoint ?? this.mastFront).applyMatrix4(this.root.matrixWorld);
+    horn.copy(this.hornLocal).applyMatrix4(this.root.matrixWorld);
   }
 
   /** The skipper is hidden from his own eyes (the helm camera). */
@@ -258,6 +279,7 @@ export class Vessel {
       readable: lighting?.helmReadable ?? false,
     });
     this.skipper?.update(time, delta, physics.roll, physics.pitch, physics.yawRate, physics.telemetry.forwardSpeed);
+    this.bell?.update(delta, physics.roll, physics.pitch);
     // Follow the simulated shaft so the screws spool up and down with the
     // engines instead of snapping to the lever position.
     const shaft = physics.engineShaft;
@@ -308,6 +330,7 @@ export class Vessel {
     this.skipper?.dispose();
     this.helm.dispose();
     this.jib.dispose();
+    this.bell?.dispose();
   }
 
   /**
@@ -359,6 +382,11 @@ export class Vessel {
     const mastBounds = mast as THREE.Box3 | null;
     const boomPart = boom as { mesh: THREE.Mesh; bounds: THREE.Box3 } | null;
     const sailMesh = sail as THREE.Mesh | null;
+    if (mastBounds) {
+      this.mastFront.set((mastBounds.min.x + mastBounds.max.x) / 2, 0, mastBounds.max.z);
+      this.mastFootY = mastBounds.min.y;
+      this.hornLocal.set(this.mastFront.x, mastBounds.min.y + 3.4, mastBounds.max.z + 0.06);
+    }
     if (!mastBounds || !boomPart || !sailMesh) return;
     const mastX = (mastBounds.min.x + mastBounds.max.x) / 2;
     const mastZ = (mastBounds.min.z + mastBounds.max.z) / 2;

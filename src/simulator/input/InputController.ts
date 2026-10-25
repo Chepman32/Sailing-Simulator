@@ -48,15 +48,17 @@ export type InputHooks = {
 
 /**
  * Whether a key press belongs to the focused element rather than the helm.
- * Only text entry and an element's own arrow keys are left alone: after a
- * click on any button or on the rudder slider the keyboard still steers (it
- * used to fall silent until the scene was clicked again).
+ * Only text entry is left alone: after a click on any button or on the
+ * rudder or throttle slider the keyboard still steers and drives. The
+ * sliders' own arrow keys are taken over too: left to the browser they moved
+ * the helm one notch per press (and only while that slider had the focus),
+ * which felt like the keys stuck or stuttered.
  */
 export function keyBelongsToElement(target: EventTarget | null, code: string): boolean {
   if (typeof HTMLElement === "undefined" || !(target instanceof HTMLElement)) return false;
   if (target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return true;
   if (target instanceof HTMLInputElement) {
-    if (target.type === "range") return code.startsWith("Arrow") || code === "Home" || code === "End";
+    if (target.type === "range") return false;
     if (target.type === "checkbox" || target.type === "radio" || target.type === "button") return code === "Space";
     return true;
   }
@@ -66,8 +68,15 @@ export function keyBelongsToElement(target: EventTarget | null, code: string): b
 
 export class InputController {
   private readonly keys = new Set<string>();
-  /** The helm returns to the centre by itself when it is let go (a setting). */
-  autoCenter = true;
+  /** The helm returns to the centre by itself when it is let go (a setting, off by default). */
+  autoCenter = false;
+  /**
+   * Gamepads are only listened to once one has been used: some laptops and
+   * phones expose a sensor or a virtual pad whose axes rest off-centre, and
+   * read blindly they turned the helm by themselves, fighting the keys.
+   */
+  private readonly gamepadRest = new Map<number, number[]>();
+  private gamepadArmed = false;
   /** The helm has been let go after keys or the slider moved it, and is on its way back. */
   private returning = false;
 
@@ -146,10 +155,29 @@ export class InputController {
   };
 
   private updateGamepad(delta: number): void {
-    const gamepad = navigator.getGamepads?.()[0];
+    const pads = navigator.getGamepads?.();
+    if (!pads) return;
+    let gamepad: Gamepad | null = null;
+    for (const pad of pads) {
+      if (!pad || !pad.connected || pad.axes.length < 2) continue;
+      const rest = this.gamepadRest.get(pad.index);
+      if (!rest) {
+        this.gamepadRest.set(pad.index, pad.axes.slice(0, 2));
+        continue;
+      }
+      // Armed by a press, or by a stick moved well away from where it rested.
+      if (!this.gamepadArmed && (pad.buttons.some((button) => button.pressed) || pad.axes.slice(0, 2).some((axis, index) => Math.abs(axis - rest[index]!) > 0.35))) {
+        this.gamepadArmed = true;
+      }
+      if (this.gamepadArmed && pad.mapping === "standard") {
+        gamepad = pad;
+        break;
+      }
+      if (this.gamepadArmed) gamepad ??= pad;
+    }
     if (!gamepad) return;
-    const rudderAxis = Math.abs(gamepad.axes[0] ?? 0) > 0.08 ? gamepad.axes[0] : 0;
-    const throttleAxis = Math.abs(gamepad.axes[1] ?? 0) > 0.08 ? -(gamepad.axes[1] ?? 0) : 0;
+    const rudderAxis = Math.abs(gamepad.axes[0] ?? 0) > 0.15 ? gamepad.axes[0]! : 0;
+    const throttleAxis = Math.abs(gamepad.axes[1] ?? 0) > 0.15 ? -(gamepad.axes[1] ?? 0) : 0;
     if (rudderAxis) this.controls.rudder = clamp(this.controls.rudder + HELM_STARBOARD * rudderAxis * delta * 0.8, -1, 1);
     if (throttleAxis) this.controls.throttle = clamp(this.controls.throttle + throttleAxis * delta * 0.55, -1, 1);
   }

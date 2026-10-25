@@ -385,6 +385,143 @@ export function buildFloatplane(livery: Livery, owned: Owned): FloatplaneParts {
   return { group, propeller, blurDisc, lights, towPoint: new THREE.Vector3(0, -0.2, -7.9) };
 }
 
+/**
+ * The display smoke and paint of an aerobatic monoplane: white with red
+ * sunburst rays fanning back from the cowling, a red belly and a dark
+ * anti-glare panel ahead of the canopy. u runs nose → tail, v around from
+ * the right side (0) over the top (0.25).
+ */
+function stuntLiveryTexture(): THREE.Texture {
+  const width = 1024;
+  const height = 512;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const g = canvas.getContext("2d")!;
+  g.fillStyle = "#f6f4ef";
+  g.fillRect(0, 0, width, height);
+  // Sunburst: rays from a point ahead of the nose, alternating red and white.
+  g.save();
+  g.translate(-width * 0.12, height * 0.5);
+  for (let index = 0; index < 22; index += 1) {
+    if (index % 2 === 1) continue;
+    const a0 = -Math.PI / 2 + (index / 22) * Math.PI;
+    const a1 = -Math.PI / 2 + ((index + 1) / 22) * Math.PI;
+    g.fillStyle = "#d1231b";
+    g.beginPath();
+    g.moveTo(0, 0);
+    g.arc(0, 0, width * 1.25, a0, a1);
+    g.closePath();
+    g.fill();
+  }
+  g.restore();
+  // Cowling and the anti-glare panel on top, a red belly.
+  g.fillStyle = "#d1231b";
+  g.fillRect(0, 0, width * 0.1, height);
+  g.fillStyle = "#1b1d22";
+  g.fillRect(width * 0.08, height * 0.66, width * 0.12, height * 0.16);
+  g.fillStyle = "#d1231b";
+  g.fillRect(0, height * 0.12, width, height * 0.12);
+  g.fillStyle = "#1b1d22";
+  g.font = "bold 40px Arial, sans-serif";
+  g.textBaseline = "middle";
+  g.fillText("N330SX", width * 0.6, height * 0.92);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  return texture;
+}
+
+export type StuntPlaneParts = {
+  group: THREE.Group;
+  propeller: THREE.Group;
+};
+
+/**
+ * An aerobatic monoplane (7 m long, 7.5 m span) in the manner of the
+ * unlimited-class display aircraft: a slim fuselage with a big round
+ * cowling, a low symmetrical-section wing with square tips, a large
+ * rudder, a bubble canopy, spatted fixed gear, a three-blade propeller.
+ */
+export function buildStuntPlane(owned: Owned): StuntPlaneParts {
+  const group = new THREE.Group();
+  group.name = "StuntPlane";
+  const liveryMap = stuntLiveryTexture();
+  owned.textures.push(liveryMap);
+  const paint = new THREE.MeshStandardMaterial({ map: liveryMap, roughness: 0.25, metalness: 0.05, envMapIntensity: 1.3 });
+  const red = new THREE.MeshStandardMaterial({ color: 0xc81f18, roughness: 0.28, metalness: 0.05, envMapIntensity: 1.2 });
+  const white = new THREE.MeshStandardMaterial({ color: 0xf4f2ec, roughness: 0.3, metalness: 0.05, envMapIntensity: 1.2 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x17191d, roughness: 0.45, metalness: 0.3 });
+  const glass = new THREE.MeshStandardMaterial({ color: 0x18222c, roughness: 0.05, metalness: 0.4, transparent: true, opacity: 0.82, envMapIntensity: 2 });
+  owned.materials.push(paint, red, white, dark, glass);
+
+  const fuselage = loft([
+    { z: 0.05, w: 0.42, h: 0.42, cy: 0, n: 2 },
+    { z: -0.35, w: 0.56, h: 0.56, cy: 0, n: 2.1 },
+    { z: -1.2, w: 0.55, h: 0.6, cy: 0.04, n: 2.4 },
+    { z: -2.2, w: 0.48, h: 0.6, cy: 0.08, n: 2.6 },
+    { z: -3.4, w: 0.36, h: 0.48, cy: 0.12, n: 2.5 },
+    { z: -4.8, w: 0.22, h: 0.32, cy: 0.18, n: 2.3 },
+    { z: -6.1, w: 0.12, h: 0.2, cy: 0.24, n: 2.1 },
+    { z: -6.9, w: 0.05, h: 0.1, cy: 0.28, n: 2 },
+  ]);
+  owned.geometries.push(fuselage);
+  group.add(new THREE.Mesh(fuselage, paint));
+
+  // Low wing, square tips; red with white tips.
+  const wingAt = (x: number): Station => ({ x, chord: 1.75 - Math.abs(x) * 0.12, lead: -0.8 - Math.abs(x) * 0.05, y: -0.32, thickness: 0.15 });
+  const centre = wing([-3.0, -1.5, 0, 1.5, 3.0].map(wingAt));
+  const tips = mergeGeometries([wing([-3.75, -3.0].map(wingAt)), wing([3.0, 3.75].map(wingAt))], false)!;
+  owned.geometries.push(centre, tips);
+  group.add(new THREE.Mesh(centre, red), new THREE.Mesh(tips, white));
+
+  // Tailplane and a big fin/rudder.
+  const tailplane = wing([-1.4, -0.7, 0, 0.7, 1.4].map((x) => ({ x, chord: 0.95 - Math.abs(x) * 0.12, lead: -5.85, y: 0.22, thickness: 0.1 })));
+  const fin = wing([0, 0.5, 1.0, 1.25].map((h) => ({ x: h, chord: 1.25 - h * 0.35, lead: -5.65 - h * 0.25, y: 0.28, thickness: 0.1 })), true);
+  owned.geometries.push(tailplane, fin);
+  group.add(new THREE.Mesh(tailplane, red), new THREE.Mesh(fin, red));
+
+  // Bubble canopy over the cockpit.
+  const canopy = new THREE.SphereGeometry(1, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+  canopy.scale(0.38, 0.42, 1.05);
+  canopy.translate(0, 0.42, -2.1);
+  owned.geometries.push(canopy);
+  group.add(new THREE.Mesh(canopy, glass));
+
+  // Fixed gear: two spats on legs.
+  const spat = new THREE.SphereGeometry(1, 16, 8);
+  spat.scale(0.12, 0.2, 0.42);
+  const spats = mergeGeometries([spat.clone().translate(-0.95, -1.35, -0.6), spat.clone().translate(0.95, -1.35, -0.6)], false)!;
+  spat.dispose();
+  const legs = mergeGeometries(
+    [-1, 1].map((side) => strut(new THREE.Vector3(side * 0.35, -0.4, -0.7), new THREE.Vector3(side * 0.95, -1.25, -0.6), 0.06, 0.18)),
+    false,
+  )!;
+  owned.geometries.push(spats, legs);
+  group.add(new THREE.Mesh(spats, red), new THREE.Mesh(legs, white));
+
+  // Spinner and a three-blade propeller.
+  const spinner = new THREE.ConeGeometry(0.2, 0.5, 20);
+  spinner.rotateX(Math.PI / 2);
+  spinner.translate(0, 0, 0.3);
+  owned.geometries.push(spinner);
+  group.add(new THREE.Mesh(spinner, white));
+  const propeller = new THREE.Group();
+  propeller.position.set(0, 0, 0.12);
+  const blade = new THREE.BoxGeometry(0.12, 0.95, 0.03);
+  blade.translate(0, 0.52, 0);
+  const blades = mergeGeometries([0, 1, 2].map((index) => blade.clone().rotateZ((index * Math.PI * 2) / 3)), false)!;
+  blade.dispose();
+  owned.geometries.push(blades);
+  propeller.add(new THREE.Mesh(blades, dark));
+  group.add(propeller);
+
+  group.traverse((object) => {
+    if (object instanceof THREE.Mesh) object.castShadow = true;
+  });
+  return { group, propeller };
+}
+
 /** A twin-engine narrow-body airliner (silhouette detail for ten kilometres away). */
 export function buildAirliner(owned: Owned): { group: THREE.Group; strobes: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[] } {
   const group = new THREE.Group();

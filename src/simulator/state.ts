@@ -51,7 +51,8 @@ export function createSimulatorState(): SimulatorState {
     soundEnabled: true,
     engineRunning: false,
     engineMuted: false,
-    autoCenterHelm: true,
+    // The helm stays where it is put (a wheel, not a spring); a setting can make it return.
+    autoCenterHelm: false,
     steadyHelmView: true,
     sailColor: "white",
     unlockedSails: ["white"],
@@ -101,7 +102,7 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   engineRunning: false,
   shoreGuardActive: false,
   engineMuted: false,
-  autoCenterHelm: true,
+  autoCenterHelm: false,
   steadyHelmView: true,
   sailColor: "white",
   unlockedSails: ["white"],

@@ -90,18 +90,22 @@ export const SKY_FUNCTIONS = /* glsl */ `
 
     float sunAmount = max(dot(direction, uSunDirection), 0.0);
     float sunVisible = smoothstep(-0.1, 0.05, uSunDirection.y) * (1.0 - uNight);
-    vec3 sunGlow = uSunColor * (
-      pow(sunAmount, 6.0) * 0.04 +
-      pow(sunAmount, 24.0) * 0.16 +
-      pow(sunAmount, 140.0) * 0.55 +
-      pow(sunAmount, 700.0) * 1.05
+    // Tropical gold: the aureole around the sun is a warm, saturated glow
+    // that covers the blue near the disc rather than being added to it (blue
+    // plus gold reads as white through the tone curve). Kept in the range
+    // where the ACES curve still holds its hue: a brighter glow would clip to
+    // white whatever its colour.
+    vec3 sunGlow = uSunColor * vec3(1.0, 0.62, 0.1) * (
+      pow(sunAmount, 6.0) * 0.025 +
+      pow(sunAmount, 24.0) * 0.09 +
+      pow(sunAmount, 140.0) * 0.3 +
+      pow(sunAmount, 700.0) * 0.5
     );
-    // Tropical gold: the glow around the sun is warm, not white.
-    sunGlow *= vec3(1.0, 0.72, 0.3);
+    float glowCover = min(0.95, pow(sunAmount, 24.0) * 0.25 + pow(sunAmount, 60.0) * 0.4 + pow(sunAmount, 300.0) * 0.33);
     // Low suns redden the haze beneath them.
     float lowSun = (1.0 - smoothstep(0.0, 0.45, uSunDirection.y)) * exp(-height * 6.0);
     sunGlow += uSunColor * vec3(1.0, 0.52, 0.2) * pow(sunAmount, 3.0) * lowSun * 0.42;
-    sky += sunGlow * sunVisible;
+    sky = sky * (1.0 - glowCover * sunVisible) + sunGlow * sunVisible;
 
     float moonAmount = max(dot(direction, uMoonDirection), 0.0);
     sky += vec3(0.36, 0.5, 0.74) * (pow(moonAmount, 22.0) * 0.045 + pow(moonAmount, 300.0) * 0.2) * uNight;
@@ -262,6 +266,24 @@ const CELESTIAL_FUNCTIONS = /* glsl */ `
     return rays * 0.5 * smoothstep(radius * 0.8, radius * 2.0, r) + bowl * 0.4;
   }
 
+  /**
+   * The solar disc, opaque over the sky behind it (rgb, coverage). It is
+   * not added to the blue: blue plus gold reads as white once tone-mapped.
+   * \`uSunDisc\` is the colour at the centre, chosen so the ACES curve
+   * leaves it a hot yellow; the limb darkens and reddens to deep gold.
+   */
+  vec4 skySun(vec3 direction) {
+    if (dot(uSunDisc, uSunDisc) <= 0.0 || dot(direction, uSunDirection) <= 0.0) return vec4(0.0);
+    float pixel = max(length(fwidth(direction)), 1.0e-5);
+    vec2 local = bodyFrame(direction, uSunDirection);
+    float radial = length(local) / SUN_RADIUS;
+    float edge = 1.0 - smoothstep(1.0 - pixel / SUN_RADIUS, 1.0 + pixel / SUN_RADIUS, radial);
+    if (edge <= 0.0) return vec4(0.0);
+    float mu = sqrt(max(0.0, 1.0 - radial * radial));
+    vec3 rim = uSunDisc * vec3(0.51, 0.29, 0.0);
+    return vec4(mix(rim, uSunDisc, pow(mu, 0.55)), edge * uCelestial);
+  }
+
   vec3 skyCelestial(vec3 direction) {
     vec3 light = vec3(0.0);
     // Pixel size in radians, for edges that stay crisp but never alias.
@@ -270,18 +292,6 @@ const CELESTIAL_FUNCTIONS = /* glsl */ `
     // Derivatives are taken here, outside any branch.
     vec2 grid = direction.xz / (1.0 + max(direction.y, 0.0)) * 230.0;
     float cellPixel = max(max(fwidth(grid.x), fwidth(grid.y)), 1.0e-4);
-
-    if (dot(uSunDisc, uSunDisc) > 0.0) {
-      vec2 local = bodyFrame(direction, uSunDirection);
-      float radial = length(local) / SUN_RADIUS;
-      float edge = 1.0 - smoothstep(1.0 - pixel / SUN_RADIUS, 1.0 + pixel / SUN_RADIUS, radial);
-      if (dot(direction, uSunDirection) > 0.0 && edge > 0.0) {
-        // Limb darkening: the disc's rim is cooler and dimmer than its centre.
-        float mu = sqrt(max(0.0, 1.0 - radial * radial));
-        vec3 limb = vec3(1.0 - 0.45 * (1.0 - mu), 1.0 - 0.55 * (1.0 - mu), 1.0 - 0.7 * (1.0 - mu));
-        light += uSunDisc * limb * edge;
-      }
-    }
 
     if (dot(uMoonDisc, uMoonDisc) > 0.0 && dot(direction, uMoonDirection) > 0.0) {
       // Seen from the ground, the face is not mirrored: east is to the right.
@@ -343,6 +353,8 @@ export const skyFragmentShader = /* glsl */ `
   void main() {
     vec3 direction = normalize(vWorldDirection);
     vec3 sky = skyAtmosphere(direction);
+    vec4 sun = skySun(direction);
+    sky = mix(sky, sun.rgb, sun.a);
     vec4 clouds = skyClouds(direction, uSkyDetail);
     // Clouds drift across the sun, the moon and the stars; thin edges let
     // them show through, dimmed.

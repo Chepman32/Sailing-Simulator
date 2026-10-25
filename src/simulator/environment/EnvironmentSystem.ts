@@ -21,10 +21,17 @@ const CAPTURE_SIZE = 128;
  * watch the sun set into a red horizon or rise out of one.
  */
 const TRANSITION_SECONDS = 11;
-/** HDR radiance of the solar disc relative to the sun's tint. */
+/** HDR radiance of the solar disc at dusk, relative to the palette's sun tint. */
 const SUN_DISC_RADIANCE = 2.0;
-/** Linear colour of the noon sun disc: a saturated golden yellow. */
-const SUN_DISC_GOLD = [1.0, 0.6, 0.12] as const;
+/**
+ * Scene-linear colour at the centre of the noon sun disc. Solved through the
+ * ACES curve (exposure 1.08) to land on a hot tropical yellow, sRGB about
+ * (255, 230, 130), with a deep-gold limb (255, 200, 70) in the sky shader.
+ * Blue must stay at zero: any blue, and any brighter value, and the curve
+ * bleaches the disc to white. Bright enough for the bloom, which then halos
+ * it in the same yellow.
+ */
+export const SUN_DISC_GOLD = [3.0, 1.06, 0.0] as const;
 
 export class EnvironmentSystem {
   private readonly sky: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
@@ -328,14 +335,15 @@ export class EnvironmentSystem {
     const sunUp = (1 - Math.pow(night, 0.65)) * (this.state.sunElevation > -0.03 ? 1 : 0);
     // Near the horizon the disc is seen through a long, hazy path: dimmer, so
     // its red-orange survives the tone curve instead of clipping to white.
-    const sunRadiance = SUN_DISC_RADIANCE * sunUp * (1 - 0.82 * palette.twilight) * (1 - 0.6 * this.weather.overcast);
+    const sunDim = sunUp * (1 - 0.6 * this.weather.overcast);
     // A saturated tropical gold by day (the white-hot palette colour clipped
-    // the disc to white), easing into the palette's orange at dusk.
+    // the disc to white), easing into the palette's dimmer orange at dusk.
     const goldMix = clamp(palette.twilight * 1.1, 0, 1);
+    const duskRadiance = SUN_DISC_RADIANCE * (1 - 0.82 * palette.twilight);
     this.sunDisc.value.setRGB(
-      (SUN_DISC_GOLD[0] + (palette.sunColor[0] - SUN_DISC_GOLD[0]) * goldMix) * sunRadiance,
-      (SUN_DISC_GOLD[1] + (palette.sunColor[1] - SUN_DISC_GOLD[1]) * goldMix) * sunRadiance,
-      (SUN_DISC_GOLD[2] + (palette.sunColor[2] - SUN_DISC_GOLD[2]) * goldMix) * sunRadiance,
+      (SUN_DISC_GOLD[0] + (palette.sunColor[0] * duskRadiance - SUN_DISC_GOLD[0]) * goldMix) * sunDim,
+      (SUN_DISC_GOLD[1] + (palette.sunColor[1] * duskRadiance - SUN_DISC_GOLD[1]) * goldMix) * sunDim,
+      (SUN_DISC_GOLD[2] + (palette.sunColor[2] * duskRadiance - SUN_DISC_GOLD[2]) * goldMix) * sunDim,
       THREE.LinearSRGBColorSpace,
     );
     const moonUp = clamp((night - 0.04) / 0.3, 0, 1) * (this.state.moonElevation > -0.02 ? 1 : 0);

@@ -702,6 +702,8 @@ export class IslandSystem {
     const colors: number[] = [];
     // 1 on sand, 0 under vegetation: the sand shading applies only where it is sand.
     const sandMask: number[] = [0];
+    // 1 on a volcano's bare rock and ash slopes (cinder grain, lava relief), 0 elsewhere.
+    const rockMask: number[] = [island.volcano ? 1 : 0];
     // High islands carry darker forest and bare rock toward the summit.
     const highland = smoothstep(3, 10, island.height);
     const indices: number[] = [];
@@ -764,6 +766,7 @@ export class IslandSystem {
             color.copy(wetBlackSand).lerp(deepSand, smoothstep(1, outerRadius, radial) * 0.4);
           }
           sandMask.push(smoothstep(VOLCANO_FOOT - 0.02, VOLCANO_FOOT + 0.06, radial));
+          rockMask.push(1 - smoothstep(VOLCANO_FOOT - 0.12, VOLCANO_FOOT - 0.02, radial));
           colors.push(color.r, color.g, color.b, alpha);
           continue;
         }
@@ -771,6 +774,7 @@ export class IslandSystem {
         const bump = hillHeight(profile, x, z, radial);
         const vegetationEdge = 0.7 + (patch - 0.5) * 0.16;
         sandMask.push(smoothstep(vegetationEdge - 0.04, vegetationEdge + 0.12, radial));
+        rockMask.push(0);
         if (radial < vegetationEdge - 0.08) {
           color.copy(green).lerp(shade, smoothstep(0.35, 0.8, fine)).lerp(dryGrass, smoothstep(0.55, 0.9, patch) * 0.6);
           if (highland > 0) {
@@ -823,6 +827,7 @@ export class IslandSystem {
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 4));
     geometry.setAttribute("sandMask", new THREE.Float32BufferAttribute(sandMask, 1));
+    geometry.setAttribute("rockMask", new THREE.Float32BufferAttribute(rockMask, 1));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
     geometry.computeBoundingSphere();

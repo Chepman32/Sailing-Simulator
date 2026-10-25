@@ -122,6 +122,13 @@ export class FlareSystem {
     return this.reload <= 0;
   }
 
+  /** The launch of the flare fired last, while it is still in the air. */
+  get lastLaunch(): FlareLaunch | null {
+    return this.last?.active ? this.last.launch : null;
+  }
+
+  private last: Flare | null = null;
+
   /** Fires a flare from (x, y, z), leaning downwind; false while reloading. */
   launch(color: FlareColor, x: number, y: number, z: number, windX: number, windZ: number): boolean {
     if (this.reload > 0) return false;
@@ -152,6 +159,7 @@ export class FlareSystem {
     slot.nextPuff = 0;
     slot.puffCount = 0;
     slot.brightness = 0;
+    this.last = slot;
     const [r, g, b] = slot.rgb;
     (slot.halo.material.color as THREE.Color).setRGB(r, g, b, THREE.LinearSRGBColorSpace);
     return true;

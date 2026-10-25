@@ -2526,8 +2526,9 @@ input[type="range"]:disabled {
 .minimap {
   position: absolute;
   z-index: 12;
-  top: calc(var(--edge-top) + var(--top-bar) + 12px);
-  right: var(--edge-right);
+  /* Bottom-left, just above the rudder (its height is measured: --minimap-bottom). */
+  bottom: var(--minimap-bottom, calc(var(--edge-bottom) + 150px));
+  left: var(--edge-left);
   width: var(--minimap-size, clamp(118px, 22vh, 164px));
   height: var(--minimap-size, clamp(118px, 22vh, 164px));
   padding: 0;
@@ -2580,9 +2581,7 @@ input[type="range"]:disabled {
 
 @media (max-width: 680px) and (orientation: portrait), (max-height: 560px) and (orientation: landscape) {
   .minimap {
-    --minimap-size: clamp(66px, calc(100vw - 304px), 84px);
-    top: calc(var(--edge-top) + 2px);
-    right: calc(var(--edge-right) + 60px);
+    --minimap-size: clamp(72px, 22vw, 92px);
     border-width: 1.5px;
   }
   .minimap-north { top: -6px; width: 15px; height: 15px; font-size: 9px; }

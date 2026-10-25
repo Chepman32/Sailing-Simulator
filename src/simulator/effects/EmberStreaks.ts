@@ -40,15 +40,20 @@ const fragmentShader = /* glsl */ `
   varying float vHeat;
   #include <fog_pars_fragment>
   void main() {
-    float across = 1.0 - abs(vUv.y * 2.0 - 1.0);
-    float core = pow(across, 2.2);
-    float along = pow(vUv.x, 1.5);
-    // Hot: white-yellow head; cooler: deep orange; the tail always redder.
-    vec3 hot = vec3(7.0, 4.6, 1.8);
-    vec3 warm = vec3(3.6, 0.95, 0.18);
-    vec3 cold = vec3(0.9, 0.12, 0.03);
-    vec3 color = mix(cold, mix(warm, hot, vHeat), along) * vHeat * vHeat;
-    gl_FragColor = vec4(color * core * (0.2 + 0.8 * along), 1.0);
+    // A streak tapers from a round, bright head to a thin, dim tail.
+    float along = vUv.x;
+    float halfWidth = mix(0.25, 1.0, pow(along, 0.7));
+    float across = 1.0 - smoothstep(0.0, halfWidth, abs(vUv.y * 2.0 - 1.0));
+    float core = pow(across, 1.6);
+    float fade = pow(along, 2.2);
+    // Saturated incandescence: yellow-orange when hot, orange-red as it
+    // cools, the tail always redder. Kept below the white point so the tone
+    // curve leaves it coloured (a white-hot streak read as a white dash).
+    vec3 hot = vec3(3.4, 1.35, 0.24);
+    vec3 warm = vec3(1.9, 0.42, 0.06);
+    vec3 cold = vec3(0.7, 0.08, 0.02);
+    vec3 color = mix(cold, mix(warm, hot, vHeat), fade) * vHeat * vHeat;
+    gl_FragColor = vec4(color * core * (0.12 + 0.88 * fade), 1.0);
     #include <fog_fragment>
     #include <tonemapping_fragment>
     #include <colorspace_fragment>

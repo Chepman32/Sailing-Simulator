@@ -6,7 +6,7 @@ import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
 import type { CameraMode, Discovery, LightingMode, LoadingState, QualityChoice } from "@/src/simulator/types";
 import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
 import { SoundPrompt } from "./SoundPrompt";
-import { requestTiltPermission, screenRollDegrees, STEERING_STORAGE_KEY, swipeToRudder, tiltToRudder } from "./steering";
+import { gravityRollDegrees, requestTiltPermission, screenAngle, screenRollDegrees, STEERING_STORAGE_KEY, swipeToRudder, tiltToRudder, wheelToRudder } from "./steering";
 import { featureText, getFeatureMessages } from "./featureMessages";
 import { ChartView } from "./ChartView";
 import {
@@ -273,6 +273,8 @@ function throttleLabel(value: number, messages: Messages): string {
 
 export function SailingSimulator() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const shellRef = useRef<HTMLElement | null>(null);
+  const rudderRef = useRef<HTMLElement | null>(null);
   const simulatorRef = useRef<SimulatorInstance | null>(null);
   const photoButtonRef = useRef<HTMLButtonElement>(null);
   const photoModeRef = useRef(false);
@@ -471,24 +473,66 @@ export function SailingSimulator() {
     return () => query.removeEventListener("change", update);
   }, []);
 
-  // Tilt steering: the phone's roll against the pose captured when it was switched on.
+  // Tilt steering: turn the phone like a steering wheel. The wheel angle is
+  // read from gravity in the plane of the screen (devicemotion), which works
+  // upright or tilted back, in portrait or landscape; its zero is the pose
+  // the phone was in when tilt was switched on (or the rudder centred).
+  // Devices that report only orientation fall back to its roll; a device
+  // that reports neither (a laptop) turns tilt off again and says so.
   useEffect(() => {
     if (!tiltSteering) return;
     tiltNeutral.current = null;
     let lastSent = 0;
-    const onOrientation = (event: DeviceOrientationEvent) => {
-      const roll = screenRollDegrees({ beta: event.beta, gamma: event.gamma }, screen.orientation?.angle ?? 0);
-      if (tiltNeutral.current === null) tiltNeutral.current = roll;
-      const rudder = tiltToRudder(roll, tiltNeutral.current);
+    let motionSeen = false;
+    let anySeen = false;
+    let smoothed: number | null = null;
+    const send = (rudder: number) => {
       const now = performance.now();
-      if (now - lastSent < 40) return;
+      if (now - lastSent < 33) return;
       lastSent = now;
       simulatorRef.current?.setRudder(rudder);
       setRudderInput(Math.round(rudder * 100));
     };
+    const onMotion = (event: DeviceMotionEvent) => {
+      const gravity = event.accelerationIncludingGravity;
+      const roll = gravityRollDegrees(gravity?.x ?? null, gravity?.y ?? null, screenAngle());
+      if (roll === null) return;
+      motionSeen = true;
+      anySeen = true;
+      // A little smoothing takes out the hand's jitter without lag you can feel.
+      smoothed = smoothed === null ? roll : smoothed + (((roll - smoothed + 540) % 360) - 180) * 0.35;
+      if (tiltNeutral.current === null) tiltNeutral.current = smoothed;
+      send(wheelToRudder(smoothed, tiltNeutral.current));
+    };
+    const onOrientation = (event: DeviceOrientationEvent) => {
+      if (event.beta === null && event.gamma === null) return;
+      anySeen = true;
+      if (motionSeen) return;
+      const roll = screenRollDegrees({ beta: event.beta, gamma: event.gamma }, screenAngle());
+      if (tiltNeutral.current === null) tiltNeutral.current = roll;
+      send(tiltToRudder(roll, tiltNeutral.current));
+    };
+    window.addEventListener("devicemotion", onMotion);
     window.addEventListener("deviceorientation", onOrientation);
-    return () => window.removeEventListener("deviceorientation", onOrientation);
-  }, [tiltSteering]);
+    const check = window.setTimeout(() => {
+      if (anySeen) return;
+      setTiltSteering(false);
+      setEngineNotice(getFeatureMessages(language).tiltUnavailable);
+      setNoticeKey((key) => key + 1);
+      window.clearTimeout(engineNoticeTimer.current);
+      engineNoticeTimer.current = window.setTimeout(() => setEngineNotice(""), 2400);
+      try {
+        window.localStorage.setItem(STEERING_STORAGE_KEY, "slider");
+      } catch {
+        // Nothing to undo.
+      }
+    }, 1800);
+    return () => {
+      window.clearTimeout(check);
+      window.removeEventListener("devicemotion", onMotion);
+      window.removeEventListener("deviceorientation", onOrientation);
+    };
+  }, [tiltSteering, language]);
 
   const messages = useMemo(() => getMessages(language), [language]);
   const voyage = useMemo(() => getFeatureMessages(language), [language]);
@@ -670,8 +714,12 @@ export function SailingSimulator() {
       return;
     }
     // The permission prompt must come straight from this tap on iOS.
-    if (!(await requestTiltPermission())) return;
+    if (!(await requestTiltPermission())) {
+      showNotice(voyage.tiltUnavailable);
+      return;
+    }
     setTiltSteering(true);
+    showNotice(voyage.tiltOn);
     try {
       window.localStorage.setItem(STEERING_STORAGE_KEY, "tilt");
     } catch {
@@ -794,6 +842,30 @@ export function SailingSimulator() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photoMode, guideStep]);
 
+  // The minimap sits in the bottom-left corner just above the rudder, whatever
+  // height the rudder panel has at this size: its top edge is measured and
+  // handed to the stylesheet as --minimap-bottom.
+  useEffect(() => {
+    const shell = shellRef.current;
+    const rudder = rudderRef.current;
+    if (!shell || !rudder) return;
+    const place = () => {
+      const shellBox = shell.getBoundingClientRect();
+      const rudderBox = rudder.getBoundingClientRect();
+      if (rudderBox.height <= 0) return;
+      shell.style.setProperty("--minimap-bottom", `${Math.round(shellBox.bottom - rudderBox.top + 12)}px`);
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(rudder);
+    observer.observe(shell);
+    window.addEventListener("resize", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+    };
+  }, [ready]);
+
   // Keyboard commands (the helm and the throttle are the simulator's own keys).
   const keyHandler = useRef<(event: KeyboardEvent) => void>(() => {});
   const onKey = (event: KeyboardEvent) => {
@@ -895,6 +967,7 @@ export function SailingSimulator() {
 
   return (
     <main
+      ref={shellRef}
       className={`simulator-shell ${panelMinimized ? "" : "settings-open"}`}
       aria-label={`Sailing Simulator Pro · ${messages.sailingControls}`}
       dir={isRtlLanguage(language) ? "rtl" : "ltr"}
@@ -1475,7 +1548,7 @@ export function SailingSimulator() {
         </section>
 
         <div className="primary-controls">
-          <section className={`rudder-control${guideStep === 2 ? " guide-target" : ""}${tiltSteering ? " is-tilt" : ""}`} aria-label={messages.rudder}>
+          <section ref={rudderRef} className={`rudder-control${guideStep === 2 ? " guide-target" : ""}${tiltSteering ? " is-tilt" : ""}`} aria-label={messages.rudder}>
             <div
               className="helm-wheel"
               role="presentation"

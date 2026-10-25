@@ -1,5 +1,7 @@
 import { clamp } from "../math";
 import { BoatVoices } from "./BoatVoices";
+import { BELL_RING, ringBell } from "./BellSynth";
+import { hornLength, openSeaImpulse, playHorn, type HornSpec } from "./HornSynth";
 import { HouseGroove, ShantyBand } from "./MusicSynth";
 
 type WebkitAudioWindow = Window & {
@@ -62,6 +64,36 @@ type ShipVoice = {
   beatRate: OscillatorNode;
   wash: GainNode;
 };
+
+type Point3 = { x: number; y: number; z: number };
+
+/**
+ * A sound made on board (the bell, the yacht's horn), heard from where it is
+ * on the yacht: level, air absorption, direction and the share of sea echo
+ * follow the camera every frame while it rings, so the bell is loud and
+ * beside you in the helm view, smaller and to one side from the chase
+ * camera, faint and distant from far away.
+ */
+type OnboardEmitter = {
+  point: Point3;
+  /** Distance at which the sound is at full level, metres. */
+  reference: number;
+  gain: GainNode;
+  air: BiquadFilterNode;
+  panner: PannerNode;
+  wet: GainNode;
+  until: number;
+};
+
+/** Level of an on-board sound heard `distance` metres away (inverse distance, full within `reference`). */
+export function onboardLevel(distance: number, reference: number): number {
+  return Math.min(1.25, reference / Math.max(0.5, distance));
+}
+
+/** Share of a sound heard as sea echo rather than direct: more of it the farther away. */
+export function onboardWet(distance: number): number {
+  return 0.12 + 0.5 * (1 - Math.exp(-distance / 70));
+}
 
 export type ListenerPose = {
   position: { x: number; y: number; z: number };
@@ -135,6 +167,12 @@ export class AudioSystem {
   private partyDistance = Infinity;
   private readonly partyPosition = { x: 0, y: 0, z: 0 };
   private readonly shipVoices: ShipVoice[] = [];
+  private readonly bellPoint: Point3 = { x: 0, y: 2.3, z: 2 };
+  private readonly hornPoint: Point3 = { x: 0, y: 5, z: 2 };
+  private readonly onboardEmitters: OnboardEmitter[] = [];
+  private seaReverb?: ConvolverNode;
+  private clickBuffer?: AudioBuffer;
+  private breathBuffer?: AudioBuffer;
   private listenerX = 0;
   private listenerY = 0;
   private listenerZ = 0;
@@ -197,14 +235,125 @@ export class AudioSystem {
     return this.armed;
   }
 
-  /** The yacht's air horn. */
-  airHorn(): void {
-    if (this.isReady() && this.enabled) this.boat?.airHorn();
+  /**
+   * Where the bell and the yacht's horn are now, in the world (the simulator
+   * moves them with the yacht every frame).
+   */
+  setSignalPoints(bell: Point3, horn: Point3): void {
+    this.bellPoint.x = bell.x;
+    this.bellPoint.y = bell.y;
+    this.bellPoint.z = bell.z;
+    this.hornPoint.x = horn.x;
+    this.hornPoint.y = horn.y;
+    this.hornPoint.z = horn.z;
   }
 
-  /** The ship's bell, two strokes. */
+  /** The yacht's horn: one long blast of a deep marine typhon, from the mast. */
+  airHorn(): void {
+    const context = this.context;
+    if (!context || !this.isReady() || !this.enabled) return;
+    const spec = this.yachtHornSpec();
+    const input = this.onboardInput(this.hornPoint, 6, hornLength(spec) + 3.5);
+    if (input) playHorn(context, input, context.currentTime + 0.02, spec);
+  }
+
+  /** The ship's bell, two strokes, from where it hangs on the mast. */
   bell(): void {
-    if (this.isReady() && this.enabled) this.boat?.bell();
+    const context = this.context;
+    if (!context || !this.isReady() || !this.enabled) return;
+    const input = this.onboardInput(this.bellPoint, 5, BELL_RING + 3.5);
+    this.clickBuffer ??= this.createNoiseBuffer(0.6, "white");
+    if (input) ringBell(context, input, context.currentTime + 0.02, this.clickBuffer, 2, 0.46, 0.85);
+  }
+
+  /**
+   * The yacht's horn: a pair of electric-air typhons a few cents apart
+   * (they beat slowly), D3 — the deep "ship" voice of a COLREG 20 m+
+   * signal, not a car's bright two-tone beep.
+   */
+  private yachtHornSpec(): HornSpec {
+    this.breathBuffer ??= this.createNoiseBuffer(1.3, "white");
+    return {
+      voices: [
+        { frequency: 146.8, weight: 1, detune: -4 },
+        { frequency: 146.8, weight: 0.8, detune: 5 },
+      ],
+      blasts: [{ offset: 0, duration: 2.4 }],
+      level: 0.46,
+      formant: 560,
+      attack: 0.38,
+      release: 0.42,
+      sag: 0.13,
+      breath: this.breathBuffer,
+    };
+  }
+
+  /**
+   * A chain for a sound made on board at `point`: air absorption, distance
+   * level, direction from the camera and a send to the sea echo, kept up to
+   * date while it sounds (`updateOnboard`). Returns its input.
+   */
+  private onboardInput(point: Point3, reference: number, seconds: number): AudioNode | null {
+    const context = this.context;
+    if (!context || !this.environmentBus) return null;
+    const air = context.createBiquadFilter();
+    air.type = "lowpass";
+    air.Q.value = 0.5;
+    const gain = context.createGain();
+    const panner = context.createPanner();
+    panner.panningModel = "HRTF";
+    panner.distanceModel = "linear";
+    panner.rolloffFactor = 0;
+    const wet = context.createGain();
+    air.connect(gain).connect(panner).connect(this.environmentBus);
+    gain.connect(wet);
+    if (this.seaReverb) wet.connect(this.seaReverb);
+    const emitter: OnboardEmitter = { point, reference, gain, air, panner, wet, until: context.currentTime + seconds };
+    this.placeOnboard(emitter, true);
+    this.onboardEmitters.push(emitter);
+    return air;
+  }
+
+  private placeOnboard(emitter: OnboardEmitter, immediate: boolean): void {
+    const context = this.context;
+    if (!context) return;
+    const { point } = emitter;
+    const distance = Math.hypot(point.x - this.listenerX, point.y - this.listenerY, point.z - this.listenerZ);
+    const level = onboardLevel(distance, emitter.reference);
+    const cutoff = Math.max(1800, 18000 * Math.exp(-distance / 140));
+    const wet = onboardWet(distance);
+    const now = context.currentTime;
+    const set = (param: AudioParam, value: number) => {
+      if (immediate) param.setValueAtTime(value, now);
+      else param.setTargetAtTime(value, now, 0.05);
+    };
+    set(emitter.gain.gain, level * (1 - wet * 0.5));
+    set(emitter.air.frequency, cutoff);
+    set(emitter.wet.gain, wet);
+    const panner = emitter.panner;
+    if (panner.positionX) {
+      set(panner.positionX, point.x);
+      set(panner.positionY, point.y);
+      set(panner.positionZ, point.z);
+    } else {
+      panner.setPosition(point.x, point.y, point.z);
+    }
+  }
+
+  /** Follows the camera with every on-board sound still ringing; lets finished ones go. */
+  private updateOnboard(): void {
+    const context = this.context;
+    if (!context) return;
+    for (let index = this.onboardEmitters.length - 1; index >= 0; index -= 1) {
+      const emitter = this.onboardEmitters[index]!;
+      if (context.currentTime > emitter.until) {
+        emitter.panner.disconnect();
+        emitter.wet.disconnect();
+        this.onboardEmitters.splice(index, 1);
+      } else {
+        this.placeOnboard(emitter, false);
+      }
+    }
   }
 
   /** A flare leaving the launcher. */
@@ -829,6 +978,7 @@ export class AudioSystem {
       listener.setPosition(pose.position.x, pose.position.y, pose.position.z);
       listener.setOrientation(pose.forward.x, pose.forward.y, pose.forward.z, pose.up.x, pose.up.y, pose.up.z);
     }
+    if (this.onboardEmitters.length > 0) this.updateOnboard();
   }
 
   /**
@@ -897,104 +1047,41 @@ export class AudioSystem {
       panner.setPosition(position.x, position.y, position.z);
     }
     panner.connect(this.environmentBus);
+    // The air takes the highs of a far whistle; the sea answers with more echo the farther it is.
     const air = context.createBiquadFilter();
     air.type = "lowpass";
     air.frequency.value = 450 + 3400 * Math.exp(-distance / 600);
     air.Q.value = 0.5;
     air.connect(panner);
-    // The open sea gives a big whistle a long, soft tail: one slow echo off the
-    // water and the haze, darker with every repeat.
-    const echo = context.createDelay(1.5);
-    echo.delayTime.value = 0.42;
-    const echoDamp = context.createBiquadFilter();
-    echoDamp.type = "lowpass";
-    echoDamp.frequency.value = 700;
-    const echoGain = context.createGain();
-    echoGain.gain.value = 0.34;
-    const envelope = context.createGain();
-    envelope.gain.value = 0.0001;
-    envelope.connect(air);
-    envelope.connect(echo);
-    echo.connect(echoDamp).connect(echoGain).connect(air);
-    echoGain.connect(echo);
+    const wet = context.createGain();
+    wet.gain.value = 0.25 + 0.55 * (1 - Math.exp(-distance / 900));
+    air.connect(wet);
+    if (this.seaReverb) wet.connect(this.seaReverb);
     // A ship's whistle is a stack of air horns tuned to a chord (a fundamental,
-    // its fifth and its octave), each a tube whose resonance lifts the partials
-    // around 400–600 Hz. The larger the ship, the lower the chord.
+    // its fifth and its octave, one octave horn mistuned so the stack beats).
+    // The larger the ship, the lower the chord and the lower the tube's resonance.
     const fundamental = clamp(92 - (length - 180) * 0.2, 55, 108);
-    const chord: [number, number, number][] = [
-      [fundamental, 1, -0.6],
-      [fundamental * 1.498, 0.8, 0.5],
-      [fundamental * 2, 0.55, -0.3],
-      [fundamental * 2.003, 0.35, 0.9],
-    ];
-    const blasts: [number, number][] = signal === "prolonged" ? [[0, 5.2]] : [0, 1, 2, 3, 4].map((index) => [index * 1.7, 0.95]);
-    let end = 0;
-    for (const [offset, duration] of blasts) end = Math.max(end, offset + duration);
-    const tones = chord.map(([frequency, weight, detune]) => {
-      const harmonics = Math.min(40, Math.floor(7000 / frequency));
-      const real = new Float32Array(harmonics + 1);
-      const imaginary = new Float32Array(harmonics + 1);
-      for (let n = 1; n <= harmonics; n += 1) {
-        const partial = n * frequency;
-        const resonance = 1 + 2.4 * Math.exp(-(((partial - 520) / 280) ** 2));
-        imaginary[n] = (resonance / Math.pow(n, 0.85)) * (n % 2 === 0 ? 0.8 : 1);
-      }
-      const tone = context.createOscillator();
-      tone.setPeriodicWave(context.createPeriodicWave(real, imaginary));
-      tone.detune.value = detune * 4;
-      const gain = context.createGain();
-      gain.gain.value = weight * 0.34;
-      tone.connect(gain).connect(envelope);
-      for (const [offset, duration] of blasts) {
-        const t0 = start + offset;
-        // Air fills the horn: the pitch starts flat and settles in as the tube sounds.
-        tone.frequency.setValueAtTime(frequency * 0.9, t0);
-        tone.frequency.exponentialRampToValueAtTime(frequency, t0 + 0.22);
-        tone.frequency.setValueAtTime(frequency, t0 + duration - 0.1);
-        tone.frequency.exponentialRampToValueAtTime(frequency * 0.94, t0 + duration + 0.45);
-      }
-      return tone;
-    });
-    for (const [offset, duration] of blasts) {
-      const t0 = start + offset;
-      envelope.gain.setValueAtTime(0.0001, t0);
-      envelope.gain.exponentialRampToValueAtTime(level * 0.55, t0 + 0.14);
-      envelope.gain.exponentialRampToValueAtTime(level, t0 + 0.42);
-      envelope.gain.setValueAtTime(level, t0 + duration - 0.1);
-      envelope.gain.exponentialRampToValueAtTime(0.0001, t0 + duration + 0.45);
-    }
-    // The rush of air as the valve opens, at the start of each blast.
-    const breath = context.createBufferSource();
-    breath.buffer = this.createNoiseBuffer(0.4);
-    const breathFilter = context.createBiquadFilter();
-    breathFilter.type = "bandpass";
-    breathFilter.frequency.value = 900;
-    breathFilter.Q.value = 0.6;
-    const breathGain = context.createGain();
-    breathGain.gain.value = 0.0001;
-    breath.connect(breathFilter).connect(breathGain).connect(air);
-    for (const [offset] of blasts) {
-      const t0 = start + offset;
-      breathGain.gain.setValueAtTime(0.0001, t0);
-      breathGain.gain.exponentialRampToValueAtTime(level * 0.16, t0 + 0.05);
-      breathGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.38);
-    }
-    breath.start(start);
-    breath.stop(start + 0.4);
-    // Each blast's breath needs its own noise: replay the same buffer.
-    for (const [offset] of blasts.slice(1)) {
-      const again = context.createBufferSource();
-      again.buffer = breath.buffer;
-      again.connect(breathFilter);
-      again.start(start + offset);
-      again.stop(start + offset + 0.4);
-    }
-    end += 0.5;
-    tones.forEach((tone) => {
-      tone.start(start);
-      tone.stop(start + end + 2.2);
-    });
-    window.setTimeout(() => panner.disconnect(), (distance / SPEED_OF_SOUND + end + 4.5) * 1000);
+    this.breathBuffer ??= this.createNoiseBuffer(1.3, "white");
+    const spec: HornSpec = {
+      voices: [
+        { frequency: fundamental, weight: 1, detune: -3 },
+        { frequency: fundamental * 1.498, weight: 0.8, detune: 2 },
+        { frequency: fundamental * 2, weight: 0.5, detune: -1 },
+        { frequency: fundamental * 2.003, weight: 0.32, detune: 4 },
+      ],
+      blasts: signal === "prolonged" ? [{ offset: 0, duration: 5.2 }] : [0, 1, 2, 3, 4].map((index) => ({ offset: index * 1.7, duration: 0.95 })),
+      level: level * 0.62,
+      formant: clamp(330 + fundamental * 1.4, 380, 520),
+      attack: 0.55,
+      release: 0.7,
+      sag: 0.1,
+      breath: this.breathBuffer,
+    };
+    const end = playHorn(context, air, start, spec);
+    window.setTimeout(() => {
+      panner.disconnect();
+      wet.disconnect();
+    }, (end - context.currentTime + 4) * 1000);
   }
 
   /**
@@ -1301,6 +1388,14 @@ export class AudioSystem {
     wind.connect(this.windFilter).connect(windSoftener).connect(this.windGain).connect(this.environmentBus);
     wind.start(0, 0.41);
     this.boat = new BoatVoices(this.context, this.environmentBus, (duration, color) => this.createNoiseBuffer(duration, color));
+    // The open sea's echo for horns and the bell: early reflections off the
+    // water and a distant shore, then a long, darkening tail.
+    this.seaReverb = this.context.createConvolver();
+    this.seaReverb.normalize = false;
+    this.seaReverb.buffer = openSeaImpulse(this.context);
+    const reverbReturn = this.context.createGain();
+    reverbReturn.gain.value = 0.55;
+    this.seaReverb.connect(reverbReturn).connect(this.environmentBus);
     this.musicBus = this.context.createGain();
     this.musicBus.gain.value = 0.8;
     this.musicBus.connect(this.master);

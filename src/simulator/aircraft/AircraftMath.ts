@@ -3,10 +3,13 @@ import { clamp, smoothstep } from "../math";
 /**
  * Aircraft over the sea, in numbers.
  *
- * Low over the water, every couple of minutes a light floatplane comes by —
- * a sightseeing flight, or one towing an advertising banner — at 120–260 m,
- * passing a few hundred metres from the yacht with a lazy S-turn, banking
- * into each turn as a real aeroplane must (bank = atan(v·ω / g)). High
+ * Low over the water, every minute or so a light plane comes by: a
+ * floatplane on a sightseeing flight or towing an advertising banner at
+ * 120–260 m, passing a few hundred metres from the yacht with a lazy S-turn,
+ * banking into each turn as a real aeroplane must (bank = atan(v·ω / g));
+ * or, by day, an aerobatic monoplane screaming past at 45–70 m trailing
+ * display smoke, which rolls right round its line of flight in a barrel
+ * roll as it passes the yacht (`STUNT_ROLL`). High
  * above, airliners cruise at 9.5–11.5 km and 230 m/s, drawing contrails
  * that form a little behind the engines, lengthen with the flight, spread
  * and drift with the wind aloft and slowly dissipate — quickly in dry air,
@@ -16,13 +19,23 @@ import { clamp, smoothstep } from "../math";
 
 export const GRAVITY = 9.81;
 
-/** Low passes: seconds between two, and the first one after the start. */
-export const LOW_PASS_GAP = [80, 160] as const;
-export const FIRST_LOW_PASS = 35;
+/** Low passes: seconds from the end of one to the start of the next, and the first one after the start. */
+export const LOW_PASS_GAP = [18, 45] as const;
+export const FIRST_LOW_PASS = 12;
 /** Half the length of a low pass (it starts and ends this far from its closest point), m. */
-export const LOW_PASS_HALF = 2600;
+export const LOW_PASS_HALF = 1700;
 
-export type LowPassKind = "banner" | "tour";
+export type LowPassKind = "banner" | "tour" | "stunt";
+
+/**
+ * The aerobatic plane's barrel roll: the aircraft flies a corkscrew round its
+ * line of flight while rolling once right round, the path a circle of
+ * `radius` metres seen end-on, over `seconds` (eased in and out), centred on
+ * the point of the pass nearest the yacht.
+ */
+export const STUNT_ROLL = { radius: 24, seconds: 4.4 } as const;
+/** The display smoke is on this far either side of the roll, m along the track. */
+export const STUNT_SMOKE_REACH = 700;
 
 export type LowPass = {
   kind: LowPassKind;
@@ -63,6 +76,24 @@ export function planLowPass(x: number, z: number, random: () => number, kind: Lo
   const miss = (250 + random() * 650) * (random() < 0.5 ? -1 : 1);
   const rightX = Math.cos(heading);
   const rightZ = -Math.sin(heading);
+  if (kind === "stunt") {
+    // Low, fast and straight, close enough for the roll to read.
+    const stuntMiss = (130 + random() * 130) * Math.sign(miss);
+    const stuntSpeed = 72 + random() * 10;
+    return {
+      kind,
+      centerX: x + rightX * stuntMiss,
+      centerZ: z + rightZ * stuntMiss,
+      heading,
+      altitude: 45 + random() * 25,
+      speed: stuntSpeed,
+      weave: 0,
+      wavelength: 3000,
+      duration: (2 * LOW_PASS_HALF) / stuntSpeed,
+      // Even seeds roll to the right, odd ones to the left.
+      seed: Math.floor(random() * 1e6),
+    };
+  }
   const speed = kind === "banner" ? 36 + random() * 6 : 46 + random() * 10;
   return {
     kind,
@@ -92,8 +123,60 @@ export type AircraftPose = {
   vz: number;
 };
 
+/** Roll angle of the barrel roll at distance `s` along the track (0 at the closest point), radians, 0…2π. */
+export function stuntRollAngle(pass: LowPass, s: number): number {
+  const half = (pass.speed * STUNT_ROLL.seconds) / 2;
+  return Math.PI * 2 * smoothstep(-half, half, s);
+}
+
+const stuntScratch = { x: 0, y: 0, z: 0 };
+
+/** A point of the stunt plane's corkscrew `s` metres along its track. */
+function stuntPoint(pass: LowPass, s: number, out: { x: number; y: number; z: number }): number {
+  const phi = stuntRollAngle(pass, s);
+  const direction = pass.seed % 2 === 0 ? 1 : -1;
+  const forwardX = Math.sin(pass.heading);
+  const forwardZ = Math.cos(pass.heading);
+  const rightX = Math.cos(pass.heading);
+  const rightZ = -Math.sin(pass.heading);
+  // A barrel roll: up and over to the rolling side, round the line of flight.
+  const lateral = direction * STUNT_ROLL.radius * Math.sin(phi);
+  out.x = pass.centerX + forwardX * s + rightX * lateral;
+  out.z = pass.centerZ + forwardZ * s + rightZ * lateral;
+  out.y = pass.altitude + STUNT_ROLL.radius * (1 - Math.cos(phi));
+  return phi * direction;
+}
+
+/** The aerobatic plane's pose: on its corkscrew, nose along the path, rolled through the barrel roll. */
+function stuntPose(pass: LowPass, time: number, out: AircraftPose): AircraftPose {
+  const s = -LOW_PASS_HALF + pass.speed * time;
+  const step = 1.5;
+  const roll = stuntPoint(pass, s, out);
+  stuntPoint(pass, s + step, stuntScratch);
+  const dx = stuntScratch.x - out.x;
+  const dy = stuntScratch.y - out.y;
+  const dz = stuntScratch.z - out.z;
+  const length = Math.hypot(dx, dy, dz) || 1;
+  // The path is slightly longer than the track through the roll; speed is along the path.
+  const speed = pass.speed * (length / step);
+  out.vx = (dx / length) * speed;
+  out.vy = (dy / length) * speed;
+  out.vz = (dz / length) * speed;
+  out.heading = Math.atan2(dx, dz);
+  out.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+  out.bank = roll;
+  return out;
+}
+
+/** Whether the aerobatic plane's display smoke is on at `time` s into its pass. */
+export function stuntSmokeOn(pass: LowPass, time: number): boolean {
+  const s = -LOW_PASS_HALF + pass.speed * time;
+  return pass.kind === "stunt" && Math.abs(s) < STUNT_SMOKE_REACH;
+}
+
 /** Where the low pass is `time` s after it began (time outside [0, duration] extrapolates). */
 export function lowPassPose(pass: LowPass, time: number, out: AircraftPose): AircraftPose {
+  if (pass.kind === "stunt") return stuntPose(pass, time, out);
   const s = -LOW_PASS_HALF + pass.speed * time;
   const k = (Math.PI * 2) / pass.wavelength;
   const lateral = pass.weave * Math.sin(s * k);
@@ -160,8 +243,8 @@ export function planAirliner(x: number, z: number, time: number, random: () => n
   const rightX = Math.cos(heading);
   const rightZ = -Math.sin(heading);
   const speed = AIRLINER_SPEED * (0.94 + random() * 0.1);
-  // Half the time the air is moist: contrails that linger and spread for minutes.
-  const persistence = random() < 0.5 ? 25 + random() * 35 : 140 + random() * 160;
+  // Half the time the air is moist: contrails that linger and spread for a couple of minutes.
+  const persistence = random() < 0.5 ? 30 + random() * 35 : 90 + random() * 70;
   return {
     startX: x + rightX * miss - forwardX * along,
     startZ: z + rightZ * miss - forwardZ * along,

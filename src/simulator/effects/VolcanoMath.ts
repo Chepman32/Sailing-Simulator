@@ -18,8 +18,8 @@ import { clamp, smoothstep } from "../math";
 export const ERUPTION_SLOT = 62;
 /** How long the lava fountain plays, s. */
 export const ERUPTION_LENGTH = 9;
-/** How long the vent feeds the ash column, s. */
-export const ASH_EMIT = 13;
+/** How long the vent feeds the ash column, s (hard at first, waning). */
+export const ASH_EMIT = 24;
 /** How long an eruption's column hangs in the sky, s (less than a slot). */
 export const COLUMN_LIFE = 56;
 /** Height the steady plume rises to, m. */
@@ -28,10 +28,10 @@ export const PLUME_TOP = 230;
 export const PLUME_LIFE = 70;
 /** Lava bombs in one fountain, and small sparks. */
 export const BOMBS = 150;
-export const SPARKS = 120;
+export const SPARKS = 200;
 /** Puffs in an ash column, a collapse and the shock ring. */
-export const ASH_PUFFS = 190;
-export const COLLAPSE_PUFFS = 28;
+export const ASH_PUFFS = 260;
+export const COLLAPSE_PUFFS = 64;
 export const SHOCK_PUFFS = 20;
 export const GRAVITY = 9.81;
 
@@ -117,13 +117,19 @@ export type AshPoint = PlumePoint & {
 
 /**
  * Where puff `index` of an eruption's ash column is `age` s after the blast.
- * Puffs leave the vent over `ASH_EMIT` s as a jet that decelerates as it
- * entrains air (height approaches v₀τ), keeps rising slowly as a buoyant
- * column, and near its top spreads out sideways into an umbrella that the
- * wind carries away. Radius grows with height, as a real column widens.
+ * Puffs leave the vent over `ASH_EMIT` s — most of them early, while the
+ * eruption is strongest, fewer and slower as it wanes — as a jet that
+ * decelerates as it entrains air (height approaches v₀τ) and keeps rising
+ * slowly as a buoyant column. The column is a cone of many modest billows
+ * (its width grows with height, as entrainment widens a real one), not a
+ * few huge balls. Near the top the ash reaches neutral buoyancy and spreads
+ * into a flat umbrella that the wind draws out downwind into a long,
+ * thinning anvil.
  */
 export function ashPuff(age: number, index: number, slot: number, strength: number, windX: number, windZ: number, out: AshPoint): AshPoint {
-  const emitted = (index / ASH_PUFFS) * ASH_EMIT * (0.85 + 0.15 * hash(index, slot + 5));
+  const order = index / ASH_PUFFS;
+  // Front-loaded: half the puffs leave in the first fifth of the emission.
+  const emitted = Math.pow(order, 1.9) * ASH_EMIT * (0.9 + 0.1 * hash(index, slot + 5));
   const a = age - emitted;
   out.opacity = 0;
   out.fresh = 0;
@@ -134,22 +140,35 @@ export function ashPuff(age: number, index: number, slot: number, strength: numb
     out.radius = 0;
     return out;
   }
-  const v0 = (45 + 40 * strength) * (0.8 + 0.4 * hash(index * 3, slot));
+  const waning = 1 - 0.55 * order;
+  const v0 = (45 + 40 * strength) * (0.82 + 0.36 * hash(index * 3, slot)) * waning;
   const tau = 7;
   const top = v0 * tau;
   const height = top * (1 - Math.exp(-a / tau)) + 1.4 * a;
   const level = clamp(height / top, 0, 1.4);
-  const umbrella = smoothstep(0.6, 1, level);
+  const umbrella = smoothstep(0.62, 1, level);
+  const wind = Math.hypot(windX, windZ);
+  const windDirX = wind > 1e-3 ? windX / wind : 1;
+  const windDirZ = wind > 1e-3 ? windZ / wind : 0;
+  // Inside the column: a point within its cone (half-width ~0.11 of the height).
   const azimuth = hash(index * 7 + 1, slot) * Math.PI * 2;
-  const offset = (hash(index * 11 + 2, slot) - 0.5) * (5 + height * 0.1) + umbrella * (18 + a * 4.5) * (0.5 + hash(index * 13 + 4, slot));
-  const drift = a * (0.12 + 0.88 * smoothstep(0, 1, level));
-  const wander = Math.sqrt(a) * 2.2;
-  out.x = Math.cos(azimuth) * offset + windX * drift + Math.sin(index * 1.7 + a * 0.3) * wander;
-  out.z = Math.sin(azimuth) * offset + windZ * drift + Math.cos(index * 2.3 + a * 0.27) * wander;
+  const inside = Math.sqrt(hash(index * 11 + 2, slot));
+  const columnRadius = (4 + height * 0.11) * inside;
+  // In the umbrella: spread mostly along the wind (an anvil), a little across.
+  const spread = umbrella * (14 + a * 3.2);
+  const along = (hash(index * 13 + 4, slot) - 0.25) * spread * 1.6;
+  const across = (hash(index * 19 + 8, slot) - 0.5) * spread * 0.9;
+  // The wind bends the column more the higher it is, and carries the umbrella off.
+  const drift = a * (0.08 + 0.92 * smoothstep(0.2, 1, level));
+  const wander = Math.sqrt(a) * 1.6;
+  out.x = Math.cos(azimuth) * columnRadius + windX * drift + windDirX * along - windDirZ * across + Math.sin(index * 1.7 + a * 0.3) * wander;
+  out.z = Math.sin(azimuth) * columnRadius + windZ * drift + windDirZ * along + windDirX * across + Math.cos(index * 2.3 + a * 0.27) * wander;
   // The umbrella is flatter than the column under it.
-  out.y = height - umbrella * hash(index * 17 + 6, slot) * 45;
-  out.radius = 12 + height * 0.12 + Math.sqrt(a) * 3.5 + umbrella * 10;
-  out.opacity = smoothstep(0, 0.5, a) * (1 - smoothstep(COLUMN_LIFE * 0.4, COLUMN_LIFE, age));
+  out.y = height - umbrella * hash(index * 17 + 6, slot) * 38;
+  out.radius = 9 + height * 0.075 + Math.sqrt(a) * 2.6 + umbrella * 8;
+  // Dense near the vent, diluting as it spreads and ages.
+  const dilution = 1 - 0.45 * smoothstep(0, COLUMN_LIFE, a) - 0.25 * umbrella * smoothstep(10, 40, a);
+  out.opacity = smoothstep(0, 0.6, a) * (1 - smoothstep(COLUMN_LIFE * 0.45, COLUMN_LIFE, age)) * dilution;
   out.fresh = Math.exp(-a / 9);
   return out;
 }
@@ -172,8 +191,9 @@ export function collapsePuff(age: number, index: number, slot: number, strength:
   const speed = 28 + 12 * hash(index * 3, slot + 7);
   out.x = speed * 6 * (1 - Math.exp(-t / 6));
   out.y = 0;
-  out.radius = 7 + out.x * 0.12 + t * 1.1;
-  out.opacity = smoothstep(0, 0.6, t) * (1 - smoothstep(12, 34, t));
+  // A ground-hugging current of many small billows, not a few boulders of smoke.
+  out.radius = 4.5 + out.x * 0.07 + t * 0.75;
+  out.opacity = smoothstep(0, 0.6, t) * (1 - smoothstep(12, 34, t)) * 0.8;
   return out;
 }
 

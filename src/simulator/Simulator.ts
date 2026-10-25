@@ -7,6 +7,7 @@ import { QualityManager } from "./core/QualityManager";
 import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
 import { ShipShadows } from "./ships/ShipShadows";
 import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
+import { FlareCamera } from "./camera/FlareCamera";
 import { GpuTimer } from "./core/GpuTimer";
 import { AUTO_GPU_TARGET_MS, GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
@@ -171,6 +172,8 @@ export class Simulator {
   private audio!: AudioSystem;
   private readonly listenerForward = new THREE.Vector3();
   private readonly listenerUp = new THREE.Vector3();
+  private readonly bellPoint = new THREE.Vector3();
+  private readonly hornPoint = new THREE.Vector3();
   private readonly underwater = new UnderwaterLight();
   private loop!: RenderLoop;
   private readonly shoreSplash = new THREE.Vector3();
@@ -575,6 +578,9 @@ export class Simulator {
   private readonly pendingCaptures: Array<(blob: Blob | null) => void> = [];
 
   private readonly photo = new PhotoDirector();
+  /** The pull-back shot of a flare just fired (takes precedence over the photo director). */
+  private readonly flareCamera = new FlareCamera();
+  private flareCameraInteractions = 0;
   private readonly photoSubjects: PhotoSubject[] = [];
   private readonly photoShotState: PhotoShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 50 };
   private photoInteractions = 0;
@@ -631,6 +637,12 @@ export class Simulator {
     const wind = this.physics.wind;
     if (!this.flares.launch(color, point.x, point.y, point.z, wind.x, wind.z)) return false;
     this.audio.flareLaunch();
+    // The camera pulls back to show the whole flight.
+    const launch = this.flares.lastLaunch;
+    if (launch) {
+      this.flareCameraInteractions = this.camera.interactions;
+      this.flareCamera.start(launch, this.camera.camera.position, this.physics.heading);
+    }
     return true;
   }
 
@@ -921,7 +933,7 @@ export class Simulator {
     const yacht = this.physics.position;
     const camera = this.camera.camera;
     const pixelAngle = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / Math.max(1, this.renderer.domElement.height);
-    this.aircraft.update(this.elapsed, delta, yacht.x, yacht.z, camera.position, this.environment.current.palette, this.environmentState.nightFactor, pixelAngle);
+    this.aircraft.update(this.elapsed, delta, yacht.x, yacht.z, camera.position, this.environment.current.palette, this.environmentState.nightFactor, pixelAngle, this.environment.lightDirection);
     const low = this.aircraft.lowPlane;
     this.audio.setLowPlane(low.active, low.position, low.velocity, delta);
     const jet = this.aircraft.airlinerSound;
@@ -991,6 +1003,7 @@ export class Simulator {
       if (this.initialized) this.ships.answerHorn(this.physics.position.x, this.physics.position.z);
     } else {
       this.audio.bell();
+      if (this.initialized) this.vessel.strikeBell();
     }
     return "played";
   }
@@ -1005,6 +1018,7 @@ export class Simulator {
     if (!this.initialized) return;
     this.physics.reset();
     this.flares.clear();
+    this.flareCamera.stop();
     this.wake.reset();
     this.state.controls.throttle = 0;
     this.state.controls.rudder = 0;
@@ -1094,7 +1108,7 @@ export class Simulator {
     this.islands.update(this.elapsed, this.environment.currentWeather.wind, this.physics.position.x, this.physics.position.z);
     // The helm camera looks out through the skipper's eyes: he steps out of its way.
     this.vessel.setCrewVisible(
-      this.state.cameraMode !== "helm" &&
+      (this.state.cameraMode !== "helm" || this.flareCamera.blend > 0.3 || this.photo.blend > 0.3) &&
         this.camera.camera.position.distanceToSquared(this.vessel.worldPoint(this.vessel.helmEye, this.helmPoint)) > 1.2,
     );
     this.vessel.update(this.physics, this.physics.guard.output, this.elapsed, delta, this.environmentState.nightFactor, {
@@ -1113,7 +1127,14 @@ export class Simulator {
     this.wildlife.update(delta, this.physics, this.camera.camera);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics, { root: this.vessel.root, eye: this.vessel.helmEye });
-    this.directPhoto(delta);
+    if (this.flareCamera.running) {
+      // A drag or a zoom by the player hands the camera straight back.
+      if (this.camera.interactions !== this.flareCameraInteractions) this.flareCamera.cancel();
+      this.flareCamera.update(delta, (x, z) => this.ocean.sample(x, z).height);
+      this.camera.direct(this.flareCamera.shot, this.flareCamera.blend);
+    } else {
+      this.directPhoto(delta);
+    }
     this.environment.setWeatherKind(this.currentWeatherKind());
     // The brightest flare in the air lights the scene; failing that, an
     // erupting volcano does (an orange light from its crater).
@@ -1184,6 +1205,8 @@ export class Simulator {
     const camera = this.camera.camera;
     camera.getWorldDirection(this.listenerForward);
     this.listenerUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+    this.vessel.signalPoints(this.bellPoint, this.hornPoint);
+    this.audio.setSignalPoints(this.bellPoint, this.hornPoint);
     this.audio.setListener({ position: camera.position, forward: this.listenerForward, up: this.listenerUp });
     this.audio.updateGulls(delta, this.wildlife.gullPositions);
     for (const call of this.wildlife.consumeGullCalls()) this.audio.gullCallAt(call.position, call.variant);
@@ -1444,7 +1467,11 @@ export class Simulator {
       }
       if (typeof saved.soundEnabled === "boolean") base.soundEnabled = saved.soundEnabled;
       if (typeof saved.engineMuted === "boolean") base.engineMuted = saved.engineMuted;
-      if (typeof saved.autoCenterHelm === "boolean") base.autoCenterHelm = saved.autoCenterHelm;
+      // The helm now stays where it is put unless the player asks otherwise:
+      // only the newer field (written once a player chose) is honoured; the
+      // old `autoCenterHelm` was saved for everyone and is ignored.
+      const helmReturn = (saved as { helmReturnsToCentre?: unknown }).helmReturnsToCentre;
+      if (typeof helmReturn === "boolean") base.autoCenterHelm = helmReturn;
       if (typeof saved.steadyHelmView === "boolean") base.steadyHelmView = saved.steadyHelmView;
       const strings = (value: unknown, limit: number): string[] =>
         Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string").slice(-limit) : [];
@@ -1474,7 +1501,7 @@ export class Simulator {
         qualityChoice: this.chosenQuality ?? undefined,
         soundEnabled: this.state.soundEnabled,
         engineMuted: this.state.engineMuted,
-        autoCenterHelm: this.state.autoCenterHelm,
+        helmReturnsToCentre: this.state.autoCenterHelm,
         steadyHelmView: this.state.steadyHelmView,
         sailColor: this.state.sailColor,
         unlockedSails: this.state.unlockedSails,
