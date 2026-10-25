@@ -189,8 +189,12 @@ export function collapsePuff(age: number, index: number, slot: number, strength:
   const lobe = Math.floor(hash(index * 5, slot + 3) * 3);
   out.z = hash(lobe, slot + 41) * Math.PI * 2 + (hash(index, slot + 43) - 0.5) * 0.35;
   const speed = 28 + 12 * hash(index * 3, slot + 7);
-  out.x = speed * 6 * (1 - Math.exp(-t / 6));
-  out.y = 0;
+  const front = speed * 6 * (1 - Math.exp(-t / 6));
+  // Puffs spread along the whole run from the rim to the front (a ribbon
+  // down the gully, thickest near the front), and some of the hot ash lofts
+  // off the top of the current as it goes.
+  out.x = front * (0.2 + 0.8 * Math.sqrt(hash(index * 7, slot + 9)));
+  out.y = hash(index * 11, slot + 13) * t * 1.5;
   // A ground-hugging current of many small billows, not a few boulders of smoke.
   out.radius = 4.5 + out.x * 0.07 + t * 0.75;
   out.opacity = smoothstep(0, 0.6, t) * (1 - smoothstep(12, 34, t)) * 0.8;

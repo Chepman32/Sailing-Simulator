@@ -396,7 +396,7 @@ export class VolcanoSystem {
           const ground = this.terrainHeight(island, Math.min(radial, 1.02), p.z);
           // A pyroclastic flow is grey-brown ash; only at night does its hot core show.
           const heat = Math.exp(-p.x / 120) * fireReach * night * 0.7;
-          ash.push(px, ground + p.radius * 0.5, pz, p.radius * 2, 0.36, 0.33, 0.29, p.opacity * 0.85, 1.4 * heat, 0.38 * heat, 0.08 * heat, (0.37 + index * 0.031) % 1);
+          ash.push(px, ground + p.radius * 0.5 + p.y, pz, p.radius * 2, 0.36, 0.33, 0.29, p.opacity * 0.85, 1.4 * heat, 0.38 * heat, 0.08 * heat, (0.37 + index * 0.031) % 1);
         }
         // The fountain: bombs streaking up and tumbling down the cone; sparks.
         if (visual.landingSlot !== eruption.slot) this.planLandings(visual, island, eruption);
