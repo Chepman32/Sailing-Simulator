@@ -2790,12 +2790,10 @@ input[type="range"]:disabled {
   .throttle-control .engine-toggle-copy small { font-size: 8.5px; letter-spacing: 0.02em; }
 }
 
-/* Portrait phones: the minimap stands in the right column under the ≡ button, clear of the instruments. */
+/* Portrait phones: the minimap stays bottom left above the rudder strip, below the button column. */
 @media (max-width: 680px) and (orientation: portrait) {
   .minimap {
-    --minimap-size: 76px;
-    top: calc(var(--edge-top) + 62px);
-    right: var(--edge-right);
+    --minimap-size: 84px;
   }
 }
 
