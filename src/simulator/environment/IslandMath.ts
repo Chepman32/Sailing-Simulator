@@ -359,19 +359,42 @@ export function distanceFromWaterline(x: number, z: number): number {
 }
 
 function waterlineDistanceAmong(x: number, z: number, islands: readonly IslandDefinition[]): number {
-  let nearest = Number.POSITIVE_INFINITY;
-  for (let index = 0; index < islands.length; index += 1) {
+  // The coast never reaches beyond MAX_EDGE_NOISE of the radius, so the
+  // island with the smallest such bound is evaluated first; every other
+  // island that cannot beat it is then skipped exactly. Usually one island
+  // pays for the coastline noise instead of several.
+  const count = islands.length;
+  let first = -1;
+  let firstBound = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < count; index += 1) {
     const island = islands[index]!;
     const dx = x - island.centerX;
     const dz = (z - island.centerZ) / island.scaleZ;
-    const centre = Math.hypot(dx, dz);
-    // The coast never reaches beyond MAX_EDGE_NOISE of the radius, so an
-    // island that cannot beat the nearest found so far is skipped exactly.
+    const bound = Math.sqrt(dx * dx + dz * dz) - island.beachRadius * MAX_EDGE_NOISE * WATERLINE_RADIAL;
+    if (bound < firstBound) {
+      firstBound = bound;
+      first = index;
+    }
+  }
+  if (first < 0) return Number.POSITIVE_INFINITY;
+  let nearest = coastDistance(islands[first]!, x, z);
+  for (let index = 0; index < count; index += 1) {
+    if (index === first) continue;
+    const island = islands[index]!;
+    const dx = x - island.centerX;
+    const dz = (z - island.centerZ) / island.scaleZ;
+    const centre = Math.sqrt(dx * dx + dz * dz);
     if (centre - island.beachRadius * MAX_EDGE_NOISE * WATERLINE_RADIAL >= nearest) continue;
     const shore = island.beachRadius * islandEdgeNoise(Math.atan2(dz, dx), island) * WATERLINE_RADIAL;
     nearest = Math.min(nearest, centre - shore);
   }
   return nearest;
+}
+
+function coastDistance(island: IslandDefinition, x: number, z: number): number {
+  const dx = x - island.centerX;
+  const dz = (z - island.centerZ) / island.scaleZ;
+  return Math.sqrt(dx * dx + dz * dz) - island.beachRadius * islandEdgeNoise(Math.atan2(dz, dx), island) * WATERLINE_RADIAL;
 }
 
 function latticeHash(x: number, z: number): number {

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { leafCards, leafGeometry } from "./IslandVegetation";
 import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import { smoothstep } from "../math";
 import { islandEdgeNoise, type IslandDefinition } from "./IslandMath";
@@ -153,8 +154,11 @@ export function inClearing(clearings: readonly Clearing[], x: number, z: number,
 
 const scratchColor = new THREE.Color();
 
-/** Non-indexed copy with a vertex colour per vertex (`color` may vary it per vertex). */
-function painted(geometry: THREE.BufferGeometry, color: (x: number, y: number, z: number, out: THREE.Color) => void): THREE.BufferGeometry {
+/** What a furniture vertex belongs to, for its surface detail (`FurnitureSurface`). */
+export const PROP_KIND = { built: 0, rock: 1, foliage: 2 } as const;
+
+/** Non-indexed copy with a vertex colour per vertex (`color` may vary it per vertex) and its kind. */
+function painted(geometry: THREE.BufferGeometry, color: (x: number, y: number, z: number, out: THREE.Color) => void, kind: number = PROP_KIND.built): THREE.BufferGeometry {
   const flat = geometry.index ? geometry.toNonIndexed() : geometry;
   if (flat !== geometry) geometry.dispose();
   flat.deleteAttribute("uv");
@@ -168,6 +172,7 @@ function painted(geometry: THREE.BufferGeometry, color: (x: number, y: number, z
     colors[index * 3 + 2] = scratchColor.b;
   }
   flat.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  flat.setAttribute("propKind", new THREE.BufferAttribute(new Float32Array(position.count).fill(kind), 1));
   return flat;
 }
 
@@ -226,7 +231,8 @@ function transformed(geometry: THREE.BufferGeometry, x: number, y: number, z: nu
 // --- The pieces -------------------------------------------------------------------
 
 type Surface = (radial: number, angle: number) => number;
-type Parts = { solid: THREE.BufferGeometry[]; glow: THREE.BufferGeometry[] };
+type LeafBuffers = { positions: number[]; uvs: number[]; colors: number[]; normals: number[] };
+type Parts = { solid: THREE.BufferGeometry[]; glow: THREE.BufferGeometry[]; leaves: LeafBuffers };
 
 /** Granite boulders: clusters on the shore, half in the water, and a few on the hills. */
 function addBoulders(island: IslandDefinition, profile: IslandProfile, surface: Surface, parts: Parts): void {
@@ -259,7 +265,7 @@ function addBoulders(island: IslandDefinition, profile: IslandProfile, surface: 
           // Lichen on the tops, a dark wet band at the waterline.
           out.lerp(lichen, smoothstep(0.55, 0.95, n) * smoothstep(ground + size * 0.5, ground + size * 1.1, y) * 0.45);
           out.lerp(wet, 1 - smoothstep(-0.1, 0.55, y));
-        }),
+        }, PROP_KIND.rock),
       );
     }
   }
@@ -278,7 +284,7 @@ function addBoulders(island: IslandDefinition, profile: IslandProfile, surface: 
         parts.solid.push(painted(geometry, (px, py, pz, out) => {
           const n = Math.sin(px * 1.9 - pz * 2.3 + seed) * 0.5 + 0.5;
           out.copy(granite).multiplyScalar(0.88 + n * 0.2).lerp(lichen, smoothstep(0.6, 1, n) * 0.4);
-        }));
+        }, PROP_KIND.rock));
       }
     }
   }
@@ -307,19 +313,21 @@ function addShrubs(island: IslandDefinition, profile: IslandProfile, surface: Su
       const ox = (hash(id, 1700 + index * 8 + part) - 0.5) * spread * 2;
       const oz = (hash(id, 1800 + index * 8 + part) - 0.5) * spread * 2;
       const lift = hash(id, 1900 + index * 8 + part) * size * 0.5;
-      const geometry = blob(r, 0.8, index * 3.1 + part * 1.7, 1, 0.38);
+      // A dense, dark core; the leafy outline is the leaf cards round it.
+      const geometry = blob(r * 0.82, 0.8, index * 3.1 + part * 1.7, 1, 0.38);
       transformed(geometry, point.x + ox, ground + r * 0.5 + lift, point.z + oz, part * 1.3, 0.3);
+      leafCards(point.x + ox, ground + r * 0.55 + lift, point.z + oz, r, green, id * 131 + index * 17 + part, parts.leaves);
       const top = ground + r + lift;
       parts.solid.push(
         painted(geometry, (x, y, z, out) => {
           // Leaf speckle: each vertex its own shade, a few sunlit or dry.
           const n = Math.sin(x * 37.1 + z * 29.3 + y * 41.7) * 43758.5453;
           const speckle = n - Math.floor(n);
-          out.copy(green).multiplyScalar(0.62 + speckle * 0.62);
+          out.copy(green).multiplyScalar(0.5 + speckle * 0.5);
           if (speckle > 0.9) out.lerp(dry, 0.5);
           // Darker underneath and inside the clump.
           out.multiplyScalar(0.5 + 0.5 * smoothstep(ground, top, y));
-        }),
+        }, PROP_KIND.foliage),
       );
     }
   }
@@ -479,6 +487,7 @@ function addLighthouse(island: IslandDefinition, profile: IslandProfile, surface
   }
   banded.deleteAttribute("uv");
   banded.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  banded.setAttribute("propKind", new THREE.BufferAttribute(new Float32Array(banded.getAttribute("position").count).fill(PROP_KIND.built), 1));
   pieces.push(banded);
   // A door and a few small windows up the tower.
   pieces.push(transformed(box(0.12, 1.9, 0.9, 1.68, 2.15, 0, 0x2a2420, 0), 0, 0, 0, 0));
@@ -528,6 +537,8 @@ export type IslandFurniture = {
   /** Island-local meshes: solid parts and the parts that glow at night. */
   solid: THREE.BufferGeometry | null;
   glow: THREE.BufferGeometry | null;
+  /** Leaf cards round the bushes (island-local), drawn with the leaf-cluster material. */
+  leaves: THREE.BufferGeometry | null;
   pier: PierFootprint | null;
   /** Island-local position of the lighthouse's lamp, if it has one. */
   lamp: THREE.Vector3 | null;
@@ -535,7 +546,7 @@ export type IslandFurniture = {
 
 /** Builds everything that furnishes an island (see `islandProfile`). */
 export function furnishIsland(island: IslandDefinition, profile: IslandProfile, surface: Surface): IslandFurniture {
-  const parts: Parts = { solid: [], glow: [] };
+  const parts: Parts = { solid: [], glow: [], leaves: { positions: [], uvs: [], colors: [], normals: [] } };
   const clearings = islandClearings(island, profile);
   addBoulders(island, profile, surface, parts);
   addShrubs(island, profile, surface, clearings, parts);
@@ -549,7 +560,7 @@ export function furnishIsland(island: IslandDefinition, profile: IslandProfile, 
     merged?.computeBoundingSphere();
     return merged;
   };
-  return { solid: merge(parts.solid), glow: merge(parts.glow), pier, lamp };
+  return { solid: merge(parts.solid), glow: merge(parts.glow), leaves: leafGeometry(parts.leaves), pier, lamp };
 }
 
 /** Signed distance from (x, z) to a pier's footprint (negative inside) and the outward normal. */

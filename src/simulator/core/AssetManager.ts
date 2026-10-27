@@ -5,7 +5,7 @@ import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import type { LoadingState } from "../types";
 
 export type AnimatedAssetKey = "dolphin" | "shark" | "whale" | "fishSchool" | "seagull";
-export type StaticAssetKey = "yacht" | "palms";
+export type StaticAssetKey = "yacht";
 export type AssetKey = StaticAssetKey | AnimatedAssetKey;
 
 export type AnimatedAssetInstance = {
@@ -21,7 +21,6 @@ type AssetDefinition = {
 
 const ASSETS = {
   yacht: { url: "/models/yacht-sailboat-pbr.glb", label: "Loading yacht", required: true },
-  palms: { url: "/models/palm-trees-quaternius.glb", label: "Planting islands", required: true },
   dolphin: { url: "/models/dolphin-animated.glb", label: "Loading dolphins", required: true },
   shark: { url: "/models/shark-animated.glb", label: "Loading sharks", required: false },
   whale: { url: "/models/blue-whale-rigged-pbr-v2.glb", label: "Loading whale", required: false },
@@ -82,9 +81,6 @@ export class AssetManager {
     return this.cloneScene("yacht", false);
   }
 
-  palms(): THREE.Group {
-    return this.cloneScene("palms", false);
-  }
 
   dolphin(): AnimatedAssetInstance {
     const asset = this.animated("dolphin");

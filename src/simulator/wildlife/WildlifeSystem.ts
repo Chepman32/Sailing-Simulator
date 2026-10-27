@@ -28,7 +28,7 @@ export type WildlifeCounts = {
  * animals are stepped first so smaller ones can keep clear of them.
  */
 export class WildlifeSystem {
-  private readonly group = new THREE.Group();
+  readonly group = new THREE.Group();
   private readonly marineGroup = new THREE.Group();
   private readonly dolphins: DolphinController;
   private readonly sharks: SharkController[];

@@ -60,7 +60,7 @@ async function savePhoto(blob: Blob): Promise<void> {
   window.setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-const ASSET_LOAD_TOTAL = 7;
+const ASSET_LOAD_TOTAL = 6;
 /** Set once the first-run guide has been finished or skipped. */
 const GUIDE_STORAGE_KEY = "sailing-onboarding-done";
 const SAIL_SWATCHES: { id: string; color: string }[] = [

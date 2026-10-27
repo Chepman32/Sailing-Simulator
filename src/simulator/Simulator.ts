@@ -8,6 +8,7 @@ import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/Render
 import { ShipShadows } from "./ships/ShipShadows";
 import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
 import { FlareCamera } from "./camera/FlareCamera";
+import { ScreenLod } from "./core/ScreenLod";
 import { GpuTimer } from "./core/GpuTimer";
 import { AUTO_GPU_TARGET_MS, GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
@@ -115,6 +116,8 @@ export class Simulator {
   private readonly flatWatch = new FlatFrameWatch();
   private nextProbe = 0;
   private column = new Uint8Array(4);
+  private probe: { fence: WebGLSync; height: number; frames: number } | null = null;
+  private probeBuffer: WebGLBuffer | null = null;
   private contextLostAt = Number.NaN;
   private restoreRequested = false;
   private recoveryTimer?: number;
@@ -215,6 +218,10 @@ export class Simulator {
       // handles a slower GPU, and the discrete one is what spins up the fans.
       powerPreference: "default",
     });
+    // three checks every program's info log by default, which makes each
+    // compile synchronous (a stall the first time anything new is drawn).
+    // Development builds keep the check for its error messages.
+    this.renderer.debug.checkShaderErrors = process.env.NODE_ENV !== "production";
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
@@ -578,6 +585,9 @@ export class Simulator {
   private readonly pendingCaptures: Array<(blob: Blob | null) => void> = [];
 
   private readonly photo = new PhotoDirector();
+  /** Screen-size levels of detail for the heavy authored meshes (animals, ships). */
+  private readonly lod = new ScreenLod();
+  private lodScan = 0;
   /** The pull-back shot of a flare just fired (takes precedence over the photo director). */
   private readonly flareCamera = new FlareCamera();
   private flareCameraInteractions = 0;
@@ -1037,6 +1047,7 @@ export class Simulator {
     this.radio?.dispose();
     this.audio?.dispose();
     this.wildlife?.dispose();
+    this.lod.dispose();
     this.ships?.dispose();
     this.post?.dispose();
     this.reflection?.dispose();
@@ -1105,7 +1116,7 @@ export class Simulator {
     this.frameDelta = delta;
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.islands.setNight(this.environmentState.nightFactor);
-    this.islands.update(this.elapsed, this.environment.currentWeather.wind, this.physics.position.x, this.physics.position.z);
+    this.islands.update(this.elapsed, this.environment.currentWeather.wind, this.physics.position.x, this.physics.position.z, this.camera.camera.position);
     // The helm camera looks out through the skipper's eyes: he steps out of its way.
     this.vessel.setCrewVisible(
       (this.state.cameraMode !== "helm" || this.flareCamera.blend > 0.3 || this.photo.blend > 0.3) &&
@@ -1127,6 +1138,15 @@ export class Simulator {
     this.wildlife.update(delta, this.physics, this.camera.camera);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics, { root: this.vessel.root, eye: this.vessel.helmEye });
+    // Heavy meshes draw fewer triangles when small on screen. New ones (a
+    // ship's model loaded in the background) are picked up every couple of seconds.
+    this.lodScan -= delta;
+    if (this.lodScan <= 0) {
+      this.lodScan = 2;
+      this.lod.register(this.wildlife.group, 2500);
+      this.lod.register(this.ships.group, 3000);
+    }
+    this.lod.update(this.camera.camera);
     if (this.flareCamera.running) {
       // A drag or a zoom by the player hands the camera straight back.
       if (this.camera.interactions !== this.flareCameraInteractions) this.flareCamera.cancel();
@@ -1264,16 +1284,22 @@ export class Simulator {
   };
 
   /**
-   * Every second or so reads a few pixels of the finished frame. Sky above
-   * sea never comes out as one flat colour, so three such readings in a row
-   * mean the view has silently broken (a poisoned buffer, a target the GPU
-   * dropped): the render targets are freed and drawn from scratch.
+   * Every couple of seconds reads a few pixels of the finished frame. Sky
+   * above sea never comes out as one flat colour, so three such readings in
+   * a row mean the view has silently broken (a poisoned buffer, a target the
+   * GPU dropped): the render targets are freed and drawn from scratch.
+   *
+   * The read is asynchronous: the column is copied into a pixel buffer and
+   * picked up a frame or two later, once a fence says the GPU has finished.
+   * A plain readPixels made the CPU wait for the GPU to drain every frame in
+   * flight, a visible hitch every probe on a phone.
    */
   private watchFrame(): void {
-    if (this.elapsed < this.nextProbe) return;
-    this.nextProbe = this.elapsed + 1.5;
     const gl = this.renderer.getContext();
     if (gl.isContextLost()) return;
+    if (this.probe && this.collectProbe(gl)) return;
+    if (this.probe || this.elapsed < this.nextProbe) return;
+    this.nextProbe = this.elapsed + 2.5;
     // Underwater the whole view is one tint by design.
     if (this.camera.camera.position.y < 0.2) {
       this.flatWatch.reset();
@@ -1282,10 +1308,41 @@ export class Simulator {
     const width = this.renderer.domElement.width;
     const height = this.renderer.domElement.height;
     if (width < 8 || height < 8) return;
-    // One column through the middle of the frame: sky, horizon and sea.
+    if (this.column.length < height * 4) this.column = new Uint8Array(height * 4);
+    if (!(gl instanceof WebGL2RenderingContext)) {
+      gl.readPixels(Math.floor(width / 2), 0, 1, height, gl.RGBA, gl.UNSIGNED_BYTE, this.column);
+      this.judgeColumn(height);
+      return;
+    }
+    const buffer = (this.probeBuffer ??= gl.createBuffer());
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffer);
+    gl.bufferData(gl.PIXEL_PACK_BUFFER, height * 4, gl.STREAM_READ);
+    gl.readPixels(Math.floor(width / 2), 0, 1, height, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if (fence) this.probe = { fence, height, frames: 0 };
+  }
+
+  /** Reads the column once the GPU has written it; true while still waiting. */
+  private collectProbe(gl: WebGLRenderingContext | WebGL2RenderingContext): boolean {
+    const probe = this.probe;
+    if (!probe || !(gl instanceof WebGL2RenderingContext)) return false;
+    probe.frames += 1;
+    const status = gl.clientWaitSync(probe.fence, 0, 0);
+    if (status === gl.TIMEOUT_EXPIRED && probe.frames < 30) return true;
+    gl.deleteSync(probe.fence);
+    this.probe = null;
+    if (status === gl.WAIT_FAILED || status === gl.TIMEOUT_EXPIRED) return false;
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.probeBuffer);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.column, 0, probe.height * 4);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    this.judgeColumn(probe.height);
+    return false;
+  }
+
+  private judgeColumn(height: number): void {
+    const column = this.column;
     const samples: PixelSample[] = [];
-    const column = this.column.length >= height * 4 ? this.column : (this.column = new Uint8Array(height * 4));
-    gl.readPixels(Math.floor(width / 2), 0, 1, height, gl.RGBA, gl.UNSIGNED_BYTE, column);
     for (const v of [0.12, 0.3, 0.45, 0.65, 0.85, 0.92]) {
       const row = Math.floor(v * height) * 4;
       samples.push([column[row]!, column[row + 1]!, column[row + 2]!]);
@@ -1332,7 +1389,13 @@ export class Simulator {
     if (this.post.enabled && this.quality.settings.reflectionScale > 0 && calmSea > 0.02) {
       this.mirrorList.length = 0;
       this.mirrorList.push(...this.mirrorHidden, ...this.islands.farFromMirror);
-      reflection.render(this.renderer, this.scene, this.camera.camera, this.mirrorList);
+      // The blurred mirror image is drawn from the coarse palms.
+      const swapped = this.islands.coarseGrovesForMirror(true);
+      try {
+        reflection.render(this.renderer, this.scene, this.camera.camera, this.mirrorList);
+      } finally {
+        if (swapped) this.islands.coarseGrovesForMirror(false);
+      }
       this.ocean.setReflection(
         reflection.active ? reflection.target.texture : null,
         reflection.textureMatrix,
@@ -1547,6 +1610,9 @@ export class Simulator {
 
   private readonly onContextRestored = (): void => {
     window.clearInterval(this.recoveryTimer);
+    // The probe's buffer and fence belonged to the lost context.
+    this.probe = null;
+    this.probeBuffer = null;
     this.contextLostAt = Number.NaN;
     // The GPU forgot every texture and target. three.js uploads textures and
     // programs again by itself; what it cannot know is the content of the

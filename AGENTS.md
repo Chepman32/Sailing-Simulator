@@ -111,8 +111,12 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/WindMath.ts` | Pure, deterministic true-wind gusts and shifts |
 | `src/simulator/environment/EnvironmentSystem.ts` | Sky dome, image-based lighting capture, fog, exposure, sun, moon, stars, directional light |
 | `src/simulator/environment/IslandMath.ts` | Pure, seeded, endless (per-cell) island generator, bathymetry, coastline noise, terrain noise, exact nearest-coast search over the 3×3 cells, shader island slots |
-| `src/simulator/environment/IslandSystem.ts` | Terrain (two LODs per island), palms merged per cluster, seabed following the yacht, draw distances, collision, shore direction |
-| `src/simulator/environment/IslandSurface.ts` | Sand shading (grain, ripples, wet sand), swash on the beach, palm shadow map and trunk contact shading |
+| `src/simulator/environment/IslandSystem.ts` | Terrain (two LODs per island), procedural palms merged per island in two levels, grass and leaf cards, seabed following the yacht, draw distances, collision, shore direction |
+| `src/simulator/environment/IslandSurface.ts` | Sand and ground shading (grain, ripples, wet sand, grass and soil detail), swash on the beach, the two-cascade palm shadow map (`PalmShadowMap`, `addIslandShadows` for any island material) and trunk contact shading |
+| `src/simulator/environment/PalmModels.ts` | Procedural coconut palms: curved ringed trunks with a bark texture and normal map, pinnate fronds on an alpha-tested texture with coverage-preserving mipmaps, coconuts; six variants in a near and a far level |
+| `src/simulator/environment/IslandVegetation.ts` | Grass tussocks and the fringe along the vegetation line (wind-swayed cards), leaf-card clusters for the scrub |
+| `src/simulator/environment/FurnitureSurface.ts` | Close-up detail for boulders (granite grain, cracks, lichen), scrub (leaf clumps, ragged outline, sun through the leaves) and buildings (grain), plus island shadows |
+| `src/simulator/core/ScreenLod.ts` | Screen-size LOD for heavy authored meshes (ships, shark, whale, gulls): meshoptimizer-simplified index buffers sharing the source attributes, with hysteresis |
 | `src/simulator/environment/SurfMath.ts` | Pure surf model (breaking crest, bore, swash, drying sand) and its GLSL twin, shared by ocean and sand; the island slot uniforms the shaders read |
 | `src/simulator/environment/WeatherMath.ts` | Pure weather model: seven kinds (clear … hurricane) as presets, exponential easing, deterministic auto planner |
 | `src/simulator/environment/LightningMath.ts` | Pure lightning: strikes hashed from time slots (kind, distance, leader and return strokes), their light, thunder delay, the branching channel |
@@ -157,7 +161,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | Path | Responsibility |
 | --- | --- |
 | `src/simulator/wildlife/WildlifeSystem.ts` | Owns every animal and the shared `MarineWorld` (rendered surface, bathymetry, yacht, each other) |
-| `RenderHealth.ts` (core) | Pure policy for a silently broken view: flat-frame detection, context restore/reload timing, usable-camera test; `Simulator` probes a pixel column every ~1.5 s and rebuilds the render targets after three flat readings |
+| `RenderHealth.ts` (core) | Pure policy for a silently broken view: flat-frame detection, context restore/reload timing, usable-camera test; `Simulator` probes a pixel column every ~2.5 s (on WebGL 2 through a pixel buffer and a fence, read a frame or more later, so the probe never stalls the GPU pipeline) and rebuilds the render targets after three flat readings |
 | `SailMath.ts` | Pure sail shape (draft, twist, flutter, wrinkle from wind, luff and trim) and triangle tessellation; the cloth shader in `SailSystem.ts` evaluates the same shape with a finite-difference normal |
 | `WhaleBehavior.ts` | Pure whale state machine, depth keeping, tail-chain springs, lobtail planning, tail forward kinematics |
 | `WhaleController.ts` | Whale rig (`createWhaleRig`): procedural fluke strokes and turn bends, flipper clip, tracked blowhole/back/fluke contact points |
@@ -251,7 +255,7 @@ When introducing a model, document its native axis, units, expected bounding dim
 `Simulator.init()` currently performs these stages in order:
 
 1. construct and apply `QualityManager`;
-2. load seven local GLB definitions through `AssetManager`;
+2. load six local GLB definitions through `AssetManager` (the palms are procedural, `PalmModels`);
 3. create the GPU ocean;
 4. create the unified environment and current light mode;
 5. create islands and bathymetry;
@@ -471,13 +475,13 @@ Island definitions, bathymetry, coastline noise, and terrain noise live in the p
 
 The rendered island uses irregular radial geometry (rings crowd toward the beach) and a short submerged apron. Terrain triangles are wound counter-clockwise seen from above so the top face is the lit front face. Vegetation, dry grass and dunes come from low-frequency terrain noise; a `sandMask` attribute marks the sand.
 
-`IslandSurface` decorates the terrain material: sand grain, rare shell fragments and broad colour patches that fade to their average before they can shimmer; wind ripples and micro-relief in the normal, faded by the pixel footprint; wet sand (darker, glossy) near the waterline and wherever the swash has just been; the swash sheet itself with its foam lace (`SurfMath`, the same waves the ocean draws). Palm shadows come from `PalmShadowMap`: the groves (on `PALM_SHADOW_LAYER`) are drawn from the dominant light into a depth map, only when the light moves, and sampled with a rotated Poisson disc for soft edges; each trunk also darkens the sand around its foot.
+`IslandSurface` decorates the terrain material: sand grain, rare shell fragments and broad colour patches that fade to their average before they can shimmer; wind ripples and micro-relief in the normal, faded by the pixel footprint; wet sand (darker, glossy) near the waterline and wherever the swash has just been; the swash sheet itself with its foam lace (`SurfMath`, the same waves the ocean draws). Inside the vegetation line the ground is grass and soil: broad dry and lush patches, leaf litter, tufts and blade grain in colour and normal, bare soil on slopes. Palm shadows come from `PalmShadowMap`: the groves, scrub and buildings (on `PALM_SHADOW_LAYER`) are drawn from the dominant light into two depth cascades (a wide one and a sharp near one around the yacht, each mesh with its own depth material so the fronds' alpha cut-outs cast leaf-shaped shadows), only when the light moves or the yacht leaves the cascade's square, and sampled with a rotated Poisson disc for soft edges (`palmShadowAt` blends the cascades). `addIslandShadows` puts the same shadows on palms, furniture and grass, so trees shade each other and the scrub; each trunk also darkens the sand around its foot.
 
 Water depth (`waterDepthAt`) slopes down from the rendered, irregular waterline, so physics, wildlife and the ocean colour agree on where the shallows are.
 
-Each island's terrain is a `THREE.LOD` of two meshes (the coarse one beyond 380 m); its vertex count follows its size. Islands are drawn to 2 km (70 % of that on the low preset), groves to 1.3 km, and islands beyond 650 m are left out of the planar mirror. The palm shadow map covers a 520 m square around the yacht on a 120 m grid and is redrawn when the yacht moves into another square or the light moves; the 32 trunk-contact slots hold the trunks nearest that square. The seabed plane follows the yacht.
+Each island's terrain is a `THREE.LOD` of two meshes (the coarse one beyond 380 m); its vertex count follows its size. Islands are drawn to 2 km (70 % of that on the low preset), groves to 1.3 km, and islands beyond 650 m are left out of the planar mirror. The wide palm cascade covers a 520 m square around the yacht on a 120 m grid, the near cascade (up to 2048²) a 150 m square on a 25 m grid; each is redrawn when the yacht moves into another square or the light moves; the 32 trunk-contact slots hold the trunks nearest that square. The seabed plane follows the yacht.
 
-The palm asset is a row of five tree variants. `plantPalms` lifts each tree out of that row and plants it individually inside the vegetated zone; never place the whole asset group as one object, or the trees trail out to sea. All palms share one material per source material and one wind uniform, and sway in world space; because the wind needs nothing per tree, the groves are then merged per 1.5 km cluster into one mesh per material (a few draw calls for every palm in view instead of one per trunk and crown). The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
+Palms are procedural (`PalmModels.createPalmVariants`): six coconut palms with a curved, ringed trunk (bark texture and normal map), a crown of drooping pinnate fronds on an alpha-tested leaflet texture (alpha-to-coverage, mipmaps that keep the leaves' coverage so far crowns do not thin out) and a cluster of coconuts, each in a near level and a far level of about a quarter of the triangles. `plantPalms` plants them inside the vegetated zone and merges each island's grove per part and level (trunks, fronds, nuts), so a grove is a handful of draw calls; the near level is shown within `GROVE_DETAIL_DISTANCE` (230 m) of the camera, the far one beyond, and the water's mirror always takes the far one. The trunks sway, the fronds flutter, and sun shines through them from behind. Scrub carries crossed leaf cards around its core, and grass tussocks and a fringe along the vegetation line (`IslandVegetation.buildGrass`) are drawn within 240 m; neither is mirrored. The outer apron fades with vertex alpha before its final edge. This prevents clear water from revealing a giant circular shelf that can be mistaken for a ring or a flat whale.
 
 Every island also has a character and furniture (`IslandProps`, decided from its id so it never changes): a low sandy cay, a lush island thick with scrub, a hilly one, or a rocky one with rounded granite boulders on the shore and tors on its hills. Gaussian hills (`hillHeight`) add to `terrainSurfaceHeight` inside the vegetation line (palms and props sample the same height); their flanks are forest and, on rocky islands, bare granite. Palms vary in size and lean out over the beach (more near the shore). Some islands get a wooden pier with a stilt hut of bamboo and thatch (windows lit at night), large ones a red-and-white lighthouse with a keeper's cottage, a glowing lantern and two beams turning every 20 s (additive cones whose edges fade with the view angle). The first home island always shows the pier and hut toward the start, the second the lighthouse. Boulders, scrub and buildings are vertex-coloured and merged per island into one solid and one glowing mesh (`furnishIsland`), drawn to 1.1 km (a lighthouse as far as its island). A pier's footprint is an obstacle for the physics and the shore guard (`IslandSystem.structureClearance`, combined into `physics.hullClearance` with ships and places).
 
@@ -824,6 +828,14 @@ Important implementation caveats:
 - the duplicate coachroof shells are left out of the planar mirror (`Vessel.mirrorSkipped`, about 90k triangles);
 - the render loop and Web Audio suspend when the document is hidden, and `FramePacer` caps rendering at 60 fps (30 fps while the page is visible but unfocused), so a 120 Hz ProMotion display does not render twice as much; the mirror pass skips pixels with nothing mirrored nearby (one coarse tap).
 
+Performance measures in place (keep them when changing these systems):
+
+- `ScreenLod` gives the heavy authored meshes (ships, shark, whale, gulls; registered every 2 s, so new ships join) simplified index buffers by screen size; in a typical view about a quarter of their triangles are drawn, with no visible change;
+- the ocean fragment shader skips work that cannot show: sparkles outside the sun's glint lobe or in the distance, the whole foam block on calm open water, lace and patches away from shore, wakes and surf, the horizon haze where it is nil;
+- the flat-frame probe reads its pixel column asynchronously (pixel buffer and fence on WebGL 2) and never calls a blocking `readPixels` in the frame;
+- the production build skips three.js's per-program shader error check (`renderer.debug.checkShaderErrors`), which otherwise forces a synchronous compile on first use;
+- coast distance (`distanceFromWaterline`, used many times a step by the shore guard, contact, ships and animals) evaluates the island with the smallest bound first, so the others are usually skipped exactly by their bound.
+
 Before increasing visual cost, measure the current bottleneck (`renderer.info.render.calls` and `.triangles` with `info.autoReset` off across the post-processing passes, texture uploads per frame, and a CPU profile of `render`). Favor shader detail, instancing, LOD, texture compression, smaller shadow casters, and bounded effects over more individual objects.
 
 ## 21. Local 3D asset manifest
@@ -833,7 +845,6 @@ The authoritative license text is `public/models/README.md`. Keep it synchronize
 | Runtime key | File | Approx. bytes | Approx. geometry | Required | Runtime role |
 | --- | --- | ---: | ---: | --- | --- |
 | `yacht` | `yacht-sailboat-pbr.glb` | 2,770,696 | 162,913 triangles, 26 meshes | Yes | Primary PBR catamaran |
-| `palms` | `palm-trees-quaternius.glb` | 1,120,784 | 1,920 triangles, 5 variants | Yes | Tropical island grove with shader wind |
 | `dolphin` | `dolphin-animated.glb` | 171,552 | 3,728 triangles, rigged | Yes | Swim and breach pod |
 | `shark` | `shark-animated.glb` | 1,739,400 | 51,199 triangles, authored clips | No | Subsurface shark |
 | `whale` | `blue-whale-rigged-pbr-v2.glb` | 1,422,856 | 38,784 triangles, rigged PBR | No | Submerged blue whale tail slap |
@@ -1110,7 +1121,7 @@ The following are known constraints, not invitations to bypass the architecture:
 - ocean reflections combine the analytic sky with a planar mirror of everything above the sea at mean sea level (bent by the ripples, not by the swell's real geometry); there is no refraction or depth-based absorption because the scene depth is not sampled;
 - whitecaps are a function of the instantaneous wave field and leave no persistent foam history;
 - the wake and the surf only shade the water (normal, foam, colour); like the detail spectrum they do not move the yacht or the camera floor;
-- palm shadows ignore the fronds' wind sway (the shadow map is drawn from the rest pose);
+- palm shadows ignore the fronds' wind sway (the shadow maps are drawn from the rest pose);
 - the ocean's own transparency is a blend rather than a refraction, and underwater absorption uses the uninverted wave height per vertex (a few centimetres of error);
 - the yacht's three cabin meshes overlap substantially (about 140k triangles together, only one of them casting shadows); removing two of them changes the cabin's detail, so it needs an asset rework;
 - reef fish are lifted from one rigged asset and animated procedurally; they do not use the asset's authored clip;
@@ -1118,7 +1129,7 @@ The following are known constraints, not invitations to bypass the architecture:
 - the yacht's wet band and the underwater absorption use the swell without ship wakes (a few tens of centimetres in a wake);
 - gull folding is an approximation by sweep, roll and a scaled hand; the rig has no legs or neck to animate;
 - wake and wildlife capacities do not rebuild when changing quality after initialization;
-- palms are individually planted GLB trees, merged per island, with runtime vertex wind rather than LOD/impostor vegetation;
+- palms are procedural meshes with two levels (near / far, switched per island grove at `GROVE_DETAIL_DISTANCE`), not impostors; grass tufts and bush leaf cards are alpha-tested cards drawn only near the yacht;
 - the steering is named by the simulation's convention (positive rudder and "starboard" turn the bow toward `+X`), which the right-handed renderer shows turning left from behind the yacht (see §5); the instruments follow the view, the names were left as they are;
 - lightning bolts are flat ribbons facing the camera, drawn at most at 1.9 km; the lighting capture does not flash with them (the palette, key, hemisphere and environment intensity do);
 - the dolphins (three skinned parts plus two eyes, textured) and the shark and whale are still drawn as their source meshes; the shark alone is 51k triangles when it is near enough to be drawn;

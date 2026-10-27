@@ -99,7 +99,7 @@ export class ShipSystem {
   readonly ships: Ship[] = [];
   private readonly visuals: ShipVisual[] = [];
   private readonly geometries = new Map<string, { hull: THREE.BufferGeometry; beacons: THREE.BufferGeometry }>();
-  private readonly group = new THREE.Group();
+  readonly group = new THREE.Group();
   private readonly night = { value: 0 };
   private readonly pixelRatio = { value: 1 };
   private readonly normal = { x: 0, z: 0 };

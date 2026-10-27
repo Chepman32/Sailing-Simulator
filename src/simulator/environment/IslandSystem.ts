@@ -1,9 +1,11 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
-import { batchStaticMeshes } from "../core/StaticBatching";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { smoothstep } from "../math";
 import type { UnderwaterLight } from "./UnderwaterLight";
+import { applyFurnitureSurface } from "./FurnitureSurface";
 import {
+  addIslandShadows,
   applyIslandSurface,
   createIslandSurfaceUniforms,
   MAX_PALM_TRUNKS,
@@ -25,6 +27,9 @@ import {
   type IslandDefinition,
 } from "./IslandMath";
 import { ISLAND_SLOT_UNIFORMS } from "./SurfMath";
+import { createBarkTextures, createFrondTexture, createPalmVariants, type PalmPart, type PalmVariant } from "./PalmModels";
+import { buildGrass, createGrassMaterial, createLeafClusterTexture } from "./IslandVegetation";
+import { patchMaterialShader } from "../core/ShaderPatch";
 import {
   furnishIsland,
   hillHeight,
@@ -50,6 +55,8 @@ type IslandVisual = {
   furniture: THREE.Mesh[];
   pier: PierFootprint | null;
   beam: THREE.Group | null;
+  /** Grass tufts over the turf, drawn only near the camera. */
+  grass: THREE.Mesh | null;
 };
 
 /** Furniture (boulders, scrub, huts) beyond this is not drawn; a lighthouse is seen as far as its island. */
@@ -67,6 +74,10 @@ export function palmsForIsland(beachRadius: number): number {
 export const ISLAND_DRAW_DISTANCE = 2000;
 /** Palm groves beyond this are lost in the haze and not drawn. */
 export const GROVE_DRAW_DISTANCE = 1300;
+/** Grass tufts are drawn within this distance of the camera (beyond it they are below a pixel). */
+const GRASS_DRAW_DISTANCE = 240;
+/** Beyond this a grove is drawn from its coarse palms (a third of the triangles). */
+export const GROVE_DETAIL_DISTANCE = 230;
 /** Islands further than this are left out of the planar mirror. */
 const MIRROR_DISTANCE = 650;
 /** Beyond this the island terrain is drawn from its coarse mesh. */
@@ -91,6 +102,12 @@ export class IslandSystem {
   /** Weather's wind relative to the trade wind: how far the crowns lean and how fast they flutter. */
   private readonly palmStrength: PalmWindUniform = { value: 1 };
   private readonly palmMaterials = new Map<THREE.Material, THREE.Material>();
+  /** Procedural palm variants (near and far detail) and the three materials every grove shares. */
+  private palmVariants: { near: PalmVariant[]; far: PalmVariant[] } | null = null;
+  private palmPartMaterials: Record<PalmPart, THREE.Material> | null = null;
+  private readonly palmTextures: THREE.Texture[] = [];
+  private leafMaterial: THREE.Material | null = null;
+  private readonly grassMaterial: THREE.MeshStandardMaterial;
   private readonly surface: IslandSurfaceUniforms = createIslandSurfaceUniforms();
   private readonly palmShadows: PalmShadowMap;
   /** Every trunk's foot (x, y, z, radius); the nearest fill the contact-shading slots. */
@@ -144,6 +161,10 @@ export class IslandSystem {
     this.furnitureMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0 });
     // Piles stand in the water like the terrain's apron.
     this.underwater.apply(this.furnitureMaterial);
+    // Granite grain, leafy bushes, wood grain; in the island shadows.
+    applyFurnitureSurface(this.furnitureMaterial, this.surface, this.sky);
+    this.grassMaterial = createGrassMaterial(this.palmWind, this.palmStrength);
+    patchMaterialShader(this.grassMaterial, "grass-shadows", (shader) => addIslandShadows(shader, this.surface, 2));
     this.glowMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, color: 0x1e1c1a });
     this.beamGeometry = createBeamGeometry();
     this.beamMaterial = new THREE.MeshBasicMaterial({
@@ -242,7 +263,7 @@ export class IslandSystem {
    * @param focusX, focusZ Where the yacht is: the shaders evaluate the islands
    * nearest her, the seabed follows her, and distant islands are not drawn.
    */
-  update(time: number, wind = 1, focusX = 0, focusZ = 0): void {
+  update(time: number, wind = 1, focusX = 0, focusZ = 0, viewer?: THREE.Vector3): void {
     this.palmWind.value = time;
     for (const visual of this.built.values()) if (visual.beam) visual.beam.rotation.y = time * BEAM_SPEED + visual.definition.id * 0.7;
     this.palmStrength.value = Math.min(3.2, Math.max(0.4, wind));
@@ -269,16 +290,32 @@ export class IslandSystem {
         const gap = Math.max(0, Math.hypot(island.x + sphere.center.x - focusX, island.z + sphere.center.z - focusZ) - sphere.radius);
         const reach = mesh.userData.farSeen ? ISLAND_DRAW_DISTANCE : FURNITURE_DRAW_DISTANCE;
         mesh.visible = gap < reach * this.drawScale;
-        if (mesh.visible && gap > MIRROR_DISTANCE) this.farFromMirror.push(mesh);
+        // Bush leaf cards add nothing to the blurred mirror image beyond the bush cores.
+        if (mesh.visible && (gap > MIRROR_DISTANCE || mesh.userData.leafCards === true)) this.farFromMirror.push(mesh);
       }
       if (visual.beam) visual.beam.visible = this.night > 0.05 && visual.lod.visible;
+      if (visual.grass) {
+        const sphere = visual.grass.geometry.boundingSphere!;
+        const island = visual.group.position;
+        const from = viewer ?? { x: focusX, z: focusZ };
+        const gap = Math.max(0, Math.hypot(island.x + sphere.center.x - from.x, island.z + sphere.center.z - from.z) - sphere.radius);
+        visual.grass.visible = visual.lod.visible && gap < GRASS_DRAW_DISTANCE * this.drawScale;
+        // Blades are far below what the blurred mirror image can show.
+        if (visual.grass.visible) this.farFromMirror.push(visual.grass);
+      }
     }
+    const eye = viewer ?? null;
     for (const mesh of this.groves) {
       const sphere = mesh.geometry.boundingSphere;
       if (!sphere) continue;
       const gap = Math.max(0, Math.hypot(sphere.center.x - focusX, sphere.center.z - focusZ) - sphere.radius);
-      mesh.visible = gap < GROVE_DRAW_DISTANCE * this.drawScale;
-      if (mesh.visible && gap > MIRROR_DISTANCE) this.farFromMirror.push(mesh);
+      // Near or far palms by the camera's distance (a chase camera or a
+      // photographer can stand well away from the yacht).
+      const seen = eye ? Math.max(0, Math.hypot(sphere.center.x - eye.x, sphere.center.z - eye.z) - sphere.radius) : gap;
+      const near = seen < GROVE_DETAIL_DISTANCE;
+      mesh.visible = gap < GROVE_DRAW_DISTANCE * this.drawScale && (mesh.userData.palmLevel === "near") === near;
+      // Coconuts are too small for the mirror.
+      if (mesh.visible && (gap > MIRROR_DISTANCE || mesh.material === this.palmPartMaterials?.nuts)) this.farFromMirror.push(mesh);
     }
   }
 
@@ -328,6 +365,29 @@ export class IslandSystem {
       this.profiles.set(island.id, profile);
     }
     return profile;
+  }
+
+  private readonly mirrorSwap: THREE.Mesh[] = [];
+
+  /**
+   * For the water's mirror: shows the coarse palms where the fine ones are
+   * shown (on), and puts them back (off). Returns whether anything changed.
+   */
+  coarseGrovesForMirror(on: boolean): boolean {
+    if (!on) {
+      for (const mesh of this.mirrorSwap) mesh.visible = !mesh.visible;
+      const changed = this.mirrorSwap.length > 0;
+      this.mirrorSwap.length = 0;
+      return changed;
+    }
+    this.mirrorSwap.length = 0;
+    for (const visual of this.built.values()) {
+      const near = visual.batches.filter((mesh) => mesh.userData.palmLevel === "near" && mesh.visible);
+      if (near.length === 0) continue;
+      for (const mesh of visual.batches) this.mirrorSwap.push(mesh);
+    }
+    for (const mesh of this.mirrorSwap) mesh.visible = !mesh.visible;
+    return this.mirrorSwap.length > 0;
   }
 
   /** Shortens how far islands and groves are drawn (1 = full distance). */
@@ -410,6 +470,11 @@ export class IslandSystem {
   dispose(): void {
     this.palmShadows.dispose();
     this.terrainMaterial.dispose();
+    this.grassMaterial.dispose();
+    this.palmTextures.forEach((texture) => texture.dispose());
+    for (const material of this.palmMaterials.values()) (material.userData.shadowDepth as THREE.Material | undefined)?.dispose();
+    // The palm variants' own geometries (the groves are merged copies).
+    for (const variant of [...(this.palmVariants?.near ?? []), ...(this.palmVariants?.far ?? [])]) Object.values(variant.parts).forEach((geometry) => geometry.dispose());
     this.scene.remove(this.group);
     this.group.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
@@ -463,15 +528,13 @@ export class IslandSystem {
     lod.userData.radius = island.beachRadius * Math.max(1, island.scaleZ) * MAX_VISIBLE_TERRAIN_RADIUS_SCALE;
     islandGroup.add(lod);
 
-    const palmParts: THREE.Mesh[] = [];
     const trunks: THREE.Vector4[] = [];
-    this.plantPalms(island, islandGroup, palmParts, trunks);
     this.group.add(islandGroup);
 
     const holder = new THREE.Group();
     holder.name = `PalmGrove_${island.id}`;
     this.group.add(holder);
-    const batches = this.mergeGrove(islandGroup, holder, palmParts, island.id);
+    const batches = this.plantPalms(island, holder, trunks);
 
     // Boulders, scrub and buildings, merged into a solid mesh and a glowing one.
     const furniture: THREE.Mesh[] = [];
@@ -482,9 +545,34 @@ export class IslandSystem {
       mesh.name = `IslandFurniture_${island.id}`;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      // Bushes, rocks and huts shade the ground around them.
+      mesh.layers.enable(PALM_SHADOW_LAYER);
       mesh.userData.farSeen = profile.lighthouseAngle !== null;
       islandGroup.add(mesh);
       furniture.push(mesh);
+    }
+    if (built.leaves) {
+      const mesh = new THREE.Mesh(built.leaves, this.leafClusterMaterial());
+      mesh.name = `IslandBushLeaves_${island.id}`;
+      mesh.userData.leafCards = true;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.layers.enable(PALM_SHADOW_LAYER);
+      islandGroup.add(mesh);
+      furniture.push(mesh);
+    }
+    let grass: THREE.Mesh | null = null;
+    const grassGeometry = buildGrass(
+      island,
+      (radial, angle) => this.terrainSurfaceHeight(island, radial, angle),
+      (x, z) => inClearing(islandClearings(island, profile), x, z, 0.5),
+    );
+    if (grassGeometry) {
+      grass = new THREE.Mesh(grassGeometry, this.grassMaterial);
+      grass.name = `IslandGrass_${island.id}`;
+      grass.receiveShadow = true;
+      grass.visible = false;
+      islandGroup.add(grass);
     }
     if (built.glow) {
       const mesh = new THREE.Mesh(built.glow, this.glowMaterial);
@@ -512,7 +600,7 @@ export class IslandSystem {
       beam.visible = false;
       islandGroup.add(beam);
     }
-    return { definition: island, group: islandGroup, holder, lod, batches, trunks, furniture, pier: built.pier, beam };
+    return { definition: island, group: islandGroup, holder, lod, batches, trunks, furniture, pier: built.pier, beam, grass };
   }
 
   /**
@@ -529,42 +617,93 @@ export class IslandSystem {
     visual.batches.forEach((batch) => batch.geometry.dispose());
     visual.batches.length = 0;
     visual.furniture.forEach((mesh) => mesh.geometry.dispose());
+    visual.grass?.geometry.dispose();
     visual.furniture.length = 0;
     visual.trunks.length = 0;
   }
 
-  /**
-   * The palm asset is a row of five tree variants laid out side by side. Each
-   * tree is lifted out of that row and planted on its own spot, so a grove
-   * stands on the island instead of trailing out to sea.
-   */
-  private plantPalms(
-    island: IslandDefinition,
-    islandGroup: THREE.Group,
-    palmParts: THREE.Mesh[],
-    trunks: THREE.Vector4[],
-  ): void {
-    const source = this.assets.palms();
-    source.updateMatrixWorld(true);
-    const container = source.getObjectByName("RootNode") ?? source;
-    const variants = container.children.filter((child) => child.children.length > 0 || child instanceof THREE.Mesh);
-    if (variants.length === 0) return;
+  /** The bushes' leaf cards: cut-out leaf clusters, lit through, in the island shadows. */
+  private leafClusterMaterial(): THREE.Material {
+    if (!this.leafMaterial) {
+      const texture = createLeafClusterTexture();
+      this.palmTextures.push(texture);
+      const source = new THREE.MeshStandardMaterial({
+        name: "BushLeaves",
+        map: texture,
+        vertexColors: true,
+        roughness: 0.55,
+        metalness: 0,
+        side: THREE.DoubleSide,
+        alphaTest: 0.5,
+      });
+      source.alphaToCoverage = true;
+      source.userData.translucent = true;
+      this.leafMaterial = this.palmMaterial(source);
+      this.leafMaterial.userData.shadowDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: texture, alphaTest: 0.5, side: THREE.DoubleSide });
+    }
+    return this.leafMaterial;
+  }
 
+  /** The palm variants and their materials, made once and shared by every island. */
+  private palmKit(): { near: PalmVariant[]; far: PalmVariant[]; materials: Record<PalmPart, THREE.Material> } {
+    if (!this.palmVariants || !this.palmPartMaterials) {
+      this.palmVariants = createPalmVariants(6);
+      const frond = createFrondTexture();
+      const { bark, normal } = createBarkTextures();
+      this.palmTextures.push(frond, bark, normal);
+      const trunk = new THREE.MeshStandardMaterial({ name: "PalmTrunk", map: bark, normalMap: normal, normalScale: new THREE.Vector2(0.8, 0.8), roughness: 0.9, metalness: 0 });
+      const leaves = new THREE.MeshStandardMaterial({
+        name: "PalmLeaves",
+        map: frond,
+        vertexColors: true,
+        roughness: 0.6,
+        metalness: 0,
+        side: THREE.DoubleSide,
+        alphaTest: 0.5,
+      });
+      // Leaflet edges are soft where the frame is multisampled.
+      leaves.alphaToCoverage = true;
+      leaves.userData.translucent = true;
+      const nuts = new THREE.MeshStandardMaterial({ name: "PalmNuts", vertexColors: true, roughness: 0.75, metalness: 0 });
+      this.palmPartMaterials = {
+        trunk: this.palmMaterial(trunk),
+        fronds: this.palmMaterial(leaves),
+        nuts: this.palmMaterial(nuts),
+      };
+      // The shadow map cuts the leaflets out of the fronds' shadows too.
+      this.palmPartMaterials.fronds.userData.shadowDepth = new THREE.MeshDepthMaterial({
+        depthPacking: THREE.RGBADepthPacking,
+        map: frond,
+        alphaTest: 0.5,
+        side: THREE.DoubleSide,
+      });
+    }
+    return { ...this.palmVariants, materials: this.palmPartMaterials };
+  }
+
+  /**
+   * Plants an island's palms: where each stands, how tall, which way it
+   * leans. The trees are procedural coconut palms (`PalmModels`); a grove
+   * is merged into one mesh per part (trunks, fronds, nuts) at two levels of
+   * detail, so a whole grove is three draw calls near and three far.
+   */
+  private plantPalms(island: IslandDefinition, holder: THREE.Group, trunks: THREE.Vector4[]): THREE.Mesh[] {
+    const kit = this.palmKit();
     const seed = island.seed;
     const profile = this.profile(island);
     const clearings = islandClearings(island, profile);
     // A volcano has only a fringe of palms between the black beach and the lava slopes.
     const baseCount = island.volcano ? 9 : palmsForIsland(island.beachRadius);
     const count = profile.character === "lush" ? Math.round(baseCount * 1.35) : profile.character === "rocky" ? Math.round(baseCount * 0.7) : baseCount;
+    const placed: { matrix: THREE.Matrix4; variant: number }[] = [];
+    const quaternion = new THREE.Quaternion();
+    const spin = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    const position = new THREE.Vector3();
+    const scale = new THREE.Vector3();
     for (let palmIndex = 0; palmIndex < count; palmIndex += 1) {
-      const tree = variants[(palmIndex + seed) % variants.length].clone(true);
-      // Remove the tree's slot in the source row, keep its upright rotation.
-      tree.position.set(0, 0, 0);
-      tree.updateMatrixWorld(true);
-      const bounds = new THREE.Box3().setFromObject(tree);
-      const height = Math.max(0.1, bounds.max.y - bounds.min.y);
-      tree.position.y = -bounds.min.y;
-
+      const variant = (palmIndex * 7 + seed) % kit.near.length;
+      const height = kit.near[variant]!.height;
       const spread = (palmIndex + 0.5) / count;
       const radial = island.volcano
         ? VOLCANO_FOOT - 0.06 + terrainNoise(palmIndex * 5.1, seed) * 0.05
@@ -578,70 +717,48 @@ export class IslandSystem {
       // Young palms and old giants side by side.
       const grain = terrainNoise(palmIndex * 3.7 + seed * 11.1, palmIndex * 1.9);
       const size = 0.62 + grain * grain * 0.55 + terrainNoise(palmIndex * 7.3, seed * 2.9 + 4.1) * 0.28;
-
-      const palm = new THREE.Group();
-      palm.name = `GLB_Palm_${island.id}_${palmIndex + 1}`;
-      palm.add(tree);
-      palm.scale.setScalar(((11 + (seed % 3) * 1.2) * size) / height);
       // Coconut palms lean, most of all near the beach, out over the sand
       // toward the light; inland they stand straighter. Each its own way.
       const leanNoise = terrainNoise(palmIndex * 5.3 + seed * 1.7, seed * 3.3 + palmIndex);
-      const lean = THREE.MathUtils.degToRad(3 + leanNoise * 9 + smoothstep(0.3, 0.66, radial) * (6 + leanNoise * 14));
+      const lean = THREE.MathUtils.degToRad(2 + leanNoise * 6 + smoothstep(0.3, 0.66, radial) * (4 + leanNoise * 10));
       const leanToward = angle + (terrainNoise(palmIndex * 2.9, seed + 7.7) - 0.5) * 1.6;
       // Tilt about the horizontal axis square to the direction of the lean (outward is +X·cos, +Z·sin).
       const tiltAxis = new THREE.Vector3(Math.sin(leanToward), 0, -Math.cos(leanToward));
-      palm.quaternion
-        .setFromAxisAngle(tiltAxis, lean)
-        .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), palmIndex * 1.94 + seed));
-      palm.position.set(
-        px,
+      // The trunk's own curve bends along its +X: turn it to face the lean.
+      quaternion.setFromAxisAngle(tiltAxis, lean).multiply(spin.setFromAxisAngle(up, -leanToward));
+      const s = ((11 + (seed % 3) * 1.2) * size) / height;
+      position.set(
+        island.centerX + px,
         // Roots sit slightly below the surface so no trunk floats on a dune.
-        this.terrainSurfaceHeight(island, radial, angle) - 0.35,
-        pz,
+        this.terrainSurfaceHeight(island, radial, angle) - 0.3,
+        island.centerZ + pz,
       );
+      placed.push({ matrix: new THREE.Matrix4().compose(position, quaternion, scale.setScalar(s)), variant });
       // Each trunk darkens the sand around its foot (contact shading).
-      trunks.push(
-        new THREE.Vector4(island.centerX + palm.position.x, palm.position.y, island.centerZ + palm.position.z, 1.1 * size),
-      );
-      tree.traverse((object) => {
-        if (!(object instanceof THREE.Mesh)) return;
-        object.castShadow = false;
-        object.receiveShadow = false;
-        const sourceMaterials = Array.isArray(object.material) ? object.material : [object.material];
-        const materials = sourceMaterials.map((material) => this.palmMaterial(material));
-        object.material = Array.isArray(object.material) ? materials : materials[0];
-        palmParts.push(object);
-      });
-      islandGroup.add(palm);
+      trunks.push(new THREE.Vector4(position.x, position.y + 0.3, position.z, 1.1 * size));
     }
-  }
-
-  /**
-   * The groves never move and their wind is computed in world space, so the
-   * trees of an island merge into one mesh per material: a handful of draw
-   * calls for every palm in view instead of one per trunk and per crown, and a
-   * grove off screen or in the haze is skipped whole.
-   */
-  private mergeGrove(islandGroup: THREE.Group, holder: THREE.Group, parts: THREE.Mesh[], id: number): THREE.Mesh[] {
-    islandGroup.updateMatrixWorld(true);
-    const result = batchStaticMeshes(
-      holder,
-      parts,
-      (mesh) => `${(mesh.material as THREE.Material).uuid}|${mesh.castShadow}|${mesh.receiveShadow}`,
-      `PalmGrove_${id}`,
-    );
-    // The groves are what the palm shadow map draws.
-    result.batches.forEach((batch) => batch.layers.enable(PALM_SHADOW_LAYER));
-    parts.filter((part) => part.parent).forEach((part) => part.layers.enable(PALM_SHADOW_LAYER));
-    // Drop the now-empty tree nodes so they are not traversed every frame.
-    [...islandGroup.children].forEach((child) => {
-      let hasMesh = false;
-      child.traverse((object) => {
-        hasMesh ||= object instanceof THREE.Mesh;
-      });
-      if (!hasMesh) child.removeFromParent();
-    });
-    return result.batches;
+    const meshes: THREE.Mesh[] = [];
+    if (placed.length === 0) return meshes;
+    for (const [level, variants] of [["near", kit.near], ["far", kit.far]] as const) {
+      for (const part of ["trunk", "fronds", "nuts"] as const) {
+        const pieces = placed.map(({ matrix, variant }) => variants[variant]!.parts[part].clone().applyMatrix4(matrix));
+        const merged = mergeGeometries(pieces, false);
+        pieces.forEach((piece) => piece.dispose());
+        if (!merged) continue;
+        merged.computeBoundingSphere();
+        const mesh = new THREE.Mesh(merged, kit.materials[part]);
+        mesh.name = `PalmGrove_${island.id}_${part}_${level}`;
+        mesh.userData.palmLevel = level;
+        mesh.matrixAutoUpdate = false;
+        mesh.castShadow = part !== "nuts";
+        mesh.receiveShadow = true;
+        // The groves are what the palm shadow map draws.
+        mesh.layers.enable(PALM_SHADOW_LAYER);
+        holder.add(mesh);
+        meshes.push(mesh);
+      }
+    }
+    return meshes;
   }
 
   /** One wind-animated material per source material, shared by every palm. */
@@ -649,28 +766,22 @@ export class IslandSystem {
     const existing = this.palmMaterials.get(source);
     if (existing) return existing;
     const material = source.clone();
-    if (material instanceof THREE.MeshStandardMaterial) {
-      material.roughness = 0.86;
-      material.metalness = 0;
-      if (material.name.toLowerCase().includes("leaves")) {
-        // Fronds are single sheets: they must be visible from above and
-        // below, and they are solid rather than blended.
-        material.side = THREE.DoubleSide;
-        material.transparent = false;
-        material.depthWrite = true;
-        material.alphaTest = material.map ? 0.5 : 0;
-        material.color.offsetHSL(0, 0.06, 0.02);
-      }
-    }
+    const translucent = material.userData.translucent === true;
     const wind = this.palmWind;
     const strength = this.palmStrength;
+    const sky = this.sky;
+    const surface = this.surface;
     material.onBeforeCompile = (shader: THREE.WebGLProgramParametersWithUniforms) => {
       shader.uniforms.uPalmTime = wind;
       shader.uniforms.uPalmStrength = strength;
+      shader.uniforms.uSunDirection = sky.uSunDirection!;
+      shader.uniforms.uSunColor = sky.uSunColor!;
+      shader.uniforms.uNight = sky.uNight!;
       // Sway in world space so every tree bends the same way in the same
-      // breeze, whatever its own scale and orientation.
+      // breeze, whatever its own scale and orientation. Fronds also flutter:
+      // a quicker, smaller shiver that grows toward their tips.
       shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", "#include <common>\nuniform float uPalmTime;\nuniform float uPalmStrength;")
+        .replace("#include <common>", "#include <common>\nuniform float uPalmTime;\nuniform float uPalmStrength;\nvarying vec3 vPalmWorld;")
         .replace(
           "#include <project_vertex>",
           `#include <project_vertex>
@@ -680,11 +791,38 @@ export class IslandSystem {
            float palmPhase = uPalmTime * 1.3 + palmWorld.x * 0.23 + palmWorld.z * 0.17;
            palmWorld.x += (sin(palmPhase) * 0.34 + 0.22) * palmSway * uPalmStrength;
            palmWorld.z += (cos(palmPhase * 0.73) * 0.2 + 0.14) * palmSway * uPalmStrength;
+           ${translucent ? `float palmFlutter = sin(uPalmTime * 7.1 + palmWorld.x * 1.9 + palmWorld.z * 2.3) * 0.045 * uPalmStrength * palmSway;
+           palmWorld.y += palmFlutter;` : ""}
+           vPalmWorld = palmWorld.xyz;
            mvPosition = viewMatrix * palmWorld;
            gl_Position = projectionMatrix * mvPosition;`,
         );
+      if (translucent) {
+        // Leaves are thin: with the sun behind them they glow yellow-green,
+        // and their undersides are lit through the blade. Ambient occlusion
+        // deep in the crown (toward its centre and underneath).
+        shader.fragmentShader = shader.fragmentShader
+          .replace(
+            "#include <common>",
+            "#include <common>\nuniform vec3 uSunDirection;\nuniform vec3 uSunColor;\nuniform float uNight;\nvarying vec3 vPalmWorld;",
+          )
+          .replace(
+            "#include <opaque_fragment>",
+            `{
+               vec3 toEye = normalize(cameraPosition - vPalmWorld);
+               float through = pow(max(dot(-toEye, uSunDirection), 0.0), 4.0);
+               float day = (1.0 - uNight) * smoothstep(-0.05, 0.15, uSunDirection.y);
+               outgoingLight += diffuseColor.rgb * vec3(1.15, 1.25, 0.55) * uSunColor * (0.22 + 1.1 * through) * day * 0.55;
+             }
+             #include <opaque_fragment>`,
+          );
+      } else {
+        shader.fragmentShader = shader.fragmentShader.replace("#include <common>", "#include <common>\nvarying vec3 vPalmWorld;");
+      }
+      // Crowns shade their own trunks and the fronds below them.
+      addIslandShadows(shader, surface, translucent ? 2 : 4);
     };
-    material.customProgramCacheKey = () => "palm-wind-v4";
+    material.customProgramCacheKey = () => `palm-wind-v6-${translucent ? "leaf" : "solid"}`;
     this.palmMaterials.set(source, material);
     return material;
   }

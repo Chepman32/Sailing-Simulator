@@ -465,7 +465,7 @@ export const oceanFragmentShader = /* glsl */ `
     // A gust event darkens and roughens its patch of sea as it sweeps down
     // on the yacht (a "cat's paw"), before she feels it.
     float gustPatch = 1.0 - smoothstep(uGustPatch.z * 0.45, uGustPatch.z, distance(vWorldPosition.xz, uGustPatch.xy));
-    gust *= 1.0 + uGustPatch.w * gustPatch * (0.75 + 0.5 * skyNoise(base * 0.05 + uTime * 0.1));
+    if (uGustPatch.w * gustPatch > 0.0) gust *= 1.0 + uGustPatch.w * gustPatch * (0.75 + 0.5 * skyNoise(base * 0.05 + uTime * 0.1));
 
     vec2 slope = vec2(0.0);
     float fold = 0.0;
@@ -635,8 +635,11 @@ ${detailCalls}
     // Bubbles in the wake scatter light back up: a paler, turquoise band.
     // Air churned into the water scatters the sunlight back up: wakes and the
     // water along a ship's side glow turquoise under and around their foam.
-    float bubbles = clamp(max(wakeSlick * 0.3, yachtSlick * 0.75) + wakeFoam * 0.85, 0.0, 1.0) * (0.55 + 0.45 * skyNoise(vWorldPosition.xz * 0.35 + 7.3));
-    body = mix(body, uScatterColor * irradiance * 0.55 + body * 0.6, bubbles * 0.55);
+    float bubbles = clamp(max(wakeSlick * 0.3, yachtSlick * 0.75) + wakeFoam * 0.85, 0.0, 1.0);
+    if (bubbles > 0.0) {
+      bubbles *= 0.55 + 0.45 * skyNoise(vWorldPosition.xz * 0.35 + 7.3);
+      body = mix(body, uScatterColor * irradiance * 0.55 + body * 0.6, bubbles * 0.55);
+    }
 
     // Sunlight entering the back of a crest scatters toward the viewer.
     float crest = clamp(fold / max(uMaxFold, 1.0e-3), -1.0, 1.0);
@@ -708,7 +711,9 @@ ${detailCalls}
 
     // Sparkles: single capillary facets tilted just right flash brighter
     // than white, so bloom turns them into points of light.
-    if (uDetail > 0.2) {
+    // A facet tilted at most ~0.25 rad from the normal cannot send the sun to
+    // the eye unless the normal already mirrors it to within ~0.6 rad.
+    if (uDetail > 0.2 && footprint < 0.45 && nDotL > 0.0 && dot(reflect(-viewDirection, normal), uLightDirection) > 0.78) {
       vec2 sparkleCell = base * 3.1 + vec2(uTime * 0.47, -uTime * 0.31);
       float sparkleA = skyNoise(sparkleCell);
       float sparkleB = skyNoise(sparkleCell * 2.3 + vec2(-uTime * 0.83, uTime * 0.59) + 17.0);
@@ -738,32 +743,57 @@ ${detailCalls}
     // Foam is sampled in a wind-aligned frame and stretched along the wind,
     // the way real foam is drawn out into streaks.
     vec2 windFrame = vec2(dot(base, vec2(0.851, 0.526)), dot(base, vec2(-0.526, 0.851)));
-    float foamFine = skyNoise(windFrame * vec2(3.4, 7.2) + vec2(uTime * 0.06, -uTime * 0.04));
-    float foamMedium = skyNoise(windFrame * vec2(0.9, 2.0) - vec2(uTime * 0.03, uTime * 0.02));
-    float foamTexture = foamFine * 0.55 + foamMedium * 0.45;
     // Whitecaps break only on the steepest crests, mostly inside gusts: a
     // 15-knot breeze leaves the sea flecked with white, not covered in it.
     float breaking = crest * 0.86 + (gust - 1.0) * 0.2 + uBreaking;
-    float whitecap = smoothstep(0.66, 1.0, breaking);
-    float foam = whitecap * whitecap * (0.5 + 0.5 * foamTexture) * 1.5;
-    // A frayed, speckled fringe dissolves around each patch.
-    foam += smoothstep(0.02, 0.5, whitecap) * smoothstep(0.58, 0.86, foamTexture) * 0.45;
-    foam += smoothstep(0.36, 0.8, breaking) * smoothstep(0.66, 0.9, foamTexture) * 0.16;
-    // The short wind sea breaks too: here and there a steep chop crest
-    // spills into a small white horse, the flecks a fresh breeze scatters
-    // over the whole sea (none in a calm, more as the wind rises).
     float chopSteep = length(rippleSlope);
-    float horseNoise = skyNoise(base * 0.21 + vec2(uTime * 0.11, -uTime * 0.07));
-    float whiteHorse = smoothstep(0.42, 0.66, chopSteep) * smoothstep(0.8, 0.95, horseNoise + (gust - 1.0) * 0.2)
-      * smoothstep(0.02, 0.09, uBreaking + (gust - 1.0) * 0.05);
-    foam = max(foam, whiteHorse * smoothstep(0.5, 0.7, foamTexture) * 0.85);
-    foam = min(foam, 0.88) * uFoamDensity * (1.0 - calm * 0.6);
-    // In a gale the foam is blown into long streaks along the wind, with dark
-    // water between them, rather than lying as a sheet.
-    float streaks = skyNoise(windFrame * vec2(0.16, 2.6) + vec2(uTime * 0.05, 0.0));
-    streaks = smoothstep(0.3, 0.72, streaks * 0.75 + foamFine * 0.25);
-    foam *= mix(1.0, 0.25 + 0.95 * streaks, clamp(uBreaking * 2.2, 0.0, 1.0));
-    foam = min(foam * (1.0 + uBreaking * 0.9), 0.92);
+    // Water piling against the hulls: a lapping line at rest, a bow wave and
+    // a ribbon of aerated water along each side once the yacht is moving.
+    float hullSpeed = smoothstep(0.4, 4.5, uVesselSpeed);
+    float bowZone = smoothstep(0.3, 0.95, hullAlong);
+    // The bow wave and its foam come from the wake field; this is only the
+    // thin line where water meets the hull.
+    // The analytic waterplane is only an approximation of the model's hulls
+    // (and does not pitch or roll with them), so the line is kept thin,
+    // broken into flecks, and to the forward part of each hull, where the
+    // bow pushes water up; a clean band would show as a hull-shaped outline.
+    float contactWidth = 0.05 + hullSpeed * (0.05 + bowZone * 0.2);
+    float contact = (1.0 - smoothstep(0.0, contactWidth, hullGap)) * step(-0.05, hullGap)
+      * smoothstep(-0.6, 0.1, hullAlong);
+    // The foam textures are only worth evaluating where some white water can
+    // be: a crest near breaking, a steep chop crest, a gale, the hull line.
+    float foam = 0.0;
+    float foamFine = 0.5;
+    float foamTexture = 0.5;
+    float streaks = 0.5;
+    if (breaking > 0.36 || chopSteep > 0.42 || gale > 0.01 || contact > 0.0) {
+      foamFine = skyNoise(windFrame * vec2(3.4, 7.2) + vec2(uTime * 0.06, -uTime * 0.04));
+      float foamMedium = skyNoise(windFrame * vec2(0.9, 2.0) - vec2(uTime * 0.03, uTime * 0.02));
+      foamTexture = foamFine * 0.55 + foamMedium * 0.45;
+      float whitecap = smoothstep(0.66, 1.0, breaking);
+      foam = whitecap * whitecap * (0.5 + 0.5 * foamTexture) * 1.5;
+      // A frayed, speckled fringe dissolves around each patch.
+      foam += smoothstep(0.02, 0.5, whitecap) * smoothstep(0.58, 0.86, foamTexture) * 0.45;
+      foam += smoothstep(0.36, 0.8, breaking) * smoothstep(0.66, 0.9, foamTexture) * 0.16;
+      // The short wind sea breaks too: here and there a steep chop crest
+      // spills into a small white horse, the flecks a fresh breeze scatters
+      // over the whole sea (none in a calm, more as the wind rises).
+      if (chopSteep > 0.42) {
+        float horseNoise = skyNoise(base * 0.21 + vec2(uTime * 0.11, -uTime * 0.07));
+        float whiteHorse = smoothstep(0.42, 0.66, chopSteep) * smoothstep(0.8, 0.95, horseNoise + (gust - 1.0) * 0.2)
+          * smoothstep(0.02, 0.09, uBreaking + (gust - 1.0) * 0.05);
+        foam = max(foam, whiteHorse * smoothstep(0.5, 0.7, foamTexture) * 0.85);
+      }
+      foam = min(foam, 0.88) * uFoamDensity * (1.0 - calm * 0.6);
+      // In a gale the foam is blown into long streaks along the wind, with dark
+      // water between them, rather than lying as a sheet.
+      if (uBreaking > 0.0 || gale > 0.01) {
+        streaks = skyNoise(windFrame * vec2(0.16, 2.6) + vec2(uTime * 0.05, 0.0));
+        streaks = smoothstep(0.3, 0.72, streaks * 0.75 + foamFine * 0.25);
+      }
+      foam *= mix(1.0, 0.25 + 0.95 * streaks, clamp(uBreaking * 2.2, 0.0, 1.0));
+      foam = min(foam * (1.0 + uBreaking * 0.9), 0.92);
+    }
     // Breaking crests leave a net of bubbles down their backs, drawn out
     // along the wind, and the sea between them stays streaked with old foam.
     if (gale > 0.01) {
@@ -778,37 +808,31 @@ ${detailCalls}
     }
 
 
-    // Water piling against the hulls: a lapping line at rest, a bow wave and
-    // a ribbon of aerated water along each side once the yacht is moving.
-    float hullSpeed = smoothstep(0.4, 4.5, uVesselSpeed);
-    float bowZone = smoothstep(0.3, 0.95, hullAlong);
-    // The bow wave and its foam come from the wake field; this is only the
-    // thin line where water meets the hull.
-    // The analytic waterplane is only an approximation of the model's hulls
-    // (and does not pitch or roll with them), so the line is kept thin,
-    // broken into flecks, and to the forward part of each hull, where the
-    // bow pushes water up; a clean band would show as a hull-shaped outline.
-    float contactWidth = 0.05 + hullSpeed * (0.05 + bowZone * 0.2);
-    float contact = (1.0 - smoothstep(0.0, contactWidth, hullGap)) * step(-0.05, hullGap)
-      * smoothstep(-0.6, 0.1, hullAlong);
-    float fleck = skyNoise(vWorldPosition.xz * 3.1 + vec2(uTime * 0.9, -uTime * 0.7));
-    float hullFoam = contact * smoothstep(0.45, 0.8, fleck * 0.7 + foamTexture * 0.3 + bowZone * 0.25)
-      * (0.18 + hullSpeed * bowZone * 0.4);
-    foam = max(foam, min(hullFoam, 0.8));
+    if (contact > 0.0) {
+      float fleck = skyNoise(vWorldPosition.xz * 3.1 + vec2(uTime * 0.9, -uTime * 0.7));
+      float hullFoam = contact * smoothstep(0.45, 0.8, fleck * 0.7 + foamTexture * 0.3 + bowZone * 0.25)
+        * (0.18 + hullSpeed * bowZone * 0.4);
+      foam = max(foam, min(hullFoam, 0.8));
+    }
 
     // Wake foam: thick foam is solid white, thin foam a lace of bubbles that
     // opens up as it decays. The lace is world-space noise at pixel scale,
     // far finer than the wake field itself.
     // Rotated lattices so the value noise never lines up into squares.
-    vec2 lacePosition = mat2(0.8, 0.6, -0.6, 0.8) * vWorldPosition.xz;
-    float laceA = skyFbm3(lacePosition * 1.9 + vec2(uTime * 0.05, -uTime * 0.04));
-    float laceB = skyNoise(mat2(0.47, -0.88, 0.88, 0.47) * vWorldPosition.xz * 6.3 - vec2(uTime * 0.09, uTime * 0.06));
-    // Patches and streaks a few metres across break the foam up first, the
-    // bubble lace finer still.
-    float patches = skyNoise(vWorldPosition.xz * 0.55 + vec2(3.1, -uTime * 0.02));
-    float lace = laceA * 0.6 + laceB * 0.4;
+    // Lace and patches only matter in the wake, the surf and the shallows.
     float laceResolved = 1.0 - smoothstep(0.08, 0.5, footprint);
-    lace = mix(0.5, lace, laceResolved);
+    float laceB = 0.5;
+    float patches = 0.5;
+    float lace = 0.5;
+    if (shore < 1.2 || wakeFoam > 0.004 || surfFoam + surfTrailFoam > 0.01) {
+      vec2 lacePosition = mat2(0.8, 0.6, -0.6, 0.8) * vWorldPosition.xz;
+      float laceA = skyFbm3(lacePosition * 1.9 + vec2(uTime * 0.05, -uTime * 0.04));
+      laceB = skyNoise(mat2(0.47, -0.88, 0.88, 0.47) * vWorldPosition.xz * 6.3 - vec2(uTime * 0.09, uTime * 0.06));
+      // Patches and streaks a few metres across break the foam up first, the
+      // bubble lace finer still.
+      patches = skyNoise(vWorldPosition.xz * 0.55 + vec2(3.1, -uTime * 0.02));
+      lace = mix(0.5, laceA * 0.6 + laceB * 0.4, laceResolved);
+    }
     // Churned white water: solid where it is thick, then bubble streaks that
     // branch and drift apart (the same marbling as the surf), never blobs.
     float wakeCover = 0.0;
@@ -838,17 +862,19 @@ ${detailCalls}
     float shallowFoam = (1.0 - smoothstep(0.0, 1.2, shore)) * smoothstep(0.45, 0.8, lace) * 0.25;
     foam = max(foam, shallowFoam);
 
-    vec3 foamColor = (uAmbientColor * 1.15 + sunLit * (0.2 + 0.8 * nDotL) * 0.3) * vec3(0.94, 0.98, 1.0);
-    // Heaps of foam catch the light on their tops and are shaded in their
-    // folds: never a flat painted white.
-    float foamRelief = skyNoise(vWorldPosition.xz * 1.6 + vec2(uTime * 0.22, -uTime * 0.17)) * 0.6
-      + skyNoise(vWorldPosition.xz * 4.3 - vec2(uTime * 0.31, uTime * 0.12)) * 0.4;
-    foamColor *= mix(1.0, 0.74 + foamRelief * 0.36, laceResolved);
-    // Foam is the whitest thing on the sea: it glows in the flare's colour.
-    foamColor += flareLight * (0.25 + 0.75 * flareFacing) * 0.42;
-    color = mix(color, foamColor, foam);
-    // Spray torn off the crests hangs as a pale veil over them.
-    color = mix(color, foamColor * 0.92, gale * smoothstep(0.55, 1.0, crest) * 0.3 * (0.6 + 0.4 * foamTexture));
+    if (foam > 0.0 || gale > 0.0) {
+      vec3 foamColor = (uAmbientColor * 1.15 + sunLit * (0.2 + 0.8 * nDotL) * 0.3) * vec3(0.94, 0.98, 1.0);
+      // Heaps of foam catch the light on their tops and are shaded in their
+      // folds: never a flat painted white.
+      float foamRelief = skyNoise(vWorldPosition.xz * 1.6 + vec2(uTime * 0.22, -uTime * 0.17)) * 0.6
+        + skyNoise(vWorldPosition.xz * 4.3 - vec2(uTime * 0.31, uTime * 0.12)) * 0.4;
+      foamColor *= mix(1.0, 0.74 + foamRelief * 0.36, laceResolved);
+      // Foam is the whitest thing on the sea: it glows in the flare's colour.
+      foamColor += flareLight * (0.25 + 0.75 * flareFacing) * 0.42;
+      color = mix(color, foamColor, foam);
+      // Spray torn off the crests hangs as a pale veil over them.
+      color = mix(color, foamColor * 0.92, gale * smoothstep(0.55, 1.0, crest) * 0.3 * (0.6 + 0.4 * foamTexture));
+    }
 
     color *= 1.0 - hullShadow * 0.34;
 
@@ -864,12 +890,14 @@ ${detailCalls}
     float alpha = clamp(1.0 - clarity + foam * 0.5 + hullShadow * 0.12, 0.3, 1.0);
 
     // --- Aerial perspective -------------------------------------------------
-    vec3 horizonDirection = normalize(vec3(-viewDirection.x, 0.0, -viewDirection.z) + vec3(0.0, 1.0e-4, 0.0));
-    vec3 horizon = skyAtmosphere(horizonDirection);
     float hazeReach = 1.0 - 0.5 * uHaze;
     float haze = 1.0 - exp(-pow(viewDistance * 0.00085 * (1.0 + uHaze * 5.0), 1.6));
     haze = max(haze * 0.9, smoothstep(${glsl(HORIZON_FADE_START)} * hazeReach, ${glsl(HORIZON_FADE_END)} * hazeReach, viewDistance));
-    color = mix(color, horizon, haze);
+    // Within a few tens of metres the haze is far below one part in a thousand.
+    if (haze > 0.0015) {
+      vec3 horizonDirection = normalize(vec3(-viewDirection.x, 0.0, -viewDirection.z) + vec3(0.0, 1.0e-4, 0.0));
+      color = mix(color, skyAtmosphere(horizonDirection), haze);
+    }
     alpha = mix(alpha, 1.0, smoothstep(90.0, 340.0, viewDistance));
 
     gl_FragColor = vec4(max(color, 0.0), alpha);
