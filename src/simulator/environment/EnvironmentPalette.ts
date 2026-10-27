@@ -37,6 +37,8 @@ export type EnvironmentPalette = {
   daylight: number;
   /** Colour in which falling rain catches the light. */
   rainLight: Rgb;
+  /** Strong sunshine actually shining now, 0…1 (fair weather, the sun well up). */
+  sunshine: number;
 };
 
 const DAY_ZENITH: Rgb = [0.018, 0.15, 0.66];
@@ -47,6 +49,15 @@ const DUSK_HORIZON: Rgb = [0.95, 0.42, 0.17];
 const DUSK_ZENITH: Rgb = [0.07, 0.13, 0.36];
 
 const NOON_SUN: Rgb = [1.0, 0.935, 0.79];
+/**
+ * A blazing tropical day: a deep, saturated cobalt overhead fading to a
+ * clean, bright blue at the horizon (no lavender haze), and a hot, golden
+ * sun that outshines the sky's blue fill.
+ */
+const SUNNY_ZENITH: Rgb = [0.006, 0.085, 0.68];
+const SUNNY_HORIZON: Rgb = [0.19, 0.47, 0.96];
+const SUNNY_SUN: Rgb = [1.0, 0.87, 0.64];
+const SUNNY_AMBIENT: Rgb = [0.5, 0.58, 0.68];
 const DUSK_SUN: Rgb = [1.0, 0.5, 0.2];
 const MOONLIGHT: Rgb = [0.56, 0.69, 1.0];
 
@@ -90,24 +101,27 @@ export function deriveEnvironmentPalette(state: TimeOfDayState, weather: Weather
   const twilight = Math.exp(-Math.pow(state.sunElevation / 0.2, 2));
   const sunUp = smoothstep(-0.1, 0.12, state.sunElevation);
   const moonBlend = smoothstep(0.35, 0.78, night);
+  // Sunshine is a daytime thing: it fades through dusk with the sun.
+  const sunshine = clamp(weather.sunshine ?? 0, 0, 1) * (1 - night) * (1 - twilight * 0.85) * smoothstep(0.04, 0.3, state.sunElevation);
 
   const zenith = scale(
-    greyed(mix(mix(DAY_ZENITH, NIGHT_ZENITH, night), DUSK_ZENITH, twilight * 0.5), overcast * 0.45 + storm * 0.4),
+    greyed(mix(mix(mix(DAY_ZENITH, SUNNY_ZENITH, sunshine), NIGHT_ZENITH, night), DUSK_ZENITH, twilight * 0.5), overcast * 0.45 + storm * 0.4),
     1 - storm * 0.55,
   );
   const horizon = scale(
-    greyed(mix(mix(DAY_HORIZON, NIGHT_HORIZON, night), DUSK_HORIZON, twilight * 0.62), overcast * 0.35 + storm * 0.4),
+    greyed(mix(mix(mix(DAY_HORIZON, SUNNY_HORIZON, sunshine), NIGHT_HORIZON, night), DUSK_HORIZON, twilight * 0.62), overcast * 0.35 + storm * 0.4),
     1 - storm * 0.45,
   );
-  const sunColor = mix(NOON_SUN, DUSK_SUN, clamp(twilight * 1.1, 0, 1));
+  const sunColor = mix(mix(NOON_SUN, SUNNY_SUN, sunshine), DUSK_SUN, clamp(twilight * 1.1, 0, 1));
 
-  const sunLight = scale(sunColor, SUN_IRRADIANCE * sunUp);
+  // Full sunshine: half as much direct light again as a merely fair sky.
+  const sunLight = scale(sunColor, SUN_IRRADIANCE * sunUp * (1 + 0.5 * sunshine));
   const moonLight = scale(MOONLIGHT, MOON_IRRADIANCE * smoothstep(0.02, 0.4, state.moonElevation));
   const lightColor = scale(mix(sunLight, moonLight, moonBlend), (1 - overcast * 0.45) * (1 - storm * 0.38));
   const daylight = clamp((lightColor[0] + lightColor[1] + lightColor[2]) / (3 * SUN_IRRADIANCE * 0.9), 0, 1);
 
   const ambientColor = scale(
-    greyed(mix(mix(DAY_AMBIENT, NIGHT_AMBIENT, night), scale(DUSK_HORIZON, 0.34), twilight * 0.45), overcast * 0.3),
+    greyed(mix(mix(mix(DAY_AMBIENT, SUNNY_AMBIENT, sunshine), NIGHT_AMBIENT, night), scale(DUSK_HORIZON, 0.34), twilight * 0.45), overcast * 0.3),
     1 - storm * 0.3,
   );
   const cloudLit = scale(
@@ -119,7 +133,12 @@ export function deriveEnvironmentPalette(state: TimeOfDayState, weather: Weather
     (1 - overcast * 0.3) * (1 - storm * 0.62),
   );
   // Under a heavy sky the water turns from blue to slate green.
-  const deepWater = mix([0.0035, 0.026, 0.08], [0.007, 0.03, 0.044], clamp(overcast * 0.35 + storm * 0.65, 0, 1));
+  // In full sun the open sea glows a luminous ultramarine.
+  const deepWater = mix(
+    mix([0.0035, 0.026, 0.08], [0.006, 0.05, 0.13], sunshine),
+    [0.007, 0.03, 0.044],
+    clamp(overcast * 0.35 + storm * 0.65, 0, 1),
+  );
 
   return {
     zenith,
@@ -131,7 +150,8 @@ export function deriveEnvironmentPalette(state: TimeOfDayState, weather: Weather
     cloudShade,
     cloudCover: clamp(weather.cloudCover - night * 0.04, 0, 1),
     deepWater,
-    shallowWater: [0.03, 0.5, 0.52],
+    // In full sun the shallows glow a vivid turquoise.
+    shallowWater: mix([0.03, 0.5, 0.52], [0.02, 0.6, 0.6], sunshine),
     sand: [0.8, 0.72, 0.5],
     scatter: [0.05, 0.78, 0.56],
     twilight,
@@ -142,6 +162,7 @@ export function deriveEnvironmentPalette(state: TimeOfDayState, weather: Weather
       Math.min(1.2, ambientColor[1] * 1.15 + lightColor[1] * 0.07),
       Math.min(1.2, ambientColor[2] * 1.15 + lightColor[2] * 0.07),
     ],
+    sunshine,
   };
 }
 

@@ -359,7 +359,13 @@ export class AudioSystem {
 
   /** A flare leaving the launcher. */
   flareLaunch(): void {
-    if (this.isReady() && this.enabled) this.boat?.flareLaunch();
+    if (!this.enabled) return;
+    if (this.isReady()) {
+      this.boat?.flareLaunch();
+      return;
+    }
+    // The first press may be the one that starts the sound: fire once it runs.
+    if (this.armed) void this.resumeFromGesture().then((running) => running && this.boat?.flareLaunch());
   }
 
   /** The radio's band on board (the shanty station): plays while wanted and sound is on. */
@@ -770,7 +776,16 @@ export class AudioSystem {
       this.setBusGain(this.master, MASTER_GAIN, 0.035);
       return true;
     }
-    if (this.resumePromise) return this.resumePromise;
+    if (this.resumePromise) {
+      // Ask again inside this gesture. WebKit does not count a touch's
+      // pointerdown as user activation, only the pointerup / touchend / click
+      // that follow it: the resume asked for on pointerdown stays pending, and
+      // returning that promise here let the click's own (allowed) attempt
+      // never happen, so every first tap was lost and only the second worked.
+      this.playUnlockImpulse();
+      void context.resume().catch(() => undefined);
+      return this.resumePromise;
+    }
 
     let timeoutId = 0;
     const resumeAttempt = context.resume().then(() => context.state === "running").catch(() => false);

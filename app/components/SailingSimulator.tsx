@@ -488,19 +488,43 @@ export function SailingSimulator() {
     let motionSeen = false;
     let anySeen = false;
     let smoothed: number | null = null;
-    const send = (rudder: number) => {
+    // Turning the phone between portrait and landscape rotates the screen's
+    // axes by a quarter turn, and browsers report the new angle at slightly
+    // different moments from the motion itself (iOS sometimes off by a half
+    // turn in landscape). Rather than trust the angle, the wheel is re-zeroed
+    // once the turn has settled: the pose the player holds the phone in after
+    // turning it is straight ahead, the helm is held amidships meanwhile.
+    let lastAngle = screenAngle();
+    let settleUntil = 0;
+    const resettle = () => {
+      tiltNeutral.current = null;
+      smoothed = null;
+      settleUntil = performance.now() + 450;
+      lastSent = 0;
+      send(0, true);
+    };
+    const settling = () => {
+      const angle = screenAngle();
+      if (angle !== lastAngle) {
+        lastAngle = angle;
+        resettle();
+      }
+      return performance.now() < settleUntil;
+    };
+    const send = (rudder: number, force = false) => {
       const now = performance.now();
-      if (now - lastSent < 33) return;
+      if (!force && now - lastSent < 33) return;
       lastSent = now;
       simulatorRef.current?.setRudder(rudder);
       setRudderInput(Math.round(rudder * 100));
     };
     const onMotion = (event: DeviceMotionEvent) => {
       const gravity = event.accelerationIncludingGravity;
-      const roll = gravityRollDegrees(gravity?.x ?? null, gravity?.y ?? null, screenAngle());
-      if (roll === null) return;
       motionSeen = true;
       anySeen = true;
+      if (settling()) return;
+      const roll = gravityRollDegrees(gravity?.x ?? null, gravity?.y ?? null, lastAngle);
+      if (roll === null) return;
       // A little smoothing takes out the hand's jitter without lag you can feel.
       smoothed = smoothed === null ? roll : smoothed + (((roll - smoothed + 540) % 360) - 180) * 0.35;
       if (tiltNeutral.current === null) tiltNeutral.current = smoothed;
@@ -509,13 +533,18 @@ export function SailingSimulator() {
     const onOrientation = (event: DeviceOrientationEvent) => {
       if (event.beta === null && event.gamma === null) return;
       anySeen = true;
-      if (motionSeen) return;
-      const roll = screenRollDegrees({ beta: event.beta, gamma: event.gamma }, screenAngle());
+      if (motionSeen || settling()) return;
+      const roll = screenRollDegrees({ beta: event.beta, gamma: event.gamma }, lastAngle);
       if (tiltNeutral.current === null) tiltNeutral.current = roll;
       send(tiltToRudder(roll, tiltNeutral.current));
     };
     window.addEventListener("devicemotion", onMotion);
     window.addEventListener("deviceorientation", onOrientation);
+    // Some browsers report the turn only through these events.
+    const orientationQuery = window.matchMedia("(orientation: portrait)");
+    orientationQuery.addEventListener("change", resettle);
+    window.addEventListener("orientationchange", resettle);
+    screen.orientation?.addEventListener?.("change", resettle);
     const check = window.setTimeout(() => {
       if (anySeen) return;
       setTiltSteering(false);
@@ -533,6 +562,9 @@ export function SailingSimulator() {
       window.clearTimeout(check);
       window.removeEventListener("devicemotion", onMotion);
       window.removeEventListener("deviceorientation", onOrientation);
+      orientationQuery.removeEventListener("change", resettle);
+      window.removeEventListener("orientationchange", resettle);
+      screen.orientation?.removeEventListener?.("change", resettle);
     };
   }, [tiltSteering, language]);
 
@@ -1691,6 +1723,9 @@ export function SailingSimulator() {
               </span>
               <span className="engine-switch-track" aria-hidden="true"><span /></span>
             </button>
+            {/* On phones the throttle springs out of the switch when the engine starts. */}
+            <div className="throttle-reveal" aria-hidden={!engineInput || undefined}>
+            <div className="throttle-reveal-inner">
             <div className="control-heading vertical-heading"><span>{messages.throttle}</span><strong>{engineInput ? throttleLabel(displayedThrottle, messages) : messages.off}</strong></div>
             <div className="throttle-layout">
               <span>{messages.forward}</span>
@@ -1719,6 +1754,8 @@ export function SailingSimulator() {
                 />
               </div>
               <span>{messages.reverse}</span>
+            </div>
+            </div>
             </div>
           </section>
         </div>

@@ -2,6 +2,9 @@ import * as THREE from "three";
 import type { QualityPreset } from "../types";
 import { AUTO_SLOW_FPS, budgetPixelRatio, FpsJudge, type GovernorVerdict } from "./RenderBudget";
 
+/** Consecutive slow frame-rate windows (0.75 s each) before automatic mode lowers the preset. */
+const SLOW_WINDOWS_TO_STEP_DOWN = 4;
+
 export type QualitySettings = {
   maxDpr: number;
   /** Most pixels the drawing buffer may hold, whatever the window and display. */
@@ -93,6 +96,8 @@ export class QualityManager {
   private slowWindows = 0;
   private gpuMeasured = false;
   private fastWindows = 0;
+  /** Whether automatic mode has lowered the preset in this session. */
+  private steppedDown = false;
   private readonly coarseDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
   private readonly fpsJudge = new FpsJudge(AUTO_SLOW_FPS);
   /** Only automatic mode changes the level by itself; a chosen preset is never lowered or raised. */
@@ -148,10 +153,22 @@ export class QualityManager {
     this.gpuMeasured = true;
     if (verdict === "overloaded" && this.preset !== "low") {
       this.apply(this.preset === "high" ? "medium" : "low", true);
-    } else if (verdict === "idle" && this.preset !== "high") {
+      this.steppedDown = true;
+    } else if (verdict === "idle" && this.preset !== "high" && !(this.coarseDevice && this.steppedDown)) {
       const nextPreset = this.preset === "low" ? "medium" : "high";
       if (!(this.coarseDevice && nextPreset === "high")) this.apply(nextPreset, true);
     }
+  }
+
+  /**
+   * Something other than the scene made the last frames slow (the screen
+   * turned, the page came back from the background): the frame-rate windows
+   * start over, with their warm-up.
+   */
+  noteDisruption(): void {
+    this.slowWindows = 0;
+    this.fastWindows = 0;
+    this.fpsJudge.reset();
   }
 
   /** @param frameCap the most frames per second the pacer allows right now (30 while unfocused). */
@@ -170,10 +187,18 @@ export class QualityManager {
       this.fastWindows = Math.max(0, this.fastWindows - 1);
     }
 
-    if (this.slowWindows >= 3 && this.preset !== "low") {
+    if (this.slowWindows >= SLOW_WINDOWS_TO_STEP_DOWN && this.preset !== "low") {
       this.apply(this.preset === "high" ? "medium" : "low", true);
       this.slowWindows = 0;
-    } else if (this.fastWindows >= 30 && this.preset !== "high" && !this.gpuMeasured) {
+      this.steppedDown = true;
+    } else if (
+      this.fastWindows >= 30 &&
+      this.preset !== "high" &&
+      !this.gpuMeasured &&
+      // On a phone a step down and back up is two recompiles of every shader
+      // (seconds of frozen picture each); once lowered, the level stays.
+      !(this.coarseDevice && this.steppedDown)
+    ) {
       // Without GPU timing a smooth frame rate is the only hint of headroom.
       const nextPreset = this.preset === "low" ? "medium" : "high";
       if (!(this.coarseDevice && nextPreset === "high")) this.apply(nextPreset, true);

@@ -151,9 +151,9 @@ export const SKY_FUNCTIONS = /* glsl */ `
     cloud += vec3(0.8, 0.9, 1.35) * uFlash * skyFlashShape(direction) * (0.35 + 0.65 * density);
 
     // Aerial perspective pulls distant clouds toward the horizon colour.
-    float nearness = smoothstep(0.02, 0.36, direction.y);
+    float nearness = smoothstep(0.015, 0.26, direction.y);
     cloud = mix(uHorizon * 1.04, cloud, nearness);
-    float coverage = density * smoothstep(0.012, 0.15, direction.y) * 0.94;
+    float coverage = density * smoothstep(0.012, 0.11, direction.y) * 0.94;
     return vec4(cloud, coverage);
   }
 

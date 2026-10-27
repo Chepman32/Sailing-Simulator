@@ -105,6 +105,9 @@ function shipShadowSize(preset: string): number {
   return preset === "low" ? 0 : 2048;
 }
 
+/** A resize is applied once the container's size has held this long (ms). */
+const RESIZE_SETTLE_MS = 140;
+
 export class Simulator {
   private readonly scene = new THREE.Scene();
   private readonly renderer: THREE.WebGLRenderer;
@@ -181,6 +184,10 @@ export class Simulator {
   private loop!: RenderLoop;
   private readonly shoreSplash = new THREE.Vector3();
   private resizeObserver?: ResizeObserver;
+  /** When a coalesced resize was last requested (performance.now), 0 when none is pending. */
+  private resizeRequestedAt = 0;
+  private appliedWidth = 0;
+  private appliedHeight = 0;
   private elapsed = 0;
   private frameDelta = 1 / 60;
   /** The preset the player chose by hand, if any: the only one remembered between visits. */
@@ -410,7 +417,7 @@ export class Simulator {
           if (!this.options.onSceneDoubleTap?.()) this.camera.recenter();
         },
       });
-      this.resizeObserver = new ResizeObserver(this.resize);
+      this.resizeObserver = new ResizeObserver(this.requestResize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
       this.resize();
       await this.prewarmShaders();
@@ -1264,6 +1271,10 @@ export class Simulator {
   }
 
   private readonly render = (): void => {
+    if (this.resizeRequestedAt > 0 && performance.now() - this.resizeRequestedAt > RESIZE_SETTLE_MS) {
+      this.resizeRequestedAt = 0;
+      this.resize();
+    }
     const timer = this.gpuTimer;
     if (timer?.available) {
       const gpuMs = timer.poll();
@@ -1413,10 +1424,31 @@ export class Simulator {
     this.quality.observeFps(fps, frameCap);
   };
 
+  /**
+   * The container changed size. Turning a phone sends a burst of these
+   * (the rotation, then the browser's bars settling), and each resize
+   * reallocates every render target; they are coalesced and applied once the
+   * size has held still for `RESIZE_SETTLE_MS`. The frames around a turn are
+   * also no evidence of a slow GPU: the automatic quality starts its
+   * measurements over instead of stepping the preset down (which recompiles
+   * every shader, a freeze of seconds on a phone).
+   */
+  private readonly requestResize = (): void => {
+    const parent = this.canvas.parentElement;
+    const width = Math.max(1, parent?.clientWidth ?? window.innerWidth);
+    const height = Math.max(1, parent?.clientHeight ?? window.innerHeight);
+    if (width === this.appliedWidth && height === this.appliedHeight && this.resizeRequestedAt === 0) return;
+    this.resizeRequestedAt = performance.now();
+    this.quality?.noteDisruption();
+    this.governor.reset();
+  };
+
   private readonly resize = (): void => {
     const parent = this.canvas.parentElement;
     const width = Math.max(1, parent?.clientWidth ?? window.innerWidth);
     const height = Math.max(1, parent?.clientHeight ?? window.innerHeight);
+    this.appliedWidth = width;
+    this.appliedHeight = height;
     if (this.quality) this.renderer.setPixelRatio(this.quality.pixelRatioFor(width, height, this.governor.scale));
     this.renderer.setSize(width, height, false);
     this.camera?.resize(width, height);

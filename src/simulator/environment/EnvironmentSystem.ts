@@ -390,12 +390,14 @@ export class EnvironmentSystem {
     );
     this.hemisphere.intensity = 0.3 + this.flash * 1.2;
     // Storm light is dark; a little more exposure keeps the sea readable.
-    this.renderer.toneMappingExposure = this.state.exposure * (1 + 0.16 * this.weather.storm);
+    // Full sunshine opens the exposure a touch: a bright, high-key day.
+    this.renderer.toneMappingExposure = this.state.exposure * (1 + 0.16 * this.weather.storm) * (1 + 0.08 * palette.sunshine);
 
     setLinearColor(this.fogColor, lit.horizon);
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.color.copy(this.fogColor);
-      this.scene.fog.density = (0.0008 + night * 0.0001) * (1 + this.weather.haze * 3.4);
+      // Sunshine means clean, dry air: the far islands stand out crisply.
+      this.scene.fog.density = (0.0008 + night * 0.0001) * (1 + this.weather.haze * 3.4) * (1 - 0.4 * palette.sunshine);
     }
     this.scene.background = this.fogColor;
 

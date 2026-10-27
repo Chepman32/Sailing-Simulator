@@ -1,6 +1,11 @@
 @import "tailwindcss";
 
 :root {
+  /* iOS-like springs as easing curves: a damped spring (response 0.4 s,
+     damping 0.62) sampled into linear(); older browsers get an overshooting
+     cubic Bézier instead. */
+  --spring: cubic-bezier(0.34, 1.4, 0.5, 1);
+  --spring-soft: cubic-bezier(0.25, 1.12, 0.4, 1);
   color-scheme: dark;
   --glass: rgba(5, 31, 43, 0.78);
   --glass-strong: rgba(4, 25, 35, 0.91);
@@ -1167,6 +1172,15 @@ input[type="range"]:disabled {
   font-size: 10px;
   line-height: 1.15;
 }
+
+/* A collapsible wrapper (collapsed only on phones, while the engine is off):
+   a one-row grid whose row animates between 0fr and 1fr. */
+.throttle-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.throttle-reveal-inner { min-height: 0; }
 
 .throttle-layout {
   display: grid;
@@ -2341,7 +2355,8 @@ input[type="range"]:disabled {
 }
 
 @media (max-height: 560px) and (orientation: landscape) {
-  .notice-stack { top: calc(var(--edge-top) + var(--top-bar) + 72px); max-width: min(360px, calc(100vw - 2 * var(--notice-side))); }
+  /* Centred in the room left of the throttle, which stands wide here when the engine runs. */
+  .notice-stack { top: calc(var(--edge-top) + var(--top-bar) + 72px); right: calc(var(--edge-right) + 190px); max-width: min(360px, calc(100vw - var(--edge-right) - 200px)); }
   /* Only the step at hand on a short screen. */
   .quick-start li:not(.is-current) { display: none; }
 }
@@ -2493,11 +2508,37 @@ input[type="range"]:disabled {
   .rudder-control.is-tilt .rudder-swipe { display: none; }
   .rudder-control.is-tilt .rudder-slider { pointer-events: none; opacity: 0.7; }
 
-  /* Engine off: only its switch; the throttle appears when it runs. */
-  .throttle-control.is-off { padding: 6px; }
-  .throttle-control.is-off .control-heading,
-  .throttle-control.is-off .throttle-layout { display: none; }
+  /* Engine off: only its switch; the throttle springs out of it when the
+     engine starts and tucks back in when it stops (see .throttle-reveal). */
+  .throttle-control { padding: 6px; transition: padding 380ms var(--spring); }
   .throttle-control.is-off .engine-toggle { min-height: 64px; margin-bottom: 0; gap: 4px; padding: 6px; }
+  .throttle-reveal {
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 560ms var(--spring-soft);
+  }
+  .throttle-reveal-inner {
+    overflow: hidden;
+    transform-origin: 50% 100%;
+    transition:
+      transform 600ms var(--spring),
+      opacity 220ms ease-out,
+      visibility 0s linear 0s;
+  }
+  /* Spacing inside the clipped block (padding on it would survive the collapse). */
+  .throttle-reveal-inner > :first-child { margin-top: 6px; }
+  .throttle-control.is-off .throttle-reveal {
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 300ms cubic-bezier(0.3, 0, 0.2, 1);
+  }
+  .throttle-control.is-off .throttle-reveal-inner {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(18px) scale(0.86, 0.7);
+    transition:
+      transform 280ms cubic-bezier(0.4, 0, 0.7, 0.2),
+      opacity 200ms ease-in 60ms,
+      visibility 0s linear 300ms;
+  }
   .throttle-control .engine-toggle { min-height: 64px; gap: 4px; padding: 6px; }
   .throttle-control .engine-switch-track { width: 48px; height: 28px; }
 
@@ -2508,15 +2549,50 @@ input[type="range"]:disabled {
 }
 
 @media (max-width: 680px) and (orientation: portrait) {
-  .simulator-shell { --throttle-length: clamp(120px, calc(100dvh - 590px), 190px); }
+  /* Twice the old travel: a long, easy-to-hit throttle for the thumb. */
+  .simulator-shell { --throttle-length: clamp(240px, calc(100dvh - 420px), 380px); }
   .quick-start,
   .discovery-card,
   .stuck-chip { bottom: calc(var(--edge-bottom) + 76px); }
 }
 
 @media (max-height: 560px) and (orientation: landscape) {
-  .simulator-shell { --throttle-length: clamp(100px, calc(100dvh - 250px), 170px); }
+  /* About twice the old travel. There is no height for that above the engine
+     switch, so in landscape the throttle stands beside it, as tall as the
+     screen allows below the settings button, and springs out sideways and
+     upward at once; the order is its only caption. */
+  .simulator-shell { --throttle-length: clamp(160px, calc(100dvh - 130px), 300px); }
   .rudder-control { width: clamp(240px, 40vw, 360px); }
+
+  .throttle-control {
+    display: grid;
+    grid-template-columns: auto auto;
+    align-items: end;
+    width: auto;
+  }
+  .throttle-control .engine-toggle { grid-column: 1; grid-row: 1; }
+  .throttle-reveal {
+    grid-column: 2;
+    grid-row: 1;
+    grid-template-columns: 1fr;
+    transition:
+      grid-template-rows 560ms var(--spring-soft),
+      grid-template-columns 560ms var(--spring-soft);
+  }
+  .throttle-reveal-inner { min-width: 0; transform-origin: 0% 100%; }
+  .throttle-reveal-inner > * { margin-left: 6px; }
+  .throttle-reveal-inner > :first-child { margin-top: 0; }
+  .throttle-control.is-off .throttle-reveal {
+    grid-template-columns: 0fr;
+    transition:
+      grid-template-rows 300ms cubic-bezier(0.3, 0, 0.2, 1),
+      grid-template-columns 300ms cubic-bezier(0.3, 0, 0.2, 1);
+  }
+  .throttle-control.is-off .throttle-reveal-inner { transform: translateX(-14px) scale(0.7, 0.8); }
+  .throttle-reveal .vertical-heading { width: 76px; margin: 0 auto 4px; }
+  .throttle-reveal .vertical-heading > span,
+  .throttle-layout > span { display: none; }
+  .throttle-reveal .vertical-heading strong { font-size: 10px; line-height: 1.15; white-space: normal; }
 }
 
 .engine-switch-track span { transition: transform 160ms ease; }
@@ -2948,4 +3024,17 @@ input[type="range"]:disabled {
   color: #d6f6ff;
   border-color: rgba(126, 220, 255, 0.45);
   background: rgba(126, 220, 255, 0.12);
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    --spring: linear(0, 0.043, 0.15, 0.291, 0.444, 0.593, 0.727, 0.84, 0.929, 0.995, 1.041, 1.068, 1.081, 1.083, 1.078, 1.068, 1.056, 1.043, 1.031, 1.02, 1.011, 1.004, 0.999, 0.996, 0.994, 0.993, 0.993, 0.994, 0.995, 0.996, 1);
+    --spring-soft: linear(0, 0.047, 0.158, 0.3, 0.449, 0.589, 0.711, 0.812, 0.891, 0.949, 0.99, 1.016, 1.031, 1.037, 1.038, 1.035, 1.031, 1.025, 1.019, 1.014, 1.01, 1.006, 1.003, 1.001, 1, 0.999, 0.999, 0.999, 1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .throttle-reveal,
+  .throttle-reveal-inner,
+  .throttle-control { transition-duration: 0s !important; }
 }
