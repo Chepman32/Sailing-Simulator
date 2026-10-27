@@ -6,6 +6,7 @@ import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
 import type { CameraMode, Discovery, LightingMode, LoadingState, QualityChoice } from "@/src/simulator/types";
 import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
 import { SoundPrompt } from "./SoundPrompt";
+import { usePwaInstall } from "./usePwaInstall";
 import { gravityRollDegrees, requestTiltPermission, screenAngle, screenRollDegrees, STEERING_STORAGE_KEY, swipeToRudder, tiltToRudder, wheelToRudder } from "./steering";
 import { featureText, getFeatureMessages } from "./featureMessages";
 import { ChartView } from "./ChartView";
@@ -340,6 +341,7 @@ export function SailingSimulator() {
   const [radioVolume, setRadioVolume] = useState(0.7);
   const [panelTab, setPanelTab] = useState<"scene" | "yacht">("scene");
   const [confirmRestart, setConfirmRestart] = useState(false);
+  const { canInstall, install: installApp } = usePwaInstall();
   // First-run guide: 1–3 while it runs, 0 once done (decided after mount, from storage).
   const [guideStep, setGuideStep] = useState(0);
   const [coarsePointer, setCoarsePointer] = useState(false);
@@ -1238,7 +1240,7 @@ export function SailingSimulator() {
           <header>
             <div>
               <p className="eyebrow">
-                <span className="full-control-title">{messages.sailingControls}</span>
+                <span className="full-control-title">{messages.worldControls}</span>
                 <span className="mobile-control-title">{messages.controls}</span>
               </p>
               {/* On phones the heading card is hidden and this line carries the
@@ -1503,6 +1505,9 @@ export function SailingSimulator() {
                     <button type="button" onClick={recenterCamera}><VoyageIcon name="recenter" /><span>{voyage.recenterCamera}</span></button>
                     <button type="button" onClick={rescueBoat}><VoyageIcon name="rescue" /><span>{voyage.rescue}</span></button>
                     <button type="button" className="quiet-danger" onClick={() => setConfirmRestart(true)}><VoyageIcon name="restart" /><span>{voyage.restart}</span></button>
+                    {canInstall && (
+                      <button type="button" className="install-app" onClick={installApp}><VoyageIcon name="install" /><span>{messages.installApp}</span></button>
+                    )}
                   </div>
                 )}
               </div>

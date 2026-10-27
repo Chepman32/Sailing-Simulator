@@ -21,6 +21,7 @@ export type VoyageIconName =
   | "recenter"
   | "rescue"
   | "restart"
+  | "install"
   | "bottle"
   | "crate"
   | "flamingo"
@@ -63,6 +64,12 @@ export function VoyageIcon({ name }: { name: VoyageIconName }) {
         <>
           <path d="M12 2.8v8.1" />
           <path d="M7.2 5.8a8 8 0 1 0 9.6 0" />
+        </>
+      )}
+      {name === "install" && (
+        <>
+          <path d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5" />
+          <path d="M4.5 15.5v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3" />
         </>
       )}
       {name === "recenter" && (
