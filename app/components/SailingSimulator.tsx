@@ -401,8 +401,7 @@ export function SailingSimulator() {
     if (!photoMode) return;
     const photoButton = photoButtonRef.current;
     canvasRef.current?.focus({ preventScroll: true });
-    // The interface is hidden in photo mode, so say once how to get it back.
-    setPhotoHint(true);
+    // The hint shown on the way in (`enterPhotoMode`) fades after a few seconds.
     const hintTimer = window.setTimeout(() => setPhotoHint(false), 3200);
     const onKeyDown = (event: KeyboardEvent) => {
       // Tab restores the interface as well, so keyboard users cannot end up
@@ -665,7 +664,10 @@ export function SailingSimulator() {
         simulatorRef.current = simulator;
         // Development builds only: lets visual checks drive the scene from a
         // headless browser (camera, engine) without clicking through the UI.
-        if (process.env.NODE_ENV !== "production") (window as unknown as { __simulator?: SimulatorInstance }).__simulator = simulator;
+        // Exposed for development, and in production with ?debug (profiling the real build).
+        if (process.env.NODE_ENV !== "production" || new URLSearchParams(window.location.search).has("debug")) {
+          (window as unknown as { __simulator?: SimulatorInstance }).__simulator = simulator;
+        }
         await simulator.init();
       } catch (reason: unknown) {
         if (!disposed) {
@@ -864,6 +866,8 @@ export function SailingSimulator() {
   const enterPhotoMode = () => {
     photoModeRef.current = true;
     setPhotoMode(true);
+    // The interface is hidden in photo mode, so say once how to get it back.
+    setPhotoHint(true);
     // The camera now turns by itself to whales, dolphins, sharks, eruptions and ships' horns.
     simulatorRef.current?.setPhotoMode(true);
     if (guideStep === 3) finishGuide();

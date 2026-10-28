@@ -1,6 +1,7 @@
 import { clamp } from "../math";
 import { BoatVoices } from "./BoatVoices";
 import { BELL_RING, ringBell } from "./BellSynth";
+import { windSoundLevels, windWander } from "./WindSoundMath";
 import { hornLength, openSeaImpulse, playHorn, type HornSpec } from "./HornSynth";
 import { HouseGroove, ShantyBand } from "./MusicSynth";
 
@@ -27,6 +28,12 @@ export type AudioWeather = {
   rain: number;
   /** Sea state scale, 1 = the trade-wind sea. */
   waves: number;
+  /** Wind of the weather relative to the trade wind (1 fair … 3.3 hurricane). */
+  wind?: number;
+  /** Storm intensity, 0…1. */
+  storm?: number;
+  /** True wind over the sea, m/s. */
+  trueWind?: number;
 };
 
 /** What the sails and the wind are doing, for the yacht's own sounds. */
@@ -47,9 +54,6 @@ export type ShipSound = {
   anchored: boolean;
   length: number;
 };
-
-/** Overall level of the wind and the rigging's whistle (1 = the former mix; 0.35 ≈ −9 dB). */
-export const WIND_LEVEL = 0.35;
 
 /** Speed of sound in air, m/s: a distant horn arrives seconds late. */
 const SPEED_OF_SOUND = 343;
@@ -153,6 +157,15 @@ export class AudioSystem {
   private thunderBuffer?: AudioBuffer;
   private windGain?: GainNode;
   private windFilter?: BiquadFilterNode;
+  /** The storm's layers (see `WindSoundMath`). */
+  private roarGain?: GainNode;
+  private roarFilter?: BiquadFilterNode;
+  private howlGain?: GainNode;
+  private readonly howlBands: BiquadFilterNode[] = [];
+  private shriekGain?: GainNode;
+  private shriekBand?: BiquadFilterNode;
+  private spindriftGain?: GainNode;
+  private windClock = 0;
   private gullClock = 4 + Math.random() * 6;
   private engineLoad = 0;
   private boat?: BoatVoices;
@@ -262,9 +275,10 @@ export class AudioSystem {
   bell(): void {
     const context = this.context;
     if (!context || !this.isReady() || !this.enabled) return;
-    const input = this.onboardInput(this.bellPoint, 5, BELL_RING + 3.5);
+    // Rung to be heard: from the chase camera as clearly as from the helm.
+    const input = this.onboardInput(this.bellPoint, 12, BELL_RING + 3.5);
     this.clickBuffer ??= this.createNoiseBuffer(0.6, "white");
-    if (input) ringBell(context, input, context.currentTime + 0.02, this.clickBuffer, 2, 0.46, 0.85);
+    if (input) ringBell(context, input, context.currentTime + 0.02, this.clickBuffer, 2, 0.46, 1.25);
   }
 
   /**
@@ -867,17 +881,28 @@ export class AudioSystem {
     const heavySea = clamp((weather.waves - 1) / 3.5, 0, 1);
     this.waveGain?.gain.setTargetAtTime(0.24 + clamp(speed / 7, 0, 1) * 0.18 + heavySea * 0.34, now, 0.5);
     this.waveFilter?.frequency.setTargetAtTime(1100 + heavySea * 900, now, 0.8);
-    // A soft, low rush that swells slowly with the breeze and the weather;
-    // the rigging only sings when it really blows, and howls in a gale.
-    const overcast = weather.overcast;
-    const breeze = clamp((apparentWind - 2) / 14, 0, 1);
-    const gale = clamp((apparentWind - 16) / 14, 0, 1);
-    // The wind is a bed under the water and the boat, not the lead: it sits
-    // about 9 dB below where it was (`WIND_LEVEL`).
-    // A gust is heard coming over the water and swells the wind while it blows.
-    const swell = 1 + sailing.gust * 0.9 + sailing.gustApproaching * 0.45;
-    this.windGain?.gain.setTargetAtTime((0.018 + breeze * 0.045 + overcast * 0.02 + gale * 0.1) * WIND_LEVEL * swell, now, 0.9);
-    this.windFilter?.frequency.setTargetAtTime(380 + breeze * 420 + overcast * 120 + gale * 520, now, 1.6);
+    // The wind: barely a breath on a fair day, a roaring, howling thing in a
+    // storm (see WindSoundMath). Driven by the weather, not by the yacht's
+    // own speed: twenty knots under power on a calm day is no gale.
+    this.windClock += step;
+    const windLevels = windSoundLevels({
+      trueWind: weather.trueWind ?? apparentWind,
+      apparentWind,
+      storm: weather.storm ?? 0,
+      windScale: weather.wind ?? 1,
+      gust: sailing.gust,
+      gustApproaching: sailing.gustApproaching,
+      wander: windWander(this.windClock),
+    });
+    this.windGain?.gain.setTargetAtTime(windLevels.breeze, now, 0.9);
+    this.windFilter?.frequency.setTargetAtTime(windLevels.breezeTone, now, 1.6);
+    this.roarGain?.gain.setTargetAtTime(windLevels.roar, now, 0.6);
+    this.roarFilter?.frequency.setTargetAtTime(windLevels.roarTone, now, 0.5);
+    this.howlGain?.gain.setTargetAtTime(windLevels.howl, now, 0.5);
+    this.howlBands.forEach((band, index) => band.frequency.setTargetAtTime(windLevels.howlPitch * (index === 0 ? 1 : 1.47), now, 0.7));
+    this.shriekGain?.gain.setTargetAtTime(windLevels.shriek, now, 0.4);
+    this.shriekBand?.frequency.setTargetAtTime(windLevels.shriekPitch, now, 0.6);
+    this.spindriftGain?.gain.setTargetAtTime(windLevels.spindrift, now, 0.5);
     // Rain: a hiss on the sea and a patter on the deck.
     const rain = clamp(weather.rain, 0, 1);
     this.rainHissGain?.gain.setTargetAtTime(Math.pow(rain, 1.2) * 0.1, now, 0.9);
@@ -897,6 +922,8 @@ export class AudioSystem {
       gustApproaching: sailing.gustApproaching,
       luff: sailing.luff,
       trimRate: sailing.trimRate,
+      trueWind: (weather.trueWind ?? apparentWind) * 1.943844,
+      motoring: revs,
     });
   }
 
@@ -1122,6 +1149,68 @@ export class AudioSystem {
   }
 
   /**
+   * The storm's wind, silent until the weather calls for it: a deep roar,
+   * the rigging's howl, a hurricane's shriek and the hiss of spindrift.
+   */
+  private createStormWind(context: AudioContext, bus: AudioNode): void {
+    const roar = context.createBufferSource();
+    roar.buffer = this.createNoiseBuffer(5.3, "brown");
+    roar.loop = true;
+    this.roarFilter = context.createBiquadFilter();
+    this.roarFilter.type = "lowpass";
+    this.roarFilter.frequency.value = 220;
+    this.roarFilter.Q.value = 0.4;
+    this.roarGain = context.createGain();
+    this.roarGain.gain.value = 0;
+    roar.connect(this.roarFilter).connect(this.roarGain).connect(bus);
+    roar.start(0, 1.7);
+
+    const howl = context.createBufferSource();
+    howl.buffer = this.createNoiseBuffer(4.4, "pink");
+    howl.loop = true;
+    this.howlGain = context.createGain();
+    this.howlGain.gain.value = 0;
+    for (const [q, level] of [[9, 1], [12, 0.55]] as const) {
+      const band = context.createBiquadFilter();
+      band.type = "bandpass";
+      band.frequency.value = 300;
+      band.Q.value = q;
+      const bandGain = context.createGain();
+      bandGain.gain.value = level;
+      howl.connect(band).connect(bandGain).connect(this.howlGain);
+      this.howlBands.push(band);
+    }
+    this.howlGain.connect(bus);
+    howl.start(0, 2.3);
+
+    const shriek = context.createBufferSource();
+    shriek.buffer = this.createNoiseBuffer(3.7, "white");
+    shriek.loop = true;
+    this.shriekBand = context.createBiquadFilter();
+    this.shriekBand.type = "bandpass";
+    this.shriekBand.frequency.value = 1600;
+    this.shriekBand.Q.value = 18;
+    this.shriekGain = context.createGain();
+    this.shriekGain.gain.value = 0;
+    shriek.connect(this.shriekBand).connect(this.shriekGain).connect(bus);
+    shriek.start(0, 0.9);
+
+    const spindrift = context.createBufferSource();
+    spindrift.buffer = this.createNoiseBuffer(3.1, "white");
+    spindrift.loop = true;
+    const spindriftHigh = context.createBiquadFilter();
+    spindriftHigh.type = "highpass";
+    spindriftHigh.frequency.value = 3200;
+    const spindriftSoft = context.createBiquadFilter();
+    spindriftSoft.type = "lowpass";
+    spindriftSoft.frequency.value = 9000;
+    this.spindriftGain = context.createGain();
+    this.spindriftGain.gain.value = 0;
+    spindrift.connect(spindriftHigh).connect(spindriftSoft).connect(this.spindriftGain).connect(bus);
+    spindrift.start(0, 1.4);
+  }
+
+  /**
    * The boom fetching up on its sheet after a gybe: a short, low thud with a
    * rattle of blocks on top.
    */
@@ -1145,11 +1234,11 @@ export class AudioSystem {
     rattle.buffer = this.createNoiseBuffer(0.2);
     const rattleFilter = this.context.createBiquadFilter();
     rattleFilter.type = "bandpass";
-    rattleFilter.frequency.value = 2200;
-    rattleFilter.Q.value = 1.4;
+    rattleFilter.frequency.value = 900;
+    rattleFilter.Q.value = 0.8;
     const rattleGain = this.context.createGain();
     rattleGain.gain.setValueAtTime(0.0001, now);
-    rattleGain.gain.exponentialRampToValueAtTime(0.09 * strength, now + 0.006);
+    rattleGain.gain.exponentialRampToValueAtTime(0.035 * strength, now + 0.006);
     rattleGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
     rattle.connect(rattleFilter).connect(rattleGain).connect(this.wildlifeBus);
     rattle.start(now);
@@ -1399,10 +1488,11 @@ export class AudioSystem {
     windSoftener.type = "lowpass";
     windSoftener.frequency.value = 1400;
     this.windGain = this.context.createGain();
-    this.windGain.gain.value = 0.02 * WIND_LEVEL;
+    this.windGain.gain.value = 0.004;
     // Gusts are events (see WindMath.gustEvent): update() swells the wind.
     wind.connect(this.windFilter).connect(windSoftener).connect(this.windGain).connect(this.environmentBus);
     wind.start(0, 0.41);
+    this.createStormWind(this.context, this.environmentBus);
     this.boat = new BoatVoices(this.context, this.environmentBus, (duration, color) => this.createNoiseBuffer(duration, color));
     // The open sea's echo for horns and the bell: early reflections off the
     // water and a distant shore, then a long, darkening tail.

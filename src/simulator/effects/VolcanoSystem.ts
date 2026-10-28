@@ -38,12 +38,12 @@ import {
  *
  * Smoke is drawn as lit, sorted billows (`LitPuffs`), the fountain as
  * motion-blurred streaks (`EmberStreaks`). The cone itself is island
- * terrain (see `IslandMath.volcanoHeight`). At most `MAX_VOLCANOES` in
- * range are animated; their meshes are built once when one comes in range.
+ * terrain (see `IslandMath.volcanoHeight`). There is one volcano in the
+ * sea; its meshes are built once when it comes in range.
  */
 
-const MAX_VOLCANOES = 2;
-/** Volcanoes farther than this are not animated (their plume is in the haze). */
+/** There is a single volcano in the sea (`isVolcanoCell`). */
+const MAX_VOLCANOES = 1;
 /** Plumes are kept to the distance at which the cones themselves are drawn (`VOLCANO_DRAW_DISTANCE`). */
 const VOLCANO_RANGE = VOLCANO_DRAW_DISTANCE;
 const PLUME_PUFFS = 80;

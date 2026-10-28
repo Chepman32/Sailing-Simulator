@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { computeBoundingSphereFast } from "../core/FastGeometry";
 import { coverageMipmaps } from "./PalmModels";
 import { islandEdgeNoise, terrainNoise, type IslandDefinition } from "./IslandMath";
 
@@ -169,10 +170,13 @@ export function buildGrass(
   let spacing = 2.2;
   const area = Math.PI * reach * reach * 0.5;
   if (area / (spacing * spacing) > MAX_TUFTS * 0.65) spacing = Math.sqrt(area / (MAX_TUFTS * 0.65));
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const normals: number[] = [];
-  const sway: number[] = [];
+  // Written straight into typed arrays (an island holds up to some 200k
+  // vertices), sized once for the most tufts this island can take: no array
+  // per vertex, no regrowing, no copy from a JS array at the end.
+  const clump = spacing * 2.4;
+  const around = Math.round((Math.PI * 2 * island.beachRadius * 0.72) / 0.6);
+  const candidates = (Math.floor((2 * reach) / clump) + 1) ** 2 * MAX_TUSSOCK_TUFTS + around * 3;
+  const buffers = new GrassBuffers(Math.min(MAX_TUFTS, candidates) * MAX_BLADES * GRASS_BLADE_VERTICES);
   const base = new THREE.Color();
   const tip = new THREE.Color();
   let tufts = 0;
@@ -181,10 +185,11 @@ export function buildGrass(
     if (grass <= 0.05 || blocked(x, z) || tufts >= MAX_TUFTS) return;
     tufts += 1;
     const y = ground(Math.min(radial, 1.02), angle) - 0.03;
-    const blades = 5 + Math.floor(rng() * 3);
+    const blades = 5 + Math.floor(rng() * (MAX_BLADES - 4));
     const height = (0.28 + rng() * 0.32) * scale * (0.6 + 0.4 * grass);
     base.setRGB(0.09, 0.2 + rng() * 0.05, 0.05);
     tip.setRGB(0.32 + dry * 0.3, 0.5 + dry * 0.1, 0.16 + dry * 0.02);
+    buffers.reserve(blades * GRASS_BLADE_VERTICES);
     for (let blade = 0; blade < blades; blade += 1) {
       const heading = rng() * Math.PI * 2;
       const lean = 0.25 + rng() * 0.55;
@@ -197,45 +202,26 @@ export function buildGrass(
       const az = dx * w;
       const ox = x + (rng() - 0.5) * 0.12;
       const oz = z + (rng() - 0.5) * 0.12;
-      // Three stations up the blade, bending further out as it rises.
-      const station = (t: number): [number, number, number] => {
-        const out = Math.sin(lean) * h * t * t;
-        return [ox + dx * out, y + Math.cos(lean * t) * h * t, oz + dz * out];
-      };
-      const p0 = station(0);
-      const p1 = station(0.5);
-      const p2 = station(1);
-      const halfWidth = [1, 0.7, 0];
-      const points = [p0, p1, p2];
-      const quad = (i: number) => {
-        const [x0, y0, z0] = points[i]!;
-        const [x1, y1, z1] = points[i + 1]!;
-        const w0 = halfWidth[i]!;
-        const w1 = halfWidth[i + 1]!;
-        const verts: [number, number, number, number][] = [
-          [x0 - ax * w0, y0, z0 - az * w0, i / 2],
-          [x0 + ax * w0, y0, z0 + az * w0, i / 2],
-          [x1 + ax * w1, y1, z1 + az * w1, (i + 1) / 2],
-          [x0 - ax * w0, y0, z0 - az * w0, i / 2],
-          [x1 + ax * w1, y1, z1 + az * w1, (i + 1) / 2],
-          [x1 - ax * w1, y1, z1 - az * w1, (i + 1) / 2],
-        ];
-        for (const [vx, vy, vz, t] of verts) {
-          positions.push(vx, vy, vz);
-          // Grass is lit like the ground it covers (normals toward the sky),
-          // with a hint of the blade's own facing so tufts are not flat.
-          normals.push(dx * 0.25, 0.95, dz * 0.25);
-          colors.push(base.r + (tip.r - base.r) * t, base.g + (tip.g - base.g) * t, base.b + (tip.b - base.b) * t);
-          sway.push(t * t * h);
-        }
-      };
-      quad(0);
-      quad(1);
+      // Three stations up the blade (t = 0, ½, 1), bending further out as it
+      // rises; the blade narrows from full width to 0.7 to a point.
+      const bend = Math.sin(lean) * h;
+      const out1 = bend * 0.25;
+      const x1 = ox + dx * out1;
+      const y1 = y + Math.cos(lean * 0.5) * h * 0.5;
+      const z1 = oz + dz * out1;
+      const x2 = ox + dx * bend;
+      const y2 = y + Math.cos(lean) * h;
+      const z2 = oz + dz * bend;
+      // Grass is lit like the ground it covers (normals toward the sky),
+      // with a hint of the blade's own facing so tufts are not flat.
+      const nx = dx * 0.25;
+      const nz = dz * 0.25;
+      buffers.quad(ox, y, oz, 1, 0, x1, y1, z1, 0.7, 0.5, ax, az, nx, nz, h, base, tip);
+      buffers.quad(x1, y1, z1, 0.7, 0.5, x2, y2, z2, 0, 1, ax, az, nx, nz, h, base, tip);
     }
   };
   // Tussocks: clumps of tufts round a jittered grid of centres, a few
   // metres apart, thick where the ground is wild and absent on short turf.
-  const clump = spacing * 2.4;
   for (let gx = -reach; gx <= reach; gx += clump) {
     for (let gz = -reach; gz <= reach; gz += clump) {
       const cx = gx + (rng() - 0.5) * clump;
@@ -243,7 +229,7 @@ export function buildGrass(
       const wild = terrainNoise(cx * 0.05 + 11.3, cz * 0.05 - 4.1);
       if (wild < 0.35) continue;
       const dry = terrainNoise(cx * 0.07 + 3.1, cz * 0.07) > 0.6 ? 0.75 : rng() * 0.3;
-      const count = 3 + Math.floor(wild * 6);
+      const count = 3 + Math.floor(wild * (MAX_TUSSOCK_TUFTS - 2));
       for (let tuft = 0; tuft < count; tuft += 1) {
         const a = rng() * Math.PI * 2;
         const r = Math.sqrt(rng()) * 1.1;
@@ -252,7 +238,6 @@ export function buildGrass(
     }
   }
   // The fringe along the vegetation line: dense, taller beach grass.
-  const around = Math.round((Math.PI * 2 * island.beachRadius * 0.72) / 0.6);
   for (let index = 0; index < around; index += 1) {
     for (let row = 0; row < 3; row += 1) {
       const angle = (index + rng()) / around * Math.PI * 2;
@@ -262,14 +247,104 @@ export function buildGrass(
       plant(Math.cos(angle) * r, Math.sin(angle) * r * island.scaleZ, 1.1 + rng() * 0.6, 0.35 + rng() * 0.4);
     }
   }
-  if (positions.length === 0) return null;
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setAttribute("sway", new THREE.Float32BufferAttribute(sway, 1));
-  geometry.computeBoundingSphere();
-  return geometry;
+  return buffers.geometry();
+}
+
+/** Vertices of one blade: two quads of two triangles. */
+const GRASS_BLADE_VERTICES = 12;
+/** Most blades in a tuft (5…7). */
+const MAX_BLADES = 7;
+/** Most tufts round one tussock centre (3…8: wild ground is below 1). */
+const MAX_TUSSOCK_TUFTS = 8;
+
+/** Growable typed arrays for the grass vertices (position, normal, colour, sway). */
+class GrassBuffers {
+  private capacity: number;
+  private count = 0;
+  private positions: Float32Array;
+  private normals: Float32Array;
+  private colors: Float32Array;
+  private sway: Float32Array;
+
+  /** `capacity` vertices to start with (more are made room for if needed). */
+  constructor(capacity: number) {
+    this.capacity = Math.max(1, Math.ceil(capacity));
+    this.positions = new Float32Array(this.capacity * 3);
+    this.normals = new Float32Array(this.capacity * 3);
+    this.colors = new Float32Array(this.capacity * 3);
+    this.sway = new Float32Array(this.capacity);
+  }
+
+  /** Room for `vertices` more. */
+  reserve(vertices: number): void {
+    const needed = this.count + vertices;
+    if (needed <= this.capacity) return;
+    const capacity = Math.max(needed, this.capacity * 2, 4096);
+    const grow = (array: Float32Array, size: number): Float32Array<ArrayBuffer> => {
+      const next = new Float32Array(capacity * size);
+      next.set(array.subarray(0, this.count * size));
+      return next;
+    };
+    this.positions = grow(this.positions, 3);
+    this.normals = grow(this.normals, 3);
+    this.colors = grow(this.colors, 3);
+    this.sway = grow(this.sway, 1);
+    this.capacity = capacity;
+  }
+
+  /**
+   * One segment of a blade from (x0, y0, z0) to (x1, y1, z1): half-widths
+   * `w0`, `w1` times the across vector (ax, az), and `t0`, `t1` up the blade
+   * for the colour (root `base` to `tip`) and the sway (t² of height `h`).
+   */
+  quad(
+    x0: number, y0: number, z0: number, w0: number, t0: number,
+    x1: number, y1: number, z1: number, w1: number, t1: number,
+    ax: number, az: number, nx: number, nz: number, h: number,
+    base: THREE.Color, tip: THREE.Color,
+  ): void {
+    this.vertex(x0 - ax * w0, y0, z0 - az * w0, t0, nx, nz, h, base, tip);
+    this.vertex(x0 + ax * w0, y0, z0 + az * w0, t0, nx, nz, h, base, tip);
+    this.vertex(x1 + ax * w1, y1, z1 + az * w1, t1, nx, nz, h, base, tip);
+    this.vertex(x0 - ax * w0, y0, z0 - az * w0, t0, nx, nz, h, base, tip);
+    this.vertex(x1 + ax * w1, y1, z1 + az * w1, t1, nx, nz, h, base, tip);
+    this.vertex(x1 - ax * w1, y1, z1 - az * w1, t1, nx, nz, h, base, tip);
+  }
+
+  private vertex(x: number, y: number, z: number, t: number, nx: number, nz: number, h: number, base: THREE.Color, tip: THREE.Color): void {
+    const index = this.count;
+    this.count += 1;
+    const i3 = index * 3;
+    this.positions[i3] = x;
+    this.positions[i3 + 1] = y;
+    this.positions[i3 + 2] = z;
+    this.normals[i3] = nx;
+    this.normals[i3 + 1] = 0.95;
+    this.normals[i3 + 2] = nz;
+    this.colors[i3] = base.r + (tip.r - base.r) * t;
+    this.colors[i3 + 1] = base.g + (tip.g - base.g) * t;
+    this.colors[i3 + 2] = base.b + (tip.b - base.b) * t;
+    this.sway[index] = t * t * h;
+  }
+
+  /**
+   * The finished geometry, or null when nothing grew. Arrays mostly filled
+   * are handed over as views (no copy; the GPU gets only the vertices), the
+   * others cut to size so an island does not keep the spare room.
+   */
+  geometry(): THREE.BufferGeometry | null {
+    if (this.count === 0) return null;
+    const count = this.count;
+    const view = count >= this.capacity * 0.75;
+    const cut = (array: Float32Array, size: number) => (view ? array.subarray(0, count * size) : array.slice(0, count * size));
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(cut(this.positions, 3), 3));
+    geometry.setAttribute("normal", new THREE.BufferAttribute(cut(this.normals, 3), 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(cut(this.colors, 3), 3));
+    geometry.setAttribute("sway", new THREE.BufferAttribute(cut(this.sway, 1), 1));
+    computeBoundingSphereFast(geometry);
+    return geometry;
+  }
 }
 
 /** The grass material: vertex colours, both faces, a breeze that moves the tips. */

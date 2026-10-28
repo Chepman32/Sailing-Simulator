@@ -3,6 +3,9 @@ import { clamp } from "../math";
 /** Extra elevation (rad) the sun reaches at the top of its arc in the automatic cycle. */
 export const SUN_ARC_HEIGHT = 0.3;
 
+/** Height of the moon at full night, radians (about 12°). */
+export const MOON_NIGHT_ELEVATION = 0.215;
+
 export type TimeOfDayState = {
   normalizedTime: number;
   sunElevation: number;
@@ -27,7 +30,11 @@ export function deriveTimeOfDay(nightFactor: number, sunArc = 0): TimeOfDayState
     // glitter path toward the opening view. Going to night it sets through a
     // full sunset, crossing the horizon about halfway, as before.
     sunElevation: 0.5 + arc * SUN_ARC_HEIGHT - night * 0.86 - night * night * night * 0.2,
-    moonElevation: -0.28 + night * (Math.PI / 6 + 0.28),
+    // The moon rides low, about 12° up at full night: in the frame of the
+    // usual views (the chase camera sees only some 20° above the horizon,
+    // so a moon 30° up was never on screen) and laying a long silver path
+    // across the sea toward the yacht.
+    moonElevation: -0.28 + night * (MOON_NIGHT_ELEVATION + 0.28),
     exposure: 1.08 - night * 0.24,
     starVisibility: Math.pow(night, 1.6),
     nightFactor: night,

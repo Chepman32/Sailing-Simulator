@@ -4,8 +4,12 @@ import { batchStaticMeshes } from "../core/StaticBatching";
 import { SHIP_SHADOW_LAYER } from "./ShipShadows";
 import { SHIP_SPECS, type ShipKind } from "./ShipMath";
 import {
+  addHullMesh,
   bowYaw,
+  closeHullProfile,
+  emptyHullProfile,
   fitShipModel,
+  HULL_PROFILE_BAND,
   isSeaSurface,
   SHIP_MODELS,
   unionBounds,
@@ -68,6 +72,11 @@ export class ShipModels {
     return this.sources[kind].length;
   }
 
+  /** The measured waterline half-widths of a loaded model (see `measureHullProfile`). */
+  profile(kind: ShipKind, variant: number): Float32Array | null {
+    return (this.prototypes.get(`${kind}:${variant}`)?.userData.hullProfile as Float32Array | undefined) ?? null;
+  }
+
   /** A ship-sized copy of a loaded model, or null while it is not available. */
   instance(kind: ShipKind, variant: number): THREE.Group | null {
     const prototype = this.prototypes.get(`${kind}:${variant}`);
@@ -84,6 +93,35 @@ export class ShipModels {
       material.dispose();
     });
     this.prototypes.clear();
+  }
+
+  /** Waterline half-widths of the prepared model, in the ship's frame. */
+  private measure(root: THREE.Object3D, halfLength: number): Float32Array {
+    root.updateMatrixWorld(true);
+    const inverse = new THREE.Matrix4().copy(root.matrixWorld).invert();
+    const toRoot = new THREE.Matrix4();
+    const point = new THREE.Vector3();
+    const profile = emptyHullProfile();
+    root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const geometry = object.geometry as THREE.BufferGeometry;
+      const position = geometry.getAttribute("position");
+      if (!position) return;
+      toRoot.multiplyMatrices(inverse, object.matrixWorld);
+      // Parts that lie wholly above or below the band (the superstructure) are skipped.
+      if (!geometry.boundingBox) geometry.computeBoundingBox();
+      box.copy(geometry.boundingBox!).applyMatrix4(toRoot);
+      if (box.max.y < HULL_PROFILE_BAND[0] || box.min.y > HULL_PROFILE_BAND[1]) return;
+      const positions = new Float32Array(position.count * 3);
+      for (let vertex = 0; vertex < position.count; vertex += 1) {
+        point.fromBufferAttribute(position, vertex).applyMatrix4(toRoot);
+        positions[3 * vertex] = point.x;
+        positions[3 * vertex + 1] = point.y;
+        positions[3 * vertex + 2] = point.z;
+      }
+      addHullMesh(profile, positions, geometry.index ? geometry.index.array : null, halfLength);
+    });
+    return closeHullProfile(profile);
   }
 
   private prepare(scene: THREE.Group, kind: ShipKind, source: ShipModelSource): THREE.Group {
@@ -148,6 +186,7 @@ export class ShipModels {
       if (!used) this.materials.delete(material);
     });
     root.userData.credit = source.credit;
+    root.userData.hullProfile = this.measure(root, SHIP_SPECS[kind].length / 2);
     return root;
   }
 }

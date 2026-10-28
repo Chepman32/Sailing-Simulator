@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { createShip, nearestHullClearance, shipHullDistance, type Ship } from "../../src/simulator/ships/ShipMath";
 import type { OceanSampler } from "../../src/simulator/vessel/VesselPhysics";
 import { VesselPhysics, type IslandPhysics } from "../../src/simulator/vessel/VesselPhysics";
+import { HULL_OUTLINE } from "../../src/simulator/vessel/ShoreContact";
 
 const CALM: OceanSampler = { sample: () => ({ height: 0, normalX: 0, normalY: 1, normalZ: 0 }) };
 const OPEN_WATER: IslandPhysics = {
@@ -70,7 +71,7 @@ test("a yacht lying against a ship's side gets away", () => {
   assert.ok(closest > 0.3, `touched the hull (${closest.toFixed(2)} m)`);
 });
 
-test("the yacht may come alongside a ship to a couple of metres without being turned away", () => {
+test("the yacht may come alongside a ship to about a metre without being turned away", () => {
   const ship = wall();
   const physics = new VesselPhysics(CALM, OPEN_WATER);
   physics.hullClearance = (x, z, normal) => nearestHullClearance([ship], x, z, normal);
@@ -79,19 +80,32 @@ test("the yacht may come alongside a ship to a couple of metres without being tu
   physics.heading = -0.28;
   const controls = { throttle: 0.2, rudder: 0, sailTrim: 0.2 };
   let closest = Infinity;
+  let closestEdge = Infinity;
   let engagedFarOff = 0;
+  const edgeGap = () => {
+    let gap = Infinity;
+    for (const [side, ahead] of HULL_OUTLINE) {
+      const px = physics.position.x + physics.right.x * side + physics.forward.x * ahead;
+      const pz = physics.position.z + physics.right.z * side + physics.forward.z * ahead;
+      gap = Math.min(gap, shipHullDistance(ship, px, pz));
+    }
+    return gap;
+  };
   for (let step = 0; step < 60 * 60; step += 1) {
-    // The helmsman holds a course converging on the side, then straightens up alongside.
-    const off = shipHullDistance(ship, physics.position.x, physics.position.z);
-    controls.rudder = off < 5 ? THREE.MathUtils.clamp(-physics.heading * 2, -1, 1) : 0;
+    // The helmsman holds a course converging on the side, then straightens up
+    // alongside once there is about a metre between the hulls.
+    controls.rudder = edgeGap() < 1.4 ? THREE.MathUtils.clamp(-physics.heading * 2, -1, 1) : 0;
     physics.fixedUpdate(1 / 60, controls, true);
     const distance = shipHullDistance(ship, physics.position.x, physics.position.z);
     closest = Math.min(closest, distance);
-    if (physics.guard.active && distance > 8) engagedFarOff += 1;
+    // The gap between her hull and the ship's side, at the nearest point of her outline.
+    closestEdge = Math.min(closestEdge, edgeGap());
+    if (physics.guard.active && distance > 6) engagedFarOff += 1;
   }
   assert.equal(engagedFarOff, 0, "the guard stepped in while she was still well off the side");
-  assert.ok(closest < 4.5, `could not come alongside (closest ${closest.toFixed(1)} m from the hull)`);
-  assert.ok(closest > 0.3, `touched the hull (${closest.toFixed(2)} m)`);
+  if (process.env.SHOW_GAP) console.log("closest gap", closestEdge.toFixed(2));
+  assert.ok(closestEdge < 1.6, `could not come alongside (closest ${closestEdge.toFixed(2)} m between the hulls)`);
+  assert.ok(closestEdge > 0.15, `touched the hull (${closestEdge.toFixed(2)} m)`);
 });
 
 import { createShoreGuard, STALL_SECONDS, updateShoreGuard } from "../../src/simulator/vessel/ShoreGuard";

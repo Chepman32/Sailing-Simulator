@@ -229,7 +229,7 @@ export class ShipSystem {
       for (const [across, along] of YACHT_OUTLINE) {
         const x = body.position.x + body.right.x * across + body.forward.x * along;
         const z = body.position.z + body.right.z * across + body.forward.z * along;
-        const depth = shipContact(ship, x, z, 0.3, this.normal);
+        const depth = shipContact(ship, x, z, 0.18, this.normal);
         if (depth > deepest) {
           deepest = depth;
           normalX = this.normal.x;
@@ -404,7 +404,10 @@ export class ShipSystem {
   private assignModel(visual: ShipVisual, ship: Ship): void {
     const variants = this.models.variants(ship.kind);
     const key = variants > 0 ? `${ship.kind}:${ship.scheme % variants}` : "";
-    if (visual.modelKey === key && (visual.model !== null || key === "")) return;
+    if (visual.modelKey === key && (visual.model !== null || key === "")) {
+      ship.hullProfile = visual.model ? this.models.profile(ship.kind, ship.scheme % variants) : null;
+      return;
+    }
     const model = key ? this.models.instance(ship.kind, ship.scheme % variants) : null;
     if (key && !model) {
       visual.hull.visible = true;
@@ -415,6 +418,8 @@ export class ShipSystem {
     visual.modelKey = key;
     if (model) visual.root.add(model);
     visual.hull.visible = model === null;
+    // Her sides are where the model's are: the yacht's fenders meet the hull she sees.
+    ship.hullProfile = model ? this.models.profile(ship.kind, ship.scheme % variants) : null;
   }
 
   private assignGeometry(visual: ShipVisual, ship: Ship): void {

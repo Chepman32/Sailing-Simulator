@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { leafCards, leafGeometry } from "./IslandVegetation";
 import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
+import { computeBoundingSphereFast, computeVertexNormalsFast } from "../core/FastGeometry";
 import { smoothstep } from "../math";
 import { islandEdgeNoise, type IslandDefinition } from "./IslandMath";
 
@@ -197,24 +198,52 @@ function post(radius: number, bottom: number, top: number, x: number, z: number,
   return painted(geometry, solid(hex, 0.12, x * 3 + z));
 }
 
-/** A rounded granite boulder (or a shrub's blob): a noisy, squashed icosphere. */
-function blob(radius: number, squash: number, seed: number, detail: number, roughness: number): THREE.BufferGeometry {
-  let geometry: THREE.BufferGeometry = new THREE.IcosahedronGeometry(radius, detail);
-  geometry.deleteAttribute("normal");
-  geometry.deleteAttribute("uv");
-  geometry = mergeVertices(geometry);
-  const position = geometry.getAttribute("position");
-  const v = new THREE.Vector3();
-  for (let index = 0; index < position.count; index += 1) {
-    v.fromBufferAttribute(position, index);
-    const n =
-      Math.sin(v.x * 1.7 / radius + seed) * Math.cos(v.z * 1.9 / radius - seed * 0.7) * 0.6 +
-      Math.sin(v.y * 3.1 / radius + v.x * 2.3 / radius + seed * 1.3) * 0.4;
-    v.multiplyScalar(1 + n * roughness);
-    v.y *= squash;
-    position.setXYZ(index, v.x, v.y, v.z);
+/**
+ * Welded unit icospheres by subdivision level. `mergeVertices` keys every
+ * vertex by a string, and an island has hundreds of blobs: the sphere is
+ * welded once and each blob starts from a copy of it.
+ */
+const unitSpheres = new Map<number, THREE.BufferGeometry>();
+
+function unitSphere(detail: number): THREE.BufferGeometry {
+  let sphere = unitSpheres.get(detail);
+  if (!sphere) {
+    const raw = new THREE.IcosahedronGeometry(1, detail);
+    raw.deleteAttribute("normal");
+    raw.deleteAttribute("uv");
+    sphere = mergeVertices(raw);
+    raw.dispose();
+    unitSpheres.set(detail, sphere);
   }
-  geometry.computeVertexNormals();
+  return sphere;
+}
+
+/**
+ * A rounded granite boulder (or a shrub's blob): a noisy, squashed icosphere.
+ * It shares the welded sphere's index (read only: the blob is moved and then
+ * written out unindexed by `painted`), and only its positions are new.
+ */
+function blob(radius: number, squash: number, seed: number, detail: number, roughness: number): THREE.BufferGeometry {
+  const sphere = unitSphere(detail);
+  const unit = sphere.getAttribute("position").array as Float32Array;
+  const array = new Float32Array(unit.length);
+  for (let index = 0; index < unit.length; index += 3) {
+    // On the unit sphere; the noise is the same at every size.
+    const x = unit[index]!;
+    const y = unit[index + 1]!;
+    const z = unit[index + 2]!;
+    const n =
+      Math.sin(x * 1.7 + seed) * Math.cos(z * 1.9 - seed * 0.7) * 0.6 +
+      Math.sin(y * 3.1 + x * 2.3 + seed * 1.3) * 0.4;
+    const scale = radius * (1 + n * roughness);
+    array[index] = x * scale;
+    array[index + 1] = y * scale * squash;
+    array[index + 2] = z * scale;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(array, 3));
+  geometry.setIndex(sphere.index);
+  computeVertexNormalsFast(geometry);
   return geometry;
 }
 
@@ -557,7 +586,7 @@ export function furnishIsland(island: IslandDefinition, profile: IslandProfile, 
     if (list.length === 0) return null;
     const merged = mergeGeometries(list, false);
     list.forEach((geometry) => geometry.dispose());
-    merged?.computeBoundingSphere();
+    if (merged) computeBoundingSphereFast(merged);
     return merged;
   };
   return { solid: merge(parts.solid), glow: merge(parts.glow), leaves: leafGeometry(parts.leaves), pier, lamp };

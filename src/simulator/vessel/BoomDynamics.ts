@@ -1,4 +1,4 @@
-import { clamp } from "../math";
+import { clamp, smoothstep } from "../math";
 
 /**
  * The main boom as a damped pendulum on its sheet.
@@ -85,4 +85,36 @@ export function boomPivotPose(angle: number, authoredAngle: number): { rotationY
   const side = angle >= 0 ? 1 : -1;
   const authoredSide = authoredAngle >= 0 ? 1 : -1;
   return { rotationY: side * Math.abs(authoredAngle) - angle, mirror: side * authoredSide };
+}
+
+/**
+ * The side the sails show, with hysteresis: it only changes once the
+ * apparent wind is clearly on the other side. Head to wind, or running dead
+ * downwind under power (the apparent wind light and wavering), the bare sign
+ * flipped back and forth several times a minute and the boom banged across
+ * each time.
+ * @param previous +1 or −1, the side shown so far.
+ * @param apparentWindAngle Radians, as in the physics telemetry (0 = from dead ahead).
+ */
+export function steadyLeewardSide(previous: number, apparentWindAngle: number, threshold = 0.15): number {
+  const across = -Math.sin(apparentWindAngle);
+  const side = previous >= 0 ? 1 : -1;
+  if (side > 0 && across < -threshold) return -1;
+  if (side < 0 && across > threshold) return 1;
+  return side;
+}
+
+/**
+ * How hard a boom stopped by its sheet is heard (0…1): a real gybe slams,
+ * with the apparent wind aft of the beam and enough of it to throw the boom;
+ * a boom swinging across a luffing sail or in a breath of apparent wind is
+ * silent.
+ * @param slam Kinematic strength from `stepBoom`.
+ * @param apparentWindSpeed m/s.
+ */
+export function audibleSlam(slam: number, apparentWindAngle: number, apparentWindSpeed: number): number {
+  if (slam <= 0) return 0;
+  const aft = smoothstep(1.5, 1.85, Math.abs(apparentWindAngle));
+  const pressure = smoothstep(4.5, 8, apparentWindSpeed);
+  return slam * aft * pressure;
 }

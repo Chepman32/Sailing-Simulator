@@ -403,8 +403,64 @@ test("imported ship models are turned bow to +Z, scaled to the type and floated 
   assert.ok(Math.abs(bounds.min.y + spec.draft) < 1e-6, "keel at the draught");
   assert.ok(Math.abs(bounds.max.x - bounds.min.x - (6 * spec.length) / 40) < 1e-6, "the sea plane is gone");
   assert.ok(Math.abs(bounds.min.z + bounds.max.z) < 1e-6 && Math.abs(bounds.min.x + bounds.max.x) < 1e-6, "centred");
+  // Her sides for the yacht alongside: the box's, measured at the waterline.
+  const profile = models.profile("cargo", 0)!;
+  const halfBeam = (3 * spec.length) / 40;
+  assert.equal(profile.length, M.HULL_PROFILE_STATIONS);
+  assert.ok(
+    profile.every((width) => Math.abs(width - halfBeam) < 1e-3),
+    `measured sides ${Math.min(...profile)}…${Math.max(...profile)} against ${halfBeam}`,
+  );
   assert.equal(models.instance("container", 0), null, "a type without a model keeps the procedural ship");
+  assert.equal(models.profile("container", 0), null);
   models.dispose();
+});
+
+test("a ship's side is where her model draws it, measured along long simplified triangles", async () => {
+  const M = await import("../../src/simulator/ships/ShipModelMath");
+  // A 100 m hull of a few long triangles: straight sides 4 m off the centreline
+  // from the stern to 30 m short of the bow, then a wedge to the stem, 10 m
+  // deep; a bridge wing 20 m wide high above, a wide bulb deep below.
+  const halfLength = 50;
+  const vertices: number[] = [];
+  const quad = (p: number[], q: number[], r: number[], s: number[]) => vertices.push(...p, ...q, ...r, ...p, ...r, ...s);
+  for (const side of [-1, 1]) {
+    quad([4 * side, -6, -50], [4 * side, 4, -50], [4 * side, 4, 20], [4 * side, -6, 20]);
+    quad([4 * side, -6, 20], [4 * side, 4, 20], [0, 4, 50], [0, -6, 50]);
+  }
+  quad([-10, 12, -40], [10, 12, -40], [10, 12, -30], [-10, 12, -30]);
+  quad([-7, -8, 30], [7, -8, 30], [7, -8, 45], [-7, -8, 45]);
+  // A sponson 7 m out at 6 m up, where the yacht's mast would pass under it.
+  quad([-7, 6, -30], [7, 6, -30], [7, 6, -22], [-7, 6, -22]);
+  const profile = M.measureHullProfile(new Float32Array(vertices), null, halfLength);
+  const underFlare = M.profileHalfWidth(profile, halfLength, -26);
+  assert.ok(Math.abs(underFlare - (7 - M.RIG_INSET)) < 0.05, `held off by the overhang at rig height: ${underFlare}`);
+  // Only the corners are vertices, yet the side is found all along (also under the wing, above the masthead).
+  for (const along of [-45, -35, -18, 0, 15]) {
+    const width = M.profileHalfWidth(profile, halfLength, along);
+    assert.ok(Math.abs(width - 4) < 0.05, `side at ${along}: ${width}`);
+  }
+  // The wedge narrows toward the stem as drawn (the bulb below the band does not count).
+  for (const along of [30, 37, 44]) {
+    const width = M.profileHalfWidth(profile, halfLength, along);
+    const drawn = (4 * (50 - along)) / 30;
+    assert.ok(width >= drawn - 0.05 && width < drawn + 0.35, `bow at ${along}: ${width} against ${drawn}`);
+  }
+  assert.equal(M.profileHalfWidth(profile, halfLength, 50.5), 0, "nothing beyond the stem");
+  // The same mesh, indexed, measures the same.
+  const indexed = M.measureHullProfile(new Float32Array(vertices), Array.from({ length: vertices.length / 3 }, (_, index) => index), halfLength);
+  assert.deepEqual([...indexed], [...profile]);
+  // The yacht's wall follows it: a point a metre off the measured side is a metre away.
+  const ship = createShip("cargo", seeded(5));
+  Object.assign(ship, { x: 0, z: 0, heading: 0, halfLength, hullProfile: profile });
+  assert.ok(Math.abs(shipHullDistance(ship, 5, 0) - 1) < 0.05, `off the side: ${shipHullDistance(ship, 5, 0)}`);
+  assert.ok(shipHullDistance(ship, 3, 0) < 0, "inside the hull");
+  // Gaps in a mesh take their neighbours' width; the open ends close.
+  const sparse = M.emptyHullProfile(8);
+  M.addHullPoint(sparse, 3, 0, -10, 20);
+  M.addHullPoint(sparse, 5, 0, 10, 20);
+  M.closeHullProfile(sparse);
+  assert.deepEqual([...sparse], [1.5, 1.5, 3, 3, 3, 3, 5, 2.5]);
 });
 
 test("every listed ship model is shipped, credited and fits its type", async () => {

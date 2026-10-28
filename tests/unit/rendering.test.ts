@@ -520,3 +520,86 @@ test("a photo shot keeps the camera's own lens: no zoom on a far subject or a ne
   photoShot({ kind: "dolphins", x: 6, y: 0.5, z: 8, size: 10 }, 0, 0.5, 0, shot, 0);
   assert.ok(Number.isNaN(shot.fov), "nor dolphins at the bow");
 });
+
+test("palms placed and merged in one pass match clone, applyMatrix4 and mergeGeometries value for value", async () => {
+  const { mergeTransformed } = await import("../../src/simulator/core/FastGeometry");
+  const { createPalmVariants } = await import("../../src/simulator/environment/PalmModels");
+  const { mergeGeometries } = await import("three/addons/utils/BufferGeometryUtils.js");
+  const { near, far } = createPalmVariants(3);
+  // Leaning, turned, scaled palms (one squashed: the normals must renormalise).
+  const matrices = Array.from({ length: 7 }, (_, index) =>
+    new THREE.Matrix4().compose(
+      new THREE.Vector3(index * 9.5 - 30, 0.4 * index, 12 - index * 3.1),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(0.08 * index, index * 1.7, -0.05 * index)),
+      index === 3 ? new THREE.Vector3(1.3, 0.8, 1.1) : new THREE.Vector3().setScalar(0.7 + index * 0.1),
+    ),
+  );
+  for (const variants of [near, far]) {
+    for (const part of ["trunk", "fronds", "nuts"] as const) {
+      const sources = matrices.map((_, index) => variants[index % variants.length]!.parts[part]);
+      const fast = mergeTransformed(sources, matrices)!;
+      const slow = mergeGeometries(sources.map((source, index) => source.clone().applyMatrix4(matrices[index]!)), false)!;
+      assert.ok(fast, `${part} merges`);
+      assert.deepEqual(Object.keys(fast.attributes).sort(), Object.keys(slow.attributes).sort(), part);
+      for (const name of Object.keys(slow.attributes)) {
+        assert.deepEqual(Array.from(fast.getAttribute(name).array), Array.from(slow.getAttribute(name).array), `${part} ${name}`);
+      }
+      assert.equal(fast.index === null, slow.index === null, `${part} indexed alike`);
+      if (slow.index) assert.deepEqual(Array.from(fast.index!.array), Array.from(slow.index.array), `${part} index`);
+    }
+  }
+  // Unlike sources are left to the slow path.
+  const plain = new THREE.BoxGeometry(1, 1, 1);
+  const bare = new THREE.BoxGeometry(1, 1, 1).deleteAttribute("uv");
+  assert.equal(mergeTransformed([plain, bare], [new THREE.Matrix4(), new THREE.Matrix4()]), null);
+  assert.equal(mergeTransformed([plain, plain.toNonIndexed()], [new THREE.Matrix4(), new THREE.Matrix4()]), null);
+  assert.equal(mergeTransformed([], []), null);
+});
+
+test("fast normals and bounding spheres are three.js's own, value for value", async () => {
+  const { computeBoundingSphereFast, computeVertexNormalsFast } = await import("../../src/simulator/core/FastGeometry");
+  let seed = 7;
+  const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+  const noisy = (geometry: THREE.BufferGeometry) => {
+    const position = geometry.getAttribute("position");
+    for (let i = 0; i < position.count; i += 1) {
+      position.setXYZ(i, position.getX(i) * (1 + random() * 0.3) + 4, position.getY(i) * (0.5 + random()), position.getZ(i) - 2 + random());
+    }
+    return geometry;
+  };
+  const cases: THREE.BufferGeometry[] = [
+    noisy(new THREE.IcosahedronGeometry(2.5, 2)),
+    noisy(new THREE.BoxGeometry(3, 1, 2, 4, 2, 3)).toNonIndexed(),
+    noisy(new THREE.CylinderGeometry(0.4, 0.6, 3, 9, 4)),
+  ];
+  // A face that repeats a vertex, and positions in a view of a larger buffer.
+  const degenerate = new THREE.BufferGeometry();
+  degenerate.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 9, 9, 9]).subarray(0, 9), 3));
+  degenerate.setIndex([0, 0, 1, 0, 1, 2]);
+  cases.push(degenerate);
+  for (const [index, geometry] of cases.entries()) {
+    const reference = geometry.clone();
+    reference.deleteAttribute("normal");
+    reference.computeVertexNormals();
+    reference.computeBoundingSphere();
+    const fast = geometry.clone();
+    fast.deleteAttribute("normal");
+    computeVertexNormalsFast(fast);
+    computeBoundingSphereFast(fast);
+    assert.deepEqual(Array.from(fast.getAttribute("normal").array), Array.from(reference.getAttribute("normal").array), `normals ${index}`);
+    assert.deepEqual(fast.boundingSphere!.center.toArray(), reference.boundingSphere!.center.toArray(), `centre ${index}`);
+    assert.equal(fast.boundingSphere!.radius, reference.boundingSphere!.radius, `radius ${index}`);
+    // Again over existing normals (they are reset, not added to).
+    computeVertexNormalsFast(fast);
+    assert.deepEqual(Array.from(fast.getAttribute("normal").array), Array.from(reference.getAttribute("normal").array), `recomputed ${index}`);
+  }
+  // Interleaved positions are left to three.js, with the same result.
+  const interleaved = new THREE.BufferGeometry();
+  const buffer = new THREE.InterleavedBuffer(new Float32Array([0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0]), 4);
+  interleaved.setAttribute("position", new THREE.InterleavedBufferAttribute(buffer, 3, 0));
+  const expected = interleaved.clone();
+  expected.computeBoundingSphere();
+  computeBoundingSphereFast(interleaved);
+  assert.equal(interleaved.boundingSphere!.radius, expected.boundingSphere!.radius);
+  assert.ok(interleaved.boundingSphere!.radius > 0.4);
+});

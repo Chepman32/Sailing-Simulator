@@ -31,14 +31,13 @@ export type IslandDefinition = {
 };
 
 /**
- * Cells whose primary island is a volcano: the one east of the start (seen
- * smoking on the horizon from the first moment), and about one cell in ten
- * elsewhere.
+ * The cell whose primary island is a volcano: the one east of the start,
+ * seen smoking on the horizon from the first moment. There is no other.
  */
 export function isVolcanoCell(column: number, row: number): boolean {
-  if (column === 1 && row === 0) return true;
-  if (Math.abs(column) + Math.abs(row) <= 1) return false;
-  return hashCell(column * 31 + 7, row * 17 - 3) % 1000 < 100;
+  // One volcano in the whole sea: the cell east of the start. A landmark
+  // stays one when there is only one of it.
+  return column === 1 && row === 0;
 }
 
 /** Radial position (fraction of the beach radius) of the crater rim and the foot of the cone. */

@@ -81,21 +81,22 @@ export class BoatVoices {
     this.riggingGain.connect(bus);
     air.start(0, 0.2);
 
-    // The sail flogging: canvas noise chopped by a fast, uneven flap.
+    // The sail flogging: a soft, low flutter of cloth. (A square-wave chop
+    // here rattled like loose metal, and was the "banging" heard at speed.)
     const canvas = context.createBufferSource();
     canvas.buffer = noise(2.7, "pink");
     canvas.loop = true;
     const canvasBand = context.createBiquadFilter();
     canvasBand.type = "bandpass";
-    canvasBand.frequency.value = 520;
-    canvasBand.Q.value = 0.7;
+    canvasBand.frequency.value = 340;
+    canvasBand.Q.value = 0.55;
     const chopper = context.createGain();
-    chopper.gain.value = 0.5;
+    chopper.gain.value = 0.6;
     this.flogRate = context.createOscillator();
-    this.flogRate.type = "square";
+    this.flogRate.type = "sine";
     this.flogRate.frequency.value = 5;
     const flogDepth = context.createGain();
-    flogDepth.gain.value = 0.5;
+    flogDepth.gain.value = 0.35;
     this.flogRate.connect(flogDepth).connect(chopper.gain);
     this.flogRate.start();
     this.flogGain = context.createGain();
@@ -124,11 +125,11 @@ export class BoatVoices {
     this.lastLevels = levels;
     this.rushGain.gain.setTargetAtTime(levels.rush * 0.34, now, 0.35);
     this.rushTone.frequency.setTargetAtTime(levels.rushTone, now, 0.5);
-    this.riggingGain.gain.setTargetAtTime(levels.rigging * 0.05, now, 0.8);
+    this.riggingGain.gain.setTargetAtTime(levels.rigging * 0.03, now, 0.8);
     this.riggingBands.forEach((band, index) =>
       band.frequency.setTargetAtTime(levels.riggingPitch * [1, 1.51, 2.03][index]!, now, 1.2),
     );
-    this.flogGain.gain.setTargetAtTime(levels.flog * 0.2, now, 0.08);
+    this.flogGain.gain.setTargetAtTime(levels.flog * 0.07, now, 0.15);
     this.flogRate.frequency.setTargetAtTime(levels.flogRate * (0.85 + Math.random() * 0.3), now, 0.1);
     this.slipGain.gain.setTargetAtTime(levels.sheetSlip * 0.05, now, 0.06);
 
@@ -163,10 +164,10 @@ export class BoatVoices {
       this.peakLuffAge = 0;
     }
     this.crackCooldown = Math.max(0, this.crackCooldown - step);
-    const crack = sailFillCrack(this.peakLuff, state.luff, state.apparentWind);
+    const crack = sailFillCrack(this.peakLuff, state.luff, state.apparentWind, state.motoring ?? 0);
     if (crack > 0 && this.crackCooldown <= 0) {
       this.sailCrack(crack, now);
-      this.crackCooldown = 3;
+      this.crackCooldown = 6;
       this.peakLuff = 0;
     }
   }
@@ -223,8 +224,9 @@ export class BoatVoices {
   }
 
   private sailCrack(strength: number, at: number): void {
-    this.burst(this.slapBuffer, at, 0.18, 0.55 * strength, "lowpass", 260, 0.8);
-    this.burst(this.sprayBuffer, at, 0.08, 0.2 * strength, "bandpass", 1400, 0.9);
+    // Cloth snapping full: a dull whump, no ring.
+    this.burst(this.slapBuffer, at, 0.2, 0.32 * strength, "lowpass", 220, 0.7);
+    this.burst(this.sprayBuffer, at, 0.06, 0.06 * strength, "bandpass", 900, 0.6);
   }
 
   private burst(

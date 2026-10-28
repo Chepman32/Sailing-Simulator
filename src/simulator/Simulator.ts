@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { AudioSystem } from "./audio/AudioSystem";
+import { AudioSystem, type AudioWeather } from "./audio/AudioSystem";
 import { CameraController } from "./camera/CameraController";
 import { AssetManager, ASSET_LOAD_TOTAL, LOAD_STEPS_TOTAL, SCENE_LOAD_STEPS } from "./core/AssetManager";
 import { PostProcessing } from "./core/PostProcessing";
@@ -188,6 +188,15 @@ export class Simulator {
   private resizeObserver?: ResizeObserver;
   /** When a coalesced resize was last requested (performance.now), 0 when none is pending. */
   private resizeRequestedAt = 0;
+  /** Where the camera stood when the mirror was last drawn (see `renderReflection`). */
+  private readonly mirrorPosition = new THREE.Vector3();
+  /** The mirror target was reallocated (a resize): its image must be redrawn now. */
+  private mirrorStale = true;
+  private readonly mirrorQuaternion = new THREE.Quaternion();
+  private mirrorFocal = 0;
+  private mirrorFrame = 0;
+  /** The weather as the sound hears it, refilled every frame. */
+  private readonly audioWeather: Required<AudioWeather> = { overcast: 0, rain: 0, waves: 1, wind: 1, storm: 0, trueWind: 7 };
   /** Set once `dispose` ran; the asynchronous start-up stops there. */
   private disposed = false;
   private appliedWidth = 0;
@@ -288,6 +297,7 @@ export class Simulator {
         this.frameGovernor.reset();
         this.resize();
         this.reflection?.setScale(this.quality.settings.reflectionScale, this.renderer.domElement.width, this.renderer.domElement.height);
+        this.mirrorStale = true;
         this.persistState();
       });
       this.state.quality = this.quality.current;
@@ -1235,12 +1245,20 @@ export class Simulator {
     this.ships.setNight(this.environmentState.nightFactor);
     this.wildlife.setLightDirection(this.environment.lightDirection);
     this.underwater.setTime(this.elapsed);
+    const weather = this.environment.currentWeather;
+    const audioWeather = this.audioWeather;
+    audioWeather.overcast = weather.overcast;
+    audioWeather.rain = weather.rain;
+    audioWeather.waves = weather.waves;
+    audioWeather.wind = weather.wind;
+    audioWeather.storm = weather.storm;
+    audioWeather.trueWind = Math.hypot(this.physics.wind.x, this.physics.wind.z);
     this.audio.update(
       delta,
       Math.abs(this.physics.telemetry.forwardSpeed),
       this.physics.telemetry.engineShaft,
       this.physics.telemetry.apparentWindSpeed,
-      this.environment.currentWeather,
+      audioWeather,
       this.sailingSound(delta),
     );
     // Positional sound: the camera is the listener; the gulls call from where they fly.
@@ -1397,6 +1415,8 @@ export class Simulator {
     this.post.rebuild();
     this.reflection?.dispose();
     this.reflection?.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
+    this.mirrorStale = true;
+    this.shipShadows?.setSize(shipShadowSize(this.quality.current));
     this.environment?.invalidateLighting();
     this.islands?.invalidateShadows();
     this.governor.reset();
@@ -1437,12 +1457,29 @@ export class Simulator {
     if (this.post.enabled && this.quality.settings.reflectionScale > 0 && calmSea > 0.02) {
       this.mirrorList.length = 0;
       this.mirrorList.push(...this.mirrorHidden, ...this.islands.farFromMirror);
-      // The blurred mirror image is drawn from the coarse palms.
-      const swapped = this.islands.coarseGrovesForMirror(true);
-      try {
-        reflection.render(this.renderer, this.scene, this.camera.camera, this.mirrorList);
-      } finally {
-        if (swapped) this.islands.coarseGrovesForMirror(false);
+      // The mirror is redrawn every other frame: rippled and blurred, a
+      // reflection a frame old cannot be told from a fresh one, and it is
+      // projected with the matrix it was drawn with, so it stays put on the
+      // water. A camera that has turned or moved noticeably since gets a
+      // fresh one at once.
+      const camera = this.camera.camera;
+      this.mirrorFrame = (this.mirrorFrame + 1) % 2;
+      const moved =
+        camera.position.distanceToSquared(this.mirrorPosition) > 0.35 * 0.35 ||
+        camera.quaternion.angleTo(this.mirrorQuaternion) > 0.026 ||
+        camera.projectionMatrix.elements[5] !== this.mirrorFocal;
+      if (this.mirrorFrame === 0 || moved || this.mirrorStale || !reflection.active) {
+        this.mirrorStale = false;
+        // The blurred mirror image is drawn from the coarse palms.
+        const swapped = this.islands.coarseGrovesForMirror(true);
+        try {
+          reflection.render(this.renderer, this.scene, camera, this.mirrorList);
+        } finally {
+          if (swapped) this.islands.coarseGrovesForMirror(false);
+        }
+        this.mirrorPosition.copy(camera.position);
+        this.mirrorQuaternion.copy(camera.quaternion);
+        this.mirrorFocal = camera.projectionMatrix.elements[5]!;
       }
       this.ocean.setReflection(
         reflection.active ? reflection.target.texture : null,
@@ -1499,6 +1536,7 @@ export class Simulator {
     this.post?.setSize(width, height);
     this.reflection?.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
     this.ships?.setPixelRatio(this.renderer.getPixelRatio());
+    this.mirrorStale = true;
   };
 
   /** The weather the sky should be heading for: the player's choice, or the planner's. */

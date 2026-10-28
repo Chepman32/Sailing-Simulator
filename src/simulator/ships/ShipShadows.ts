@@ -27,6 +27,10 @@ export class ShipShadows {
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.5, 1000);
   private readonly depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide });
   private readonly picked: number[] = [];
+  /** What the atlas was last drawn for (see the stride in `render`). */
+  private readonly drawnFor: number[] = [];
+  private readonly drawnLight = new THREE.Vector3();
+  private stride = 0;
   private readonly atlas = new THREE.Matrix4();
   private readonly centre = new THREE.Vector3();
   private readonly clearColor = new THREE.Color();
@@ -53,6 +57,8 @@ export class ShipShadows {
 
   /** Atlas edge in texels; 0 switches the shadows off (low preset). */
   setSize(size: number): void {
+    // Whatever happens, the next frame draws the atlas afresh.
+    this.drawnFor.length = 0;
     this.enabled = size > 0;
     if (!this.enabled) {
       this.uniforms.uShipShadowCount.value = 0;
@@ -112,6 +118,15 @@ export class ShipShadows {
       return;
     }
     pickShadowShips(ships, viewer.x, viewer.z, this.picked);
+    // Ships move a few metres a second and the sun hardly at all: the atlas
+    // is redrawn every third frame (a ship's shadow is then at most a few
+    // decimetres behind her), at once when the ships or the light change.
+    this.stride = (this.stride + 1) % 3;
+    const sameShips = this.picked.length === this.drawnFor.length && this.picked.every((index, slot) => this.drawnFor[slot] === index);
+    if (this.stride !== 0 && sameShips && this.picked.length > 0 && toLight.angleTo(this.drawnLight) < 0.01) return;
+    this.drawnFor.length = 0;
+    this.drawnFor.push(...this.picked);
+    this.drawnLight.copy(toLight);
     uniforms.uShipShadowCount.value = 0;
     if (this.picked.length === 0) return;
 

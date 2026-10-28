@@ -53,10 +53,11 @@ export const SHORE_CONTACT: ContactProfile = {
 
 /**
  * A ship's side: steel, straight down, with the crew's fenders between. The
- * yacht can lie a metre off it; touching, she is held off softly and slides
- * along rather than bouncing.
+ * yacht can lie under a metre off it (the hull is where the ship's model
+ * draws it, `measureHullProfile`); touching, she is held off softly and
+ * slides along rather than bouncing.
  */
-export const SHIP_CONTACT: ContactProfile = { contact: 0.35, cushion: 1.6, restitution: 0.25, friction: 0.05 };
+export const SHIP_CONTACT: ContactProfile = { contact: 0.22, cushion: 0.8, restitution: 0.2, friction: 0.05 };
 
 /**
  * Applies cushion and contact to `body` in place. Returns the impact speed of

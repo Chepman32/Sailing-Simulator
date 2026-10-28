@@ -45,6 +45,7 @@ const PLACE_COLORS: Record<ChartPlace["kind"], string> = {
 // --- Shared textures ----------------------------------------------------------
 
 let cloudTexture: HTMLCanvasElement | null = null;
+let cloudField: Float32Array | null = null;
 
 /** A tileable 256² fBm cloud (value noise on wrapping lattices), white with varying alpha. */
 function clouds(): HTMLCanvasElement {
@@ -86,15 +87,21 @@ function clouds(): HTMLCanvasElement {
     total += amplitude;
     amplitude *= 0.55;
   }
+  // The alpha is kept as numbers too (`cloudValues`): reading it back from the
+  // canvas would make the browser wait for the GPU.
+  const values = new Float32Array(size * size);
   for (let index = 0; index < field.length; index += 1) {
     const v = field[index]! / total;
+    const alpha = Math.round(Math.min(1, Math.max(0, (v - 0.25) * 1.6)) * 255);
     image.data[index * 4] = 255;
     image.data[index * 4 + 1] = 255;
     image.data[index * 4 + 2] = 255;
-    image.data[index * 4 + 3] = Math.round(Math.min(1, Math.max(0, (v - 0.25) * 1.6)) * 255);
+    image.data[index * 4 + 3] = alpha;
+    values[index] = alpha / 255;
   }
   context.putImageData(image, 0, 0);
   cloudTexture = canvas;
+  cloudField = values;
   return canvas;
 }
 
@@ -134,15 +141,11 @@ function fogFill(): HTMLCanvasElement {
 type FogMask = { canvas: HTMLCanvasElement; key: string; c1: number; r1: number; columns: number; rows: number };
 const fogMasks = new WeakMap<CanvasRenderingContext2D, FogMask>();
 const fogLayers = new WeakMap<CanvasRenderingContext2D, HTMLCanvasElement>();
-let cloudField: Float32Array | null = null;
 
 /** The cloud texture's alpha as numbers 0…1, for shaping the fog's edge. */
 function cloudValues(): Float32Array {
-  if (cloudField) return cloudField;
-  const data = clouds().getContext("2d")!.getImageData(0, 0, 256, 256).data;
-  cloudField = new Float32Array(256 * 256);
-  for (let index = 0; index < cloudField.length; index += 1) cloudField[index] = data[index * 4 + 3]! / 255;
-  return cloudField;
+  if (!cloudField) clouds();
+  return cloudField!;
 }
 
 /** Two passes of a running box blur along rows, then columns (about a Gaussian). */

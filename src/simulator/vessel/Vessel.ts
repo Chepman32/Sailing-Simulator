@@ -13,7 +13,7 @@ import {
 import { HELM_EYE, HelmStation, type HelmTraffic } from "./HelmStation";
 import { Skipper } from "./Skipper";
 import { ShipBell } from "./ShipBell";
-import { boomPivotPose, boomTarget, createBoomState, stepBoom } from "./BoomDynamics";
+import { audibleSlam, boomPivotPose, boomTarget, createBoomState, steadyLeewardSide, stepBoom } from "./BoomDynamics";
 import { SailSystem } from "./SailSystem";
 import { JibSail } from "./JibSail";
 import type { VesselPhysics } from "./VesselPhysics";
@@ -85,6 +85,8 @@ export class Vessel {
   private authoredBoomAngle = 0;
   private hasRig = false;
   private pendingSlam = 0;
+  /** The side the sails show (`steadyLeewardSide`): steadier than the physics' sign. */
+  private leewardShown = 1;
   private propellerAngularVelocity = 0;
 
   constructor(
@@ -232,11 +234,12 @@ export class Vessel {
       controls.sailTrim,
       delta,
     );
+    this.leewardShown = steadyLeewardSide(this.leewardShown, physics.telemetry.apparentWindAngle);
     this.jib.update(
       time,
       delta,
       physics.telemetry.sheetAngle,
-      physics.telemetry.leewardSide,
+      this.leewardShown,
       physics.telemetry.sailLuff,
       physics.telemetry.apparentWindSpeed,
       controls.sailTrim,
@@ -244,7 +247,7 @@ export class Vessel {
     if (this.hasRig) {
       const target = boomTarget(
         physics.telemetry.sheetAngle,
-        physics.telemetry.leewardSide,
+        this.leewardShown,
         physics.telemetry.sailLuff,
         time,
       );
@@ -252,7 +255,8 @@ export class Vessel {
       let remaining = Math.min(delta, 0.1);
       while (remaining > 1e-5) {
         const step = Math.min(remaining, 1 / 60);
-        this.pendingSlam = Math.max(this.pendingSlam, stepBoom(this.boom, target, step));
+        const slam = audibleSlam(stepBoom(this.boom, target, step), physics.telemetry.apparentWindAngle, physics.telemetry.apparentWindSpeed);
+        this.pendingSlam = Math.max(this.pendingSlam, slam);
         remaining -= step;
       }
       const pose = boomPivotPose(this.boom.angle, this.authoredBoomAngle);

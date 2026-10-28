@@ -116,7 +116,7 @@ export function deriveEnvironmentPalette(state: TimeOfDayState, weather: Weather
 
   // Full sunshine: half as much direct light again as a merely fair sky.
   const sunLight = scale(sunColor, SUN_IRRADIANCE * sunUp * (1 + 0.5 * sunshine));
-  const moonLight = scale(MOONLIGHT, MOON_IRRADIANCE * smoothstep(0.02, 0.4, state.moonElevation));
+  const moonLight = scale(MOONLIGHT, MOON_IRRADIANCE * smoothstep(0.02, 0.22, state.moonElevation));
   const lightColor = scale(mix(sunLight, moonLight, moonBlend), (1 - overcast * 0.45) * (1 - storm * 0.38));
   const daylight = clamp((lightColor[0] + lightColor[1] + lightColor[2]) / (3 * SUN_IRRADIANCE * 0.9), 0, 1);
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
-import { deriveTimeOfDay } from "../../src/simulator/environment/EnvironmentMath";
+import { deriveTimeOfDay, MOON_NIGHT_ELEVATION } from "../../src/simulator/environment/EnvironmentMath";
 import { deriveEnvironmentPalette } from "../../src/simulator/environment/EnvironmentPalette";
 import {
   START_ISLANDS,
@@ -82,7 +82,8 @@ test("day and night derive from one bounded environment state", () => {
   assert.equal(night.starVisibility, 1);
   assert.ok(day.sunElevation > 0);
   assert.ok(night.sunElevation < 0);
-  assert.ok(Math.abs(night.moonElevation - Math.PI / 6) < 1e-12);
+  assert.ok(Math.abs(night.moonElevation - MOON_NIGHT_ELEVATION) < 1e-12);
+  assert.ok(night.moonElevation > 0.15 && night.moonElevation < 0.3, "a low moon, in the frame of the chase camera");
   assert.ok(day.exposure > night.exposure);
   assert.ok(night.exposure >= 0.8, "night exposure should preserve readable moonlit detail");
 });

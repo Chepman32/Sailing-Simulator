@@ -379,8 +379,8 @@ export function updateShoreGuard(
   return output;
 }
 
-/** Room the hull edge keeps from a ship's side: a helmsman may lie a couple of metres off. */
-export const SHIP_GUARD_MARGIN = 1.2;
+/** Room the hull edge keeps from a ship's side: a helmsman may lie a metre off, on fenders. */
+export const SHIP_GUARD_MARGIN = 0.55;
 /** Seconds of closing speed the ship guard looks ahead, beyond the distance to stop. */
 const SHIP_GUARD_HORIZON = 1.6;
 /** Deceleration the yacht can count on to stop her closing speed (astern, or turning), m/s². */
@@ -396,7 +396,7 @@ const shipNormal = { x: 0, z: 1 };
 
 /**
  * The helmsman's reflex beside a ship. A ship's side is a steel wall in deep
- * water: the yacht may come alongside to a couple of metres, so the guard
+ * water: the yacht may come alongside to about a metre, so the guard
  * does nothing until the hull is about to touch (closing on it within
  * `SHIP_GUARD_HORIZON` seconds of `SHIP_GUARD_MARGIN`). Then it brings her
  * parallel to the side, the short way round, backing off first if her bow is

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
+import { computeBoundingSphereFast, computeVertexNormalsFast, mergeTransformed } from "../core/FastGeometry";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { smoothstep } from "../math";
 import type { UnderwaterLight } from "./UnderwaterLight";
@@ -565,10 +566,11 @@ export class IslandSystem {
       furniture.push(mesh);
     }
     let grass: THREE.Mesh | null = null;
+    const clearings = islandClearings(island, profile);
     const grassGeometry = buildGrass(
       island,
       (radial, angle) => this.terrainSurfaceHeight(island, radial, angle),
-      (x, z) => inClearing(islandClearings(island, profile), x, z, 0.5),
+      (x, z) => inClearing(clearings, x, z, 0.5),
     );
     if (grassGeometry) {
       grass = new THREE.Mesh(grassGeometry, this.grassMaterial);
@@ -742,13 +744,18 @@ export class IslandSystem {
     }
     const meshes: THREE.Mesh[] = [];
     if (placed.length === 0) return meshes;
+    const matrices = placed.map(({ matrix }) => matrix);
     for (const [level, variants] of [["near", kit.near], ["far", kit.far]] as const) {
       for (const part of ["trunk", "fronds", "nuts"] as const) {
-        const pieces = placed.map(({ matrix, variant }) => variants[variant]!.parts[part].clone().applyMatrix4(matrix));
-        const merged = mergeGeometries(pieces, false);
-        pieces.forEach((piece) => piece.dispose());
+        const sources = placed.map(({ variant }) => variants[variant]!.parts[part]);
+        let merged = mergeTransformed(sources, matrices);
+        if (!merged) {
+          const pieces = sources.map((source, index) => source.clone().applyMatrix4(matrices[index]!));
+          merged = mergeGeometries(pieces, false);
+          pieces.forEach((piece) => piece.dispose());
+        }
         if (!merged) continue;
-        merged.computeBoundingSphere();
+        computeBoundingSphereFast(merged);
         const mesh = new THREE.Mesh(merged, kit.materials[part]);
         mesh.name = `PalmGrove_${island.id}_${part}_${level}`;
         mesh.userData.palmLevel = level;
@@ -835,19 +842,33 @@ export class IslandSystem {
     const segments = Math.max(32, Math.round(THREE.MathUtils.clamp(island.beachRadius * 2.6, 96, 220) * detail));
     const rings = Math.max(12, Math.round((island.volcano ? 72 : THREE.MathUtils.clamp(20 + island.beachRadius * 0.3, 30, 52)) * detail));
     const outerRadius = MAX_VISIBLE_TERRAIN_RADIUS_SCALE;
-    const positions: number[] = [
-      0,
-      island.volcano ? this.terrainSurfaceHeight(island, 0, 0) : this.islandTerrainHeight(0, 0, island.seed, island.height),
-      0,
-    ];
-    const colors: number[] = [];
+    // Typed arrays of the final size: a high island is some 11k vertices, and
+    // this runs while the yacht sails (an island streaming in).
+    const vertexCount = 1 + rings * segments;
+    const positions = new Float32Array(vertexCount * 3);
+    positions[1] = island.volcano ? this.terrainSurfaceHeight(island, 0, 0) : this.islandTerrainHeight(0, 0, island.seed, island.height);
+    const colors = new Float32Array(vertexCount * 4);
     // 1 on sand, 0 under vegetation: the sand shading applies only where it is sand.
-    const sandMask: number[] = [0];
+    const sandMask = new Float32Array(vertexCount);
     // 1 on a volcano's bare rock and ash slopes (cinder grain, lava relief), 0 elsewhere.
-    const rockMask: number[] = [island.volcano ? 1 : 0];
+    const rockMask = new Float32Array(vertexCount);
+    rockMask[0] = island.volcano ? 1 : 0;
     // High islands carry darker forest and bare rock toward the summit.
     const highland = smoothstep(3, 10, island.height);
-    const indices: number[] = [];
+    const profile = this.profile(island);
+    // The coastline's shape depends on the angle alone: once per segment, not per vertex.
+    const angles = new Float64Array(segments);
+    const cosines = new Float64Array(segments);
+    const sines = new Float64Array(segments);
+    const edges = new Float64Array(segments);
+    for (let segment = 0; segment < segments; segment += 1) {
+      const angle = segment / segments * Math.PI * 2;
+      angles[segment] = angle;
+      cosines[segment] = Math.cos(angle);
+      sines[segment] = Math.sin(angle);
+      edges[segment] = islandEdgeNoise(angle, island);
+    }
+    const color = new THREE.Color();
     const green = new THREE.Color(island.seed % 3 === 1 ? 0x3d8448 : 0x3a8a4c);
     const dryGrass = new THREE.Color(0x7d9a4e);
     const shade = new THREE.Color(0x2a6a3c);
@@ -864,28 +885,35 @@ export class IslandSystem {
     const rim = new THREE.Color(0x5c3b2b);
     const blackSand = new THREE.Color(0x45403a);
     const wetBlackSand = new THREE.Color(0x2b2825);
-    if (volcanic) colors.push(rim.r * 0.6, rim.g * 0.6, rim.b * 0.6, 1);
-    else colors.push(green.r, green.g, green.b, 1);
+    if (volcanic) colors.set([rim.r * 0.6, rim.g * 0.6, rim.b * 0.6, 1], 0);
+    else colors.set([green.r, green.g, green.b, 1], 0);
 
+    let vertex = 1;
     for (let ring = 1; ring <= rings; ring += 1) {
       // Rings crowd toward the beach, where the surf and the waterline need detail.
       // (A volcano needs its rings up the cone as much as at the beach.)
       const radial = outerRadius * Math.pow(ring / rings, island.volcano ? 0.92 : 0.72);
-      for (let segment = 0; segment < segments; segment += 1) {
-        const angle = segment / segments * Math.PI * 2;
-        const edgeNoise = islandEdgeNoise(angle, island);
-        const radius = island.beachRadius * radial * edgeNoise;
-        const x = Math.cos(angle) * radius;
-        const z = Math.sin(angle) * radius * island.scaleZ;
+      const alpha = 1 - smoothstep(0.965, outerRadius, radial);
+      for (let segment = 0; segment < segments; segment += 1, vertex += 1) {
+        const angle = angles[segment]!;
+        const radius = island.beachRadius * radial * edges[segment]!;
+        const x = cosines[segment]! * radius;
+        const z = sines[segment]! * radius * island.scaleZ;
         // Low-frequency patches break up the vegetation line and the dunes.
         const patch = terrainNoise(x * 0.11 + island.seed * 17.3, z * 0.11 - island.seed * 9.1);
         const fine = terrainNoise(x * 0.37 - island.seed * 4.2, z * 0.37 + island.seed * 13.7);
-        const y = this.terrainSurfaceHeight(island, radial, angle);
-        positions.push(x, y, z);
+        // The height is `terrainSurfaceHeight`'s, from the values already at hand.
+        const bump = volcanic ? 0 : hillHeight(profile, x, z, radial);
+        const y = volcanic
+          ? this.terrainSurfaceHeight(island, radial, angle)
+          : this.islandTerrainHeight(radial, angle, island.seed, island.height) +
+            (patch - 0.5) * (0.5 + highland * 1.6) * (1 - smoothstep(0.7, 0.95, radial)) +
+            bump;
+        positions[vertex * 3] = x;
+        positions[vertex * 3 + 1] = y;
+        positions[vertex * 3 + 2] = z;
 
-        const color = new THREE.Color();
         if (volcanic) {
-          const alpha = 1 - smoothstep(0.965, outerRadius, radial);
           if (radial < VOLCANO_RIM + 0.02) {
             color.copy(rim).lerp(lavaRock, smoothstep(VOLCANO_RIM * 0.4, VOLCANO_RIM, radial) * 0.4);
           } else if (radial < VOLCANO_FOOT - 0.1) {
@@ -906,72 +934,72 @@ export class IslandSystem {
           } else {
             color.copy(wetBlackSand).lerp(deepSand, smoothstep(1, outerRadius, radial) * 0.4);
           }
-          sandMask.push(smoothstep(VOLCANO_FOOT - 0.02, VOLCANO_FOOT + 0.06, radial));
-          rockMask.push(1 - smoothstep(VOLCANO_FOOT - 0.12, VOLCANO_FOOT - 0.02, radial));
-          colors.push(color.r, color.g, color.b, alpha);
-          continue;
-        }
-        const profile = this.profile(island);
-        const bump = hillHeight(profile, x, z, radial);
-        const vegetationEdge = 0.7 + (patch - 0.5) * 0.16;
-        sandMask.push(smoothstep(vegetationEdge - 0.04, vegetationEdge + 0.12, radial));
-        rockMask.push(0);
-        if (radial < vegetationEdge - 0.08) {
-          color.copy(green).lerp(shade, smoothstep(0.35, 0.8, fine)).lerp(dryGrass, smoothstep(0.55, 0.9, patch) * 0.6);
-          if (highland > 0) {
-            const summit = 1 - smoothstep(0.05, 0.45, radial);
-            color.lerp(forest, highland * smoothstep(0.2, 0.7, fine) * 0.7);
-            color.lerp(rock, highland * summit * smoothstep(0.45, 0.75, patch) * 0.8);
-          }
-          // Hills: forest on their flanks, bare granite on a rocky island's tops.
-          if (bump > 0.5) {
-            color.lerp(forest, smoothstep(0.5, 3, bump) * (1 - profile.rockiness) * 0.6);
-            color.lerp(rock, profile.rockiness * smoothstep(1.5, 4.5, bump) * (0.55 + 0.45 * fine));
-          }
-        } else if (radial < vegetationEdge + 0.12) {
-          color
-            .copy(green)
-            .lerp(dryGrass, 0.5)
-            .lerp(sand, smoothstep(vegetationEdge - 0.08, vegetationEdge + 0.12, radial));
-        } else if (radial < 1) {
-          // Sand darkens where the swash keeps it wet.
-          color.copy(sand).lerp(wetSand, smoothstep(0.93, 0.985, radial));
+          sandMask[vertex] = smoothstep(VOLCANO_FOOT - 0.02, VOLCANO_FOOT + 0.06, radial);
+          rockMask[vertex] = 1 - smoothstep(VOLCANO_FOOT - 0.12, VOLCANO_FOOT - 0.02, radial);
         } else {
-          color.copy(wetSand).lerp(deepSand, smoothstep(1, outerRadius, radial));
+          const vegetationEdge = 0.7 + (patch - 0.5) * 0.16;
+          sandMask[vertex] = smoothstep(vegetationEdge - 0.04, vegetationEdge + 0.12, radial);
+          if (radial < vegetationEdge - 0.08) {
+            color.copy(green).lerp(shade, smoothstep(0.35, 0.8, fine)).lerp(dryGrass, smoothstep(0.55, 0.9, patch) * 0.6);
+            if (highland > 0) {
+              const summit = 1 - smoothstep(0.05, 0.45, radial);
+              color.lerp(forest, highland * smoothstep(0.2, 0.7, fine) * 0.7);
+              color.lerp(rock, highland * summit * smoothstep(0.45, 0.75, patch) * 0.8);
+            }
+            // Hills: forest on their flanks, bare granite on a rocky island's tops.
+            if (bump > 0.5) {
+              color.lerp(forest, smoothstep(0.5, 3, bump) * (1 - profile.rockiness) * 0.6);
+              color.lerp(rock, profile.rockiness * smoothstep(1.5, 4.5, bump) * (0.55 + 0.45 * fine));
+            }
+          } else if (radial < vegetationEdge + 0.12) {
+            color
+              .copy(green)
+              .lerp(dryGrass, 0.5)
+              .lerp(sand, smoothstep(vegetationEdge - 0.08, vegetationEdge + 0.12, radial));
+          } else if (radial < 1) {
+            // Sand darkens where the swash keeps it wet.
+            color.copy(sand).lerp(wetSand, smoothstep(0.93, 0.985, radial));
+          } else {
+            color.copy(wetSand).lerp(deepSand, smoothstep(1, outerRadius, radial));
+          }
         }
-        const alpha = 1 - smoothstep(0.965, outerRadius, radial);
-        colors.push(color.r, color.g, color.b, alpha);
+        colors[vertex * 4] = color.r;
+        colors[vertex * 4 + 1] = color.g;
+        colors[vertex * 4 + 2] = color.b;
+        colors[vertex * 4 + 3] = alpha;
       }
     }
 
+    const indices = new (vertexCount > 65535 ? Uint32Array : Uint16Array)((segments + (rings - 1) * segments * 2) * 3);
+    let cursor = 0;
     for (let segment = 0; segment < segments; segment += 1) {
       // Counter-clockwise seen from above, so the lit front face is the top.
-      indices.push(0, 1 + (segment + 1) % segments, 1 + segment);
+      indices[cursor++] = 0;
+      indices[cursor++] = 1 + (segment + 1) % segments;
+      indices[cursor++] = 1 + segment;
     }
     for (let ring = 1; ring < rings; ring += 1) {
       const innerStart = 1 + (ring - 1) * segments;
       const outerStart = 1 + ring * segments;
       for (let segment = 0; segment < segments; segment += 1) {
         const next = (segment + 1) % segments;
-        indices.push(
-          innerStart + segment,
-          innerStart + next,
-          outerStart + segment,
-          innerStart + next,
-          outerStart + next,
-          outerStart + segment,
-        );
+        indices[cursor++] = innerStart + segment;
+        indices[cursor++] = innerStart + next;
+        indices[cursor++] = outerStart + segment;
+        indices[cursor++] = innerStart + next;
+        indices[cursor++] = outerStart + next;
+        indices[cursor++] = outerStart + segment;
       }
     }
 
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 4));
-    geometry.setAttribute("sandMask", new THREE.Float32BufferAttribute(sandMask, 1));
-    geometry.setAttribute("rockMask", new THREE.Float32BufferAttribute(rockMask, 1));
-    geometry.setIndex(indices);
-    geometry.computeVertexNormals();
-    geometry.computeBoundingSphere();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 4));
+    geometry.setAttribute("sandMask", new THREE.BufferAttribute(sandMask, 1));
+    geometry.setAttribute("rockMask", new THREE.BufferAttribute(rockMask, 1));
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    computeVertexNormalsFast(geometry);
+    computeBoundingSphereFast(geometry);
     return geometry;
   }
 

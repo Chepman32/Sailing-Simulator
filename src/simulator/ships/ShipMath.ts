@@ -1,4 +1,5 @@
 import { clamp, smoothstep } from "../math";
+import { profileHalfWidth } from "./ShipModelMath";
 
 /**
  * Merchant ships and liners on passage far from the yacht.
@@ -138,6 +139,12 @@ export type Ship = {
    * carrier in ballast shows a broad band of red antifouling.
    */
   ballast: number;
+  /**
+   * Half-widths of the hull she is drawn with, measured at the waterline
+   * (`measureHullProfile`), once her imported model is on; until then (and
+   * for procedural hulls) the analytic `hullHalfWidth`.
+   */
+  hullProfile?: Float32Array | null;
 };
 
 export type ShipWorld = {
@@ -210,7 +217,9 @@ const scratchLocal = { along: 0, across: 0 };
 /** Approximate signed distance in metres from the hull's waterplane; negative inside. */
 export function shipHullDistance(ship: Ship, x: number, z: number): number {
   shipLocal(ship, x, z, scratchLocal);
-  const width = hullHalfWidth(ship.halfLength, ship.halfBeam, scratchLocal.along);
+  const width = ship.hullProfile
+    ? profileHalfWidth(ship.hullProfile, ship.halfLength, scratchLocal.along)
+    : hullHalfWidth(ship.halfLength, ship.halfBeam, scratchLocal.along);
   return Math.max(Math.abs(scratchLocal.across) - width, Math.abs(scratchLocal.along) - ship.halfLength);
 }
 

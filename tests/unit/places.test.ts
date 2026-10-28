@@ -57,6 +57,10 @@ test("bottles hold sail colours until all are found, then messages", () => {
 
 test("a volcano smokes east of the start; its cone rises to a crater", () => {
   assert.ok(isVolcanoCell(1, 0) && !isVolcanoCell(0, 0));
+  // The only one in the sea.
+  for (let column = -12; column <= 12; column += 1) {
+    for (let row = -12; row <= 12; row += 1) assert.equal(isVolcanoCell(column, row), column === 1 && row === 0);
+  }
   const volcano = islandsInCell(1, 0).find((island) => island.volcano);
   assert.ok(volcano, "the cell east of the start holds a volcano");
   assert.ok(volcano.height > 60 && volcano.beachRadius >= 150);

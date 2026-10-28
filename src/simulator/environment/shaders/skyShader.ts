@@ -186,7 +186,9 @@ const CELESTIAL_FUNCTIONS = /* glsl */ `
   uniform float uCelestial;
 
   const float SUN_RADIUS = 0.021;
-  const float MOON_RADIUS = 0.0155;
+  // Drawn larger than life (as the eye sees a low moon): it has to read at
+  // phone size and in a wide view.
+  const float MOON_RADIUS = 0.021;
 
   // Angular position of a direction in a body's own tangent frame, in radians.
   vec2 bodyFrame(vec3 direction, vec3 axis) {

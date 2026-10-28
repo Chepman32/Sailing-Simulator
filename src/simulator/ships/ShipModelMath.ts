@@ -176,3 +176,227 @@ export function unionBounds(boxes: readonly Bounds3[]): Bounds3 | null {
   }
   return { min, max };
 }
+
+/** Stations of a measured hull profile, stern to bow. */
+export const HULL_PROFILE_STATIONS = 64;
+/** Heights (m, from the waterline) whose hull counts as the ship's side to a yacht's hulls alongside. */
+export const HULL_PROFILE_BAND: readonly [number, number] = [-1.2, 3.5];
+/**
+ * Above the band, up to the yacht's masthead, the ship's side meets her rig,
+ * which stands this far inboard of her hulls' outer edge (the outline is
+ * 1.85 m off her centreline): a bow flaring out over the water holds her
+ * off by its width less this, so the mast does not pass into the flare.
+ */
+export const RIG_TOP = 9.5;
+export const RIG_INSET = 1.6;
+/** Spacing of the horizontal cuts through the band, and above it to `RIG_TOP`, metres. */
+const HULL_SLICE_STEP = 0.6;
+const RIG_SLICE_STEP = 1;
+
+/**
+ * The half-width of a model's hull for a yacht alongside, measured station by
+ * station from its triangles (ship frame: bow toward +Z, waterline y = 0):
+ * the widest point within `band` metres of the waterline in each slice of
+ * the length (and, above it, the flare the rig would meet, see `RIG_INSET`)
+ * — its vertices there, points along its long edges and horizontal cuts
+ * every `HULL_SLICE_STEP` through the band, so a flat side drawn as a few long
+ * triangles (a simplified model's) is measured all along, not only at its
+ * corners. An imported ship
+ * is scaled to its type's length, not its beam, and its hull is never the
+ * analytic shape; walls and fenders that follow the measured hull let the
+ * yacht come alongside to the metre the eye sees. Empty stations (a gap in
+ * the mesh) take their neighbours' width.
+ *
+ * Several meshes add up: `emptyHullProfile`, `addHullMesh` for each, then
+ * `closeHullProfile`; `measureHullProfile` does all three for one mesh.
+ * @param positions xyz per vertex, metres, ship frame.
+ * @param index three vertex indices per triangle; null for a non-indexed mesh.
+ */
+export function measureHullProfile(
+  positions: ArrayLike<number>,
+  index: ArrayLike<number> | null,
+  halfLength: number,
+  band: readonly [number, number] = HULL_PROFILE_BAND,
+  stations = HULL_PROFILE_STATIONS,
+): Float32Array {
+  const profile = emptyHullProfile(stations);
+  addHullMesh(profile, positions, index, halfLength, band);
+  return closeHullProfile(profile);
+}
+
+/** A profile with nothing measured yet (`-1` marks an empty station). */
+export function emptyHullProfile(stations = HULL_PROFILE_STATIONS): Float32Array {
+  return new Float32Array(stations).fill(-1);
+}
+
+/** The heights the triangles are cut at: through the band, then up the rig. */
+function sliceHeights(band: readonly [number, number]): number[] {
+  const heights: number[] = [];
+  for (let height = band[0]; height < band[1]; height += HULL_SLICE_STEP) heights.push(height);
+  heights.push(band[1]);
+  for (let height = band[1] + RIG_SLICE_STEP; height < RIG_TOP; height += RIG_SLICE_STEP) heights.push(height);
+  if (RIG_TOP > band[1]) heights.push(RIG_TOP);
+  return heights;
+}
+
+/** Widens `profile` to take in one mesh of the hull (see `measureHullProfile`). */
+export function addHullMesh(
+  profile: Float32Array,
+  positions: ArrayLike<number>,
+  index: ArrayLike<number> | null,
+  halfLength: number,
+  band: readonly [number, number] = HULL_PROFILE_BAND,
+): void {
+  const triangles = index ? Math.floor(index.length / 3) : Math.floor(positions.length / 9);
+  const reach = (2 * halfLength) / profile.length / 2;
+  const top = Math.max(band[1], RIG_TOP);
+  const heights = sliceHeights(band);
+  for (let triangle = 0; triangle < triangles; triangle += 1) {
+    const a = 3 * (index ? index[3 * triangle]! : 3 * triangle);
+    const b = 3 * (index ? index[3 * triangle + 1]! : 3 * triangle + 1);
+    const c = 3 * (index ? index[3 * triangle + 2]! : 3 * triangle + 2);
+    const ay = positions[a + 1]!;
+    const by = positions[b + 1]!;
+    const cy = positions[c + 1]!;
+    const low = Math.min(ay, by, cy);
+    const high = Math.max(ay, by, cy);
+    // Most of a ship (the bottom, the upper decks) is nowhere near the yacht.
+    if (!(high >= band[0] && low <= top)) continue;
+    // The corners and, along any long edge, points a half station apart
+    // (a flat plate is measured by its rim); then the horizontal cuts.
+    addHullPoint(profile, positions[a]!, ay, positions[a + 2]!, halfLength, band);
+    addHullPoint(profile, positions[b]!, by, positions[b + 2]!, halfLength, band);
+    addHullPoint(profile, positions[c]!, cy, positions[c + 2]!, halfLength, band);
+    sampleEdge(profile, positions, a, b, halfLength, reach, band);
+    sampleEdge(profile, positions, b, c, halfLength, reach, band);
+    sampleEdge(profile, positions, c, a, halfLength, reach, band);
+    for (const height of heights) {
+      if (height < low) continue;
+      if (height > high) break;
+      cutTriangle(profile, positions, a, b, c, height, halfLength, reach, height <= band[1] ? 0 : RIG_INSET);
+    }
+  }
+}
+
+/** Points along an edge longer than `reach` (its ends are measured as corners). */
+function sampleEdge(
+  profile: Float32Array,
+  positions: ArrayLike<number>,
+  p: number,
+  q: number,
+  halfLength: number,
+  reach: number,
+  band: readonly [number, number],
+): void {
+  const span = Math.abs(positions[q + 2]! - positions[p + 2]!);
+  if (span <= reach) return;
+  const samples = Math.min(256, Math.ceil(span / reach));
+  for (let sample = 1; sample < samples; sample += 1) {
+    const t = sample / samples;
+    addHullPoint(
+      profile,
+      positions[p]! + (positions[q]! - positions[p]!) * t,
+      positions[p + 1]! + (positions[q + 1]! - positions[p + 1]!) * t,
+      positions[p + 2]! + (positions[q + 2]! - positions[p + 2]!) * t,
+      halfLength,
+      band,
+    );
+  }
+}
+
+/** Where a triangle crosses the plane y = `height`: a segment, sampled a half station apart. */
+function cutTriangle(
+  profile: Float32Array,
+  positions: ArrayLike<number>,
+  a: number,
+  b: number,
+  c: number,
+  height: number,
+  halfLength: number,
+  reach: number,
+  inset: number,
+): void {
+  let count = 0;
+  let x0 = 0;
+  let z0 = 0;
+  let x1 = 0;
+  let z1 = 0;
+  for (let edge = 0; edge < 3; edge += 1) {
+    const p = edge === 0 ? a : edge === 1 ? b : c;
+    const q = edge === 0 ? b : edge === 1 ? c : a;
+    const dp = positions[p + 1]! - height;
+    const dq = positions[q + 1]! - height;
+    if ((dp < 0) === (dq < 0)) continue;
+    const t = dp / (dp - dq);
+    const x = positions[p]! + (positions[q]! - positions[p]!) * t;
+    const z = positions[p + 2]! + (positions[q + 2]! - positions[p + 2]!) * t;
+    if (count === 0) {
+      x0 = x;
+      z0 = z;
+    } else {
+      x1 = x;
+      z1 = z;
+    }
+    count += 1;
+  }
+  if (count < 2) return;
+  const samples = Math.min(256, Math.ceil(Math.abs(z1 - z0) / reach)) + 1;
+  for (let sample = 0; sample <= samples; sample += 1) {
+    const t = sample / samples;
+    widen(profile, Math.max(0, Math.abs(x0 + (x1 - x0) * t) - inset), z0 + (z1 - z0) * t, halfLength);
+  }
+}
+
+/**
+ * Widens `profile` to take in one point of the hull (ship frame, metres):
+ * within `band` as it is, above it up to `RIG_TOP` less `RIG_INSET`.
+ */
+export function addHullPoint(
+  profile: Float32Array,
+  x: number,
+  y: number,
+  z: number,
+  halfLength: number,
+  band: readonly [number, number] = HULL_PROFILE_BAND,
+): void {
+  if (y >= band[0] && y <= band[1]) widen(profile, Math.abs(x), z, halfLength);
+  else if (y > band[1] && y <= RIG_TOP) widen(profile, Math.max(0, Math.abs(x) - RIG_INSET), z, halfLength);
+}
+
+function widen(profile: Float32Array, width: number, z: number, halfLength: number): void {
+  const t = (z / halfLength + 1) / 2;
+  if (!(t >= 0 && t <= 1)) return;
+  const stations = profile.length;
+  const station = Math.min(stations - 1, Math.floor(t * stations));
+  if (width > profile[station]!) profile[station] = width;
+}
+
+/** Fills the stations nothing reached and returns the finished profile. */
+export function closeHullProfile(profile: Float32Array): Float32Array {
+  const stations = profile.length;
+  // Fill gaps from the nearest measured stations; the very ends close to 0.
+  for (let station = 0; station < stations; station += 1) {
+    if (profile[station]! >= 0) continue;
+    let left = station - 1;
+    while (left >= 0 && profile[left]! < 0) left -= 1;
+    let right = station + 1;
+    while (right < stations && profile[right]! < 0) right += 1;
+    const a = left >= 0 ? profile[left]! : 0;
+    const b = right < stations ? profile[right]! : 0;
+    profile[station] = Math.max(0, left >= 0 && right < stations ? Math.min(a, b) : Math.max(a, b) * 0.5);
+  }
+  return profile;
+}
+
+/** Half-width of a measured profile at `along` metres from midships (+ toward the bow). */
+export function profileHalfWidth(profile: Float32Array, halfLength: number, along: number): number {
+  const stations = profile.length;
+  const t = (along / halfLength + 1) / 2;
+  if (t <= 0 || t >= 1) return 0;
+  const position = t * stations - 0.5;
+  const index = Math.floor(position);
+  const fraction = position - index;
+  const a = profile[Math.max(0, Math.min(stations - 1, index))]!;
+  const b = profile[Math.max(0, Math.min(stations - 1, index + 1))]!;
+  return a + (b - a) * fraction;
+}
