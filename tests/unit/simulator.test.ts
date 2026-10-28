@@ -401,12 +401,12 @@ test("sail polar luffs head to wind, lifts when reaching, and drags when running
 
 test("propellers spool with shaft speed squared and lose thrust as the hull catches up", () => {
   assert.equal(shaftTargetForThrottle(0), 0);
-  assert.ok(shaftTargetForThrottle(ENGINE_START_THROTTLE) > 0.3);
+  assert.ok(shaftTargetForThrottle(ENGINE_START_THROTTLE) > 0.25);
   assert.equal(shaftTargetForThrottle(1), 1);
   assert.equal(shaftTargetForThrottle(-1), -1);
   assert.equal(propellerThrust(0, 3), 0);
   const bollard = propellerThrust(1, 0);
-  assert.ok(bollard > 4000 && bollard < 20000, "twin auxiliaries produce kilonewtons, not tens of them");
+  assert.ok(bollard > 4000 && bollard < 40000, "twin outboards produce tens of kilonewtons, not hundreds");
   assert.ok(Math.abs(propellerThrust(0.5, 0) / bollard - 0.25) < 1e-9);
   assert.ok(propellerThrust(1, 4) < bollard);
   assert.ok(propellerThrust(-1, 0) < 0 && -propellerThrust(-1, 0) < bollard, "astern thrust is weaker than ahead");
@@ -440,7 +440,7 @@ test("engines give a realistic top speed, steerage from prop wash, and correct h
   const controls = { throttle: 1, rudder: 0, sailTrim: 0.2 };
   for (let step = 0; step < 40 * 60; step += 1) motor.fixedUpdate(1 / 60, controls);
   assert.ok(motor.engineShaft === 1);
-  assert.ok(motor.telemetry.speedKnots > 6 && motor.telemetry.speedKnots < 14.5, "an auxiliary-powered cruising speed");
+  assert.ok(motor.telemetry.speedKnots > 17 && motor.telemetry.speedKnots < 24, `a fast powered catamaran flat out (${motor.telemetry.speedKnots.toFixed(1)} kn)`);
 
   const headingBefore = motor.heading;
   controls.rudder = 1;
@@ -643,7 +643,8 @@ test("in a hurricane sea the yacht rides waves several metres high and stays fin
     let time = 0;
     const physics = new VesselPhysics({ sample: (x, z) => O.sampleOcean(x, z, time) }, OPEN_WATER);
     physics.windScale = 3.3;
-    const controls = { throttle: 0.8, rudder: 0, sailTrim: 1 };
+    // About 12 kn of power, as a skipper would hold in a hurricane sea.
+    const controls = { throttle: 0.45, rudder: 0, sailTrim: 1 };
     let lowest = Infinity;
     let highest = -Infinity;
     let maximumGap = 0;
@@ -1075,7 +1076,8 @@ test("a helmsman already turning clear of an island keeps the helm", () => {
   for (const bearing of [0, 1.3, 2.6, 4.2]) {
     // Aimed past the island's edge, turning further away from it, hard over.
     const physics = offTheBeach(bearing, 32, 34);
-    const controls = { throttle: 0.8, rudder: 0.9, sailTrim: 0.2 };
+    // About 12 kn under power.
+    const controls = { throttle: 0.45, rudder: 0.9, sailTrim: 0.2 };
     let engaged = 0;
     let impacts = 0;
     for (let step = 0; step < 12 * 60; step += 1) {

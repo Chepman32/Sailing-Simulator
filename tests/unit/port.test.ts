@@ -14,13 +14,13 @@ function renderer(): THREE.WebGLRenderer {
   return { shadowMap: { enabled: false, type: 0 }, setPixelRatio: () => undefined } as unknown as THREE.WebGLRenderer;
 }
 
-test("only Auto changes the quality by itself, and it aims for about 30 fps", () => {
+test("only Auto changes the quality by itself, and it aims for 60 fps", () => {
   const globals = globalThis as unknown as { window?: unknown };
   const previous = globals.window;
   globals.window = { matchMedia: () => ({ matches: false }), devicePixelRatio: 1 };
   try {
-    assert.ok(AUTO_SLOW_FPS <= 30 && AUTO_SLOW_FPS >= 24);
-    assert.ok(AUTO_GPU_TARGET_MS > GPU_TARGET_MS * 2, "auto tolerates a 30 fps frame");
+    assert.ok(AUTO_SLOW_FPS >= 45 && AUTO_SLOW_FPS < 58);
+    assert.ok(AUTO_GPU_TARGET_MS >= GPU_TARGET_MS && AUTO_GPU_TARGET_MS < 1000 / 60, "the GPU budget fits a 60 fps frame");
     const changes: string[] = [];
     const fixed = new QualityManager(renderer(), "high", (preset) => changes.push(preset));
     fixed.setAdaptive(false);
@@ -31,8 +31,8 @@ test("only Auto changes the quality by itself, and it aims for about 30 fps", ()
     assert.equal(fixed.current, "high", "a chosen preset is never lowered");
     assert.deepEqual(changes, []);
     const auto = new QualityManager(renderer(), "high", () => undefined);
-    for (let window = 0; window < 40; window += 1) auto.observeFps(45);
-    assert.equal(auto.current, "high", "45 fps is above the 30 fps target: no change");
+    for (let window = 0; window < 40; window += 1) auto.observeFps(58);
+    assert.equal(auto.current, "high", "a full frame rate changes nothing");
     for (let window = 0; window < 40; window += 1) auto.observeFps(12);
     assert.notEqual(auto.current, "high", "a slow session steps down");
   } finally {

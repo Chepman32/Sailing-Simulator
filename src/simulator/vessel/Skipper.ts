@@ -42,11 +42,34 @@ export function stepSkipperLean(state: LeanState, heel: number, turnLoad: number
   return state.lean;
 }
 
+/** Something the skipper does now and then with a hand off the wheel, or a look astern. */
+type GestureKind = "cap" | "shade" | "wave" | "lookBack";
+type Gesture = { kind: GestureKind; start: number; duration: number; side: "L" | "R" };
+
+/** Weight of a gesture at `t` seconds into it: eases in, holds, eases out. */
+function envelope(t: number, duration: number): number {
+  if (t <= 0 || t >= duration) return 0;
+  const rise = Math.min(1, t / 0.5);
+  const fall = Math.min(1, (duration - t) / 0.55);
+  const k = Math.min(rise, fall);
+  return k * k * (3 - 2 * k);
+}
+
+/** Small deterministic generator, so a session's skipper is not a metronome. */
+function random(seed: number): number {
+  const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return value - Math.floor(value);
+}
+
 /**
- * The skipper at the wheel: both hands on the rim (riding the wheel as it
- * turns, sliding when it turns far), feet planted on the deck through leg IK,
- * a balance spring against the heel, a head that scans the horizon and the
- * sails, and slow breathing. One skinned mesh, so one draw call.
+ * The skipper at the wheel, alive: both hands on the rim (riding the wheel
+ * as it turns, sliding when it turns far), feet planted on the deck through
+ * leg IK, knees giving to the yacht's heave, the weight shifting from foot to
+ * foot, a balance spring against the heel, breathing, quick glances that
+ * settle (ahead, up at the sails, along the horizon, down at the
+ * instruments), and now and then a gesture: a hand to the cap's peak, a hand
+ * shading the eyes, a wave, a look back over the shoulder. His shirt and
+ * shorts flutter in the apparent wind. One skinned mesh, one draw call.
  */
 export class Skipper {
   readonly figure = new HumanFigure();
@@ -55,6 +78,24 @@ export class Skipper {
   private readonly target = new THREE.Vector3();
   private readonly pole = new THREE.Vector3();
   private readonly localPoint = new THREE.Vector3();
+  private readonly rim = [new THREE.Vector3(), new THREE.Vector3()];
+  private readonly gestureTarget = new THREE.Vector3();
+  private readonly worldScratch = new THREE.Vector3();
+  private readonly rootQuaternion = new THREE.Quaternion();
+  private readonly parentQuaternion = new THREE.Quaternion();
+  /** Gaze, radians: yaw (left +) and pitch (down +), eased toward a chosen point. */
+  private gazeYaw = 0;
+  private gazePitch = 0;
+  private gazeTargetYaw = 0;
+  private gazeTargetPitch = 0;
+  private nextGaze = 1.5;
+  private gesture: Gesture | null = null;
+  private nextGesture = 14;
+  private gestureCount = 0;
+  /** Heave: the deck's vertical speed and acceleration, for the knees. */
+  private lastY = Number.NaN;
+  private heaveVelocity = 0;
+  private dip = 0;
 
   constructor(private readonly root: THREE.Object3D, private readonly stand: SkipperStand) {
     this.scale = stand.eyeHeight / FIGURE_EYE_HEIGHT;
@@ -76,21 +117,91 @@ export class Skipper {
     this.figure.mesh.visible = value;
   }
 
-  update(time: number, delta: number, heel: number, pitch: number, yawRate: number, forwardSpeed: number): void {
+  update(time: number, delta: number, heel: number, pitch: number, yawRate: number, forwardSpeed: number, apparentWind = 6): void {
     if (!this.figure.mesh.visible) return;
     const figure = this.figure;
+    const step = Math.min(0.05, Math.max(0, delta));
+    figure.uniforms.uFigureTime.value = time;
+    figure.uniforms.uFigureWind.value = Math.min(1.4, Math.max(0.15, apparentWind / 9));
     figure.resetPose();
+
+    // --- Balance, heave and weight ---------------------------------------------
     const turnLoad = Math.max(-0.1, Math.min(0.1, -yawRate * Math.abs(forwardSpeed) * 0.05));
-    const lean = stepSkipperLean(this.lean, heel, turnLoad, delta);
-    const scan = Math.sin(time * 0.11) * 0.42 + Math.sin(time * 0.29 + 1.3) * 0.22;
-    const lookUp = Math.pow(Math.max(0, Math.sin(time * 0.073 + 0.5)), 8) * 0.4;
+    const lean = stepSkipperLean(this.lean, heel, turnLoad, step);
+    this.root.getWorldPosition(this.worldScratch);
+    if (Number.isNaN(this.lastY) || step <= 0) {
+      this.lastY = this.worldScratch.y;
+    } else {
+      const velocity = (this.worldScratch.y - this.lastY) / step;
+      const acceleration = (velocity - this.heaveVelocity) / step;
+      this.heaveVelocity = velocity;
+      this.lastY = this.worldScratch.y;
+      // The knees soak up the deck rising under him, then stand tall again.
+      const wanted = Math.max(-0.05, Math.min(0.05, -acceleration * 0.006));
+      this.dip += (wanted - this.dip) * Math.min(1, step * 6);
+    }
+    // Weight from foot to foot every ten seconds or so, hips swaying with it.
+    const shift = Math.sin(time * 0.6 + Math.sin(time * 0.17) * 1.5) * 0.022;
+    const hips = figure.bone("hips");
+    hips.position.set(shift, 0.96 + Math.min(0, this.dip) - Math.abs(shift) * 0.25, 0);
+    const breath = Math.sin(time * 1.5);
+    hips.rotation.set(0.02 - pitch * 0.4, 0, lean * 0.55 - shift * 1.6);
+    figure.bone("spine").rotation.set(0.07 + forwardSpeed * 0.004, Math.sin(time * 0.21) * 0.05, lean * 0.3 + shift * 1.1);
+    figure.bone("chest").rotation.set(0.03 + breath * 0.014, 0, lean * 0.12 + shift * 0.4);
+    figure.bone("clavicleL").rotation.set(0, 0, breath * 0.018);
+    figure.bone("clavicleR").rotation.set(0, 0, -breath * 0.018);
 
-    figure.bone("hips").rotation.set(0.02 - pitch * 0.4, 0, lean * 0.55);
-    figure.bone("spine").rotation.set(0.07, Math.sin(time * 0.21) * 0.05, lean * 0.3);
-    figure.bone("chest").rotation.set(0.03 + Math.sin(time * 1.55) * 0.012, 0, lean * 0.12);
-    figure.bone("neck").rotation.set(-0.04, Math.max(-0.5, Math.min(0.5, scan * 0.45)), -lean * 0.15);
-    figure.bone("head").rotation.set(-lookUp - 0.03, Math.max(-0.6, Math.min(0.6, scan * 0.55)), 0);
+    // --- Gestures ------------------------------------------------------------------
+    if (!this.gesture && time >= this.nextGesture) {
+      this.gestureCount += 1;
+      const roll = random(this.gestureCount * 3.1 + 0.7);
+      const kind: GestureKind = roll < 0.3 ? "cap" : roll < 0.55 ? "shade" : roll < 0.75 ? "wave" : "lookBack";
+      const side = random(this.gestureCount * 5.3 + 1.1) < 0.5 ? "L" : "R";
+      this.gesture = { kind, start: time, duration: kind === "wave" ? 2.6 : kind === "lookBack" ? 2.8 : 2.1, side };
+    }
+    let gestureWeight = 0;
+    const gesture = this.gesture;
+    if (gesture) {
+      const t = time - gesture.start;
+      gestureWeight = envelope(t, gesture.duration);
+      if (t >= gesture.duration || t < 0) {
+        this.gesture = null;
+        this.nextGesture = time + 16 + random(this.gestureCount * 7.7) * 20;
+      }
+    }
 
+    // --- Gaze: quick turns that settle, like a person keeping watch -----------------
+    if (time >= this.nextGaze) {
+      const pick = random(Math.floor(time * 10) * 0.37 + 2.3);
+      const spread = random(Math.floor(time * 10) * 0.71 + 5.9) - 0.5;
+      if (pick < 0.35) [this.gazeTargetYaw, this.gazeTargetPitch] = [spread * 0.3, 0.02];
+      else if (pick < 0.55) [this.gazeTargetYaw, this.gazeTargetPitch] = [0.35 + spread * 0.3, -0.42];
+      else if (pick < 0.85) [this.gazeTargetYaw, this.gazeTargetPitch] = [Math.sign(spread || 1) * (0.55 + Math.abs(spread) * 0.6), 0.0];
+      else [this.gazeTargetYaw, this.gazeTargetPitch] = [spread * 0.2, 0.32];
+      this.nextGaze = time + 1.6 + random(time * 1.3) * 3.8;
+    }
+    let yawGoal = this.gazeTargetYaw;
+    let pitchGoal = this.gazeTargetPitch;
+    if (gesture?.kind === "lookBack") {
+      yawGoal += (gesture.side === "L" ? 1 : -1) * 1.9 * gestureWeight;
+      pitchGoal *= 1 - gestureWeight;
+    } else if (gesture?.kind === "shade") {
+      yawGoal = yawGoal * (1 - gestureWeight) + (gesture.side === "L" ? 0.4 : -0.4) * gestureWeight;
+      pitchGoal = pitchGoal * (1 - gestureWeight) - 0.05 * gestureWeight;
+    } else if (gesture?.kind === "cap") {
+      pitchGoal += 0.18 * gestureWeight;
+    }
+    // A head turns fast and settles: a stiff, well-damped approach.
+    const ease = 1 - Math.exp(-step * 7);
+    this.gazeYaw += (yawGoal - this.gazeYaw) * ease;
+    this.gazePitch += (pitchGoal - this.gazePitch) * ease;
+    const twist = Math.max(-0.45, Math.min(0.45, this.gazeYaw * 0.22));
+    const spine = figure.bone("spine");
+    spine.rotation.y += twist;
+    figure.bone("neck").rotation.set(-0.04 + this.gazePitch * 0.4, this.gazeYaw * 0.32, -lean * 0.15);
+    figure.bone("head").rotation.set(-0.03 + this.gazePitch * 0.6, this.gazeYaw * 0.46, Math.sin(time * 0.37) * 0.02);
+
+    // --- Legs: soles flat on the deck ---------------------------------------------
     this.root.updateMatrixWorld(true);
     const { feet } = this.stand;
     for (const side of ["L", "R"] as const) {
@@ -103,22 +214,32 @@ export class Skipper {
       this.levelFoot(side);
     }
 
+    // --- Arms: on the wheel, unless one is busy with a gesture --------------------
     const ride = Math.max(-MAX_HAND_RIDE, Math.min(MAX_HAND_RIDE, this.stand.wheelAngle()));
-    const rimPoints: THREE.Vector3[] = [];
-    for (const angle of [Math.PI / 2 + GRIP_OFFSET + ride, Math.PI / 2 - GRIP_OFFSET + ride]) {
-      const point = this.stand.rimPoint(angle, new THREE.Vector3());
-      rimPoints.push(point);
-    }
+    this.stand.rimPoint(Math.PI / 2 + GRIP_OFFSET + ride, this.rim[0]!);
+    this.stand.rimPoint(Math.PI / 2 - GRIP_OFFSET + ride, this.rim[1]!);
     // The left hand (+X side of the figure) takes whichever rim point is on that side.
-    const sideX = rimPoints.map((point) => this.root.worldToLocal(this.localPoint.copy(point)).x);
-    const leftIndex = sideX[0]! >= sideX[1]! ? 0 : 1;
+    const firstX = this.root.worldToLocal(this.localPoint.copy(this.rim[0]!)).x;
+    const secondX = this.root.worldToLocal(this.localPoint.copy(this.rim[1]!)).x;
+    const leftIndex = firstX >= secondX ? 0 : 1;
+    figure.mesh.updateMatrixWorld(true);
     for (const side of ["L", "R"] as const) {
       const sign = side === "L" ? 1 : -1;
-      this.target.copy(rimPoints[side === "L" ? leftIndex : 1 - leftIndex]!);
+      this.target.copy(this.rim[side === "L" ? leftIndex : 1 - leftIndex]!);
       this.pole.set(feet.x + sign * 0.6, feet.y + 0.9 * this.scale, feet.z - 0.5);
       this.root.localToWorld(this.pole);
+      let handTilt = 0;
+      if (gesture && gesture.side === side && gesture.kind !== "lookBack" && gestureWeight > 0) {
+        this.gestureHand(gesture, side, time);
+        this.target.lerp(this.gestureTarget, gestureWeight);
+        // Elbow out and down while the hand is up.
+        this.localPoint.set(sign * 0.55, 1.05, -0.25);
+        figure.mesh.localToWorld(this.localPoint);
+        this.pole.lerp(this.localPoint, gestureWeight);
+        handTilt = gestureWeight;
+      }
       figure.solveTwoBone(`upperArm${side}`, `forearm${side}`, UPPER_ARM_LENGTH * this.scale, FOREARM_LENGTH * this.scale, this.target, this.pole);
-      figure.bone(`hand${side}`).rotation.set(0.3, 0, sign * 0.4);
+      figure.bone(`hand${side}`).rotation.set(0.3 - handTilt * 1.2, 0, sign * (0.4 - handTilt * 0.3));
     }
   }
 
@@ -127,14 +248,31 @@ export class Skipper {
     this.figure.dispose();
   }
 
+  /** Where the gesturing hand goes, in the world. */
+  private gestureHand(gesture: Gesture, side: "L" | "R", time: number): void {
+    const sign = side === "L" ? 1 : -1;
+    const head = this.figure.bone("head");
+    if (gesture.kind === "cap") {
+      // Fingers to the cap's peak, a small tug.
+      this.gestureTarget.set(sign * 0.03, 0.125 + Math.sin(time * 9) * 0.004, 0.15);
+      head.localToWorld(this.gestureTarget);
+    } else if (gesture.kind === "shade") {
+      // The flat of the hand over the brow.
+      this.gestureTarget.set(sign * 0.02, 0.115, 0.13);
+      head.localToWorld(this.gestureTarget);
+    } else {
+      // A wave, high and out to the side.
+      this.gestureTarget.set(sign * (0.36 + Math.sin(time * 8.5) * 0.07), 1.82, 0.12);
+      this.figure.mesh.localToWorld(this.gestureTarget);
+    }
+  }
+
   /** Keep each sole flat on the deck whatever the leg bones do. */
   private levelFoot(side: "L" | "R"): void {
     const foot = this.figure.bone(`foot${side}`);
-    const inverse = new THREE.Quaternion();
-    const parent = new THREE.Quaternion();
-    this.root.getWorldQuaternion(inverse).invert();
-    (foot.parent as THREE.Object3D).getWorldQuaternion(parent);
-    parent.premultiply(inverse).invert();
-    foot.quaternion.copy(parent);
+    this.root.getWorldQuaternion(this.rootQuaternion).invert();
+    (foot.parent as THREE.Object3D).getWorldQuaternion(this.parentQuaternion);
+    this.parentQuaternion.premultiply(this.rootQuaternion).invert();
+    foot.quaternion.copy(this.parentQuaternion);
   }
 }

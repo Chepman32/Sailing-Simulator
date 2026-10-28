@@ -291,6 +291,37 @@ test("render budget: the GPU governor lowers the scale under load, restores it w
   assert.equal(governor.observe(-1, time, 1 / 60), "steady");
 });
 
+test("render budget: without GPU timing the frame rate drives the scale, and a step that buys nothing is undone", async () => {
+  const R = await import("../../src/simulator/core/RenderBudget");
+  // GPU-bound: 30 fps at full scale, 60 once the pixels are cut far enough.
+  const gpuBound = new R.FrameRateGovernor();
+  let now = 0;
+  const fpsAt = (scale: number) => Math.min(60, 30 / (scale * scale));
+  for (let window = 0; window < 40; window += 1) {
+    now += 0.75;
+    gpuBound.observe(fpsAt(gpuBound.scale), 60, now);
+  }
+  assert.ok(gpuBound.scale < 0.8 && gpuBound.scale >= R.MIN_RENDER_SCALE, `scale ${gpuBound.scale}`);
+  assert.ok(fpsAt(gpuBound.scale) >= 54, "the frame rate is restored");
+  // Paced to 30 fps on purpose (another window has the focus): nothing changes.
+  const before = gpuBound.scale;
+  for (let window = 0; window < 10; window += 1) gpuBound.observe(30, 30, (now += 0.75));
+  assert.equal(gpuBound.scale, before);
+  // CPU-bound: 40 fps whatever the scale. The step down is taken back.
+  const cpuBound = new R.FrameRateGovernor();
+  now = 0;
+  for (let window = 0; window < 12; window += 1) cpuBound.observe(40, 60, (now += 0.75));
+  assert.equal(cpuBound.scale, 1, "no blur for nothing");
+  assert.ok(cpuBound.atFloorAt(now), "and the presets are told resolution cannot help");
+  // A heavy moment, then a light scene: back to full resolution after a while at 60 fps.
+  const light = new R.FrameRateGovernor();
+  now = 0;
+  for (let window = 0; window < 8; window += 1) light.observe(Math.min(60, 25 / light.scale ** 2), 60, (now += 0.75));
+  assert.ok(light.scale < 1);
+  for (let window = 0; window < 200; window += 1) light.observe(60, 60, (now += 0.75));
+  assert.equal(light.scale, 1);
+});
+
 test("render budget: the frame-rate fallback ignores start-up stalls and a page paced down while unfocused", async () => {
   const R = await import("../../src/simulator/core/RenderBudget");
   const judge = new R.FpsJudge(36);

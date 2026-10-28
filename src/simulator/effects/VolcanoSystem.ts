@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { islandEdgeNoise, islandsWithin, VOLCANO_RIM, volcanoHeight, type IslandDefinition } from "../environment/IslandMath";
+import { islandEdgeNoise, islandsWithin, VOLCANO_DRAW_DISTANCE, VOLCANO_RIM, volcanoHeight, type IslandDefinition } from "../environment/IslandMath";
 import { LitPuffs } from "./LitPuffs";
 import { EmberStreaks } from "./EmberStreaks";
 import type { EnvironmentPalette } from "../environment/EnvironmentPalette";
@@ -44,7 +44,8 @@ import {
 
 const MAX_VOLCANOES = 2;
 /** Volcanoes farther than this are not animated (their plume is in the haze). */
-const VOLCANO_RANGE = 2600;
+/** Plumes are kept to the distance at which the cones themselves are drawn (`VOLCANO_DRAW_DISTANCE`). */
+const VOLCANO_RANGE = VOLCANO_DRAW_DISTANCE;
 const PLUME_PUFFS = 80;
 const FLOWS = 3;
 

@@ -78,12 +78,14 @@ const SWAY_MASS = MASS * 1.75;
 const YAW_INERTIA = 78000;
 
 // --- Propulsion ------------------------------------------------------------
-const AHEAD_BOLLARD_THRUST = 15600;
-const ASTERN_BOLLARD_THRUST = 9700;
-const IDLE_SHAFT_FRACTION = 0.3;
+// Twin high-output outboards: about 20 kn flat out in calm water, 13 kn at
+// half, 8 kn just engaged (players found the old 13 kn auxiliary sluggish).
+const AHEAD_BOLLARD_THRUST = 33700;
+const ASTERN_BOLLARD_THRUST = 15000;
+const IDLE_SHAFT_FRACTION = 0.2;
 const SHAFT_SPOOL_UP = 1.5;
 const SHAFT_SPOOL_DOWN = 2.3;
-const THRUST_FADE_SPEED = 15;
+const THRUST_FADE_SPEED = 25;
 const PROPELLER_DISC_AREA = 0.32;
 
 // --- Hull hydrodynamics ----------------------------------------------------
@@ -106,6 +108,8 @@ const RUDDER_ARM = 4.2;
 const RUDDER_FORCE = 720;
 const RUDDER_FIN = 0.9;
 const PROP_WASH_ON_RUDDER = 0.4;
+/** Flow over the rudders (m/s) above which their grip grows only slowly. */
+const RUDDER_FLOW_KNEE = 8.5;
 
 // --- Aerodynamics ----------------------------------------------------------
 const SAIL_CENTRE_HEIGHT = 6.5;
@@ -325,7 +329,14 @@ export class VesselPhysics {
 
     // --- Rudders -----------------------------------------------------------
     const propellerRace = Math.sqrt((2 * Math.abs(thrust)) / (WATER_DENSITY * PROPELLER_DISC_AREA));
-    const rudderFlow = forwardSpeed + (thrust > 0 ? PROP_WASH_ON_RUDDER * propellerRace : 0);
+    const rawRudderFlow = forwardSpeed + (thrust > 0 ? PROP_WASH_ON_RUDDER * propellerRace : 0);
+    // Above the old top speed the rudders ventilate and the hulls' own
+    // resistance to turning grows: their bite grows far more slowly with
+    // speed, so a fast run under full power turns no quicker than a cruise.
+    const rudderFlowSize = Math.abs(rawRudderFlow);
+    const rudderFlow =
+      Math.sign(rawRudderFlow) *
+      (rudderFlowSize <= RUDDER_FLOW_KNEE ? rudderFlowSize : RUDDER_FLOW_KNEE + (rudderFlowSize - RUDDER_FLOW_KNEE) * 0.25);
     const rudderAngle = clamp(controls.rudder, -1, 1) * MAX_RUDDER_ANGLE;
     const sternSway = lateralSpeed - this.yawRate * RUDDER_ARM;
     const rudderSide =

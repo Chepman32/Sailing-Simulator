@@ -3038,3 +3038,16 @@ input[type="range"]:disabled {
   .throttle-reveal-inner,
   .throttle-control { transition-duration: 0s !important; }
 }
+
+/* Until the first frame of the scene is on screen only the loading card shows
+   (the controls over a black canvas looked like a broken page); then the
+   interface fades in with the scene. */
+.simulator-interface.is-loading > :not(.loading-screen):not(.error-card) { visibility: hidden; }
+.simulator-interface.is-ready { animation: interface-in 520ms ease-out backwards; }
+@keyframes interface-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .simulator-interface.is-ready { animation: none; }
+}

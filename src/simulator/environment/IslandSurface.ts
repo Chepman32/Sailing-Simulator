@@ -163,7 +163,7 @@ export function applyIslandSurface(
   surface: IslandSurfaceUniforms,
   sky: Record<string, THREE.IUniform>,
 ): void {
-  patchMaterialShader(material, "island-surface-v2", (shader) => {
+  patchMaterialShader(material, "island-surface-v3", (shader) => {
     Object.assign(shader.uniforms, sky, surface, ISLAND_SLOT_UNIFORMS);
     shader.vertexShader = injectAfter(
       shader.vertexShader.replace(
@@ -172,6 +172,14 @@ export function applyIslandSurface(
       ),
       "project_vertex",
       "vSandWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvSandMask = sandMask;\nvRockMask = rockMask;\nvGroundNormal = normalize(mat3(modelMatrix) * objectNormal);",
+    );
+    // The haze lies on the sea: high ground stands out of it, so a far
+    // volcano's cone and an island's hills fade with distance like their
+    // plumes and clouds do rather than turning into a ghost under them.
+    shader.vertexShader = injectAfter(
+      shader.vertexShader,
+      "fog_vertex",
+      "#ifdef USE_FOG\nvFogDepth *= 1.0 - 0.55 * smoothstep(6.0, 80.0, vSandWorld.y);\n#endif",
     );
     let fragment = injectAfter(shader.fragmentShader, "packing", SAND_DECLARATIONS);
     // Surface state shared by the colour, roughness and normal stages.

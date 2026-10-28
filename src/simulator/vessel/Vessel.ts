@@ -278,7 +278,7 @@ export class Vessel {
       night: nightFactor,
       readable: lighting?.helmReadable ?? false,
     });
-    this.skipper?.update(time, delta, physics.roll, physics.pitch, physics.yawRate, physics.telemetry.forwardSpeed);
+    this.skipper?.update(time, delta, physics.roll, physics.pitch, physics.yawRate, physics.telemetry.forwardSpeed, telemetry.apparentWindSpeed);
     this.bell?.update(delta, physics.roll, physics.pitch);
     // Follow the simulated shaft so the screws spool up and down with the
     // engines instead of snapping to the lever position.

@@ -38,6 +38,8 @@ const TURN_KICK = 0.3;
 const MAX_TURN_KICK = 1.0;
 
 const normal = { x: 0, z: 1 };
+/** Farthest outline point from the yacht's centre, m. */
+const OUTLINE_REACH = Math.max(...HULL_OUTLINE.map(([side, ahead]) => Math.hypot(side, ahead)));
 
 /** How a surface meets the hulls: where contact is, how far out the cushion reaches. */
 export type ContactProfile = { contact: number; cushion: number; restitution: number; friction: number };
@@ -68,6 +70,8 @@ export function resolveShoreContact(
   delta: number,
   profile: ContactProfile = SHORE_CONTACT,
 ): number {
+  // Far from any shore (nearly always): one sample at the centre settles it.
+  if (shore(body.position.x, body.position.z, normal) > (OUTLINE_REACH + profile.cushion) * 1.3 + 4) return 0;
   const fx = Math.sin(body.heading);
   const fz = Math.cos(body.heading);
   // Starboard is +X at heading zero.

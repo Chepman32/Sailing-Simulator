@@ -28,3 +28,22 @@ test("levels switch by size on screen, with hysteresis", () => {
   assert.equal(chooseLodLevel(0.17, 1, DEFAULT_LOD_STEPS), 1);
   assert.equal(chooseLodLevel(0.2, 1, DEFAULT_LOD_STEPS), 0);
 });
+
+test("a mesh whose level is its own non-indexed geometry is counted, not crashed on", async () => {
+  await MeshoptSimplifier.ready;
+  const { ScreenLod } = await import("../../src/simulator/core/ScreenLod");
+  const lod = new ScreenLod();
+  await MeshoptSimplifier.ready;
+  // A non-indexed mesh too coarse to simplify usefully: its levels are itself.
+  const geometry = new THREE.BoxGeometry(1, 1, 1, 30, 30, 30).toNonIndexed();
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial());
+  const scene = new THREE.Scene();
+  scene.add(mesh);
+  lod.register(scene, 100, [{ ratio: 0.95, below: 10 }]);
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+  camera.position.set(0, 0, 500);
+  scene.updateMatrixWorld(true);
+  for (let frame = 0; frame < 5; frame += 1) assert.doesNotThrow(() => lod.update(camera));
+  assert.ok(lod.stats.drawn > 0);
+  lod.dispose();
+});

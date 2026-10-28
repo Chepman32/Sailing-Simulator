@@ -90,6 +90,9 @@ const STERN_EDGE: readonly (readonly [number, number])[] = [
   [-1.8, -4.6], [1.8, -4.6], [-1.9, -2.2], [1.9, -2.2],
 ];
 
+/** Farthest edge point from the yacht's centre, m. */
+const HULL_REACH = Math.max(...[...BOW_EDGE, ...STERN_EDGE].map(([side, ahead]) => Math.hypot(side, ahead)));
+
 export type ShoreGuardState = {
   active: boolean;
   /** +1 turning to starboard, −1 to port; fixed while engaged. */
@@ -148,6 +151,11 @@ export function hullFreeRun(
   direction = 1,
   margin = GUARD_MARGIN,
 ): number {
+  // Open water: one sample at the yacht says the whole sweep is clear. The
+  // clearance is a first-order distance estimate, so a generous safety
+  // factor keeps this exact in practice; it spares hundreds of coastline
+  // evaluations per step on the open sea.
+  if (shore(x, z, scratchNormal) > (distance + HULL_REACH) * 1.3 + margin + 6) return distance;
   const fx = Math.sin(heading);
   const fz = Math.cos(heading);
   const rx = fz;

@@ -42,6 +42,20 @@ export class RenderLoop {
     document.removeEventListener("visibilitychange", this.handleVisibility);
   }
 
+  /** Errors already reported (each once), so a fault repeated every frame does not flood the console. */
+  private readonly reported = new Set<string>();
+
+  private guard(stage: string, run: () => void): void {
+    try {
+      run();
+    } catch (error) {
+      const message = `${stage}: ${error instanceof Error ? error.message : String(error)}`;
+      if (this.reported.has(message)) return;
+      this.reported.add(message);
+      console.error(`Frame ${stage} failed; the loop carries on.`, error);
+    }
+  }
+
   private readonly handleVisibility = (): void => {
     this.pausedByVisibility = document.hidden;
     this.accumulator = 0;
@@ -66,13 +80,15 @@ export class RenderLoop {
 
     let steps = 0;
     while (this.accumulator >= this.fixedDelta && steps < 5) {
-      this.callbacks.fixedUpdate(this.fixedDelta);
+      this.guard("fixed update", () => this.callbacks.fixedUpdate(this.fixedDelta));
       this.accumulator -= this.fixedDelta;
       steps += 1;
     }
 
-    this.callbacks.update(delta, this.elapsed, this.accumulator / this.fixedDelta);
-    this.callbacks.render();
+    // A failing system must not freeze the picture: each stage is guarded on
+    // its own, so a fault in one (an update) still lets the frame be drawn.
+    this.guard("update", () => this.callbacks.update(delta, this.elapsed, this.accumulator / this.fixedDelta));
+    this.guard("render", () => this.callbacks.render());
 
     this.fpsElapsed += delta;
     this.fpsFrames += 1;

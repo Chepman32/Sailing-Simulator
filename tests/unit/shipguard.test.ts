@@ -74,10 +74,10 @@ test("the yacht may come alongside a ship to a couple of metres without being tu
   const ship = wall();
   const physics = new VesselPhysics(CALM, OPEN_WATER);
   physics.hullClearance = (x, z, normal) => nearestHullClearance([ship], x, z, normal);
-  // 25 m off her side, closing on it at a shallow angle under slow power.
+  // 25 m off her side, closing on it at a shallow angle under slow power (about 8 kn).
   physics.position.set(ship.halfBeam + 25, physics.position.y, -80);
   physics.heading = -0.28;
-  const controls = { throttle: 0.35, rudder: 0, sailTrim: 0.2 };
+  const controls = { throttle: 0.2, rudder: 0, sailTrim: 0.2 };
   let closest = Infinity;
   let engagedFarOff = 0;
   for (let step = 0; step < 60 * 60; step += 1) {

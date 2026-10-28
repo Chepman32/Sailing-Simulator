@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { AudioSystem } from "./audio/AudioSystem";
 import { CameraController } from "./camera/CameraController";
-import { AssetManager } from "./core/AssetManager";
+import { AssetManager, ASSET_LOAD_TOTAL, LOAD_STEPS_TOTAL, SCENE_LOAD_STEPS } from "./core/AssetManager";
 import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
 import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
@@ -10,7 +10,7 @@ import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./c
 import { FlareCamera } from "./camera/FlareCamera";
 import { ScreenLod } from "./core/ScreenLod";
 import { GpuTimer } from "./core/GpuTimer";
-import { AUTO_GPU_TARGET_MS, GpuGovernor } from "./core/RenderBudget";
+import { AUTO_GPU_TARGET_MS, FrameRateGovernor, GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
 import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
@@ -124,7 +124,9 @@ export class Simulator {
   private contextLostAt = Number.NaN;
   private restoreRequested = false;
   private recoveryTimer?: number;
-  private readonly governor = new GpuGovernor();
+  private readonly governor = new GpuGovernor(AUTO_GPU_TARGET_MS);
+  /** The render scale where GPU time cannot be measured (Safari): follows the frame rate. */
+  private readonly frameGovernor = new FrameRateGovernor();
   private ocean!: OceanSystem;
   private environment!: EnvironmentSystem;
   private islands!: IslandSystem;
@@ -186,6 +188,8 @@ export class Simulator {
   private resizeObserver?: ResizeObserver;
   /** When a coalesced resize was last requested (performance.now), 0 when none is pending. */
   private resizeRequestedAt = 0;
+  /** Set once `dispose` ran; the asynchronous start-up stops there. */
+  private disposed = false;
   private appliedWidth = 0;
   private appliedHeight = 0;
   private elapsed = 0;
@@ -281,6 +285,7 @@ export class Simulator {
         this.post?.setQuality(this.quality.settings);
         this.shipShadows?.setSize(shipShadowSize(preset));
         this.governor.reset();
+        this.frameGovernor.reset();
         this.resize();
         this.reflection?.setScale(this.quality.settings.reflectionScale, this.renderer.domElement.width, this.renderer.domElement.height);
         this.persistState();
@@ -420,6 +425,7 @@ export class Simulator {
       this.resizeObserver = new ResizeObserver(this.requestResize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
       this.resize();
+      this.reportLoading(1, "Preparing the graphics");
       await this.prewarmShaders();
       this.loop = new RenderLoop({
         fixedUpdate: this.fixedUpdate,
@@ -428,6 +434,9 @@ export class Simulator {
         onFps: this.onFps,
         onPauseChange: (paused) => {
           this.status = paused ? "paused" : "running";
+          // The first frames back from the background are no measure of the GPU.
+          this.frameGovernor.pause(3);
+          this.quality.noteDisruption();
           this.hud.emit(this.snapshot());
         },
       });
@@ -435,6 +444,10 @@ export class Simulator {
       this.status = "running";
       this.hud.emit(this.snapshot());
       this.loop.start();
+      // The interface appears with the first frame actually on screen.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (!this.disposed) this.reportLoading(SCENE_LOAD_STEPS, "Scene ready", true);
+      }));
     } catch (error) {
       this.status = "error";
       const message = error instanceof Error ? error.message : "The simulator could not start.";
@@ -535,6 +548,7 @@ export class Simulator {
     this.quality?.setAdaptive(automatic);
     this.governor.target = AUTO_GPU_TARGET_MS;
     this.governor.reset();
+    this.frameGovernor.reset();
     if (this.initialized) this.resize();
   }
 
@@ -1045,6 +1059,7 @@ export class Simulator {
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.chartDirty) this.saveChart();
     this.pendingCaptures.splice(0).forEach((resolve) => resolve(null));
     this.loop?.dispose();
@@ -1262,12 +1277,25 @@ export class Simulator {
       this.update(1 / 60);
       const previousTarget = this.renderer.getRenderTarget();
       this.renderer.setRenderTarget(this.post.sceneTarget);
-      await this.renderer.compileAsync(this.scene, this.camera.camera);
+      // One part of the scene at a time, with a frame in between, so the
+      // loading bar moves while a tablet compiles for several seconds.
+      const parts = [...this.scene.children];
+      for (let index = 0; index < parts.length; index += 1) {
+        await this.renderer.compileAsync(parts[index]!, this.camera.camera, this.scene);
+        this.reportLoading(1 + Math.round(((index + 1) / parts.length) * (SCENE_LOAD_STEPS - 2)), "Preparing the graphics");
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        if (this.disposed) return;
+      }
       this.renderer.setRenderTarget(previousTarget);
       this.render();
     } catch (error) {
       console.warn("Shader prewarm skipped; programs will compile on first use.", error);
     }
+  }
+
+  /** The loading bar beyond the downloads (`step` of `SCENE_LOAD_STEPS`). */
+  private reportLoading(step: number, label: string, ready = false): void {
+    this.options.onLoading?.({ loaded: ASSET_LOAD_TOTAL + Math.min(step, SCENE_LOAD_STEPS), total: LOAD_STEPS_TOTAL, label, ready });
   }
 
   private readonly render = (): void => {
@@ -1372,16 +1400,25 @@ export class Simulator {
     this.environment?.invalidateLighting();
     this.islands?.invalidateShadows();
     this.governor.reset();
+    this.frameGovernor.reset();
     this.flatWatch.reset();
     this.resize();
   }
 
-  /** GPU time of a finished frame: eases the render scale, and the preset if that is not enough. */
+  /**
+   * GPU time of a finished frame: eases the render scale on every preset (60
+   * fps comes before resolution, a chosen preset included), and in Auto the
+   * preset too once the scale has nothing more to give.
+   */
   private observeGpu(gpuMs: number): void {
-    if (this.chosenQuality !== null) return;
     const verdict = this.governor.observe(gpuMs, this.elapsed, this.frameDelta);
     if (verdict === "scaled") this.resize();
-    else if (verdict !== "steady") this.quality.observeGpu(verdict);
+    else if (verdict !== "steady" && this.chosenQuality === null) this.quality.observeGpu(verdict);
+  }
+
+  /** The render scale in use: GPU-timed where the browser allows, frame-rate driven elsewhere. */
+  private get renderScale(): number {
+    return this.gpuTimer?.available ? this.governor.scale : this.frameGovernor.scale;
   }
 
   /**
@@ -1421,7 +1458,13 @@ export class Simulator {
 
   private readonly onFps = (fps: number, frameCap = 60): void => {
     this.fps = fps;
-    this.quality.observeFps(fps, frameCap);
+    if (this.gpuTimer?.available) {
+      this.quality.observeFps(fps, frameCap);
+      return;
+    }
+    if (this.frameGovernor.observe(fps, frameCap, this.elapsed) === "scaled") this.resize();
+    // The preset only hears about slow frames once resolution is exhausted.
+    if (this.frameGovernor.atFloorAt(this.elapsed) || fps >= frameCap * 0.96) this.quality.observeFps(fps, frameCap);
   };
 
   /**
@@ -1440,7 +1483,8 @@ export class Simulator {
     if (width === this.appliedWidth && height === this.appliedHeight && this.resizeRequestedAt === 0) return;
     this.resizeRequestedAt = performance.now();
     this.quality?.noteDisruption();
-    this.governor.reset();
+    // The scale learned so far still holds; only the next measurements are void.
+    this.frameGovernor.pause(2);
   };
 
   private readonly resize = (): void => {
@@ -1449,7 +1493,7 @@ export class Simulator {
     const height = Math.max(1, parent?.clientHeight ?? window.innerHeight);
     this.appliedWidth = width;
     this.appliedHeight = height;
-    if (this.quality) this.renderer.setPixelRatio(this.quality.pixelRatioFor(width, height, this.governor.scale));
+    if (this.quality) this.renderer.setPixelRatio(this.quality.pixelRatioFor(width, height, this.renderScale));
     this.renderer.setSize(width, height, false);
     this.camera?.resize(width, height);
     this.post?.setSize(width, height);

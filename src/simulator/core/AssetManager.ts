@@ -31,6 +31,15 @@ const ASSETS = {
 const ASSET_ENTRIES = Object.entries(ASSETS) as Array<[AssetKey, AssetDefinition]>;
 
 export const ASSET_LOAD_TOTAL = ASSET_ENTRIES.length;
+/**
+ * Steps of the loading bar after the downloads: building the scene, compiling
+ * its shaders (most of the wait on a phone or tablet) and the first frame.
+ * The bar is only full, and the interface only shown, once that frame is on
+ * screen: before, a tablet showed the controls over a black canvas for many
+ * seconds while every shader compiled.
+ */
+export const SCENE_LOAD_STEPS = 10;
+export const LOAD_STEPS_TOTAL = ASSET_LOAD_TOTAL + SCENE_LOAD_STEPS;
 
 const REQUIRED_ANIMATED_ASSETS = new Set<AnimatedAssetKey>(["dolphin"]);
 
@@ -74,7 +83,7 @@ export class AssetManager {
       throw new Error(`Required 3D assets failed to load (${requiredFailures.join("; ")}).`);
     }
 
-    this.emitProgress("Scene ready", true);
+    this.emitProgress("Building the scene", false);
   }
 
   yacht(): THREE.Group {
@@ -136,7 +145,7 @@ export class AssetManager {
   private emitProgress(label: string, ready: boolean): void {
     this.onProgress?.({
       loaded: this.completedLoads,
-      total: ASSET_LOAD_TOTAL,
+      total: LOAD_STEPS_TOTAL,
       label,
       ready,
     });

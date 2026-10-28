@@ -290,17 +290,22 @@ export const ISLAND_SLOTS = 8;
  * `shape` receives (centre x, centre z, beach radius, scale z) and `frame`
  * (island seed, lobe, 0, 0) per slot; unused slots hold an island far away.
  */
+const slotOrder: { island: IslandDefinition; distance: number }[] = [];
+
 export function selectIslandSlots(x: number, z: number, shape: Float32Array, frame: Float32Array): void {
-  const order = islandsAround(x, z)
-    .map((island) => ({
-      island,
-      distance:
-        Math.hypot(x - island.centerX, (z - island.centerZ) / island.scaleZ) * Math.min(1, island.scaleZ) -
-        island.beachRadius,
-    }))
-    .sort((a, b) => a.distance - b.distance);
+  // Runs every frame: reuses its scratch list instead of allocating one.
+  const around = islandsAround(x, z);
+  slotOrder.length = around.length;
+  for (let index = 0; index < around.length; index += 1) {
+    const island = around[index]!;
+    const entry = (slotOrder[index] ??= { island, distance: 0 });
+    entry.island = island;
+    entry.distance =
+      Math.hypot(x - island.centerX, (z - island.centerZ) / island.scaleZ) * Math.min(1, island.scaleZ) - island.beachRadius;
+  }
+  slotOrder.sort((a, b) => a.distance - b.distance);
   for (let slot = 0; slot < ISLAND_SLOTS; slot += 1) {
-    const entry = order[slot];
+    const entry = slotOrder[slot];
     const island = entry?.island;
     shape[slot * 4] = island ? island.centerX : 1.0e6;
     shape[slot * 4 + 1] = island ? island.centerZ : 1.0e6;
@@ -312,6 +317,13 @@ export function selectIslandSlots(x: number, z: number, shape: Float32Array, fra
     frame[slot * 4 + 3] = 0;
   }
 }
+
+/**
+ * Volcanoes are landmarks: their cones (IslandSystem) and their plumes
+ * (VolcanoSystem) are drawn this far on every preset, inside the distance at
+ * which islands are built.
+ */
+export const VOLCANO_DRAW_DISTANCE = 2350;
 
 /** Largest outward excursion of the coastline noise above the nominal ellipse. */
 export const MAX_EDGE_NOISE = 1.073 + 0.04;

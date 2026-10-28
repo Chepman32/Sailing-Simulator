@@ -20,6 +20,7 @@ import {
   selectIslandSlots,
   shoreClearance,
   terrainNoise,
+  VOLCANO_DRAW_DISTANCE,
   VOLCANO_FOOT,
   VOLCANO_RIM,
   volcanoHeight,
@@ -276,10 +277,12 @@ export class IslandSystem {
     // be a sliver at the horizon fade.
     this.farFromMirror.length = 0;
     this.stream(focusX, focusZ, BUILDS_PER_FRAME);
-    this.built.forEach(({ lod }) => {
+    this.built.forEach(({ lod, definition }) => {
       const island = lod.parent!;
       const gap = Math.hypot(island.position.x - focusX, island.position.z - focusZ) - lod.userData.radius;
-      lod.visible = gap < ISLAND_DRAW_DISTANCE * this.drawScale;
+      // A volcano is a landmark: its cone stays in view as far as its plume
+      // does, on every preset (a plume over an empty horizon gave it away).
+      lod.visible = gap < (definition.volcano ? VOLCANO_DRAW_DISTANCE : ISLAND_DRAW_DISTANCE * this.drawScale);
       if (lod.visible && gap > MIRROR_DISTANCE) this.farFromMirror.push(lod);
     });
     for (const visual of this.built.values()) {

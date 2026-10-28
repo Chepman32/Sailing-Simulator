@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
 import type { CameraMode, Discovery, LightingMode, LoadingState, QualityChoice } from "@/src/simulator/types";
@@ -61,7 +61,8 @@ async function savePhoto(blob: Blob): Promise<void> {
   window.setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-const ASSET_LOAD_TOTAL = 6;
+/** Downloads plus scene steps (`LOAD_STEPS_TOTAL` in AssetManager), for the bar before the first report. */
+const ASSET_LOAD_TOTAL = 16;
 /** Set once the first-run guide has been finished or skipped. */
 const GUIDE_STORAGE_KEY = "sailing-onboarding-done";
 const SAIL_SWATCHES: { id: string; color: string }[] = [
@@ -633,13 +634,18 @@ export function SailingSimulator() {
         if (!readGuideDone()) setGuideStep(1);
         simulator = new simulatorModule.Simulator(canvas, {
           onSnapshot: (nextSnapshot) => {
-            setSnapshot(nextSnapshot);
-            setEngineInput(nextSnapshot.engineRunning);
-            // The first-run guide ticks itself off as the player does each thing.
-            setGuideStep((step) => {
-              if (step === 1 && (nextSnapshot.engineRunning || nextSnapshot.speedKnots > 1.2)) return 2;
-              if (step === 2 && Math.abs(nextSnapshot.rudderDegrees) > 8) return 3;
-              return step;
+            // A transition: React renders the interface in short slices and
+            // yields to the next animation frame, so the HUD's refresh several
+            // times a second never costs the scene a frame.
+            startTransition(() => {
+              setSnapshot(nextSnapshot);
+              setEngineInput(nextSnapshot.engineRunning);
+              // The first-run guide ticks itself off as the player does each thing.
+              setGuideStep((step) => {
+                if (step === 1 && (nextSnapshot.engineRunning || nextSnapshot.speedKnots > 1.2)) return 2;
+                if (step === 2 && Math.abs(nextSnapshot.rudderDegrees) > 8) return 3;
+                return step;
+              });
             });
           },
           onLoading: setLoading,
@@ -1071,7 +1077,11 @@ export function SailingSimulator() {
 
       {/* Faded rather than removed, so leaving photo mode is a smooth return;
           inert keeps the hidden controls out of reach meanwhile. */}
-      <div className={`simulator-interface ${photoMode ? "photo-hidden" : ""}`} inert={photoMode} aria-hidden={photoMode}>
+      <div
+        className={`simulator-interface ${photoMode ? "photo-hidden" : ""} ${!loading.ready && !error ? "is-loading" : "is-ready"}`}
+        inert={photoMode}
+        aria-hidden={photoMode}
+      >
 
         {!loading.ready && !error && (
           <section className="loading-screen" aria-live="polite">
