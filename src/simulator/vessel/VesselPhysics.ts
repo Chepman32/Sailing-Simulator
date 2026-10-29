@@ -391,6 +391,14 @@ export class VesselPhysics {
     const helmGrip = smoothstep(0.12, 2.2, Math.abs(rawRudderFlow));
     const helmTarget = clamp(controls.rudder, -1, 1) * ARCADE_TURN_RATE * helmGrip * Math.sign(rawRudderFlow || 1);
     this.yawRate += (helmTarget - this.yawRate) * (1 - Math.exp(-ARCADE_HELM_RESPONSE * helmGrip * delta));
+    if (this.hoveTo) {
+      // Nobody at the helm: the sheets are let fly and a drogue streamed, so
+      // she lies quietly, drifting a little, while her skipper is in the water.
+      const settle = Math.exp(-0.9 * delta);
+      this.velocity.x *= settle;
+      this.velocity.z *= settle;
+      this.yawRate *= Math.exp(-2.5 * delta);
+    }
     this.heading += this.yawRate * delta;
     this.position.addScaledVector(this.velocity, delta);
 
@@ -439,6 +447,9 @@ export class VesselPhysics {
       this.reset();
     }
   }
+
+  /** Nobody at the helm: she lies to a drogue (see `fixedUpdate`). */
+  hoveTo = false;
 
   /**
    * A helping hand off whatever holds her, set by `Simulator.watchStuck`

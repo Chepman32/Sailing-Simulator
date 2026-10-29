@@ -55,6 +55,8 @@ const FinishShader = {
     uGradeShadows: { value: new THREE.Vector3(0, 0, 0) },
     uGradeSaturation: { value: 1 },
     uGradeVignette: { value: 0 },
+    // A diver's view: the mask's edge, the water's wobble, 0 in air … 1 under.
+    uUnderwater: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -74,6 +76,7 @@ const FinishShader = {
     uniform vec3 uGradeShadows;
     uniform float uGradeSaturation;
     uniform float uGradeVignette;
+    uniform float uUnderwater;
     varying vec2 vUv;
 
     ${SANE_COLOR_GLSL}
@@ -85,15 +88,26 @@ const FinishShader = {
     }
 
     void main() {
-      vec2 centred = vUv - 0.5;
+      vec2 uv = vUv;
+      // Under water the image swims a little (the water's own density
+      // ripples), most toward the edges of the mask.
+      if (uUnderwater > 0.0) {
+        vec2 c = uv - 0.5;
+        float edge = 0.35 + dot(c, c) * 2.6;
+        uv += vec2(
+          sin(uv.y * 23.0 + uTime * 1.6) + sin(uv.y * 41.0 - uTime * 2.3) * 0.5,
+          cos(uv.x * 19.0 + uTime * 1.3) + cos(uv.x * 37.0 + uTime * 2.1) * 0.5
+        ) * 0.0011 * edge * uUnderwater;
+      }
+      vec2 centred = uv - 0.5;
       float radius2 = dot(centred, centred);
       // A real lens focuses red and blue at slightly different magnifications
       // toward the corners; the centre of the frame stays untouched.
-      vec2 fringe = centred * radius2 * uAberration;
+      vec2 fringe = centred * radius2 * (uAberration + uUnderwater * 0.012);
       vec3 color = vec3(
-        texture2D(tDiffuse, vUv - fringe).r,
-        texture2D(tDiffuse, vUv).g,
-        texture2D(tDiffuse, vUv + fringe).b
+        texture2D(tDiffuse, uv - fringe).r,
+        texture2D(tDiffuse, uv).g,
+        texture2D(tDiffuse, uv + fringe).b
       );
       color = saneColor(color);
       float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
@@ -101,6 +115,8 @@ const FinishShader = {
       // Mood: a tint over the whole image and a lift of the shadows' colour.
       color = color * uGradeGain + uGradeShadows * (1.0 - smoothstep(0.0, 0.6, luminance));
       color *= 1.0 - smoothstep(0.1, 0.52, radius2) * (uVignette + uGradeVignette);
+      // The dive mask: its rim darkens the corners of the view.
+      color *= 1.0 - smoothstep(0.16, 0.42, radius2 * vec2(1.0, 1.0).x) * 0.55 * uUnderwater;
       gl_FragColor = vec4(color, 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
@@ -231,6 +247,11 @@ export class PostProcessing {
     (uniforms.uGradeShadows!.value as THREE.Vector3).set(shadows[0]!, shadows[1]!, shadows[2]!);
     uniforms.uGradeSaturation!.value = saturation;
     uniforms.uGradeVignette!.value = vignette;
+  }
+
+  /** A diver's view under the water (0 … 1). */
+  setUnderwater(amount: number): void {
+    this.finish.uniforms.uUnderwater!.value = amount;
   }
 
   render(delta: number, time: number): void {

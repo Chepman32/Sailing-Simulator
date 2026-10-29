@@ -117,6 +117,7 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   positionX: 0,
   positionZ: 0,
   photoAutoTarget: true,
+  diver: { mode: "helm", depth: 0, air: 1, prompt: null, torch: false, underwater: false, pointerLocked: false },
   fps: 60,
   status: "loading",
 };

@@ -63,6 +63,8 @@ export class UnderwaterLight {
     uUnderwaterTime: { value: 0 },
     /** Strength of the sun's caustics: full by day, none at night. */
     uUnderwaterCaustics: { value: 1 },
+    /** 1 while the camera is under the surface: the whole way to the eye is water (the scene's haze carries most of it). */
+    uUnderwaterView: { value: 0 },
     /** The sea state, shared with the ocean: the waterline follows the real waves. */
     uSeaFactors: { value: seaFactors },
     /**
@@ -73,6 +75,11 @@ export class UnderwaterLight {
      */
     uUnderwaterNight: { value: 0 },
   };
+
+  /** The camera is under the surface by `amount` (0…1). */
+  setView(amount: number): void {
+    this.uniforms.uUnderwaterView.value = amount;
+  }
 
   /** Keeps the waterline in step with the ocean. */
   setTime(time: number): void {
@@ -95,8 +102,9 @@ export class UnderwaterLight {
   /** Decorates a lit or unlit built-in material; works with skinning and instancing. */
   apply(material: THREE.Material): void {
     const uniforms = this.uniforms;
-    patchMaterialShader(material, "underwater-v5", (shader) => {
+    patchMaterialShader(material, "underwater-v6", (shader) => {
       shader.uniforms.uUnderwaterNight = uniforms.uUnderwaterNight;
+      shader.uniforms.uUnderwaterView = uniforms.uUnderwaterView;
       shader.uniforms.uUnderwaterColor = uniforms.uUnderwaterColor;
       shader.uniforms.uUnderwaterTime = uniforms.uUnderwaterTime;
       shader.uniforms.uUnderwaterCaustics = uniforms.uUnderwaterCaustics;
@@ -124,6 +132,7 @@ export class UnderwaterLight {
         "common",
         `uniform vec3 uUnderwaterColor;
         uniform float uUnderwaterNight;
+        uniform float uUnderwaterView;
         uniform float uUnderwaterCaustics;
         uniform float uUnderwaterTime;
         varying vec3 vUnderwaterWorld;
@@ -150,6 +159,9 @@ export class UnderwaterLight {
             float slant = max(abs(toFragment.y) / max(viewDistance, 0.001), 0.2);
             float fade = smoothstep(0.0, ${UNDERWATER_FADE_DEPTH.toFixed(2)}, underwaterDepth);
             float path = (min(underwaterDepth / slant, viewDistance) + underwaterDepth * 0.6) * fade;
+            // A diver sees through the water all the way: the colour is lost
+            // along the line of sight as well as on the light's way down.
+            path = mix(path, viewDistance * 0.2 + underwaterDepth * 0.38, uUnderwaterView);
             vec3 transmittance = exp(-${glslVector(UNDERWATER_ABSORPTION)} * path);
             // Sunlight focused by the waves plays over anything near the
             // surface: caustics fade with depth as the light spreads out.
@@ -167,7 +179,9 @@ export class UnderwaterLight {
             gl_FragColor.rgb = gl_FragColor.rgb * transmittance + uUnderwaterColor * (1.0 - transmittance);
             // At night the sea is black a few decimetres down: nothing lights
             // a submerged body, so it disappears into the water around it.
-            float nightVeil = uUnderwaterNight * smoothstep(0.04, ${UNDERWATER_NIGHT_HIDE_DEPTH.toFixed(2)}, underwaterDepth);
+            // (A diver down there with a torch sees what it lights: the veil is
+            // for eyes above the surface.)
+            float nightVeil = uUnderwaterNight * smoothstep(0.04, ${UNDERWATER_NIGHT_HIDE_DEPTH.toFixed(2)}, underwaterDepth) * (1.0 - uUnderwaterView);
             gl_FragColor.rgb = mix(gl_FragColor.rgb, uUnderwaterColor, nightVeil);
           }
         }`,

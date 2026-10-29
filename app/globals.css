@@ -3084,3 +3084,269 @@ input[type="range"]:disabled {
 @media (prefers-reduced-motion: reduce) {
   .simulator-interface.is-ready { animation: none; }
 }
+
+/* --- The skipper on foot and in the water: his own HUD --------------------- */
+.diver-hud {
+  position: absolute;
+  z-index: 26;
+  inset: 0;
+  pointer-events: none;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.diver-hud button { pointer-events: auto; }
+
+.diver-status {
+  position: absolute;
+  top: var(--edge-top);
+  left: var(--edge-left);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  max-width: calc(100vw - 2 * var(--gap) - 210px);
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  font-size: 13px;
+}
+
+.diver-mode {
+  color: var(--accent-strong);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.diver-gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.diver-gauge-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.diver-gauge-value { font-weight: 700; }
+
+.diver-air {
+  position: relative;
+  display: inline-block;
+  width: 64px;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.diver-air-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  transform-origin: left center;
+  transition: transform 300ms linear;
+}
+
+.diver-gauge.is-low .diver-air-fill { background: #ff7a5c; }
+.diver-gauge.is-low .diver-gauge-value { color: #ff9a80; animation: diver-pulse 1s ease-in-out infinite; }
+
+.diver-torch-on {
+  color: #ffe9b0;
+  text-shadow: 0 0 10px rgba(255, 220, 140, 0.9);
+}
+
+.diver-helm {
+  position: absolute;
+  top: var(--edge-top);
+  right: var(--edge-right);
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 0 16px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.diver-helm:hover { border-color: var(--accent); }
+
+.diver-helm-wheel {
+  width: 18px;
+  height: 18px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  background:
+    linear-gradient(currentColor, currentColor) center / 2px 100% no-repeat,
+    linear-gradient(currentColor, currentColor) center / 100% 2px no-repeat;
+}
+
+.diver-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.diver-prompt {
+  position: absolute;
+  top: calc(50% + 34px);
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 16px;
+  border: 1px solid rgba(130, 255, 240, 0.5);
+  border-radius: 99px;
+  color: var(--text);
+  background: rgba(4, 25, 35, 0.72);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  transform: translateX(-50%);
+  cursor: pointer;
+  animation: diver-rise 220ms var(--spring-soft) both;
+}
+
+.diver-prompt kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.diver-warning {
+  position: absolute;
+  top: calc(var(--edge-top) + 64px);
+  left: 50%;
+  margin: 0;
+  padding: 8px 16px;
+  border-radius: 99px;
+  color: #fff;
+  background: rgba(150, 40, 20, 0.78);
+  font-size: 13px;
+  font-weight: 700;
+  transform: translateX(-50%);
+  animation: diver-pulse 1s ease-in-out infinite;
+}
+
+.diver-hint {
+  position: absolute;
+  right: 0;
+  bottom: var(--edge-bottom);
+  left: 0;
+  width: fit-content;
+  max-width: calc(100vw - 32px);
+  margin: 0 auto;
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(4, 25, 35, 0.78);
+  font-size: 12px;
+  text-align: center;
+  animation: diver-fade 400ms ease-out both;
+}
+
+.diver-stick {
+  position: absolute;
+  bottom: calc(var(--edge-bottom) + 10px);
+  left: calc(var(--edge-left) + 10px);
+  display: grid;
+  place-items: center;
+  width: 120px;
+  height: 120px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.18));
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.diver-stick-knob {
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.diver-buttons {
+  position: absolute;
+  right: calc(var(--edge-right) + 6px);
+  bottom: calc(var(--edge-bottom) + 10px);
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.diver-button {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.26);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  font-size: 20px;
+  touch-action: none;
+}
+
+.diver-button.is-large { width: 66px; height: 66px; font-size: 24px; }
+.diver-button[aria-pressed="true"] { border-color: #ffe0a0; color: #ffe9b0; }
+
+.diver-hud.is-underwater .diver-status,
+.diver-hud.is-underwater .diver-helm { background: rgba(2, 18, 28, 0.62); }
+
+@keyframes diver-rise {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+}
+
+@keyframes diver-fade {
+  from { opacity: 0; }
+}
+
+@keyframes diver-pulse {
+  50% { opacity: 0.55; }
+}
+
+@media (max-width: 680px) {
+  .diver-status { font-size: 12px; padding: 8px 11px; max-width: calc(100vw - 2 * var(--gap) - 64px); }
+  .diver-helm span:last-child { display: none; }
+  .diver-helm { width: 44px; padding: 0; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diver-prompt, .diver-hint, .diver-warning, .diver-gauge.is-low .diver-gauge-value { animation: none; }
+}

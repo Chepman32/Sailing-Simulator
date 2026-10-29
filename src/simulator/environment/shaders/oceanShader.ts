@@ -236,6 +236,11 @@ export const oceanFragmentShader = /* glsl */ `
   uniform vec4 uFlare;
   uniform vec3 uFlareColor;
   uniform float uHaze;
+  // Seen from below (a diver): 1 while the camera is under the surface, the
+  // water's colour and the haze of the water between.
+  uniform float uCameraUnder;
+  uniform vec3 uUnderFogColor;
+  uniform float uUnderFogDensity;
   // Wake field (see WakeField): R foam, G aerated slick, B − A height in metres.
   uniform sampler2D uWakeMap;
   uniform vec3 uWakeArea;
@@ -569,6 +574,66 @@ ${detailCalls}
     lostVariance = swellVariance + rippleVariance * (1.0 - smoothing);
 
     vec3 normal = normalize(vec3(-slope.x, 1.0, -slope.y));
+
+    // --- The surface from below -------------------------------------------
+    // Looking up from under the water: straight above, Snell's window, the
+    // sky squeezed into a circle of 97° bent by every ripple, the sun a
+    // blinding spot in it; beyond the critical angle the surface is a
+    // mirror of the blue depths (total internal reflection), its ripples
+    // catching the light from below.
+    if (!gl_FrontFacing) {
+      if (uCameraUnder < 0.5) discard;
+      // Ripples matter more from below: the calm field is too smooth.
+      // The fine ripples alias into a mosaic from below: the window is
+      // bent by the larger waves and only shimmers with the small ones.
+      vec3 under = normalize(vec3(-(swellSlope.x * 0.85 + (slope.x - swellSlope.x) * 0.18), 1.0, -(swellSlope.y * 0.85 + (slope.y - swellSlope.y) * 0.18)));
+      vec3 ray = -viewDirection;
+      vec3 out_ = refract(ray, -under, 1.333);
+      float cosI = clamp(dot(ray, under), 0.0, 1.0);
+      vec3 depths = uUnderFogColor * 0.62;
+      vec3 seen;
+      if (dot(out_, out_) > 1.0e-4) {
+        vec3 skyDirection = normalize(out_);
+        skyDirection.y = max(skyDirection.y, 0.015);
+        vec3 sky = skyAtmosphere(skyDirection);
+        vec4 clouds = skyClouds(skyDirection, -1.0);
+        sky = mix(sky, clouds.rgb, clouds.a);
+        float sunAmount = max(dot(skyDirection, uSunDirection), 0.0);
+        sky += uSunColor * (pow(sunAmount, 1200.0) * 9.0 + pow(sunAmount, 120.0) * 0.35) * (1.0 - uNight) * smoothstep(-0.05, 0.1, uSunDirection.y);
+        float moonAmount = max(dot(skyDirection, uMoonDirection), 0.0);
+        sky += vec3(0.6, 0.7, 0.9) * pow(moonAmount, 900.0) * 1.5 * uNight;
+        // Fresnel going out of the water: near the window's edge almost all
+        // the light is reflected back down.
+        float cosT = sqrt(max(0.0, 1.0 - 1.777 * (1.0 - cosI * cosI)));
+        float rs = (1.333 * cosI - cosT) / (1.333 * cosI + cosT);
+        float rp = (cosI - 1.333 * cosT) / (cosI + 1.333 * cosT);
+        float reflectance = clamp(0.5 * (rs * rs + rp * rp), 0.0, 1.0);
+        seen = mix(sky * 1.15, depths, reflectance);
+      } else {
+        // Total internal reflection: the depths, rippled, and the light
+        // scattered up from the water column catching the facets.
+        float facet = pow(max(dot(reflect(ray, -under), uLightDirection * vec3(1.0, -1.0, 1.0)), 0.0), 12.0);
+        seen = depths * (0.92 + 0.16 * skyNoise(vWorldPosition.xz * 0.7 + uTime * 0.2)) + uLightColor * facet * 0.03;
+      }
+      // Foam and the wake float on top: pale patches against the light.
+      vec3 wakeUnder = vec3(0.0);
+      if (uWakeTexel > 0.0) {
+        vec2 wakeUv = (vWorldPosition.xz - uWakeArea.xy) / uWakeArea.z + 0.5;
+        if (all(greaterThan(wakeUv, vec2(0.0))) && all(lessThan(wakeUv, vec2(1.0)))) wakeUnder = vec3(texture2D(uWakeMap, wakeUv).r);
+      }
+      // Seen from below foam is a lace of bubbles, not a sheet: broken up by
+      // the same marbling as from above and only a little brighter than the
+      // light coming through it.
+      float laceUnder = foamCover(clamp(wakeUnder.r, 0.0, 1.0) * 0.8, foamMarble(vWorldPosition.xz * 1.4, uTime), 0.18);
+      seen = mix(seen, (uAmbientColor * 0.7 + uLightColor * 0.18) * (1.0 - uNight * 0.7), laceUnder * 0.45);
+      float haze = 1.0 - exp(-viewDistance * uUnderFogDensity * 0.85);
+      seen = mix(seen, uUnderFogColor, haze);
+      gl_FragColor = vec4(max(seen, 0.0), 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+      return;
+    }
+
     float nDotV = clamp(dot(normal, viewDirection), 0.02, 1.0);
     float roughness = clamp(sqrt(0.0014 + lostVariance * 2.0), 0.035, 0.42);
 

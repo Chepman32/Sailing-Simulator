@@ -208,6 +208,11 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/effects/PoiMath.ts`, `PoiSystem.ts`, `PoiModels.ts`, `PuffPoints.ts` | Party barge, pirate wreck on its reef and monolith: placement, footprints (physics obstacles), procedural models and animation; pooled soft puffs for smoke |
 | `src/simulator/vessel/RescueMath.ts` | `findOpenWater`: where a stuck yacht is towed |
 | `src/simulator/ui/HudController.ts` | Snapshot throttling between simulator and React |
+| `src/simulator/diver/DiverMath.ts` | Pure first-person movement: walking constants, `stepSwim` (surface float spring with wave-rise feed-forward, duck dive, neutral buoyancy under water, seabed and hull limits), scuba air use by ambient pressure, refill, `hullDistance` |
+| `src/simulator/diver/DeckField.ts` | Layered deck heightfield rasterised from the yacht's meshes (vessel space); `floor`/`footing` report height and walls (a rise above `STEP_UP` and below headroom) |
+| `src/simulator/diver/DiverController.ts` | Modes `helm` → `deck` → `swim`, keyboard/mouse (pointer lock)/touch input, deck walking in the yacht's frame, jumping off and climbing aboard at the sterns, the first-person camera, prompts and audio hooks. `InputController.enabled` is false and the yacht is hove-to while away from the helm |
+| `src/simulator/diver/UnderwaterWorld.ts`, `DiveFish.ts` | Seabed patch, instanced reef, light shafts, marine snow, bubbles, the torch (a `SpotLight` that never leaves the scene, intensity 0 when off) and schooling fish; only updated and visible while the camera is in or near the water |
+| `app/components/DiverHud.tsx`, `diverMessages.ts` | Depth and air gauges, prompts, back-to-helm, touch stick and buttons; texts for all 30 languages |
 
 ### Build, hosting, and tests
 
@@ -545,6 +550,8 @@ Sun requirements:
 - avoid excessive sail transparency or emissive brightness that makes the sun appear through canvas.
 
 Do not independently set `scene.background`, fog, sky dome, ocean colours, lighting capture, and exposure from multiple event handlers. Environment ownership is centralized.
+
+The diver sees the sea from below through the ocean's back faces (`oceanShader`, `!gl_FrontFacing`, only when `uCameraUnder`): Snell's window with sky, clouds and sun, Fresnel at its edge, total internal reflection outside it, wake foam as a lace. `Simulator.updateUnderwater` drives the underwater amount, water colour and fog density from depth and daylight into `EnvironmentSystem.setUnderwater` (FogExp2, sky hidden), `OceanSystem.setUnderside`, `UnderwaterLight.setView`, `PostProcessing.setUnderwater` (wobble, aberration), `AudioSystem.setUnderwater` (low-pass, hum) and `IslandSystem.setDeepSeabedVisible` (the flat far seabed is hidden while the diver's own seabed is drawn). Planar reflection is skipped under water.
 
 ### Presentation pipeline
 

@@ -60,12 +60,23 @@ import { AircraftSystem } from "./aircraft/AircraftSystem";
 import { ExploredSea, Track } from "./map/ChartMath";
 import { poiInCell, poisAround, POI_CELL, type PlaceKind, type Poi } from "./effects/PoiMath";
 import type { LootKind } from "./effects/LootMath";
+import { DiverController, type DiverPrompt } from "./diver/DiverController";
+import { DeckField } from "./diver/DeckField";
+import { DIVE_DEPTH, type DiverMode } from "./diver/DiverMath";
+import { seabedHeight, UnderwaterWorld } from "./diver/UnderwaterWorld";
+import { DiveFish } from "./diver/DiveFish";
+import { HelmStation, HULL_TRANSOM_Z } from "./vessel/HelmStation";
+import { HULL_CENTER_Z, HULL_HALF_BEAM, HULL_HALF_LENGTH, HULL_OFFSET_X } from "./environment/shaders/oceanShader";
 
 /**
  * A shell's burst against a signal flare's light: brighter (a big shell
  * outshines a flare many times over), but usually a kilometre off.
  */
 const FIREWORK_LIGHT = 14;
+
+function setLinearRgb(target: THREE.Color, rgb: readonly number[]): void {
+  target.setRGB(rgb[0]!, rgb[1]!, rgb[2]!, THREE.LinearSRGBColorSpace);
+}
 /** How far aft of the yacht's centre her engines are, metres. */
 const ENGINE_ROOM_AFT = 3.6;
 
@@ -158,6 +169,18 @@ export class Simulator {
   private shipShadows?: ShipShadows;
   private readonly shipImpact = new THREE.Vector3();
   private readonly helmPoint = new THREE.Vector3();
+  /** The skipper on foot and in the water (see `diver/`). */
+  private diver?: DiverController;
+  private deckField: DeckField | null = null;
+  private underwaterWorld?: UnderwaterWorld;
+  private diveFish?: DiveFish;
+  private underwaterAmount = 0;
+  private readonly diverWater = new THREE.Color();
+  private readonly diverLight = new THREE.Color();
+  private readonly sunDown = new THREE.Vector3();
+  private readonly diverScratch = new THREE.Vector3();
+  private torchOffered = false;
+  private readonly swimSurface = (x: number, z: number): number => this.ocean.sample(x, z).height;
   private readonly sampleSurface = (x: number, z: number) => this.ocean.sample(x, z);
   private camera!: CameraController;
   private input!: InputController;
@@ -453,12 +476,49 @@ export class Simulator {
       });
       this.input.autoCenter = this.state.autoCenterHelm;
       this.touch = new TouchControls(this.canvas, {
-        orbit: (x, y) => this.camera.orbit(x, y),
-        zoom: (delta) => this.camera.zoom(delta),
+        // On foot or in the water a drag looks round (without a pointer lock).
+        orbit: (x, y) => (this.diver?.active ? this.diver.look(x, y) : this.camera.orbit(x, y)),
+        zoom: (delta) => {
+          if (!this.diver?.active) this.camera.zoom(delta);
+        },
         recenter: () => {
+          if (this.diver?.active) return;
           if (!this.options.onSceneDoubleTap?.()) this.camera.recenter();
         },
       });
+      this.underwaterWorld = new UnderwaterWorld(this.scene, this.underwater, this.quality.settings.oceanDetail);
+      this.diveFish = new DiveFish(this.scene, this.underwater);
+      this.diver = new DiverController(
+        this.canvas,
+        { surface: this.swimSurface, seabedDepth: (x, z) => -seabedHeight(x, z) },
+        { offsetX: HULL_OFFSET_X, centreZ: HULL_CENTER_Z, halfLength: HULL_HALF_LENGTH, halfBeam: HULL_HALF_BEAM + 0.2, draught: 1.25, freeboard: 1.4 },
+        {
+          splash: (position, speed) => {
+            const intensity = Math.min(3, 0.7 + speed * 0.35);
+            this.wake.splash(position, intensity, "entry");
+            this.audio.splash(intensity, "entry", 0, position);
+            this.diverScratch.copy(position);
+            this.diverScratch.y -= 0.7;
+            this.underwaterWorld?.emitBubbles(this.diverScratch, 70, 0.04, 0.9);
+          },
+          exhale: (position, depth) => {
+            // Out of the regulator's exhaust, past the cheeks: behind and
+            // below the eyes, not in front of them.
+            const camera = this.camera.camera;
+            this.diverScratch.set(0, -0.14, 0.16).applyQuaternion(camera.quaternion).add(position);
+            this.underwaterWorld?.emitBubbles(this.diverScratch, 20 + Math.floor(Math.random() * 10), 0.022, 0.1);
+            this.audio.exhaleBubbles(depth);
+          },
+          inhale: (depth) => this.audio.regulatorInhale(depth),
+          footstep: (running) => this.audio.footstep(running),
+          stroke: (position) => {
+            this.wake.splash(position, 0.28, "slap");
+            this.audio.splash(0.28, "slap", 0, position);
+          },
+          modeChanged: (mode) => this.onDiverMode(mode),
+        },
+      );
+      this.canvas.addEventListener("click", this.onCanvasClick);
       this.resizeObserver = new ResizeObserver(this.requestResize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
       this.resize();
@@ -1155,6 +1215,10 @@ export class Simulator {
     this.resizeObserver?.disconnect();
     this.touch?.dispose();
     this.input?.dispose();
+    this.canvas.removeEventListener("click", this.onCanvasClick);
+    this.diver?.dispose();
+    this.underwaterWorld?.dispose();
+    this.diveFish?.dispose();
     this.radio?.dispose();
     this.audio?.dispose();
     this.wildlife?.dispose();
@@ -1229,9 +1293,12 @@ export class Simulator {
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
     this.islands.setNight(this.environmentState.nightFactor);
     this.islands.update(this.elapsed, this.environment.currentWeather.wind, this.physics.position.x, this.physics.position.z, this.camera.camera.position);
-    // The helm camera looks out through the skipper's eyes: he steps out of its way.
+    // The helm camera looks out through the skipper's eyes: he steps out of
+    // its way. Away from the helm the player is the skipper.
+    const diving = this.diver?.active ?? false;
     this.vessel.setCrewVisible(
-      (this.state.cameraMode !== "helm" || this.flareCamera.blend > 0.3 || this.photo.blend > 0.3) &&
+      !diving &&
+        (this.state.cameraMode !== "helm" || this.flareCamera.blend > 0.3 || this.photo.blend > 0.3) &&
         this.camera.camera.position.distanceToSquared(this.vessel.worldPoint(this.vessel.helmEye, this.helmPoint)) > 1.2,
     );
     this.vessel.update(this.physics, this.physics.guard.output, this.elapsed, delta, this.environmentState.nightFactor, {
@@ -1244,6 +1311,7 @@ export class Simulator {
         this.state.cameraMode === "helm" ||
         this.camera.camera.position.distanceToSquared(this.vessel.worldPoint(this.vessel.helmEye, this.helmPoint)) < 64,
     });
+    if (diving) this.updateDiver(delta);
     const slam = this.vessel.consumeBoomSlam();
     if (slam > 0) this.audio.boomSlam(slam);
     this.ships.update(delta, this.sampleSurface);
@@ -1260,8 +1328,14 @@ export class Simulator {
       // her into a lumpy toy at a kilometre, so her levels are gentler.
       this.lod.register(this.ships.group, 3000, SHIP_LOD_STEPS);
     }
+    if (this.diver?.active) {
+      this.diver.updateCamera(this.camera.camera, this.vessel.root, this.physics.heading, this.physics.roll, this.physics.pitch, delta);
+    }
+    this.updateUnderwater(delta);
     this.lod.update(this.camera.camera);
-    if (this.flareCamera.running) {
+    if (this.diver?.active) {
+      // His own eyes: no director, no flare camera.
+    } else if (this.flareCamera.running) {
       // A drag or a zoom by the player hands the camera straight back.
       if (this.camera.interactions !== this.flareCameraInteractions) this.flareCamera.cancel();
       this.flareCamera.update(delta, (x, z) => this.ocean.sample(x, z).height);
@@ -1370,6 +1444,144 @@ export class Simulator {
     this.hud.update(delta, () => this.snapshot());
   }
 
+  // --- The skipper on foot and in the water --------------------------------------
+
+  /** Leaves the wheel: first person, on deck beside it. */
+  leaveHelm(): void {
+    if (!this.initialized || !this.diver || this.diver.active) return;
+    this.deckField ??= new DeckField(this.vessel.root, (object) => {
+      // Moving or overhead parts are not floors (the boom, the sails, the crew).
+      for (let node: THREE.Object3D | null = object; node; node = node.parent) {
+        if (node.name === "MainBoomPivot" || node.name === "Jib" || node.name === "Skipper_At_Helm") return true;
+      }
+      return false;
+    });
+    this.state.controls.throttle = 0;
+    this.state.controls.rudder = 0;
+    const spot = HelmStation.STAND_FEET.clone();
+    spot.z -= 0.3;
+    const floor = this.deckField.top(spot.x, spot.z, spot.y + 0.15);
+    if (Number.isFinite(floor)) spot.y = floor;
+    this.diver.leaveHelm(spot, 0);
+  }
+
+  /** Back to the wheel (from anywhere: a quick way home from a dive). */
+  returnToHelm(): void {
+    if (!this.diver?.active) return;
+    this.diver.takeHelm();
+  }
+
+  /** Touch joystick: x right, y forward (−1…1). */
+  setDiverStick(x: number, y: number): void {
+    this.diver?.setStick(x, y);
+  }
+
+  setDiverHold(up: boolean, down: boolean): void {
+    this.diver?.setHold(up, down);
+  }
+
+  setDiverSprint(on: boolean): void {
+    this.diver?.setSprint(on);
+  }
+
+  diverJump(): void {
+    this.diver?.jump();
+  }
+
+  diverInteract(): void {
+    this.diver?.interact();
+  }
+
+  toggleTorch(): void {
+    if (this.diver) this.diver.torch = !this.diver.torch;
+  }
+
+  private readonly onCanvasClick = (): void => {
+    if (this.diver?.active) this.diver.requestPointer();
+  };
+
+  private onDiverMode(mode: DiverMode): void {
+    const away = mode !== "helm";
+    this.input.enabled = !away;
+    this.physics.hoveTo = away;
+    if (!away) {
+      this.camera.setMode(this.state.cameraMode);
+      this.camera.snap();
+    }
+    if (mode !== "swim") this.torchOffered = false;
+    this.hud.emit(this.snapshot());
+  }
+
+  private updateDiver(delta: number): void {
+    const diver = this.diver!;
+    diver.update(delta, this.vessel.root, this.physics.velocity, this.physics.heading, this.deckField, HelmStation.STAND_FEET);
+    const action: DiverPrompt = diver.consumeInteract();
+    if (action === "helm") {
+      this.returnToHelm();
+    } else if (action === "board" && this.deckField) {
+      const side = diver.sternSide(this.vessel.root);
+      const x = side * HULL_OFFSET_X;
+      const z = HULL_TRANSOM_Z + 0.55;
+      const top = this.deckField.top(x, z, 1.6);
+      diver.board(new THREE.Vector3(x, Number.isFinite(top) ? top : 0.62, z), this.physics.heading);
+      this.audio.splash(0.4, "exit", 0);
+    }
+    // A night dive: the torch comes on by itself the first time.
+    if (diver.mode === "swim" && !this.torchOffered && diver.cameraDepth > 0.3) {
+      this.torchOffered = true;
+      if (this.environmentState.nightFactor > 0.55) diver.torch = true;
+    }
+  }
+
+  /** Under the water: the haze, the surface from below, the sound, the reef and its life. */
+  private updateUnderwater(delta: number): void {
+    const diver = this.diver;
+    const camera = this.camera.camera;
+    const active = diver?.active ?? false;
+    const depth = active ? diver!.cameraDepth : -10;
+    const amount = smoothstep(-0.02, 0.06, depth);
+    this.underwaterAmount = amount;
+    const palette = this.environment.current.palette;
+    const daylight = palette.daylight;
+    // The water's colour round him: clear turquoise near the surface by day,
+    // deepening to blue and to black at night.
+    const depthFade = Math.exp(-Math.max(0, depth) * 0.05);
+    const light = 0.012 + daylight * 0.95;
+    this.diverWater.setRGB(
+      (0.012 + 0.02 * daylight) * light * Math.exp(-Math.max(0, depth) * 0.12),
+      0.13 * light * depthFade,
+      0.19 * light * Math.pow(depthFade, 0.7),
+      THREE.LinearSRGBColorSpace,
+    );
+    const density = 0.034 + Math.max(0, depth) * 0.0005 + (1 - daylight) * 0.012 + this.environment.currentWeather.storm * 0.02;
+    this.environment.setUnderwater(amount, this.diverWater, density);
+    this.islands.setDeepSeabedVisible(!(active && diver!.mode === "swim"));
+    this.ocean.setUnderside(amount > 0.5, this.diverWater, density);
+    this.underwater.setView(amount);
+    this.post.setUnderwater(amount);
+    this.audio.setUnderwater(amount, Math.max(0, depth), active && diver!.mode === "swim" && depth > DIVE_DEPTH);
+    // Sunlight bent down into the water (Snell), for the shafts.
+    const sun = this.environment.lightDirection;
+    this.sunDown.set(-sun.x / 1.333, 0, -sun.z / 1.333);
+    this.sunDown.y = -Math.sqrt(Math.max(0.05, 1 - this.sunDown.x * this.sunDown.x - this.sunDown.z * this.sunDown.z));
+    setLinearRgb(this.diverLight, palette.lightColor);
+    const swimming = active && diver!.mode === "swim";
+    this.underwaterWorld?.update(
+      delta,
+      camera.position,
+      camera,
+      swimming,
+      amount,
+      this.swimSurface,
+      this.sunDown,
+      daylight * (1 - this.environment.currentWeather.overcast * 0.6),
+      this.diverLight,
+      this.diverWater,
+      diver?.torch ?? false,
+    );
+    this.diveFish?.update(delta, swimming, camera.position, seabedHeight, this.swimSurface);
+  }
+
   private lootIsOpen(x: number, z: number): boolean {
     return distanceFromWaterline(x, z) > LOOT_SHORE_CLEARANCE && this.places.clearance(x, z, this.obstacleNormal) > 40;
   }
@@ -1419,7 +1631,8 @@ export class Simulator {
       timer.begin();
     }
     this.shipShadows?.render(this.scene, this.ships.ships, this.ships.roots, this.camera.camera.position, this.environment.lightDirection);
-    this.renderReflection();
+    // From under the water the mirror image of the world above is never seen.
+    if (this.underwaterAmount < 0.5) this.renderReflection();
     this.post.render(this.frameDelta, this.elapsed);
     if (this.pendingCaptures.length > 0) {
       const resolvers = this.pendingCaptures.splice(0);
@@ -1707,6 +1920,15 @@ export class Simulator {
       positionX: this.physics?.position.x ?? 0,
       positionZ: this.physics?.position.z ?? 0,
       photoAutoTarget: this.photoAutoTarget,
+      diver: {
+        mode: this.diver?.mode ?? "helm",
+        depth: this.diver?.depth ?? 0,
+        air: this.diver?.airLeft ?? 1,
+        prompt: this.diver?.prompt ?? null,
+        torch: this.diver?.torch ?? false,
+        underwater: this.underwaterAmount > 0.5,
+        pointerLocked: this.diver?.pointerLocked ?? false,
+      },
       fps: this.fps,
       status: this.status,
     };

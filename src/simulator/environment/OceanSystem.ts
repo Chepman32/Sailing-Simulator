@@ -72,6 +72,9 @@ export class OceanSystem {
       uWakeMap: { value: null },
       uWakeArea: { value: new THREE.Vector3(0, 0, 1) },
       uWakeTexel: { value: 0 },
+      uCameraUnder: { value: 0 },
+      uUnderFogColor: { value: new THREE.Color(0.01, 0.08, 0.12) },
+      uUnderFogDensity: { value: 0.04 },
     };
     const material = new THREE.ShaderMaterial({
       name: "OceanSurface",
@@ -81,7 +84,9 @@ export class OceanSystem {
       transparent: true,
       depthTest: true,
       depthWrite: false,
-      side: THREE.FrontSide,
+      // Both sides: the underside is the surface seen by a diver (it is
+      // discarded unless the camera is under the water).
+      side: THREE.DoubleSide,
     });
     const { geometry, cellSize } = createFocusedOceanGeometry(quality.oceanSegments);
     this.mesh = new THREE.Mesh(geometry, material);
@@ -214,6 +219,16 @@ export class OceanSystem {
   setFlare(x: number, y: number, z: number, light: number, r: number, g: number, b: number): void {
     (this.uniforms.uFlare.value as THREE.Vector4).set(x, y, z, Math.max(0, light));
     (this.uniforms.uFlareColor.value as THREE.Color).setRGB(r, g, b, THREE.LinearSRGBColorSpace);
+  }
+
+  /**
+   * The camera is under the surface (a diver): the surface is drawn from
+   * below, hazed by the water between in `fogColor` (linear) at `density`.
+   */
+  setUnderside(under: boolean, fogColor: THREE.Color, density: number): void {
+    this.uniforms.uCameraUnder.value = under ? 1 : 0;
+    (this.uniforms.uUnderFogColor.value as THREE.Color).copy(fogColor);
+    this.uniforms.uUnderFogDensity.value = density;
   }
 
   /** Water colours and light levels for the current time of day. */

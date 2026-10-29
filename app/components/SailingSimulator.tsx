@@ -9,6 +9,8 @@ import { SoundPrompt } from "./SoundPrompt";
 import { usePwaInstall } from "./usePwaInstall";
 import { gravityRollDegrees, requestTiltPermission, screenAngle, screenRollDegrees, STEERING_STORAGE_KEY, swipeToRudder, tiltToRudder, wheelToRudder } from "./steering";
 import { featureText, getFeatureMessages } from "./featureMessages";
+import { DiverHud } from "./DiverHud";
+import { getDiverMessages } from "./diverMessages";
 import { ChartView } from "./ChartView";
 import {
   DiscoveryCard,
@@ -107,6 +109,7 @@ type ControlIconName =
   | "drone"
   | "reset"
   | "photo"
+  | "walk"
   | "map"
   | "close"
   | "target"
@@ -131,6 +134,13 @@ function ControlIcon({ name }: { name: ControlIconName }) {
           <path d="M4 10h16v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1Z" />
           <path d="M4 10 3.3 7a1 1 0 0 1 .75-1.2l13.6-3.1a1 1 0 0 1 1.2.75l.45 1.95Z" />
           <path d="M8.3 5.1l2.4 3.3M13.2 4l2.4 3.3M4 14h16" />
+        </>
+      )}
+      {name === "walk" && (
+        <>
+          {/* A figure stepping off: away from the helm. */}
+          <circle cx="13" cy="4.5" r="1.8" />
+          <path d="M11.5 8.5 9 12.5l3 1.5-1 6M12 9l3 3 3 .5M12 14l3.5 2 1.5 4M9 12.5 6 13" />
         </>
       )}
       {name === "map" && (
@@ -572,6 +582,8 @@ export function SailingSimulator() {
 
   const messages = useMemo(() => getMessages(language), [language]);
   const voyage = useMemo(() => getFeatureMessages(language), [language]);
+  const diverWords = useMemo(() => getDiverMessages(language), [language]);
+  const away = snapshot.diver.mode !== "helm";
   const closeChart = useCallback(() => setChartOpen(false), []);
   // Callbacks the simulator holds for its lifetime reach the current render through this.
   type LatestHandlers = { keyAction: (action: string) => void; discovery: (discovery: Discovery) => void; radioFailed: (station: string) => void };
@@ -917,6 +929,15 @@ export function SailingSimulator() {
   const onKey = (event: KeyboardEvent) => {
     if (!ready || photoMode || event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     if (isTypingTarget(event.target)) return;
+    if (event.code === "KeyT") {
+      // Away from the helm and back (on foot the walk keys are the diver's own).
+      if (away) simulatorRef.current?.returnToHelm();
+      else simulatorRef.current?.leaveHelm();
+      event.preventDefault();
+      return;
+    }
+    // On deck and in the water the signals, flares and camera keys are not his.
+    if (away && ["KeyF", "KeyG", "KeyH", "KeyB", "KeyV", "KeyR"].includes(event.code)) return;
     switch (event.code) {
       case "KeyP":
         setChartOpen(false);
@@ -1090,10 +1111,26 @@ export function SailingSimulator() {
 
       {/* Faded rather than removed, so leaving photo mode is a smooth return;
           inert keeps the hidden controls out of reach meanwhile. */}
+      {ready && away && !photoMode && (
+        <DiverHud
+          diver={snapshot.diver}
+          messages={diverWords}
+          touch={coarsePointer}
+          actions={{
+            returnToHelm: () => simulatorRef.current?.returnToHelm(),
+            interact: () => simulatorRef.current?.diverInteract(),
+            jump: () => simulatorRef.current?.diverJump(),
+            toggleTorch: () => simulatorRef.current?.toggleTorch(),
+            stick: (x, y) => simulatorRef.current?.setDiverStick(x, y),
+            hold: (up, down) => simulatorRef.current?.setDiverHold(up, down),
+          }}
+        />
+      )}
+
       <div
-        className={`simulator-interface ${photoMode ? "photo-hidden" : ""} ${!loading.ready && !error ? "is-loading" : "is-ready"}`}
-        inert={photoMode}
-        aria-hidden={photoMode}
+        className={`simulator-interface ${photoMode || away ? "photo-hidden" : ""} ${!loading.ready && !error ? "is-loading" : "is-ready"}`}
+        inert={photoMode || away}
+        aria-hidden={photoMode || away}
       >
 
         {!loading.ready && !error && (
@@ -1218,6 +1255,16 @@ export function SailingSimulator() {
           >
             <ControlIcon name="photo" />
             <span className="scene-action-label">{messages.photoMode}</span>
+          </button>
+          <button
+            type="button"
+            className="scene-action"
+            disabled={!ready}
+            title={`${diverWords.leaveHelm} (T)`}
+            onClick={() => simulatorRef.current?.leaveHelm()}
+          >
+            <ControlIcon name="walk" />
+            <span className="scene-action-label">{diverWords.leaveHelm}</span>
           </button>
           <button
             type="button"

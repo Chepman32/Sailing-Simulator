@@ -89,7 +89,14 @@ export class InputController {
     window.addEventListener("blur", this.onBlur);
   }
 
+  /** False while the skipper is away from the helm (the keys then walk and swim). */
+  enabled = true;
+
   update(delta: number): void {
+    if (!this.enabled) {
+      this.keys.clear();
+      return;
+    }
     const steering = (this.keys.has("KeyD") || this.keys.has("ArrowRight") ? 1 : 0) -
       (this.keys.has("KeyA") || this.keys.has("ArrowLeft") ? 1 : 0);
     const throttle = (this.keys.has("KeyW") || this.keys.has("ArrowUp") ? 1 : 0) -
@@ -135,6 +142,7 @@ export class InputController {
   }
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (!this.enabled) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (keyBelongsToElement(event.target, event.code)) return;
     if (DRIVING_KEYS.includes(event.code)) event.preventDefault();

@@ -170,6 +170,20 @@ export class EnvironmentSystem {
     this.update(0, null, new THREE.Vector3(), 0);
   }
 
+  private underwater = 0;
+  private readonly underwaterColor = new THREE.Color();
+  private underwaterDensity = 0.04;
+
+  /**
+   * The camera is under the water by `amount` (0…1): the scene's haze
+   * becomes the water's, `color` (linear) at `density` (FogExp2).
+   */
+  setUnderwater(amount: number, color: THREE.Color, density: number): void {
+    this.underwater = Math.min(1, Math.max(0, amount));
+    this.underwaterColor.copy(color);
+    this.underwaterDensity = density;
+  }
+
   /** Sky dome, with the sun, moon and stars in it; the ocean reflects it analytically. */
   get celestial(): THREE.Object3D[] {
     return [this.sky];
@@ -400,6 +414,14 @@ export class EnvironmentSystem {
       this.scene.fog.density = (0.0008 + night * 0.0001) * (1 + this.weather.haze * 3.4) * (1 - 0.4 * palette.sunshine);
     }
     this.scene.background = this.fogColor;
+    if (this.underwater > 0 && this.scene.fog instanceof THREE.FogExp2) {
+      // A diver's eyes: the water itself is the haze, and the sky is only
+      // seen through the surface (the ocean draws it from below).
+      this.fogColor.lerp(this.underwaterColor, this.underwater);
+      this.scene.fog.color.copy(this.fogColor);
+      this.scene.fog.density += (this.underwaterDensity - this.scene.fog.density) * this.underwater;
+    }
+    this.sky.visible = this.underwater < 0.5;
 
     this.captureCooldown -= delta;
     const settled = Math.abs(night - this.goalNight) < 0.004;

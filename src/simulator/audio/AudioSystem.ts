@@ -139,6 +139,11 @@ export class AudioSystem {
   private context?: AudioContext;
   private master?: GainNode;
   private engineBus?: GainNode;
+  /** The diver's ears: the water's low-pass, his own breath, the sea's hum. */
+  private waterFilter?: BiquadFilterNode;
+  private diverBus?: GainNode;
+  private underwaterHum?: GainNode;
+  private underwaterAmount = 0;
   /** After the engine bus: its level, air absorption and stereo position as heard from the camera. */
   private engineSpace?: GainNode;
   private engineAir?: BiquadFilterNode;
@@ -1073,6 +1078,100 @@ export class AudioSystem {
     }
   }
 
+  /**
+   * The camera is under the water by `amount` (0…1), `depth` metres down:
+   * the world is dulled to a murmur and the sea's own hum rises.
+   */
+  setUnderwater(amount: number, depth: number, diving: boolean): void {
+    this.underwaterAmount = amount;
+    const context = this.context;
+    if (!context || context.state !== "running") return;
+    const now = context.currentTime;
+    const cutoff = 20000 * Math.pow(650 / 20000, amount);
+    this.waterFilter?.frequency.setTargetAtTime(cutoff, now, 0.05);
+    this.diverBus?.gain.setTargetAtTime(diving && this.enabled ? 1 : 0, now, 0.1);
+    this.underwaterHum?.gain.setTargetAtTime(amount * (0.16 + Math.min(1, depth / 20) * 0.08), now, 0.2);
+  }
+
+  /** A breath in through the regulator: a hiss as the valve opens. */
+  regulatorInhale(depth: number): void {
+    const context = this.context;
+    if (!context || !this.diverBus || context.state !== "running" || !this.enabled) return;
+    const now = context.currentTime;
+    const noise = context.createBufferSource();
+    noise.buffer = this.createNoiseBuffer(1.4, "white");
+    const band = context.createBiquadFilter();
+    band.type = "bandpass";
+    band.frequency.value = 2400 - Math.min(800, depth * 25);
+    band.Q.value = 0.9;
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.05, now + 0.18);
+    gain.gain.setValueAtTime(0.045, now + 0.9);
+    gain.gain.exponentialRampToValueAtTime(0.0005, now + 1.25);
+    noise.connect(band).connect(gain).connect(this.diverBus);
+    noise.start(now);
+    noise.stop(now + 1.35);
+    noise.onended = () => gain.disconnect();
+  }
+
+  /** A breath out: a rush through the exhaust valve and a cascade of bubbles past the ears. */
+  exhaleBubbles(depth: number): void {
+    const context = this.context;
+    if (!context || !this.diverBus || context.state !== "running" || !this.enabled) return;
+    const now = context.currentTime;
+    const rush = context.createBufferSource();
+    rush.buffer = this.createNoiseBuffer(1.5, "pink");
+    const low = context.createBiquadFilter();
+    low.type = "lowpass";
+    low.frequency.value = 900;
+    const rushGain = context.createGain();
+    rushGain.gain.setValueAtTime(0, now);
+    rushGain.gain.linearRampToValueAtTime(0.09, now + 0.08);
+    rushGain.gain.exponentialRampToValueAtTime(0.001, now + 1.3);
+    rush.connect(low).connect(rushGain).connect(this.diverBus);
+    rush.start(now);
+    rush.stop(now + 1.45);
+    rush.onended = () => rushGain.disconnect();
+    // Bubbles: each a little sine whose pitch rises as it breaks free.
+    const count = 14 + Math.floor(Math.random() * 8);
+    for (let index = 0; index < count; index += 1) {
+      const start = now + 0.05 + Math.random() * 1.1;
+      const oscillator = context.createOscillator();
+      oscillator.type = "sine";
+      const base = 280 + Math.random() * 900 - Math.min(150, depth * 4);
+      oscillator.frequency.setValueAtTime(base, start);
+      oscillator.frequency.exponentialRampToValueAtTime(base * (1.6 + Math.random()), start + 0.05);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.018 + Math.random() * 0.02, start + 0.006);
+      gain.gain.exponentialRampToValueAtTime(0.0003, start + 0.07);
+      oscillator.connect(gain).connect(this.diverBus);
+      oscillator.start(start);
+      oscillator.stop(start + 0.08);
+      oscillator.onended = () => gain.disconnect();
+    }
+  }
+
+  /** A footstep on deck (bare feet on teak and gelcoat). */
+  footstep(running: boolean): void {
+    const context = this.context;
+    if (!context || !this.master || context.state !== "running" || !this.enabled) return;
+    const now = context.currentTime;
+    const thump = context.createBufferSource();
+    thump.buffer = this.createNoiseBuffer(0.2, "brown");
+    const low = context.createBiquadFilter();
+    low.type = "lowpass";
+    low.frequency.value = running ? 420 : 300;
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(running ? 0.16 : 0.1, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    thump.connect(low).connect(gain).connect(this.master);
+    thump.start(now, Math.random() * 0.05);
+    thump.stop(now + 0.15);
+    thump.onended = () => gain.disconnect();
+  }
+
   /** Where the engine is (the yacht's engine room), for how it is heard from the camera. */
   setEngineSource(point: { x: number; y: number; z: number }): void {
     this.engineSourceX = point.x;
@@ -1506,7 +1605,29 @@ export class AudioSystem {
     compressor.ratio.value = 3.2;
     compressor.attack.value = 0.012;
     compressor.release.value = 0.24;
-    this.master.connect(compressor).connect(this.context.destination);
+    // Under the water everything from outside the mask is dulled: a low-pass
+    // between the mix and the output, wide open in the air.
+    this.waterFilter = this.context.createBiquadFilter();
+    this.waterFilter.type = "lowpass";
+    this.waterFilter.frequency.value = 20000;
+    this.waterFilter.Q.value = 0.7;
+    this.master.connect(this.waterFilter).connect(compressor).connect(this.context.destination);
+    // What the diver hears inside his own mask (his breath, the regulator)
+    // goes round the filter.
+    this.diverBus = this.context.createGain();
+    this.diverBus.gain.value = 0;
+    this.diverBus.connect(compressor);
+    // The hum of the sea itself, heard only under it.
+    const hum = this.context.createBufferSource();
+    hum.buffer = this.createNoiseBuffer(6.1, "brown");
+    hum.loop = true;
+    const humFilter = this.context.createBiquadFilter();
+    humFilter.type = "lowpass";
+    humFilter.frequency.value = 260;
+    this.underwaterHum = this.context.createGain();
+    this.underwaterHum.gain.value = 0;
+    hum.connect(humFilter).connect(this.underwaterHum).connect(this.diverBus);
+    hum.start(0, 0.9);
     this.engineBus = this.context.createGain();
     this.environmentBus = this.context.createGain();
     this.wildlifeBus = this.context.createGain();

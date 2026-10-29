@@ -489,6 +489,11 @@ export class IslandSystem {
     });
   }
 
+  /** The distant flat bottom; a diver has his own detailed one, so it is hidden under the water. */
+  setDeepSeabedVisible(visible: boolean): void {
+    this.seabed.visible = visible;
+  }
+
   private createSeabed(): void {
     const seabed = new THREE.Mesh(
       // It follows the yacht (see `update`), so it only needs to reach the haze.

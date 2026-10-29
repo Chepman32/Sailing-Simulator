@@ -73,6 +73,21 @@ export type SimulationSnapshot = {
   positionZ: number;
   /** Photo mode: the camera turns to events by itself. */
   photoAutoTarget: boolean;
+  /** The skipper away from the helm: on deck, or swimming and diving. */
+  diver: {
+    mode: "helm" | "deck" | "swim";
+    /** Eyes under the surface, m. */
+    depth: number;
+    /** Air left in the tank, 0…1. */
+    air: number;
+    /** What the interact key would do here. */
+    prompt: "helm" | "board" | null;
+    torch: boolean;
+    /** The camera is under the water. */
+    underwater: boolean;
+    /** The mouse is captured for looking round. */
+    pointerLocked: boolean;
+  };
   fps: number;
   status: "loading" | "running" | "paused" | "error";
 };
