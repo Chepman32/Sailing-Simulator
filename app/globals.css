@@ -2878,7 +2878,40 @@ input[type="range"]:disabled {
   .chart-compass { top: var(--edge-top); right: calc(var(--edge-right) + 54px); width: 46px; height: 46px; }
 }
 
-/* Photo mode toolbar */
+/* Cinematic mode: letterbox bars. About the height of a 2.39 : 1 frame on a
+   landscape screen, kept to a slim band on a portrait phone. */
+.cinema-bars {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  pointer-events: none;
+  --cinema-bar: clamp(5vh, calc((100vh - 100vw / 2.39) / 2), 12.5vh);
+}
+
+@supports (height: 100dvh) {
+  .cinema-bars { --cinema-bar: clamp(5dvh, calc((100dvh - 100vw / 2.39) / 2), 12.5dvh); }
+}
+
+.cinema-bar {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: var(--cinema-bar);
+  background: #000000;
+  transition: transform 650ms cubic-bezier(0.22, 0.8, 0.24, 1);
+  will-change: transform;
+}
+
+.cinema-bar-top { top: 0; transform: translateY(-101%); }
+.cinema-bar-bottom { bottom: 0; transform: translateY(101%); }
+.cinema-bars.is-on .cinema-bar { transform: translateY(0); }
+.cinema-bars:not(.is-on) .cinema-bar { transition-duration: 360ms; transition-timing-function: ease-in; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cinema-bar { transition-duration: 1ms; }
+}
+
+/* Cinematic mode toolbar, in the upper bar */
 .photo-toolbar {
   position: absolute;
   z-index: 30;

@@ -2,6 +2,7 @@ import { clamp } from "../math";
 import { BoatVoices } from "./BoatVoices";
 import { BELL_RING, ringBell } from "./BellSynth";
 import { windSoundLevels, windWander } from "./WindSoundMath";
+import { engineAirCutoff, engineDistanceGain, enginePan } from "./EngineSoundMath";
 import { hornLength, openSeaImpulse, playHorn, type HornSpec } from "./HornSynth";
 import { HouseGroove, ShantyBand } from "./MusicSynth";
 
@@ -12,7 +13,8 @@ type WebkitAudioWindow = Window & {
 type NoiseColor = "brown" | "pink" | "white";
 
 const MASTER_GAIN = 0.94;
-const ENGINE_BUS_GAIN = 0.95;
+/** The engine heard from the helm; it falls away with the camera's distance (see EngineSoundMath). */
+const ENGINE_BUS_GAIN = 0.62;
 const ENGINE_ENVIRONMENT_DUCK = 0.78;
 /** Firing frequency of the four-cylinder diesel at idle and at full power, Hz. */
 const ENGINE_IDLE_FIRING = 26;
@@ -137,6 +139,17 @@ export class AudioSystem {
   private context?: AudioContext;
   private master?: GainNode;
   private engineBus?: GainNode;
+  /** After the engine bus: its level, air absorption and stereo position as heard from the camera. */
+  private engineSpace?: GainNode;
+  private engineAir?: BiquadFilterNode;
+  private enginePanner?: StereoPannerNode;
+  private engineSourceX = 0;
+  private engineSourceY = 0.6;
+  private engineSourceZ = 0;
+  private listenerRightX = 1;
+  private listenerRightZ = 0;
+  /** Engine level heard at the camera, 0…1 (smoothed). */
+  private engineHeard = 1;
   private environmentBus?: GainNode;
   private wildlifeBus?: GainNode;
   private engineFiring?: OscillatorNode;
@@ -875,6 +888,7 @@ export class AudioSystem {
     this.engineCrankGain?.gain.setTargetAtTime(0.03 + revs * 0.02, now, 0.35);
     this.engineCombustionGain?.gain.setTargetAtTime(0.012 + this.engineLoad * 0.03, now, 0.35);
     this.exhaustGain?.gain.setTargetAtTime(0.05 + revs * 0.05, now, 0.4);
+    this.updateEngineSpace(step, now);
 
     // --- Water and wind --------------------------------------------------------
     // A high sea roars: more water, and more of its low end.
@@ -1059,11 +1073,21 @@ export class AudioSystem {
     }
   }
 
+  /** Where the engine is (the yacht's engine room), for how it is heard from the camera. */
+  setEngineSource(point: { x: number; y: number; z: number }): void {
+    this.engineSourceX = point.x;
+    this.engineSourceY = point.y;
+    this.engineSourceZ = point.z;
+  }
+
   /** Where the listener (the camera) is, for positional sounds. */
   setListener(pose: ListenerPose): void {
     this.listenerX = pose.position.x;
     this.listenerY = pose.position.y;
     this.listenerZ = pose.position.z;
+    // Right = forward × up, kept horizontal for the engine's stereo position.
+    this.listenerRightX = pose.forward.y * pose.up.z - pose.forward.z * pose.up.y;
+    this.listenerRightZ = pose.forward.x * pose.up.y - pose.forward.y * pose.up.x;
     const context = this.context;
     if (!context || context.state !== "running") return;
     const listener = context.listener;
@@ -1486,7 +1510,16 @@ export class AudioSystem {
     this.engineBus = this.context.createGain();
     this.environmentBus = this.context.createGain();
     this.wildlifeBus = this.context.createGain();
-    this.engineBus.connect(this.master);
+    this.engineSpace = this.context.createGain();
+    this.engineSpace.gain.value = this.engineHeard;
+    this.engineAir = this.context.createBiquadFilter();
+    this.engineAir.type = "lowpass";
+    this.engineAir.frequency.value = 14000;
+    this.engineAir.Q.value = 0.5;
+    this.enginePanner = typeof this.context.createStereoPanner === "function" ? this.context.createStereoPanner() : undefined;
+    const engineOut = this.engineBus.connect(this.engineSpace).connect(this.engineAir);
+    if (this.enginePanner) engineOut.connect(this.enginePanner).connect(this.master);
+    else engineOut.connect(this.master);
     this.environmentBus.connect(this.master);
     this.wildlifeBus.connect(this.master);
     const engineAudible = this.engineRunning && !this.engineMuted;
@@ -1908,8 +1941,25 @@ export class AudioSystem {
     const engineAudible = this.engineRunning && !this.engineMuted;
     this.setBusGain(this.engineBus, engineAudible ? ENGINE_BUS_GAIN : 0, 0.045);
     // Ambient audio remains present, but it ducks slightly while the engine is
-    // running so its RPM layers are distinct on small mobile speakers.
-    this.setBusGain(this.environmentBus, engineAudible ? ENGINE_ENVIRONMENT_DUCK : 1, 0.12);
+    // running so its RPM layers are distinct on small mobile speakers; less
+    // so when the camera is far from the engine and hears little of it.
+    this.setBusGain(this.environmentBus, engineAudible ? 1 - (1 - ENGINE_ENVIRONMENT_DUCK) * this.engineHeard : 1, 0.12);
+  }
+
+  /** The engine as heard from the camera: level, dulling by distance, and side. */
+  private updateEngineSpace(step: number, now: number): void {
+    const dx = this.engineSourceX - this.listenerX;
+    const dy = this.engineSourceY - this.listenerY;
+    const dz = this.engineSourceZ - this.listenerZ;
+    const distance = Math.hypot(dx, dy, dz);
+    const target = engineDistanceGain(distance);
+    // A camera that jumps (a new mode) glides the level over a fraction of a second.
+    const previous = this.engineHeard;
+    this.engineHeard += (target - this.engineHeard) * (1 - Math.exp(-step * 6));
+    this.engineSpace?.gain.setTargetAtTime(this.engineHeard, now, 0.08);
+    this.engineAir?.frequency.setTargetAtTime(engineAirCutoff(distance), now, 0.12);
+    this.enginePanner?.pan.setTargetAtTime(enginePan(this.listenerRightX, this.listenerRightZ, dx, dz), now, 0.1);
+    if (Math.abs(this.engineHeard - previous) > 0.01) this.updateEngineBusGain();
   }
 
   private setReady(ready: boolean): void {

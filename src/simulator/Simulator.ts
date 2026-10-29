@@ -61,6 +61,14 @@ import { ExploredSea, Track } from "./map/ChartMath";
 import { poiInCell, poisAround, POI_CELL, type PlaceKind, type Poi } from "./effects/PoiMath";
 import type { LootKind } from "./effects/LootMath";
 
+/**
+ * A shell's burst against a signal flare's light: brighter (a big shell
+ * outshines a flare many times over), but usually a kilometre off.
+ */
+const FIREWORK_LIGHT = 14;
+/** How far aft of the yacht's centre her engines are, metres. */
+const ENGINE_ROOM_AFT = 3.6;
+
 /** Ships keep half their triangles until small, a quarter only far off (see `ScreenLod`). */
 const SHIP_LOD_STEPS = [
   { ratio: 0.55, below: 0.06 },
@@ -1262,11 +1270,14 @@ export class Simulator {
       this.directPhoto(delta);
     }
     this.environment.setWeatherKind(this.currentWeatherKind());
-    // The brightest flare in the air lights the scene; failing that, an
-    // erupting volcano does (an orange light from its crater).
+    // The brightest flare in the air lights the scene; failing that, the
+    // liner's fireworks (each burst flashes on the sea in its colours), or an
+    // erupting volcano (an orange light from its crater).
     const flare = this.flares.brightest();
-    const eruptionLight = flare ? null : this.volcanoes.eruptionLight;
+    const fireworkLight = flare ? null : this.fireworks.light();
+    const eruptionLight = flare || fireworkLight ? null : this.volcanoes.eruptionLight;
     if (flare) this.environment.setFlare(flare.position, flare.brightness, flare.rgb);
+    else if (fireworkLight) this.environment.setFlare(fireworkLight.position, fireworkLight.brightness * FIREWORK_LIGHT, fireworkLight.rgb);
     else if (eruptionLight) this.environment.setFlare(eruptionLight.position, eruptionLight.brightness, ERUPTION_RGB);
     else this.environment.setFlare(null, 0, ERUPTION_RGB);
     this.environmentState = this.environment.update(
@@ -1344,6 +1355,10 @@ export class Simulator {
     this.vessel.signalPoints(this.bellPoint, this.hornPoint);
     this.audio.setSignalPoints(this.bellPoint, this.hornPoint);
     this.audio.setListener({ position: camera.position, forward: this.listenerForward, up: this.listenerUp });
+    // The engines sit low in the quarters, aft of the yacht's centre.
+    const yacht = this.physics.position;
+    this.listenerPoint.set(yacht.x - Math.sin(this.physics.heading) * ENGINE_ROOM_AFT, yacht.y + 0.3, yacht.z - Math.cos(this.physics.heading) * ENGINE_ROOM_AFT);
+    this.audio.setEngineSource(this.listenerPoint);
     this.audio.updateGulls(delta, this.wildlife.gullPositions);
     for (const call of this.wildlife.consumeGullCalls()) this.audio.gullCallAt(call.position, call.variant);
     this.audio.updateShips(this.ships.soundSources);

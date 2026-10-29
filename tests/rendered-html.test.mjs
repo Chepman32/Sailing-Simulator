@@ -42,7 +42,7 @@ test("renders the modular simulator shell without the legacy iframe", async () =
   assert.match(html, /<title>Enhanced Sailing Simulator Pro<\/title>/i);
   assert.match(html, /<canvas[^>]+class="simulator-canvas"[^>]+aria-label=/i);
   assert.match(html, /<section[^>]+class="control-panel is-minimized"[^>]+aria-label=/i);
-  assert.match(html, /<span class="scene-action-label">Photo mode<\/span>/);
+  assert.match(html, /<span class="scene-action-label">Cinematic mode<\/span>/);
   assert.match(html, /<span class="scene-action-label">Map<\/span>/);
   assert.match(html, /id="photo-mode-hint"/);
   assert.doesNotMatch(html, /Sailing_Simulator_Pro_-_Ultimate\.html/);

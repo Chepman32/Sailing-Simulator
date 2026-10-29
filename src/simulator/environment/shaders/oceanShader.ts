@@ -887,6 +887,9 @@ ${detailCalls}
     // the shelf the sand shows through almost as if there were no water.
     float clarity = mix(0.56, 0.08, smoothstep(0.02, 0.42, fresnel));
     clarity = mix(clarity, 0.8, bottom * (1.0 - smoothstep(0.02, 0.34, fresnel)));
+    // After dark no light comes down through the water: the sea is opaque
+    // black but for pale sand in the very shallows under the moon.
+    clarity *= mix(1.0, 0.12 * bottom, smoothstep(0.35, 0.85, uNight));
     float alpha = clamp(1.0 - clarity + foam * 0.5 + hullShadow * 0.12, 0.3, 1.0);
 
     // --- Aerial perspective -------------------------------------------------

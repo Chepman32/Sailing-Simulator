@@ -127,8 +127,10 @@ function ControlIcon({ name }: { name: ControlIconName }) {
       {name === "reset" && <path d="M4 10a8 8 0 1 1 1 7M4 4v6h6" />}
       {name === "photo" && (
         <>
-          <path d="M4 6h4l2-3h4l2 3h4a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Z" />
-          <circle cx="12" cy="13" r="4" />
+          {/* A clapperboard: the cinematic mode. */}
+          <path d="M4 10h16v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1Z" />
+          <path d="M4 10 3.3 7a1 1 0 0 1 .75-1.2l13.6-3.1a1 1 0 0 1 1.2.75l.45 1.95Z" />
+          <path d="M8.3 5.1l2.4 3.3M13.2 4l2.4 3.3M4 14h16" />
         </>
       )}
       {name === "map" && (
@@ -1023,6 +1025,13 @@ export function SailingSimulator() {
         tabIndex={photoMode ? 0 : -1}
         aria-label={photoMode ? `${messages.photoMode}. ${messages.photoModeHint}` : messages.sailingControls}
       />
+
+      {/* Cinematic mode: black bars close in from above and below, as in a
+          cinema; taps pass through them to the picture. */}
+      <div className={`cinema-bars ${photoMode ? "is-on" : ""}`} aria-hidden="true">
+        <div className="cinema-bar cinema-bar-top" />
+        <div className="cinema-bar cinema-bar-bottom" />
+      </div>
 
       {photoMode && (
         <div className="photo-toolbar" role="toolbar" aria-label={messages.photoMode}>

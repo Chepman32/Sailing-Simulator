@@ -37,6 +37,15 @@ export function underwaterPathLength(depth: number, verticalViewFraction: number
   return (viewPath + depth * 0.6) * fade * fade * (3 - 2 * fade);
 }
 
+/** Depth below which nothing submerged can be seen at full night (m). */
+export const UNDERWATER_NIGHT_HIDE_DEPTH = 0.45;
+
+/** How completely the night sea hides what is under it: 0 by day … 1 at night. */
+export function underwaterNightVeil(daylight: number): number {
+  const t = Math.min(1, Math.max(0, (0.42 - daylight) / 0.34));
+  return t * t * (3 - 2 * t);
+}
+
 export function underwaterTransmittance(pathLength: number, target: Rgb = [0, 0, 0]): Rgb {
   for (let channel = 0; channel < 3; channel += 1) {
     target[channel] = Math.exp(-UNDERWATER_ABSORPTION[channel] * Math.max(0, pathLength));
@@ -56,8 +65,13 @@ export class UnderwaterLight {
     uUnderwaterCaustics: { value: 1 },
     /** The sea state, shared with the ocean: the waterline follows the real waves. */
     uSeaFactors: { value: seaFactors },
-    /** Bioluminescence round swimming animals: 0 by day … 1 at night. */
-    uUnderwaterGlow: { value: 0 },
+    /**
+     * 0 by day … 1 at night. After dark no light comes down through the
+     * water, so anything more than a hand's breadth under the surface is lost
+     * in the black of the sea: a dolphin shows only where it breaks the
+     * surface, never as a lit shape beneath it.
+     */
+    uUnderwaterNight: { value: 0 },
   };
 
   /** Keeps the waterline in step with the ocean. */
@@ -75,21 +89,14 @@ export class UnderwaterLight {
     color.g = palette.deepWater[1] * (palette.ambientColor[1] + 0.2 * palette.lightColor[1]) * 0.8;
     color.b = palette.deepWater[2] * (palette.ambientColor[2] + 0.2 * palette.lightColor[2]) * 0.8;
     this.uniforms.uUnderwaterCaustics.value = palette.daylight;
-    this.uniforms.uUnderwaterGlow.value = 1 - Math.min(1, palette.daylight * 2.2);
+    this.uniforms.uUnderwaterNight.value = underwaterNightVeil(palette.daylight);
   }
 
-  /**
-   * Decorates a lit or unlit built-in material; works with skinning and
-   * instancing. `glow` (lit materials of swimming animals): at night the
-   * plankton they stir up lights them in a cold blue-green, brightest at
-   * their outline and near the surface, as dolphins and sharks are seen in
-   * tropical water after dark; without it the night sea would hide them.
-   */
-  apply(material: THREE.Material, options: { glow?: boolean } = {}): void {
+  /** Decorates a lit or unlit built-in material; works with skinning and instancing. */
+  apply(material: THREE.Material): void {
     const uniforms = this.uniforms;
-    const glow = options.glow === true && "isMeshStandardMaterial" in material;
-    patchMaterialShader(material, glow ? "underwater-v4-glow" : "underwater-v4", (shader) => {
-      shader.uniforms.uUnderwaterGlow = uniforms.uUnderwaterGlow;
+    patchMaterialShader(material, "underwater-v5", (shader) => {
+      shader.uniforms.uUnderwaterNight = uniforms.uUnderwaterNight;
       shader.uniforms.uUnderwaterColor = uniforms.uUnderwaterColor;
       shader.uniforms.uUnderwaterTime = uniforms.uUnderwaterTime;
       shader.uniforms.uUnderwaterCaustics = uniforms.uUnderwaterCaustics;
@@ -116,7 +123,7 @@ export class UnderwaterLight {
         shader.fragmentShader,
         "common",
         `uniform vec3 uUnderwaterColor;
-        uniform float uUnderwaterGlow;
+        uniform float uUnderwaterNight;
         uniform float uUnderwaterCaustics;
         uniform float uUnderwaterTime;
         varying vec3 vUnderwaterWorld;
@@ -158,12 +165,10 @@ export class UnderwaterLight {
             // shape against the blue, as in any photograph from above.
             gl_FragColor.rgb *= mix(1.0, 0.42, smoothstep(0.25, 2.6, underwaterDepth));
             gl_FragColor.rgb = gl_FragColor.rgb * transmittance + uUnderwaterColor * (1.0 - transmittance);
-            ${glow ? `if (uUnderwaterGlow > 0.001) {
-              float glowRim = 1.0 - abs(dot(normalize(normal), normalize(vViewPosition)));
-              float glowFlicker = 0.65 + 0.35 * underwaterNoise(vUnderwaterWorld.xz * 2.3 + vec2(uUnderwaterTime * 1.7, -uUnderwaterTime * 1.3));
-              float glowDepth = exp(-underwaterDepth * 0.09) * fade;
-              gl_FragColor.rgb += vec3(0.05, 0.42, 0.36) * uUnderwaterGlow * (0.22 + 0.9 * glowRim * glowRim) * glowFlicker * glowDepth;
-            }` : ""}
+            // At night the sea is black a few decimetres down: nothing lights
+            // a submerged body, so it disappears into the water around it.
+            float nightVeil = uUnderwaterNight * smoothstep(0.04, ${UNDERWATER_NIGHT_HIDE_DEPTH.toFixed(2)}, underwaterDepth);
+            gl_FragColor.rgb = mix(gl_FragColor.rgb, uUnderwaterColor, nightVeil);
           }
         }`,
       );

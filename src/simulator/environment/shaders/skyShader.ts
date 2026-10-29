@@ -126,7 +126,9 @@ export const SKY_FUNCTIONS = /* glsl */ `
     float shape = detail > 0.5 ? skyFbm5(uv) : skyFbm3(uv);
     float threshold = 1.0 - uCloudCover;
     // A clear sky holds a few small, crisp cumulus; a heavy one a soft blanket.
-    float edge = mix(0.045, 0.14, smoothstep(0.1, 0.5, uCloudCover));
+    // At night the edges are crisper still: a cloud is a dark shape cut out
+    // of the stars, not a glowing haze.
+    float edge = mix(0.045, 0.14, smoothstep(0.1, 0.5, uCloudCover)) * mix(1.0, 0.6, uNight);
     float density = smoothstep(threshold - 0.02, threshold + edge, shape);
     if (density <= 0.001) return vec4(0.0);
 
@@ -147,13 +149,24 @@ export const SKY_FUNCTIONS = /* glsl */ `
     // Thin edges glow when they sit in front of the light source.
     float forward = pow(max(dot(direction, uLightDirection), 0.0), 24.0);
     cloud += uCloudLit * forward * (1.0 - density) * 0.4;
+    // Night: moonlight catches the cloud nearest the moon, brightest where it
+    // thins to an edge (the silver lining) and a faint glow through the body
+    // round it; everywhere else the clouds stay dark against the sky.
+    if (uNight > 0.01) {
+      float moonSide = max(dot(direction, uMoonDirection), 0.0);
+      float aureole = pow(moonSide, 6.0);
+      float lining = pow(moonSide, 36.0);
+      cloud += vec3(0.42, 0.5, 0.68) * uNight * (aureole * (0.05 + 0.08 * lit) + lining * (1.0 - density) * 0.85);
+    }
     // A stroke of lightning lights the cloud base from inside.
     cloud += vec3(0.8, 0.9, 1.35) * uFlash * skyFlashShape(direction) * (0.35 + 0.65 * density);
 
     // Aerial perspective pulls distant clouds toward the horizon colour.
     float nearness = smoothstep(0.015, 0.26, direction.y);
     cloud = mix(uHorizon * 1.04, cloud, nearness);
-    float coverage = density * smoothstep(0.012, 0.11, direction.y) * 0.94;
+    // By day the thinnest cloud lets a little sky through; at night a cloud
+    // hides the stars behind it.
+    float coverage = density * smoothstep(0.012, 0.11, direction.y) * mix(0.94, 0.99, uNight);
     return vec4(cloud, coverage);
   }
 

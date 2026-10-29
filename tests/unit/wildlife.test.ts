@@ -538,14 +538,15 @@ test("a shark keeps below the surface but shows its fin near the yacht every min
         shallowUnderYacht += 1;
       }
     }
-    assert.ok(deep / samples > 0.5, `seed ${seed}: shallow ${((1 - deep / samples) * 100).toFixed(0)}% of the time`);
+    // A dark shape under the surface for much of the time, the fin up for much of the rest.
+    assert.ok(deep / samples > 0.35, `seed ${seed}: shallow ${((1 - deep / samples) * 100).toFixed(0)}% of the time`);
     assert.ok((time.fin_show ?? 0) < 600 * 0.5, `seed ${seed}: the fin show must end and come round again`);
     // Ten minutes: the fin comes up near the yacht several times and stays up a while each time.
-    assert.ok(finNear > 60, `seed ${seed}: the fin was out near the yacht for only ${finNear.toFixed(0)} s`);
-    assert.ok(showings >= 4, `seed ${seed}: the fin came up ${showings} times in ten minutes`);
+    assert.ok(finNear > 90, `seed ${seed}: the fin was out near the yacht for only ${finNear.toFixed(0)} s`);
+    assert.ok(showings >= 5, `seed ${seed}: the fin came up ${showings} times in ten minutes`);
     assert.ok(closestFin > SHARK_FIN_SHOW_CLEARANCE - 3, `seed ${seed}: the fin came to ${closestFin.toFixed(1)} m`);
-    assert.ok(highestBody < -0.4, `seed ${seed}: the body rose to ${highestBody.toFixed(2)} m`);
-    assert.ok(highestFin < 0.6, `seed ${seed}: the fin stood ${highestFin.toFixed(2)} m out`);
+    assert.ok(highestBody < -0.2, `seed ${seed}: the body rose to ${highestBody.toFixed(2)} m`);
+    assert.ok(highestFin < 0.85, `seed ${seed}: the fin stood ${highestFin.toFixed(2)} m out`);
     assert.ok(slowest > 0.8, "a shark never stops swimming");
     assert.equal(shallowUnderYacht, 0, `seed ${seed}: the shark grazed the keels`);
   }

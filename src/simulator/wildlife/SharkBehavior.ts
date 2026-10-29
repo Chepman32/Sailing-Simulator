@@ -45,8 +45,12 @@ export const SHARK_DORSAL_TIP = { y: 0.98, z: 0.05 } as const;
 export const SHARK_CAUDAL_TIP = { y: 0.76, z: -2.75 } as const;
 export const SHARK_BELLY = 0.9;
 
-/** Depth of the body centre while showing the dorsal fin. */
-export const SHARK_FIN_SHOW_DEPTH = 0.62;
+/**
+ * Depth of the body centre while showing the dorsal fin: the fin stands half
+ * a metre out of the water and the upper lobe of the tail cuts the surface
+ * behind it, the two-fin wake every sailor knows.
+ */
+export const SHARK_FIN_SHOW_DEPTH = 0.44;
 /** Below this the hulls and keels can never be touched. */
 export const SHARK_UNDER_KEEL_DEPTH = 3.8;
 export const SHARK_DEEP_DEPTH = { min: 7.5, max: 10 } as const;
@@ -54,9 +58,11 @@ export const SHARK_DEEP_DEPTH = { min: 7.5, max: 10 } as const;
 export const SHARK_CLOSE_PASS_COOLDOWN = 80;
 export const SHARK_FIN_SHOW_COOLDOWN = 30;
 /** Seconds from the end of one fin show to the start of the next, by one shark (drawn afresh each time). */
-export const SHARK_FIN_SHOW_INTERVAL = { min: 30, max: 65 } as const;
+export const SHARK_FIN_SHOW_INTERVAL = { min: 24, max: 50 } as const;
 /** How long the fin stays up once it has surfaced, s. */
-export const SHARK_FIN_SHOW_LENGTH = { min: 16, max: 26 } as const;
+export const SHARK_FIN_SHOW_LENGTH = { min: 18, max: 28 } as const;
+/** Depth band of a shark cruising or patrolling near the yacht, m (a dark shape just under the surface). */
+export const SHARK_CRUISE_DEPTH = { min: 1.1, max: 1.9 } as const;
 /** Closest the fin comes to the yacht's centre, m. */
 export const SHARK_FIN_SHOW_CLEARANCE = 10;
 export const SHARK_HIDE_DISTANCE = 110;
@@ -163,7 +169,7 @@ export function createSharkAgent(
     sinceClosePass: 40,
     sinceFinShow: 30,
     // The first fin comes soon after the start, so a new player sees one.
-    nextFinShow: between(random, 40, 60),
+    nextFinShow: between(random, 12, 24),
     finSide: random() < 0.5 ? -1 : 1,
     boldness: between(random, 0.35, 0.85),
     strokePhase: random() * Math.PI * 2,
@@ -194,7 +200,7 @@ function nextCalmPhase(agent: SharkAgent, vessel: VesselState, random: RandomSou
     beginInvestigate(agent, random);
   } else if (roll < 0.8) {
     enter(agent, "cruise", between(random, 14, 26));
-    agent.depth = between(random, 1.7, 2.8);
+    agent.depth = between(random, SHARK_CRUISE_DEPTH.min, SHARK_CRUISE_DEPTH.max);
   } else if (roll < 0.86 && distance < 60) {
     enter(agent, "accelerate", between(random, 1.8, 2.8));
   } else {
@@ -210,13 +216,13 @@ function beginPatrol(agent: SharkAgent, vessel: VesselState, random: RandomSourc
   agent.centreZ = vessel.z + Math.cos(angle) * offset;
   agent.radius = between(random, 18, 32);
   agent.direction = random() < 0.5 ? -1 : 1;
-  agent.depth = between(random, 1.8, 2.9);
+  agent.depth = between(random, SHARK_CRUISE_DEPTH.min, SHARK_CRUISE_DEPTH.max);
   enter(agent, "patrol", between(random, 22, 40));
 }
 
 function beginInvestigate(agent: SharkAgent, random: RandomSource): void {
   agent.direction = random() < 0.5 ? -1 : 1;
-  agent.depth = between(random, 1.5, 2.2);
+  agent.depth = between(random, 1.0, 1.6);
   enter(agent, "investigate", between(random, 12, 20));
 }
 
@@ -358,7 +364,7 @@ export function stepShark(
           agent.depth = between(random, SHARK_DEEP_DEPTH.min, SHARK_DEEP_DEPTH.max);
         } else {
           enter(agent, "cruise", between(random, 14, 24));
-          agent.depth = between(random, 1.7, 2.8);
+          agent.depth = between(random, SHARK_CRUISE_DEPTH.min, SHARK_CRUISE_DEPTH.max);
         }
       }
       break;
@@ -367,7 +373,7 @@ export function stepShark(
         // The interval to the next showing runs from the end of this one.
         agent.sinceFinShow = 0;
         enter(agent, "cruise", between(random, 12, 22));
-        agent.depth = between(random, 2, 3.2);
+        agent.depth = between(random, SHARK_CRUISE_DEPTH.min + 0.4, SHARK_CRUISE_DEPTH.max + 0.6);
       }
       break;
   }

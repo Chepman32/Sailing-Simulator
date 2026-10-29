@@ -38,6 +38,7 @@ import {
   inClearing,
   islandClearings,
   islandProfile,
+  LIGHTHOUSE_SCALE,
   pierClearance,
   type IslandProfile,
   type PierFootprint,
@@ -592,6 +593,8 @@ export class IslandSystem {
       beam = new THREE.Group();
       beam.name = `LighthouseBeam_${island.id}`;
       beam.position.copy(built.lamp);
+      // The beams and the lamp grow with the tower.
+      beam.scale.setScalar(LIGHTHOUSE_SCALE);
       for (const turn of [0, Math.PI]) {
         const ray = new THREE.Mesh(this.beamGeometry, this.beamMaterial);
         ray.rotation.y = turn;

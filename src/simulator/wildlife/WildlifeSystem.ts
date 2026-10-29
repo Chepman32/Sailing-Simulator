@@ -73,14 +73,14 @@ export class WildlifeSystem {
       materials.forEach((material) => {
         if (treated.has(material)) return;
         treated.add(material);
-        underwater.apply(material, { glow: true });
+        underwater.apply(material);
       });
     });
     // The distant breacher flies through the air, so it lives outside the
     // underwater group (it shows in the water's mirror); it is still seen
     // through the water whenever it is below the surface.
     this.breach = new WhaleBreachController(this.group, ocean, this.world, assets, effects);
-    this.breach.materials.forEach((material) => underwater.apply(material, { glow: true }));
+    this.breach.materials.forEach((material) => underwater.apply(material));
     this.fish = new ReefFishController(this.marineGroup, ocean, assets, underwater, counts.fishDensity);
     // Gulls rest head to wind; the trade wind's mean direction is enough for that.
     const windLength = Math.hypot(6.8, 4.2);
@@ -144,9 +144,13 @@ export class WildlifeSystem {
     return this.gulls.calls.splice(0);
   }
 
-  /** 0 by day … 1 at night: the shows (a shark's fin, a breach) come about half as often. */
+  /**
+   * 0 by day … 1 at night: the shows (a shark's fin, a breach) come a little
+   * less often after dark, but still come, since at night the fin and its
+   * wake are all that can be seen of a shark.
+   */
   setNight(night: number): void {
-    this.world.rarity = 1 + Math.min(1, Math.max(0, night)) * 1.1;
+    this.world.rarity = 1 + Math.min(1, Math.max(0, night)) * 0.3;
   }
 
   /** Direction toward the dominant light, for the sun through the gulls' wings. */

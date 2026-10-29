@@ -68,8 +68,13 @@ const DAY_CLOUD_LIT: Rgb = [1.06, 1.03, 0.98];
 const DAY_CLOUD_SHADE: Rgb = [0.47, 0.55, 0.68];
 const DUSK_CLOUD_LIT: Rgb = [1.05, 0.56, 0.3];
 const DUSK_CLOUD_SHADE: Rgb = [0.2, 0.17, 0.27];
-const NIGHT_CLOUD_LIT: Rgb = [0.17, 0.215, 0.31];
-const NIGHT_CLOUD_SHADE: Rgb = [0.03, 0.046, 0.078];
+/**
+ * Night clouds are grey-black shapes against the starlit blue: their moonlit
+ * tops a little above the sky's brightness, their bodies below it (the
+ * moon's silver lining on the edges nearest it is added in the sky shader).
+ */
+const NIGHT_CLOUD_LIT: Rgb = [0.084, 0.095, 0.122];
+const NIGHT_CLOUD_SHADE: Rgb = [0.008, 0.011, 0.02];
 
 export const SUN_IRRADIANCE = 3.2;
 export const MOON_IRRADIANCE = 0.62;

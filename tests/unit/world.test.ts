@@ -479,3 +479,31 @@ test("every listed ship model is shipped, credited and fits its type", async () 
     }
   }
 });
+
+test("lighthouses are tall landmarks, far enough apart that only one is ever in sight", async () => {
+  const { islandsInCell, WORLD_CELL } = await import("../../src/simulator/environment/IslandMath");
+  const { islandProfile, LANTERN_HEIGHT } = await import("../../src/simulator/environment/IslandProps");
+  const { ISLAND_DRAW_DISTANCE } = await import("../../src/simulator/environment/IslandSystem");
+  const lights: { x: number; z: number; reach: number }[] = [];
+  const span = 24;
+  for (let row = -span; row <= span; row += 1) {
+    for (let column = -span; column <= span; column += 1) {
+      for (const island of islandsInCell(column, row)) {
+        if (islandProfile(island).lighthouseAngle === null) continue;
+        lights.push({ x: island.centerX, z: island.centerZ, reach: island.beachRadius * Math.max(1, island.scaleZ) });
+      }
+    }
+  }
+  assert.ok(lights.length >= 30, `only ${lights.length} lighthouses in ${(span * 2 + 1) ** 2} cells`);
+  assert.ok(lights.some((light) => Math.hypot(light.x, light.z) < WORLD_CELL), "one stands near the start");
+  for (let a = 0; a < lights.length; a += 1) {
+    for (let b = a + 1; b < lights.length; b += 1) {
+      const first = lights[a]!;
+      const second = lights[b]!;
+      // Both are in sight only if the camera is within the draw distance of both beaches.
+      const sight = 2 * ISLAND_DRAW_DISTANCE + first.reach + second.reach;
+      assert.ok(Math.hypot(first.x - second.x, first.z - second.z) > sight, "two lighthouses could be seen at once");
+    }
+  }
+  assert.ok(LANTERN_HEIGHT > 35, "a lighthouse stands about forty metres");
+});

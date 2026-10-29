@@ -55,6 +55,42 @@ function homeIndex(island: IslandDefinition): number {
   return slot >= 0 && slot < 3 ? slot : -1;
 }
 
+/**
+ * Lighthouses stand only on a sparse lattice of world cells, one cell in
+ * every {@link LIGHTHOUSE_LATTICE} along each axis (the start cell is one of
+ * them), so two are always farther apart than twice the distance an island
+ * is drawn: at most one is ever in sight, and each is a landmark.
+ */
+export const LIGHTHOUSE_LATTICE = 5;
+/** Smallest island that carries a lighthouse (beach radius, metres). */
+const LIGHTHOUSE_MIN_RADIUS = 22;
+
+/** World cell and slot of an island, from its id (see IslandMath's `islandId`). */
+function islandCell(id: number): { column: number; row: number; slot: number } {
+  const slot = id % 8;
+  const key = (id - slot) / 8;
+  const row = (key % 16384) - 8192;
+  const column = (key - (row + 8192)) / 16384 - 8192;
+  return { column, row, slot };
+}
+
+function onLighthouseLattice(column: number, row: number): boolean {
+  const n = LIGHTHOUSE_LATTICE;
+  return ((column % n) + n) % n === 0 && ((row % n) + n) % n === 0;
+}
+
+/**
+ * Whether an island (other than the home islands, whose lighthouse is fixed)
+ * carries a lighthouse: the primary island of a lattice cell, if it is large
+ * enough and not the volcano.
+ */
+export function hasLighthouse(island: IslandDefinition): boolean {
+  if (island.volcano || island.beachRadius < LIGHTHOUSE_MIN_RADIUS) return false;
+  const { column, row, slot } = islandCell(island.id);
+  if (column === 0 && row === 0) return false;
+  return slot === 0 && onLighthouseLattice(column, row);
+}
+
 export function islandProfile(island: IslandDefinition): IslandProfile {
   const id = island.id;
   const radius = island.beachRadius;
@@ -92,7 +128,7 @@ export function islandProfile(island: IslandDefinition): IslandProfile {
   }
   if (home === 1) {
     lighthouseAngle = Math.atan2(-island.centerZ / island.scaleZ, -island.centerX) + 0.5;
-  } else if (radius >= 40 && hash(id, 60) < 0.24) {
+  } else if (home < 0 && hasLighthouse(island)) {
     lighthouseAngle = (pierAngle ?? hash(id, 61) * Math.PI * 2) + (pierAngle === null ? 0 : Math.PI);
   }
   return {
@@ -142,7 +178,7 @@ export function islandClearings(island: IslandDefinition, profile: IslandProfile
   }
   if (profile.lighthouseAngle !== null) {
     const tower = islandPoint(island, 0.5, profile.lighthouseAngle);
-    clearings.push({ ...tower, radius: 8 });
+    clearings.push({ ...tower, radius: 6 + 4.2 * LIGHTHOUSE_SCALE });
   }
   return clearings;
 }
@@ -481,8 +517,14 @@ function addHut(island: IslandDefinition, profile: IslandProfile, surface: Surfa
   for (const piece of glowParts) parts.glow.push(transformed(piece, spot.x, ground, spot.z, yaw));
 }
 
+/**
+ * The lighthouse is built at a keeper's-cottage scale and then enlarged by
+ * this factor (the cottage beside it is not): a coastal light of about
+ * forty metres, a landmark from kilometres off.
+ */
+export const LIGHTHOUSE_SCALE = 2.4;
 /** Height of the lighthouse's lantern above its foot, metres. */
-export const LANTERN_HEIGHT = 17.6;
+export const LANTERN_HEIGHT = 17.6 * LIGHTHOUSE_SCALE;
 
 /** A banded tower, gallery, lantern room and keeper's cottage. */
 function addLighthouse(island: IslandDefinition, profile: IslandProfile, surface: Surface, parts: Parts): THREE.Vector3 | null {
@@ -490,76 +532,121 @@ function addLighthouse(island: IslandDefinition, profile: IslandProfile, surface
   const angle = profile.lighthouseAngle;
   const spot = islandPoint(island, 0.5, angle);
   const dir = outward(island, angle);
-  const ground = surface(0.5, angle) - 0.3;
+  const ground = surface(0.5, angle) - 0.3 * LIGHTHOUSE_SCALE;
+  // The tower is drawn in its own units, then scaled up as one.
   const pieces: THREE.BufferGeometry[] = [];
   const glow: THREE.BufferGeometry[] = [];
   const white = new THREE.Color(0xf2efe8);
   const red = new THREE.Color(0xc0302c);
   const tower = 15.5;
-  pieces.push(post(2.5, -0.5, 1.2, 0, 0, 0x9a948a, 8));
-  const shaft = new THREE.CylinderGeometry(1.15, 1.75, tower, 28, 10);
+  // A granite plinth in two steps.
+  pieces.push(post(2.55, -0.6, 0.55, 0, 0, 0x8f897f, 12));
+  pieces.push(post(2.15, 0.55, 1.2, 0, 0, 0x9a948a, 12));
+  const shaft = new THREE.CylinderGeometry(1.15, 1.75, tower, 36, 14);
   shaft.translate(0, 1.2 + tower / 2, 0);
   const banded = shaft.toNonIndexed();
   shaft.dispose();
-  // Bands by each triangle's centre, so the edges are crisp.
+  // Bands by each triangle's centre, so the edges are crisp; the paint is a
+  // little weathered, darker toward the foot.
   const position = banded.getAttribute("position");
   const colors = new Float32Array(position.count * 3);
   for (let triangle = 0; triangle < position.count / 3; triangle += 1) {
     const y = (position.getY(triangle * 3) + position.getY(triangle * 3 + 1) + position.getY(triangle * 3 + 2)) / 3;
     const band = Math.floor((y - 1.2) / (tower / 5)) % 2 === 1;
     const color = band ? red : white;
+    const weather = 0.86 + 0.14 * Math.min(1, (y - 1.2) / 4);
     for (let k = 0; k < 3; k += 1) {
-      colors[(triangle * 3 + k) * 3] = color.r;
-      colors[(triangle * 3 + k) * 3 + 1] = color.g;
-      colors[(triangle * 3 + k) * 3 + 2] = color.b;
+      colors[(triangle * 3 + k) * 3] = color.r * weather;
+      colors[(triangle * 3 + k) * 3 + 1] = color.g * weather;
+      colors[(triangle * 3 + k) * 3 + 2] = color.b * weather;
     }
   }
   banded.deleteAttribute("uv");
   banded.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   banded.setAttribute("propKind", new THREE.BufferAttribute(new Float32Array(banded.getAttribute("position").count).fill(PROP_KIND.built), 1));
   pieces.push(banded);
-  // A door and a few small windows up the tower.
-  pieces.push(transformed(box(0.12, 1.9, 0.9, 1.68, 2.15, 0, 0x2a2420, 0), 0, 0, 0, 0));
-  for (let index = 0; index < 3; index += 1) {
-    const y = 5 + index * 3.6;
-    const r = 1.75 - (0.6 * (y - 1.2)) / tower + 0.03;
-    pieces.push(transformed(box(0.08, 0.7, 0.4, r, y, 0, 0x1a1d22, 0), 0, 0, 0, index * 2.1));
+  const radiusAt = (y: number): number => 1.75 - (0.6 * (y - 1.2)) / tower;
+  // A door under a small pediment, and windows climbing the stair in a spiral.
+  pieces.push(box(0.14, 1.9, 0.9, radiusAt(2.15) - 0.02, 2.15, 0, 0x2a2420, 0));
+  pieces.push(box(0.3, 0.14, 1.2, radiusAt(3.2) + 0.05, 3.2, 0, 0xe9e5dc, 0.02));
+  for (let index = 0; index < 7; index += 1) {
+    const y = 4.4 + index * 1.75;
+    const r = radiusAt(y) + 0.02;
+    pieces.push(transformed(box(0.08, 0.62, 0.36, r, y, 0, 0x1a1d22, 0), 0, 0, 0, index * 1.9 + 0.6));
+    // A white sill under each window.
+    pieces.push(transformed(box(0.14, 0.05, 0.48, r + 0.03, y - 0.34, 0, 0xeeeae2, 0), 0, 0, 0, index * 1.9 + 0.6));
   }
   const top = 1.2 + tower;
-  pieces.push(post(1.75, top, top + 0.28, 0, 0, 0x2a2d31, 24));
-  // Gallery railing: posts and a rail.
+  // Corbels under the gallery, the gallery deck, and its railing.
   for (let index = 0; index < 16; index += 1) {
     const a = (index / 16) * Math.PI * 2;
-    pieces.push(post(0.03, top + 0.28, top + 1.1, Math.cos(a) * 1.65, Math.sin(a) * 1.65, 0x2a2d31, 5));
+    const corbel = box(0.5, 0.42, 0.16, 0, 0, 0, 0x2a2d31, 0);
+    corbel.translate(radiusAt(top) + 0.2, top - 0.2, 0);
+    pieces.push(transformed(corbel, 0, 0, 0, a));
   }
-  const rail = new THREE.TorusGeometry(1.65, 0.035, 6, 32);
-  rail.rotateX(Math.PI / 2);
-  rail.translate(0, top + 1.1, 0);
-  pieces.push(painted(rail, solid(0x2a2d31)));
-  // The lantern room: glazing that glows at night, under a red cupola.
-  const lantern = new THREE.CylinderGeometry(0.95, 0.95, 1.6, 16, 1, true);
-  lantern.translate(0, top + 0.28 + 0.8, 0);
+  pieces.push(post(1.85, top, top + 0.28, 0, 0, 0x2a2d31, 32));
+  for (let index = 0; index < 32; index += 1) {
+    const a = (index / 32) * Math.PI * 2;
+    pieces.push(post(0.025, top + 0.28, top + 1.1, Math.cos(a) * 1.75, Math.sin(a) * 1.75, 0x2a2d31, 5));
+  }
+  for (const height of [0.62, 1.1]) {
+    const rail = new THREE.TorusGeometry(1.75, height > 1 ? 0.035 : 0.02, 6, 40);
+    rail.rotateX(Math.PI / 2);
+    rail.translate(0, top + height, 0);
+    pieces.push(painted(rail, solid(0x2a2d31)));
+  }
+  // The lantern room on its low wall: glazing that glows at night, the
+  // lens inside it, mullions, and a red cupola with a vent ball and vane.
+  pieces.push(post(1.02, top + 0.28, top + 0.62, 0, 0, 0xe9e5dc, 20));
+  const lantern = new THREE.CylinderGeometry(0.95, 0.95, 1.5, 20, 1, true);
+  lantern.translate(0, top + 0.62 + 0.75, 0);
   glow.push(painted(lantern, solid(0xffe2a0)));
-  for (let index = 0; index < 8; index += 1) {
-    const a = (index / 8) * Math.PI * 2;
-    pieces.push(post(0.035, top + 0.28, top + 1.9, Math.cos(a) * 0.97, Math.sin(a) * 0.97, 0x1d1f22, 5));
+  const lens = new THREE.CylinderGeometry(0.5, 0.5, 1.0, 12);
+  lens.translate(0, top + 0.62 + 0.75, 0);
+  glow.push(painted(lens, solid(0xfff1c8)));
+  for (let index = 0; index < 10; index += 1) {
+    const a = (index / 10) * Math.PI * 2;
+    pieces.push(post(0.03, top + 0.62, top + 2.12, Math.cos(a) * 0.97, Math.sin(a) * 0.97, 0x1d1f22, 5));
   }
-  const cupola = new THREE.ConeGeometry(1.2, 1.1, 20);
-  cupola.translate(0, top + 1.88 + 0.55, 0);
+  pieces.push(post(1.0, top + 2.12, top + 2.2, 0, 0, 0x1d1f22, 20));
+  const cupola = new THREE.ConeGeometry(1.2, 1.0, 24);
+  cupola.translate(0, top + 2.2 + 0.5, 0);
   pieces.push(painted(cupola, solid(0xa82a26)));
-  pieces.push(post(0.05, top + 2.4, top + 3.0, 0, 0, 0x1d1f22, 5));
-  // The keeper's cottage beside the tower: white walls, a red roof.
-  pieces.push(box(4.2, 2.6, 3.2, -4.4, 1.3, 0.6, 0xf0ece2, 0.04));
+  const vent = new THREE.SphereGeometry(0.16, 10, 8);
+  vent.translate(0, top + 2.8, 0);
+  pieces.push(painted(vent, solid(0x1d1f22)));
+  pieces.push(post(0.03, top + 2.8, top + 3.6, 0, 0, 0x1d1f22, 5));
+  pieces.push(box(0.5, 0.18, 0.02, 0.18, top + 3.42, 0, 0x1d1f22, 0));
+  const scale = LIGHTHOUSE_SCALE;
+  for (const piece of [...pieces, ...glow]) piece.scale(scale, scale, scale);
+  // The keeper's cottage beside the tower, at its own size: white walls, a
+  // red roof, a chimney, a lit window and a low garden wall.
+  const cottageX = -1.75 * scale - 4.2;
+  const cottage: THREE.BufferGeometry[] = [];
+  cottage.push(box(4.2, 2.6, 3.2, cottageX, 1.3, 0.6, 0xf0ece2, 0.04));
   const roof = new THREE.ConeGeometry(3.2, 1.5, 4);
   roof.rotateY(Math.PI / 4);
   roof.scale(1.05, 1, 0.82);
-  roof.translate(-4.4, 2.6 + 0.75, 0.6);
-  pieces.push(painted(roof, solid(0xa83b2e, 0.06)));
-  glow.push(box(0.06, 0.6, 0.7, -2.27, 1.5, 0.6, 0xffc777, 0));
+  roof.translate(cottageX, 2.6 + 0.75, 0.6);
+  cottage.push(painted(roof, solid(0xa83b2e, 0.06)));
+  cottage.push(box(0.5, 1.4, 0.5, cottageX - 1.2, 3.5, 1.2, 0xd9d4c8, 0.05));
+  cottage.push(box(0.9, 1.8, 0.06, cottageX + 0.6, 0.9, 2.22, 0x3a2c22, 0));
+  for (const [x0, z0, x1, z1] of [
+    [cottageX - 3, -2, cottageX + 3, -2],
+    [cottageX - 3, -2, cottageX - 3, 3.6],
+    [cottageX - 3, 3.6, cottageX - 0.5, 3.6],
+  ] as const) {
+    const length = Math.hypot(x1 - x0, z1 - z0);
+    const wall = box(length, 0.7, 0.35, 0, 0.35, 0, 0xb9b2a5, 0.1);
+    wall.rotateY(-Math.atan2(z1 - z0, x1 - x0));
+    wall.translate((x0 + x1) / 2, 0, (z0 + z1) / 2);
+    cottage.push(wall);
+  }
+  glow.push(box(0.06, 0.6, 0.7, cottageX + 2.13, 1.5, 0.6, 0xffc777, 0));
   const yaw = Math.atan2(-dir.z, dir.x);
-  for (const piece of pieces) parts.solid.push(transformed(piece, spot.x, ground, spot.z, yaw));
+  for (const piece of [...pieces, ...cottage]) parts.solid.push(transformed(piece, spot.x, ground, spot.z, yaw));
   for (const piece of glow) parts.glow.push(transformed(piece, spot.x, ground, spot.z, yaw));
-  return new THREE.Vector3(spot.x, ground + top + 1.08, spot.z);
+  return new THREE.Vector3(spot.x, ground + (top + 1.37) * scale, spot.z);
 }
 
 export type IslandFurniture = {

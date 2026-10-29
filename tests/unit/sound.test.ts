@@ -57,3 +57,20 @@ test("the sails' side holds steady near head to wind and dead downwind, and only
   assert.equal(audibleSlam(1, 2.6, 1.5), 0, "nor in a breath of apparent wind");
   assert.ok(audibleSlam(1, 2.6, 9) > 0.9, "a gybe in a breeze slams");
 });
+
+test("the engine is heard from where the camera is: full at the helm, quieter astern, a mutter from afar", async () => {
+  const { engineAirCutoff, engineDistanceGain, enginePan, ENGINE_NEAR_DISTANCE } = await import("../../src/simulator/audio/EngineSoundMath");
+  assert.equal(engineDistanceGain(1), 1, "at the helm");
+  assert.equal(engineDistanceGain(ENGINE_NEAR_DISTANCE), 1);
+  const chase = engineDistanceGain(14);
+  const drone = engineDistanceGain(60);
+  assert.ok(chase < 0.5 && chase > 0.3, `chase camera ${chase.toFixed(2)}`);
+  assert.ok(drone < chase * 0.4 && drone > 0, `drone ${drone.toFixed(3)}`);
+  assert.equal(engineDistanceGain(5000), 0, "too far to hear");
+  assert.equal(engineDistanceGain(Number.NaN), 0);
+  for (let d = 1; d < 400; d *= 1.3) assert.ok(engineDistanceGain(d * 1.3) <= engineDistanceGain(d), "never louder farther away");
+  assert.ok(engineAirCutoff(2) > engineAirCutoff(60) && engineAirCutoff(60) > engineAirCutoff(300), "duller with distance");
+  assert.equal(enginePan(1, 0, 0, 0.1), 0, "centred close in");
+  assert.ok(enginePan(1, 0, 20, 0) > 0.5 && enginePan(1, 0, -20, 0) < -0.5, "left and right");
+  assert.ok(Math.abs(enginePan(1, 0, 40, 0)) <= 0.7, "never from one speaker only");
+});
