@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 /**
  * The ship's bell on the front of the mast, above the cabin top: a polished
@@ -45,10 +46,10 @@ export class ShipBell {
     // A ring for the crown's shackle.
     const crown = new THREE.TorusGeometry(0.018, 0.006, 8, 16);
     crown.translate(0, 0.012, 0);
-    const bellMesh = new THREE.Mesh(bellGeometry, bronze);
-    const crownMesh = new THREE.Mesh(crown, bronze);
+    // Parts of one material are one mesh each: four draw calls, not seven.
+    const bellMesh = new THREE.Mesh(merged(bellGeometry, crown), bronze);
     bellMesh.castShadow = true;
-    this.bell.add(bellMesh, crownMesh);
+    this.bell.add(bellMesh);
 
     // The clapper: a rod and a ball, with the lanyard's short tail below.
     const clapperGeometry = new THREE.CylinderGeometry(0.005, 0.005, 0.15, 6);
@@ -57,10 +58,10 @@ export class ShipBell {
     ball.translate(0, -0.155, 0);
     const lanyard = new THREE.CylinderGeometry(0.006, 0.006, 0.22, 6);
     lanyard.translate(0, -0.28, 0);
-    const clapperMesh = new THREE.Mesh(clapperGeometry, steel);
-    const ballMesh = new THREE.Mesh(ball, bronze);
+    // A bronze clapper, rod and ball cast as one.
+    const clapperMesh = new THREE.Mesh(merged(clapperGeometry, ball), bronze);
     const lanyardMesh = new THREE.Mesh(lanyard, rope);
-    this.clapper.add(clapperMesh, ballMesh, lanyardMesh);
+    this.clapper.add(clapperMesh, lanyardMesh);
     this.clapper.position.set(0, -0.02, 0);
     this.bell.add(this.clapper);
 
@@ -69,14 +70,13 @@ export class ShipBell {
     arm.translate(0, 0.03, -0.085);
     const plate = new THREE.BoxGeometry(0.08, 0.14, 0.012);
     plate.translate(0, 0.0, -0.17);
-    const armMesh = new THREE.Mesh(arm, steel);
-    const plateMesh = new THREE.Mesh(plate, steel);
-    this.geometries.push(bellGeometry, crown, clapperGeometry, ball, lanyard, arm, plate);
+    const bracketMesh = new THREE.Mesh(merged(arm, plate), steel);
+    this.geometries.push(bellMesh.geometry, clapperMesh.geometry, lanyard, bracketMesh.geometry);
 
     // About 1.1 m above the cabin top on the mast's forward face, clear of the boom.
     const hangY = deckHeight + 1.15;
     this.group.position.set(mastFront.x, hangY, mastFront.z + 0.17);
-    this.group.add(armMesh, plateMesh, this.bell);
+    this.group.add(bracketMesh, this.bell);
     this.soundPoint.set(mastFront.x, hangY - 0.12, mastFront.z + 0.17);
   }
 
@@ -114,4 +114,13 @@ export class ShipBell {
     this.geometries.forEach((geometry) => geometry.dispose());
     this.materials.forEach((material) => material.dispose());
   }
+}
+
+/** One geometry from parts already placed in the same space (the parts are released). */
+function merged(...parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  // Lathes and boxes come with uvs, torus and spheres too; normals everywhere.
+  const result = mergeGeometries(parts, false);
+  if (!result) return parts[0];
+  parts.forEach((part) => part.dispose());
+  return result;
 }

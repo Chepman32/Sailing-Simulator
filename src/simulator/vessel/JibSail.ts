@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { clamp, damp } from "../math";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { computeVertexNormalsFast } from "../core/FastGeometry";
 
 /**
  * The jib: the headsail the aerodynamics already counts with the main (see
@@ -175,10 +177,21 @@ export class JibSail {
     const drum = new THREE.CylinderGeometry(0.09, 0.09, 0.12, 16);
     const drumMesh = new THREE.Mesh(drum, dark);
     drumMesh.position.copy(rig.stayFoot).add(new THREE.Vector3(0, 0.04, 0));
+    // The beam, stay and strut share one metal: baked where they sit into one
+    // mesh (one draw call, one shadow caster) beside the dark drum.
+    const metalParts = [beamMesh, stayMesh, strutMesh].map((mesh) => {
+      mesh.updateMatrix();
+      return mesh.geometry.clone().applyMatrix4(mesh.matrix);
+    });
+    const metalGeometry = mergeGeometries(metalParts, false) ?? beam;
+    metalParts.forEach((geometry) => geometry.dispose());
+    beam.dispose();
+    stay.dispose();
+    strut.dispose();
+    const metalMesh = new THREE.Mesh(metalGeometry, metal);
+    metalMesh.name = "JibFittings";
     for (const [mesh, geometry] of [
-      [beamMesh, beam],
-      [stayMesh, stay],
-      [strutMesh, strut],
+      [metalMesh, metalGeometry],
       [drumMesh, drum],
     ] as const) {
       mesh.castShadow = true;
@@ -257,7 +270,7 @@ export class JibSail {
     }
     const attribute = this.geometry.getAttribute("position") as THREE.BufferAttribute;
     attribute.needsUpdate = true;
-    this.geometry.computeVertexNormals();
+    computeVertexNormalsFast(this.geometry);
     // The sheet: clew to a block on the cabin top, abeam the mast on the leeward side.
     const clewIndex = (ROWS * (COLUMNS + 1) + COLUMNS) * 3;
     this.sheetPositions[0] = positions[clewIndex]!;

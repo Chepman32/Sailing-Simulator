@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 import { shareSkeletons } from "../../src/simulator/core/AssetManager";
-import { mergeSkinnedParts } from "../../src/simulator/core/SkinnedMerge";
+import { bindToNearestBone, mergeSkinnedParts } from "../../src/simulator/core/SkinnedMerge";
 import { batchStaticMeshes, coincidentShells, type ShellBounds } from "../../src/simulator/core/StaticBatching";
 import { simplifiedFish } from "../../src/simulator/wildlife/ReefFishController";
 
@@ -218,6 +218,41 @@ test("a flat-coloured rig merges into one skinned mesh that deforms exactly as i
     const r = colour.getX(corner);
     assert.ok(Math.abs(r - colours[index].r) < 1e-6, "each part keeps its colour");
   });
+});
+
+test("a loose part bound to its nearest bone stays put, then follows that bone and merges with the body", () => {
+  const { model, bones, parts } = riggedModel();
+  // An eye beside the tip of the third part, outside the armature.
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 4), new THREE.MeshStandardMaterial({ color: 0x000000 }));
+  const tip = parts[2].getVertexPosition(0, new THREE.Vector3()).applyMatrix4(parts[2].matrixWorld);
+  model.add(eye);
+  eye.position.copy(model.worldToLocal(tip.clone()));
+  model.updateMatrixWorld(true);
+  const before = posedWorldVertices([eye as unknown as THREE.SkinnedMesh]);
+  const bound = bindToNearestBone(eye, parts[2]);
+  assert.ok(bound);
+  assert.equal(eye.parent, null, "the plain mesh is replaced");
+  model.updateMatrixWorld(true);
+  const after = posedWorldVertices([bound]);
+  const moved = after.reduce((max, vertex, index) => Math.max(max, vertex.distanceTo(before[index])), 0);
+  assert.ok(moved < 1e-5, `binding moved the part by ${moved}`);
+
+  // Bent, the eye keeps its place relative to the bone it was bound to.
+  const boneIndex = bound.geometry.getAttribute("skinIndex").getX(0);
+  const bone = bones[boneIndex];
+  const local = bone.worldToLocal(after[0].clone());
+  bones[1].rotation.set(0.5, 0.2, -0.7);
+  bones[2].rotation.set(-0.4, 0, 0.9);
+  model.updateMatrixWorld(true);
+  const posed = bound.getVertexPosition(bound.geometry.getIndex()!.getX(0), new THREE.Vector3()).applyMatrix4(bound.matrixWorld);
+  assert.ok(posed.distanceTo(bone.localToWorld(local.clone())) < 1e-5, "it rides its bone");
+
+  assert.ok(mergeSkinnedParts(model), "the bound part merges with the rig");
+  let skinned = 0;
+  model.traverse((object) => {
+    if (object instanceof THREE.SkinnedMesh) skinned += 1;
+  });
+  assert.equal(skinned, 1);
 });
 
 test("rigs that cannot merge exactly are left alone", () => {

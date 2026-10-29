@@ -217,3 +217,94 @@ export function smoothNormalsByPosition(geometry: THREE.BufferGeometry, creaseAn
   });
   normal.needsUpdate = true;
 }
+
+/**
+ * Re-binds a plain mesh of a rigged model (a dolphin's eyes, modelled as
+ * loose spheres beside the armature) to the bone of `reference` nearest to
+ * it, as a skinned mesh on `reference`'s skeleton. Where it is now does not
+ * change; from then on it follows that bone (the eyes stay in the head as the
+ * spine bends) and `mergeSkinnedParts` can fold it into one draw call with
+ * the body. Returns the new skinned mesh (the plain one is removed), or null.
+ */
+export function bindToNearestBone(mesh: THREE.Mesh, reference: THREE.SkinnedMesh): THREE.SkinnedMesh | null {
+  if (Array.isArray(mesh.material) || mesh.geometry.morphAttributes.position) return null;
+  const position = mesh.geometry.getAttribute("position");
+  const normal = mesh.geometry.getAttribute("normal");
+  if (!position || !normal) return null;
+  mesh.updateMatrixWorld(true);
+  reference.updateMatrixWorld(true);
+  reference.skeleton.update();
+
+  // The part's centre in the reference's own space, and the body vertex nearest it.
+  mesh.geometry.computeBoundingSphere();
+  const centre = mesh.geometry.boundingSphere!.center.clone()
+    .applyMatrix4(mesh.matrixWorld)
+    .applyMatrix4(reference.matrixWorld.clone().invert());
+  const bodyPosition = reference.geometry.getAttribute("position");
+  const skinIndex = reference.geometry.getAttribute("skinIndex");
+  const skinWeight = reference.geometry.getAttribute("skinWeight");
+  if (!skinIndex || !skinWeight) return null;
+  const vertex = new THREE.Vector3();
+  let nearest = -1;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < bodyPosition.count; index += 1) {
+    reference.applyBoneTransform(index, vertex.fromBufferAttribute(bodyPosition, index));
+    const distance = vertex.distanceToSquared(centre);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearest = index;
+    }
+  }
+  if (nearest < 0) return null;
+  let bone = skinIndex.getComponent(nearest, 0);
+  let heaviest = -1;
+  for (let slot = 0; slot < 4; slot += 1) {
+    const weight = skinWeight.getComponent(nearest, slot);
+    if (weight > heaviest) {
+      heaviest = weight;
+      bone = skinIndex.getComponent(nearest, slot);
+    }
+  }
+
+  // Skinned world position = M · bindMatrixInverse · bone · boneInverse · bindMatrix · v,
+  // so the bind-space vertex is that transform's inverse applied to where it is now.
+  const skin = new THREE.Matrix4()
+    .copy(reference.matrixWorld)
+    .multiply(reference.bindMatrixInverse)
+    .multiply(reference.skeleton.bones[bone].matrixWorld)
+    .multiply(reference.skeleton.boneInverses[bone])
+    .multiply(reference.bindMatrix);
+  const toBind = skin.invert().multiply(mesh.matrixWorld);
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", expanded(position));
+  geometry.setAttribute("normal", expanded(normal));
+  const count = position.count;
+  const indices = new Uint16Array(count * 4);
+  const weights = new Float32Array(count * 4);
+  for (let index = 0; index < count; index += 1) {
+    indices[index * 4] = bone;
+    weights[index * 4] = 1;
+  }
+  geometry.setAttribute("skinIndex", new THREE.BufferAttribute(indices, 4));
+  geometry.setAttribute("skinWeight", new THREE.BufferAttribute(weights, 4));
+  const index = mesh.geometry.getIndex();
+  const triangles = new Uint32Array(index ? index.count : count);
+  for (let at = 0; at < triangles.length; at += 1) triangles[at] = index ? index.getX(at) : at;
+  geometry.setIndex(new THREE.BufferAttribute(triangles, 1));
+  geometry.applyMatrix4(toBind);
+  if (toBind.determinant() < 0) flipWinding(triangles);
+
+  const skinned = new THREE.SkinnedMesh(geometry, mesh.material);
+  skinned.name = mesh.name;
+  skinned.position.copy(reference.position);
+  skinned.quaternion.copy(reference.quaternion);
+  skinned.scale.copy(reference.scale);
+  skinned.castShadow = mesh.castShadow;
+  skinned.receiveShadow = mesh.receiveShadow;
+  skinned.frustumCulled = reference.frustumCulled;
+  (reference.parent ?? reference).add(skinned);
+  skinned.bind(reference.skeleton, reference.bindMatrix);
+  mesh.removeFromParent();
+  return skinned;
+}

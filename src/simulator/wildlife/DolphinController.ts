@@ -12,6 +12,7 @@ import {
 } from "./DolphinBehavior";
 import { CONTACT_MASS, contactIntensity, SurfacePoint, type MarineWorld, type VesselState, type WaterEffects } from "./WaterContact";
 import { createAnimatedVisual, type AnimatedVisual } from "./WildlifeModel";
+import { bindToNearestBone, mergeSkinnedParts } from "../core/SkinnedMerge";
 
 /**
  * Renders the dolphin pod described by {@link DolphinBehavior}.
@@ -70,6 +71,8 @@ export class DolphinController {
   private readonly angles = new Float32Array(SPINE.length);
   private readonly yaws = new Float32Array(SPINE.length);
   private podState: DolphinPod | null = null;
+  /** One material for every dolphin's merged body (one shader, one state). */
+  private bodyMaterial: THREE.Material | null = null;
 
   constructor(
     private readonly group: THREE.Group,
@@ -133,6 +136,27 @@ export class DolphinController {
         }
       });
     });
+    // Body, belly, mouth and eyes become one mesh: five draw calls per
+    // dolphin (and five more in the water's mirror) become one. The eyes
+    // are loose spheres beside the armature in the source; bound to the
+    // head bone they also stay in the head as the spine bends.
+    visual.model.updateMatrixWorld(true);
+    const parts: THREE.Mesh[] = [];
+    let reference: THREE.SkinnedMesh | undefined;
+    visual.model.traverse((object) => {
+      if (object instanceof THREE.SkinnedMesh) reference ??= object;
+      else if (object instanceof THREE.Mesh) parts.push(object);
+    });
+    if (reference) for (const part of parts) bindToNearestBone(part, reference);
+    const body = mergeSkinnedParts(visual.model);
+    if (body) {
+      if (this.bodyMaterial) {
+        (body.material as THREE.Material).dispose();
+        body.material = this.bodyMaterial;
+      } else {
+        this.bodyMaterial = body.material as THREE.Material;
+      }
+    }
     visual.actions.forEach((action) => action.stop());
     visual.mixer?.stopAllAction();
     const swim = visual.clips[0];

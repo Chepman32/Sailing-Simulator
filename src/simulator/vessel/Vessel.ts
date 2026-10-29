@@ -56,6 +56,8 @@ type HullProfile = {
 const STATION = 0.1;
 /** Meshes whose bounds agree this closely are copies of one shell. */
 const SHELL_TOLERANCE = 0.06;
+/** Parts with a bounding radius under this (metres) skip the mirror and the shadow map. */
+const SMALL_PART_RADIUS = 0.4;
 
 export class Vessel {
   readonly root = new THREE.Group();
@@ -179,6 +181,31 @@ export class Vessel {
       eyeHeight: HELM_EYE.y - HelmStation.STAND_FEET.y,
       rimPoint: (angle, target) => this.helm.rimPoint(angle, target),
       wheelAngle: () => this.helm.wheelAngle,
+    });
+    this.skipSmallParts();
+  }
+
+  /**
+   * The fittings smaller than a hand span (the helm's instruments and
+   * compass, the jib's blocks, cleats, lines) are each a draw call of their
+   * own and cover a few pixels: they are left out of the blurred planar
+   * mirror and cast no shadow. The navigation lamps keep their reflection,
+   * which is what is seen of them on the water at night.
+   */
+  private skipSmallParts(): void {
+    this.root.updateMatrixWorld(true);
+    const skipped = new Set(this.mirrorSkipped);
+    this.root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh || object instanceof THREE.Line) || object instanceof THREE.SkinnedMesh) return;
+      if (skipped.has(object)) return;
+      const geometry = object.geometry as THREE.BufferGeometry;
+      if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+      const radius = (geometry.boundingSphere?.radius ?? 0) * object.matrixWorld.getMaxScaleOnAxis();
+      if (radius >= SMALL_PART_RADIUS) return;
+      object.castShadow = false;
+      const material = Array.isArray(object.material) ? object.material[0] : object.material;
+      if (material instanceof THREE.MeshBasicMaterial) return;
+      this.mirrorSkipped.push(object);
     });
   }
 
