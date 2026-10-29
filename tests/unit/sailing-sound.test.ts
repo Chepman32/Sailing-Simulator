@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boatSoundLevels, sailFillCrack, SPRAY_START_KNOTS } from "../../src/simulator/audio/BoatSoundMath";
+import { boatSoundLevels, sailFillCrack } from "../../src/simulator/audio/BoatSoundMath";
 import { GUST_SLOT, gustEvent, MAX_GUST_FACTOR, sampleWind } from "../../src/simulator/environment/WindMath";
 
 const calm = { knots: 0, waves: 1, apparentWind: 10, gust: 0, gustApproaching: 0, luff: 0, trimRate: 0 };
 
-test("slap at rest gives way to the bow wave's rush, and spray only above 6 knots", () => {
+test("water laps at the hulls at rest (softly on a calm sea) and falls silent under way; no knocks at speed", () => {
   const rest = boatSoundLevels(calm);
+  const lop = boatSoundLevels({ ...calm, waves: 3 });
   const slow = boatSoundLevels({ ...calm, knots: 3 });
   const fast = boatSoundLevels({ ...calm, knots: 9 });
-  assert.ok(rest.slap > 0.5 && rest.rush < 0.01);
-  assert.ok(fast.slap < rest.slap * 0.3, "the slap is drowned by the rush at speed");
+  assert.ok(rest.slap > 0.2 && rest.slap < 0.4 && rest.rush < 0.01, "a calm day's lapping is faint");
+  assert.ok(lop.slap > rest.slap * 2, "louder in a lop");
+  assert.equal(fast.slap, 0, "no slaps (heard as knocks) once she is under way");
   assert.ok(fast.rush > slow.rush * 4 && fast.rushTone > slow.rushTone);
-  assert.equal(boatSoundLevels({ ...calm, knots: SPRAY_START_KNOTS - 0.5 }).spray, 0);
-  assert.ok(fast.spray > 0.5 && fast.sprayRate > 1);
+  assert.ok(!("spray" in fast), "no spray bursts against the hulls");
 });
 
 test("the sail flogs only when it luffs in a breeze; the winch clicks only while trimming in", () => {

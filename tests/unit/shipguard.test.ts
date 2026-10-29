@@ -92,9 +92,10 @@ test("the yacht may come alongside a ship to about a metre without being turned 
     return gap;
   };
   for (let step = 0; step < 60 * 60; step += 1) {
-    // The helmsman holds a course converging on the side, then straightens up
-    // alongside once there is about a metre between the hulls.
-    controls.rudder = edgeGap() < 1.4 ? THREE.MathUtils.clamp(-physics.heading * 2, -1, 1) : 0;
+    // The helmsman converges on the side and eases in as the gap closes,
+    // aiming to lie about a metre off (the helm answers at once).
+    const wanted = -THREE.MathUtils.clamp((edgeGap() - 1) * 0.035, 0, 0.28);
+    controls.rudder = THREE.MathUtils.clamp((wanted - physics.heading) * 3, -1, 1);
     physics.fixedUpdate(1 / 60, controls, true);
     const distance = shipHullDistance(ship, physics.position.x, physics.position.z);
     closest = Math.min(closest, distance);

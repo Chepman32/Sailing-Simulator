@@ -3,10 +3,11 @@ import { clamp, smoothstep } from "../math";
 /**
  * How loud each layer of the yacht's own sound is, from what she is doing.
  *
- * Moored or drifting, the water only laps and slaps at the hulls. As she
- * gathers way the bows begin to cut the water: a soft rush that fills out
- * with speed, and above 6–8 knots a powerful tearing of water with bursts of
- * spray as she meets each wave. The wind sings in the rigging when it pipes
+ * Moored or drifting, the water only laps and slaps at the hulls (softly on
+ * a calm day). As she gathers way the bows begin to cut the water: a soft
+ * rush that fills out with speed, and the slaps die away. There are no
+ * bursts of spray against the hulls: played as knocks, they sounded like
+ * metal being struck at speed. The wind sings in the rigging when it pipes
  * up, the sail flogs whenever it luffs (going about, or head to wind), and
  * the winches ratchet while the sheet is trimmed. A gust is heard before it
  * arrives and swells everything it touches. Pure numbers; `BoatVoices`
@@ -40,9 +41,6 @@ export type BoatSoundLevels = {
   /** The bow wave's rush, and the low-pass that opens with speed (Hz). */
   rush: number;
   rushTone: number;
-  /** Spray thrown off the bows at speed, and bursts a second. */
-  spray: number;
-  sprayRate: number;
   /** Wind singing in the shrouds, and the hum's pitch (Hz). */
   rigging: number;
   riggingPitch: number;
@@ -56,10 +54,6 @@ export type BoatSoundLevels = {
   sheetSlip: number;
 };
 
-/** Speed above which the bows start to tear the water and throw spray, knots. */
-export const SPRAY_START_KNOTS = 6;
-export const SPRAY_FULL_KNOTS = 8.5;
-
 export function boatSoundLevels(state: BoatSoundState): BoatSoundLevels {
   const knots = Math.max(0, Number.isFinite(state.knots) ? state.knots : 0);
   const sea = clamp((state.waves - 1) / 3, 0, 1);
@@ -67,18 +61,16 @@ export function boatSoundLevels(state: BoatSoundState): BoatSoundLevels {
   const gust = clamp(state.gust, 0, 1);
   const approaching = clamp(state.gustApproaching, 0, 1);
   const rushLevel = smoothstep(1.2, 9.5, knots);
-  const spray = smoothstep(SPRAY_START_KNOTS, SPRAY_FULL_KNOTS, knots) * (0.65 + 0.35 * sea);
   const trim = Number.isFinite(state.trimRate) ? state.trimRate : 0;
   const trueWind = Math.max(0, state.trueWind ?? wind);
   const riggingWind = Math.max(trueWind, wind * 0.6);
   const motoring = clamp(state.motoring ?? 0, 0, 1);
   return {
-    slap: (1 - smoothstep(3, 7.5, knots)) * (0.55 + 0.45 * sea) + 0.08,
+    // Lapping at rest, faint on a calm sea, gone once she is under way.
+    slap: (1 - smoothstep(2.5, 6, knots)) * (0.3 + 0.7 * sea),
     slapRate: 0.7 + knots * 0.12 + sea * 0.8,
-    rush: Math.pow(rushLevel, 1.4) * (0.85 + 0.15 * sea),
+    rush: Math.pow(rushLevel, 1.4) * (0.6 + 0.4 * sea),
     rushTone: 700 + 4300 * smoothstep(1.5, 12, knots),
-    spray,
-    sprayRate: spray > 0 ? 0.9 + (knots - SPRAY_START_KNOTS) * 0.45 + sea * 0.8 : 0,
     // The shrouds sing in a real blow, not in the breeze of the yacht's own
     // speed: under power at twenty knots the apparent wind is strong but the
     // day is calm.

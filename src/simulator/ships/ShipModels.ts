@@ -9,8 +9,9 @@ import {
   closeHullProfile,
   emptyHullProfile,
   fitShipModel,
-  HULL_PROFILE_BAND,
   isSeaSurface,
+  modelLights,
+  type ModelMesh,
   SHIP_MODELS,
   unionBounds,
   type Bounds3,
@@ -38,7 +39,12 @@ export class ShipModels {
   private readonly geometries = new Set<THREE.BufferGeometry>();
   private disposed = false;
 
-  constructor(private readonly prepareMaterial: (material: THREE.Material) => void) {}
+  /**
+   * @param prepareMaterial Shading for each of a model's materials; `windows`
+   *   is that model's (deck height, accommodation from z, to z, 1 for a
+   *   passenger ship lit all along), filled in once the model is measured.
+   */
+  constructor(private readonly prepareMaterial: (material: THREE.Material, windows: { value: THREE.Vector4 }) => void) {}
 
   private sources: Record<ShipKind, readonly ShipModelSource[]> = SHIP_MODELS;
 
@@ -56,7 +62,7 @@ export class ShipModels {
             .loadAsync(source.url)
             .then((gltf) => {
               if (this.disposed) return;
-              this.prototypes.set(`${kind}:${variant}`, this.prepare(gltf.scene, kind, source));
+              this.prototypes.set(`${kind}:${variant}`, this.prepare(gltf.scene, kind, source, variant));
             })
             .catch((error: unknown) => {
               console.warn(`Ship model ${source.url} could not be loaded; the procedural ship is used.`, error);
@@ -95,23 +101,24 @@ export class ShipModels {
     this.prototypes.clear();
   }
 
-  /** Waterline half-widths of the prepared model, in the ship's frame. */
-  private measure(root: THREE.Object3D, halfLength: number): Float32Array {
+  /** The night lights of a loaded model (see `modelLights`), or null while it is not available. */
+  lights(kind: ShipKind, variant: number): THREE.BufferGeometry | null {
+    return (this.prototypes.get(`${kind}:${variant}`)?.userData.lights as THREE.BufferGeometry | undefined) ?? null;
+  }
+
+  /** The prepared model's meshes in the ship's frame (metres, bow +Z, waterline y = 0). */
+  private shipFrameMeshes(root: THREE.Object3D): ModelMesh[] {
     root.updateMatrixWorld(true);
     const inverse = new THREE.Matrix4().copy(root.matrixWorld).invert();
     const toRoot = new THREE.Matrix4();
     const point = new THREE.Vector3();
-    const profile = emptyHullProfile();
+    const meshes: ModelMesh[] = [];
     root.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
       const geometry = object.geometry as THREE.BufferGeometry;
       const position = geometry.getAttribute("position");
       if (!position) return;
       toRoot.multiplyMatrices(inverse, object.matrixWorld);
-      // Parts that lie wholly above or below the band (the superstructure) are skipped.
-      if (!geometry.boundingBox) geometry.computeBoundingBox();
-      box.copy(geometry.boundingBox!).applyMatrix4(toRoot);
-      if (box.max.y < HULL_PROFILE_BAND[0] || box.min.y > HULL_PROFILE_BAND[1]) return;
       const positions = new Float32Array(position.count * 3);
       for (let vertex = 0; vertex < position.count; vertex += 1) {
         point.fromBufferAttribute(position, vertex).applyMatrix4(toRoot);
@@ -119,12 +126,33 @@ export class ShipModels {
         positions[3 * vertex + 1] = point.y;
         positions[3 * vertex + 2] = point.z;
       }
-      addHullMesh(profile, positions, geometry.index ? geometry.index.array : null, halfLength);
+      meshes.push({ positions, index: geometry.index ? geometry.index.array : null });
     });
+    return meshes;
+  }
+
+  /** Waterline half-widths of the prepared model, in the ship's frame. */
+  private measure(meshes: readonly ModelMesh[], halfLength: number): Float32Array {
+    const profile = emptyHullProfile();
+    for (const mesh of meshes) addHullMesh(profile, mesh.positions, mesh.index, halfLength);
     return closeHullProfile(profile);
   }
 
-  private prepare(scene: THREE.Group, kind: ShipKind, source: ShipModelSource): THREE.Group {
+  /** Her lights at night as points (`ShipSystem`'s beacon layer). */
+  private lightPoints(meshes: readonly ModelMesh[], kind: ShipKind, variant: number, windows: THREE.Vector4): THREE.BufferGeometry {
+    const spec = SHIP_SPECS[kind];
+    const passenger = kind === "cruise" || kind === "ferry";
+    const { positions, lights, block } = modelLights(meshes, spec.length / 2, spec.freeboard, passenger, 11 + variant * 7 + kind.length);
+    windows.set(spec.freeboard, block[0], block[1], passenger ? 1 : 0);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("shipLight", new THREE.BufferAttribute(lights, 4));
+    geometry.computeBoundingSphere();
+    return geometry;
+  }
+
+  private prepare(scene: THREE.Group, kind: ShipKind, source: ShipModelSource, variant = 0): THREE.Group {
+    const windows = { value: new THREE.Vector4(SHIP_SPECS[kind].freeboard, -1e4, 1e4, 0) };
     scene.updateMatrixWorld(true);
     const meshes: THREE.Mesh[] = [];
     scene.traverse((object) => {
@@ -161,7 +189,7 @@ export class ShipModels {
       const materials = Array.isArray(object.material) ? object.material : [object.material];
       materials.forEach((material) => {
         if (this.materials.has(material)) return;
-        this.prepareMaterial(material);
+        this.prepareMaterial(material, windows);
         this.materials.add(material);
       });
       kept.push(object);
@@ -186,7 +214,10 @@ export class ShipModels {
       if (!used) this.materials.delete(material);
     });
     root.userData.credit = source.credit;
-    root.userData.hullProfile = this.measure(root, SHIP_SPECS[kind].length / 2);
+    const frame = this.shipFrameMeshes(root);
+    root.userData.hullProfile = this.measure(frame, SHIP_SPECS[kind].length / 2);
+    root.userData.lights = this.lightPoints(frame, kind, variant, windows.value);
+    this.geometries.add(root.userData.lights as THREE.BufferGeometry);
     return root;
   }
 }

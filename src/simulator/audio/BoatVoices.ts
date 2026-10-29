@@ -11,7 +11,6 @@ type NoiseFactory = (duration: number, color: "brown" | "pink" | "white") => Aud
  *   moment;
  * - **rush**: the bow wave, a continuous broadband rush whose top end opens
  *   with speed;
- * - **spray**: above 6–8 knots, hissing bursts as the bows throw water;
  * - **rigging**: the shrouds humming and whistling in a breeze;
  * - **flog**: the sail cracking and rattling while it luffs, and one loud
  *   crack when it fills on the new tack;
@@ -22,7 +21,7 @@ type NoiseFactory = (duration: number, color: "brown" | "pink" | "white") => Aud
  */
 export class BoatVoices {
   private readonly slapBuffer: AudioBuffer;
-  private readonly sprayBuffer: AudioBuffer;
+  private readonly hissBuffer: AudioBuffer;
   private readonly rushGain: GainNode;
   private readonly rushTone: BiquadFilterNode;
   private readonly riggingGain: GainNode;
@@ -31,7 +30,6 @@ export class BoatVoices {
   private readonly flogRate: OscillatorNode;
   private readonly slipGain: GainNode;
   private slapClock = 0.3;
-  private sprayClock = 0.5;
   private clickClock = 0;
   private peakLuff = 0;
   private peakLuffAge = 0;
@@ -44,7 +42,7 @@ export class BoatVoices {
     noise: NoiseFactory,
   ) {
     this.slapBuffer = noise(2.3, "brown");
-    this.sprayBuffer = noise(2.1, "white");
+    this.hissBuffer = noise(2.1, "white");
 
     // The bow wave: pink noise, high-passed so it never booms, low-passed by speed.
     const rush = context.createBufferSource();
@@ -123,7 +121,7 @@ export class BoatVoices {
     const now = context.currentTime;
     const levels = boatSoundLevels(state);
     this.lastLevels = levels;
-    this.rushGain.gain.setTargetAtTime(levels.rush * 0.34, now, 0.35);
+    this.rushGain.gain.setTargetAtTime(levels.rush * 0.16, now, 0.35);
     this.rushTone.frequency.setTargetAtTime(levels.rushTone, now, 0.5);
     this.riggingGain.gain.setTargetAtTime(levels.rigging * 0.03, now, 0.8);
     this.riggingBands.forEach((band, index) =>
@@ -138,14 +136,6 @@ export class BoatVoices {
     while (this.slapClock <= 0) {
       this.slap(levels.slap * (0.5 + Math.random() * 0.6), now + Math.random() * 0.05);
       this.slapClock += (0.35 + Math.random() * 1.3) / Math.max(0.3, levels.slapRate);
-    }
-    // Spray bursts as she meets the waves at speed.
-    if (levels.spray > 0.01) {
-      this.sprayClock -= step;
-      while (this.sprayClock <= 0) {
-        this.spray(levels.spray * (0.6 + Math.random() * 0.5), now + Math.random() * 0.05);
-        this.sprayClock += (0.25 + Math.random() * 0.9) / Math.max(0.3, levels.sprayRate);
-      }
     }
     // Winch ratchet while trimming in.
     if (levels.winchClicks > 0) {
@@ -181,7 +171,7 @@ export class BoatVoices {
   flareLaunch(): void {
     const start = this.context.currentTime + 0.01;
     this.burst(this.slapBuffer, start, 0.12, 0.35, "lowpass", 900, 0.7);
-    this.burst(this.sprayBuffer, start + 0.02, 1.4, 0.07, "bandpass", 2600, 1.2, 4200);
+    this.burst(this.hissBuffer, start + 0.02, 1.4, 0.07, "bandpass", 2600, 1.2, 4200);
     // High overhead, the star ejecting: a small, distant crack.
     this.burst(this.slapBuffer, start + 2.3, 0.18, 0.09, "bandpass", 1500, 0.9);
   }
@@ -212,21 +202,16 @@ export class BoatVoices {
     this.burst(this.slapBuffer, at + 0.03, 0.25 + Math.random() * 0.2, 0.12 * level, "bandpass", 700 + Math.random() * 500, 2.4);
   }
 
-  private spray(level: number, at: number): void {
-    this.burst(this.sprayBuffer, at, 0.35 + Math.random() * 0.45, 0.16 * level, "bandpass", 3000 + Math.random() * 2500, 0.7);
-    this.burst(this.slapBuffer, at, 0.22, 0.2 * level, "lowpass", 600, 0.7);
-  }
-
   private click(at: number): void {
     // The pawl dropping onto the ratchet: a tiny metallic tick.
-    this.burst(this.sprayBuffer, at, 0.018, 0.09, "bandpass", 4200 + Math.random() * 600, 7);
+    this.burst(this.hissBuffer, at, 0.018, 0.09, "bandpass", 4200 + Math.random() * 600, 7);
     this.burst(this.slapBuffer, at, 0.03, 0.05, "bandpass", 1300, 4);
   }
 
   private sailCrack(strength: number, at: number): void {
     // Cloth snapping full: a dull whump, no ring.
     this.burst(this.slapBuffer, at, 0.2, 0.32 * strength, "lowpass", 220, 0.7);
-    this.burst(this.sprayBuffer, at, 0.06, 0.06 * strength, "bandpass", 900, 0.6);
+    this.burst(this.hissBuffer, at, 0.06, 0.06 * strength, "bandpass", 900, 0.6);
   }
 
   private burst(

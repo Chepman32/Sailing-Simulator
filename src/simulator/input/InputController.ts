@@ -27,8 +27,8 @@ export function helmFromRudder(rudder: number): number {
 const DRIVING_KEYS = ["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "KeyC", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"];
 
 /** Helm travel a second while a steering key is held, and the rate the helm returns by itself. */
-export const KEY_HELM_RATE = 0.62;
-export const HELM_RETURN_RATE = 0.85;
+export const KEY_HELM_RATE = 2.4;
+export const HELM_RETURN_RATE = 4;
 
 /**
  * The helm returning to the centre once it is let go: at
@@ -178,7 +178,8 @@ export class InputController {
     if (!gamepad) return;
     const rudderAxis = Math.abs(gamepad.axes[0] ?? 0) > 0.15 ? gamepad.axes[0]! : 0;
     const throttleAxis = Math.abs(gamepad.axes[1] ?? 0) > 0.15 ? -(gamepad.axes[1] ?? 0) : 0;
-    if (rudderAxis) this.controls.rudder = clamp(this.controls.rudder + HELM_STARBOARD * rudderAxis * delta * 0.8, -1, 1);
+    // The stick is the helm itself, as in a driving game.
+    if (rudderAxis) this.controls.rudder = clamp(HELM_STARBOARD * rudderAxis, -1, 1);
     if (throttleAxis) this.controls.throttle = clamp(this.controls.throttle + throttleAxis * delta * 0.55, -1, 1);
   }
 }

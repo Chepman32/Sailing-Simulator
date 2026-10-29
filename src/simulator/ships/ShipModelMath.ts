@@ -400,3 +400,190 @@ export function profileHalfWidth(profile: Float32Array, halfLength: number, alon
   const b = profile[Math.max(0, Math.min(stations - 1, index + 1))]!;
   return a + (b - a) * fraction;
 }
+
+/** A mesh of a prepared model in the ship frame (metres, bow +Z, waterline y = 0). */
+export type ModelMesh = { positions: ArrayLike<number>; index: ArrayLike<number> | null };
+
+/**
+ * Lights of a ship model: points (xyz) and their glow (rgb, channel: 0
+ * always, 1 under way, 2 at anchor), and the stretch of her length (z from,
+ * to) that is accommodation, where her windows are.
+ */
+export type ModelLights = { positions: Float32Array; lights: Float32Array; block: [number, number] };
+
+const WINDOW_GLOW: readonly [number, number, number] = [1.0, 0.72, 0.42];
+const MASTHEAD_GLOW: readonly [number, number, number] = [5, 5, 4.6];
+const PORT_GLOW: readonly [number, number, number] = [6, 0.25, 0.2];
+const STARBOARD_GLOW: readonly [number, number, number] = [0.2, 6, 1.2];
+
+/**
+ * Where an imported ship shows lights at night, read off her model: lit
+ * windows scattered over the walls of her accommodation (all along the decks
+ * of a liner or a ferry, the block round the bridge of a cargo ship), a
+ * masthead light on her highest point and the sidelights at the bridge wings
+ * (under way), the anchor lights at bow and stern (at anchor), the stern
+ * light. Each point stands a little off its wall, so the model never hides
+ * it. The procedural ships carry their own; a model's had been theirs, which
+ * floated inside or beside a hull of another shape, or were hidden in it.
+ */
+export function modelLights(
+  meshes: readonly ModelMesh[],
+  halfLength: number,
+  deck: number,
+  passenger: boolean,
+  seed = 1,
+): ModelLights {
+  let state = (seed * 2654435761) >>> 0;
+  const random = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  // The ship's height profile along her length, to find the accommodation.
+  const stations = 48;
+  const heights = new Float32Array(stations).fill(-Infinity);
+  let top = -Infinity;
+  let topX = 0;
+  let topZ = 0;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  const station = (z: number) => Math.min(stations - 1, Math.max(0, Math.floor(((z / halfLength + 1) / 2) * stations)));
+  for (const mesh of meshes) {
+    const p = mesh.positions;
+    for (let i = 0; i + 2 < p.length; i += 3) {
+      const x = p[i]!;
+      const y = p[i + 1]!;
+      const z = p[i + 2]!;
+      const s = station(z);
+      if (y > heights[s]!) heights[s] = y;
+      if (y > top) {
+        top = y;
+        topX = x;
+        topZ = z;
+      }
+      if (y > deck * 0.5) {
+        minZ = Math.min(minZ, z);
+        maxZ = Math.max(maxZ, z);
+      }
+    }
+  }
+  if (!Number.isFinite(top)) return { positions: new Float32Array(0), lights: new Float32Array(0), block: [0, 0] };
+  if (!Number.isFinite(minZ)) {
+    minZ = -halfLength;
+    maxZ = halfLength;
+  }
+  // The accommodation of a cargo ship: the stations within 80 % of the top
+  // (around the highest one), widened by a couple of stations.
+  let first = station(topZ);
+  let last = first;
+  const tall = deck + (top - deck) * 0.62;
+  while (first > 0 && heights[first - 1]! >= tall) first -= 1;
+  while (last < stations - 1 && heights[last + 1]! >= tall) last += 1;
+  const blockLow = ((Math.max(0, first - 1) / stations) * 2 - 1) * halfLength;
+  const blockHigh = (((Math.min(stations - 1, last + 1) + 1) / stations) * 2 - 1) * halfLength;
+
+  // Walls (near-vertical faces) where windows can be, weighted by area.
+  const walls: number[] = [];
+  const areas: number[] = [];
+  let total = 0;
+  const lowest = passenger ? deck * 0.55 : deck + 1.5;
+  for (const [meshIndex, mesh] of meshes.entries()) {
+    const p = mesh.positions;
+    const count = mesh.index ? mesh.index.length : p.length / 3;
+    for (let i = 0; i + 2 < count; i += 3) {
+      const a = 3 * (mesh.index ? mesh.index[i]! : i);
+      const b = 3 * (mesh.index ? mesh.index[i + 1]! : i + 1);
+      const c = 3 * (mesh.index ? mesh.index[i + 2]! : i + 2);
+      const cy = (p[a + 1]! + p[b + 1]! + p[c + 1]!) / 3;
+      if (cy < lowest || cy > top - 1) continue;
+      const cz = (p[a + 2]! + p[b + 2]! + p[c + 2]!) / 3;
+      if (!passenger && (cz < blockLow || cz > blockHigh)) continue;
+      const ux = p[b]! - p[a]!;
+      const uy = p[b + 1]! - p[a + 1]!;
+      const uz = p[b + 2]! - p[a + 2]!;
+      const vx = p[c]! - p[a]!;
+      const vy = p[c + 1]! - p[a + 1]!;
+      const vz = p[c + 2]! - p[a + 2]!;
+      const nx = uy * vz - uz * vy;
+      const ny = uz * vx - ux * vz;
+      const nz = ux * vy - uy * vx;
+      const length = Math.hypot(nx, ny, nz);
+      if (length < 1e-6 || Math.abs(ny) / length > 0.3) continue;
+      const area = length / 2;
+      total += area;
+      walls.push(meshIndex, a, b, c);
+      areas.push(total);
+    }
+  }
+
+  const points: number[] = [];
+  const glow: number[] = [];
+  const add = (x: number, y: number, z: number, color: readonly [number, number, number], scale: number, channel: number) => {
+    points.push(x, y, z);
+    glow.push(color[0] * scale, color[1] * scale, color[2] * scale, channel);
+  };
+  const windows = walls.length === 0 ? 0 : passenger ? 560 : 90;
+  for (let window = 0; window < windows; window += 1) {
+    const pick = random() * total;
+    let low = 0;
+    let high = areas.length - 1;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (areas[middle]! < pick) low = middle + 1;
+      else high = middle;
+    }
+    const [meshIndex, a, b, c] = [walls[low * 4]!, walls[low * 4 + 1]!, walls[low * 4 + 2]!, walls[low * 4 + 3]!];
+    const p = meshes[meshIndex]!.positions;
+    let r1 = random();
+    let r2 = random();
+    if (r1 + r2 > 1) {
+      r1 = 1 - r1;
+      r2 = 1 - r2;
+    }
+    const x = p[a]! + (p[b]! - p[a]!) * r1 + (p[c]! - p[a]!) * r2;
+    const y = p[a + 1]! + (p[b + 1]! - p[a + 1]!) * r1 + (p[c + 1]! - p[a + 1]!) * r2;
+    const z = p[a + 2]! + (p[b + 2]! - p[a + 2]!) * r1 + (p[c + 2]! - p[a + 2]!) * r2;
+    // Off the wall, outward (away from the centreline, or fore and aft on a front).
+    const outX = Math.abs(x) > 1 ? Math.sign(x) * 0.45 : 0;
+    const outZ = Math.abs(x) > 1 ? 0 : Math.sign(z) * 0.45;
+    const warm = 0.8 + random() * 0.8;
+    add(x + outX, y, z + outZ, random() < 0.12 ? [0.85, 0.9, 1] : WINDOW_GLOW, warm, 0);
+  }
+
+  // Navigation lights from her own shape.
+  const bridgeZ = Math.min(maxZ, Math.max(minZ, topZ));
+  add(topX, top + 0.6, topZ, MASTHEAD_GLOW, 1, 1);
+  let portX = 0;
+  let starboardX = 0;
+  let wingY = deck + (top - deck) * 0.55;
+  let wingZ = bridgeZ;
+  const wingLow = deck + (top - deck) * 0.35;
+  const wingHigh = deck + (top - deck) * 0.85;
+  for (const mesh of meshes) {
+    const p = mesh.positions;
+    for (let i = 0; i + 2 < p.length; i += 3) {
+      const y = p[i + 1]!;
+      const z = p[i + 2]!;
+      if (y < wingLow || y > wingHigh || Math.abs(z - bridgeZ) > halfLength * 0.12) continue;
+      const x = p[i]!;
+      if (x > portX) {
+        portX = x;
+        wingY = y;
+        wingZ = z;
+      }
+      if (x < starboardX) starboardX = x;
+    }
+  }
+  add(portX + 0.4, wingY, wingZ, PORT_GLOW, 1, 1);
+  add(starboardX - 0.4, wingY, wingZ, STARBOARD_GLOW, 1, 1);
+  add(0, deck + 2.5, minZ - 0.4, MASTHEAD_GLOW, 0.8, 1);
+  add(0, deck + 6, maxZ * 0.97, MASTHEAD_GLOW, 0.9, 2);
+  add(0, deck + 3, minZ - 0.4, MASTHEAD_GLOW, 0.8, 2);
+  return {
+    positions: new Float32Array(points),
+    lights: new Float32Array(glow),
+    block: passenger ? [minZ, maxZ] : [blockLow, blockHigh],
+  };
+}

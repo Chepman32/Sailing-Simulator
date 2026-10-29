@@ -56,6 +56,8 @@ export class UnderwaterLight {
     uUnderwaterCaustics: { value: 1 },
     /** The sea state, shared with the ocean: the waterline follows the real waves. */
     uSeaFactors: { value: seaFactors },
+    /** Bioluminescence round swimming animals: 0 by day … 1 at night. */
+    uUnderwaterGlow: { value: 0 },
   };
 
   /** Keeps the waterline in step with the ocean. */
@@ -73,12 +75,21 @@ export class UnderwaterLight {
     color.g = palette.deepWater[1] * (palette.ambientColor[1] + 0.2 * palette.lightColor[1]) * 0.8;
     color.b = palette.deepWater[2] * (palette.ambientColor[2] + 0.2 * palette.lightColor[2]) * 0.8;
     this.uniforms.uUnderwaterCaustics.value = palette.daylight;
+    this.uniforms.uUnderwaterGlow.value = 1 - Math.min(1, palette.daylight * 2.2);
   }
 
-  /** Decorates a lit or unlit built-in material; works with skinning and instancing. */
-  apply(material: THREE.Material): void {
+  /**
+   * Decorates a lit or unlit built-in material; works with skinning and
+   * instancing. `glow` (lit materials of swimming animals): at night the
+   * plankton they stir up lights them in a cold blue-green, brightest at
+   * their outline and near the surface, as dolphins and sharks are seen in
+   * tropical water after dark; without it the night sea would hide them.
+   */
+  apply(material: THREE.Material, options: { glow?: boolean } = {}): void {
     const uniforms = this.uniforms;
-    patchMaterialShader(material, "underwater-v4", (shader) => {
+    const glow = options.glow === true && "isMeshStandardMaterial" in material;
+    patchMaterialShader(material, glow ? "underwater-v4-glow" : "underwater-v4", (shader) => {
+      shader.uniforms.uUnderwaterGlow = uniforms.uUnderwaterGlow;
       shader.uniforms.uUnderwaterColor = uniforms.uUnderwaterColor;
       shader.uniforms.uUnderwaterTime = uniforms.uUnderwaterTime;
       shader.uniforms.uUnderwaterCaustics = uniforms.uUnderwaterCaustics;
@@ -105,6 +116,7 @@ export class UnderwaterLight {
         shader.fragmentShader,
         "common",
         `uniform vec3 uUnderwaterColor;
+        uniform float uUnderwaterGlow;
         uniform float uUnderwaterCaustics;
         uniform float uUnderwaterTime;
         varying vec3 vUnderwaterWorld;
@@ -146,6 +158,12 @@ export class UnderwaterLight {
             // shape against the blue, as in any photograph from above.
             gl_FragColor.rgb *= mix(1.0, 0.42, smoothstep(0.25, 2.6, underwaterDepth));
             gl_FragColor.rgb = gl_FragColor.rgb * transmittance + uUnderwaterColor * (1.0 - transmittance);
+            ${glow ? `if (uUnderwaterGlow > 0.001) {
+              float glowRim = 1.0 - abs(dot(normalize(normal), normalize(vViewPosition)));
+              float glowFlicker = 0.65 + 0.35 * underwaterNoise(vUnderwaterWorld.xz * 2.3 + vec2(uUnderwaterTime * 1.7, -uUnderwaterTime * 1.3));
+              float glowDepth = exp(-underwaterDepth * 0.09) * fade;
+              gl_FragColor.rgb += vec3(0.05, 0.42, 0.36) * uUnderwaterGlow * (0.22 + 0.9 * glowRim * glowRim) * glowFlicker * glowDepth;
+            }` : ""}
           }
         }`,
       );

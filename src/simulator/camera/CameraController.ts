@@ -52,6 +52,8 @@ export class CameraController {
   /** At the helm, keep the horizon level and the heave smoothed (a setting, on by default). */
   steadyHelm = true;
   private steadyEyeY = Number.NaN;
+  /** The sea level the outside cameras ride at: the yacht's heave, slowed (see `update`). */
+  private rideY = Number.NaN;
 
   /** Counts the player's own look-arounds and zooms (photo mode yields to them). */
   interactions = 0;
@@ -197,9 +199,14 @@ export class CameraController {
       const distance = (this.mode === "drone" ? Math.max(this.distance, 34) : this.distance) * portraitFraming;
       const horizontalDistance = Math.cos(this.pitch) * distance;
       const height = Math.sin(this.pitch) * distance + (this.mode === "drone" ? 7 : 2.4);
+      // The camera rides the swell more slowly than the yacht does, so in a
+      // big sea she is seen to climb each crest and drop into the trough
+      // instead of the whole world heaving round a yacht fixed in the frame.
+      this.rideY = Number.isFinite(this.rideY) && !this.snapNext ? this.rideY + (focus.y - this.rideY) * this.follow(0.55, delta) : focus.y;
+      const rideY = this.rideY + (focus.y - this.rideY) * 0.35;
       this.desiredPosition.set(
         focus.x - horizontalDirectionX * horizontalDistance,
-        focus.y + height,
+        rideY + height,
         focus.z - horizontalDirectionZ * horizontalDistance,
       );
       const waterHeight = this.ocean.sample(this.desiredPosition.x, this.desiredPosition.z).height;
@@ -207,7 +214,7 @@ export class CameraController {
       const spring = this.mode === "chase" ? 4.8 : 3.1;
       this.camera.position.lerp(this.desiredPosition, this.follow(spring, delta));
       this.lookTarget.copy(focus).addScaledVector(physics.forward, Math.min(5, Math.abs(physics.telemetry.forwardSpeed) * 0.7));
-      this.lookTarget.y += 1.35;
+      this.lookTarget.y = rideY + (focus.y - rideY) * 0.4 + 1.35;
       this.lookTarget.y += clamp(-this.pitch - 0.02, 0, 0.22) * distance * 0.9;
       this.smoothedTarget.lerp(this.lookTarget, this.follow(5.5, delta));
     }

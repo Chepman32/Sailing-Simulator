@@ -10,7 +10,7 @@ const calm = (apparentWind: number) => windSoundLevels({ trueWind: 7.7, apparent
 test("on a fair day the wind is barely a breath, even at twenty knots under power", () => {
   for (const apparent of [3, 8, 14, 20]) {
     const levels = calm(apparent);
-    assert.ok(levels.breeze < 0.011, `breeze ${levels.breeze} at ${apparent} m/s apparent`);
+    assert.ok(levels.breeze < 0.004, `breeze ${levels.breeze} at ${apparent} m/s apparent`);
     assert.equal(levels.roar, 0);
     assert.equal(levels.howl, 0);
     assert.equal(levels.shriek, 0);

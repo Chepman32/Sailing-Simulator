@@ -4,7 +4,7 @@ import { clamp, smoothstep } from "../math";
  * How the wind sounds, from the weather (pure numbers; `AudioSystem` plays
  * them).
  *
- * On a fair day the wind is barely there: a faint, low breath of air that
+ * On a fair day the wind is all but silent: the faintest low breath of air that
  * the yacht's own speed only freshens a little (twenty knots under power on
  * a calm day is a breeze past the ears, not a gale). A real blow is another
  * sound altogether, built in layers as a storm is heard at sea:
@@ -66,7 +66,7 @@ export function windSoundLevels(input: WindSoundInput): WindSoundLevels {
   const gusty = clamp(0.5 + 0.5 * wander + clamp(input.gust, 0, 1) * 0.6 + clamp(input.gustApproaching, 0, 1) * 0.3, 0, 1.5);
   return {
     breeze:
-      (0.0022 + 0.0038 * smoothstep(4, 11, trueWind) + 0.0028 * smoothstep(9, 20, apparent)) * (0.85 + 0.25 * gusty) +
+      (0.0006 + 0.001 * smoothstep(4, 11, trueWind) + 0.0007 * smoothstep(9, 20, apparent)) * (0.85 + 0.25 * gusty) +
       fury * 0.012,
     breezeTone: 300 + 260 * smoothstep(4, 14, Math.max(trueWind, apparent * 0.7)),
     roar: Math.pow(fury, 1.2) * 0.13 * (0.7 + 0.4 * gusty),

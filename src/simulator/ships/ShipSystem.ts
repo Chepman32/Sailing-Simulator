@@ -74,16 +74,69 @@ const YACHT_OUTLINE: readonly [number, number][] = [
 /**
  * A ship is a landmark: the sea haze (tuned for the water and the islands)
  * would melt a vessel three kilometres off into the horizon, so it veils her
- * at about half strength and her silhouette stays readable.
+ * at a little over half strength: her silhouette stays readable, but a far
+ * ship takes the air's colour like everything else instead of standing out
+ * crisp and saturated as a toy would.
  */
 function applyShipHaze(material: THREE.Material): void {
   patchMaterialShader(material, "ship-haze-v1", (shader) => {
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <fog_fragment>",
       `#ifdef USE_FOG
-        float shipFog = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth * 0.28 );
+        float shipFog = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth * 0.4 );
         gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, shipFog );
       #endif`,
+    );
+  });
+}
+
+/**
+ * Lit windows on an imported model at night: a grid of panes over the walls
+ * of her accommodation (every deck of a liner or a ferry, the block round a
+ * cargo ship's bridge), some lit warm, a few cold, with a faint wash of deck
+ * lighting over the superstructure. Far off, where the panes are smaller
+ * than a pixel, the grid gives way to its average so it does not shimmer.
+ * `windows` = (deck height, accommodation from z, to z, 1 for a passenger
+ * ship); positions are the model's own (ship frame: bow +Z, waterline 0).
+ */
+function applyShipWindows(material: THREE.Material, night: { value: number }, windows: { value: THREE.Vector4 }): void {
+  if (!(material instanceof THREE.MeshStandardMaterial)) return;
+  patchMaterialShader(material, "ship-windows-v1", (shader) => {
+    shader.uniforms.uShipNight = night;
+    shader.uniforms.uShipWindows = windows;
+    shader.vertexShader = injectAfter(
+      shader.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vShipObject;\nvarying vec3 vShipObjectNormal;"),
+      "begin_vertex",
+      "vShipObject = transformed;\nvShipObjectNormal = objectNormal;",
+    );
+    shader.fragmentShader = injectAfter(
+      shader.fragmentShader.replace(
+        "#include <common>",
+        "#include <common>\nuniform float uShipNight;\nuniform vec4 uShipWindows;\nvarying vec3 vShipObject;\nvarying vec3 vShipObjectNormal;",
+      ),
+      "emissivemap_fragment",
+      `if (uShipNight > 0.001) {
+        vec3 shipP = vShipObject;
+        vec3 shipN = normalize(vShipObjectNormal);
+        float shipWall = 1.0 - smoothstep(0.25, 0.45, abs(shipN.y));
+        float shipAbove = uShipWindows.w > 0.5
+          ? step(uShipWindows.x * 0.55, shipP.y)
+          : step(uShipWindows.x + 1.5, shipP.y) * step(uShipWindows.y, shipP.z) * step(shipP.z, uShipWindows.z);
+        if (shipWall * shipAbove > 0.0) {
+          float shipAlong = abs(shipN.x) > abs(shipN.z) ? shipP.z : shipP.x;
+          vec2 shipCellCoord = vec2(shipAlong / 2.4, shipP.y / 2.9);
+          vec2 shipCell = floor(shipCellCoord);
+          vec2 shipF = fract(shipCellCoord);
+          float shipSide = shipN.x + shipN.z * 3.0 > 0.0 ? 1.0 : 0.0;
+          float shipHash = fract(sin(dot(shipCell + shipSide * 17.0, vec2(12.9898, 78.233))) * 43758.5453);
+          float shipPane = step(0.18, shipF.x) * step(shipF.x, 0.82) * step(0.32, shipF.y) * step(shipF.y, 0.78) * step(0.42, shipHash);
+          vec2 shipGrad = fwidth(shipCellCoord);
+          float shipBlur = clamp(max(shipGrad.x, shipGrad.y) * 1.6 - 0.35, 0.0, 1.0);
+          float shipWindow = mix(shipPane, 0.17, shipBlur);
+          vec3 shipWarm = mix(vec3(1.0, 0.72, 0.42), vec3(0.78, 0.87, 1.0), step(0.92, shipHash));
+          totalEmissiveRadiance += (shipWarm * shipWindow * 1.9 + vec3(0.06, 0.05, 0.035)) * shipWall * shipAbove * uShipNight;
+        }
+      }`,
     );
   });
 }
@@ -132,7 +185,13 @@ export class ShipSystem {
     scene.add(this.group);
     this.world = { shoreDistance, windFrom: 0, time: 0 };
     // Imported models load in the background; procedural ships stand in.
-    this.models = new ShipModels((material) => {
+    this.models = new ShipModels((material, windows) => {
+      // Painted steel, not plastic: no glossy sheen over a whole hull.
+      if (material instanceof THREE.MeshStandardMaterial) {
+        material.roughness = Math.max(material.roughness, 0.62);
+        material.metalness = Math.min(material.metalness, 0.18);
+      }
+      applyShipWindows(material, this.night, windows);
       this.underwater.apply(material);
       applyShipHaze(material);
       this.decorate(material);
@@ -405,7 +464,7 @@ export class ShipSystem {
     const variants = this.models.variants(ship.kind);
     const key = variants > 0 ? `${ship.kind}:${ship.scheme % variants}` : "";
     if (visual.modelKey === key && (visual.model !== null || key === "")) {
-      ship.hullProfile = visual.model ? this.models.profile(ship.kind, ship.scheme % variants) : null;
+      if (visual.model && ship.hullProfile == null) ship.hullProfile = this.models.profile(ship.kind, ship.scheme % variants);
       return;
     }
     const model = key ? this.models.instance(ship.kind, ship.scheme % variants) : null;
@@ -420,12 +479,20 @@ export class ShipSystem {
     visual.hull.visible = model === null;
     // Her sides are where the model's are: the yacht's fenders meet the hull she sees.
     ship.hullProfile = model ? this.models.profile(ship.kind, ship.scheme % variants) : null;
+    // And her lights are on the model's own decks, not the procedural ship's.
+    const lights = model ? this.models.lights(ship.kind, ship.scheme % variants) : null;
+    visual.beacons.geometry = lights ?? this.geometry(ship.kind, ship.scheme).beacons;
   }
 
   private assignGeometry(visual: ShipVisual, ship: Ship): void {
     const geometry = this.geometry(ship.kind, ship.scheme);
     visual.hull.geometry = geometry.hull;
     visual.beacons.geometry = geometry.beacons;
+    // A new kind or scheme: the model (and its lights) are chosen again.
+    visual.modelKey = "";
+    visual.model?.removeFromParent();
+    visual.model = null;
+    ship.hullProfile = null;
     visual.key = this.geometryKey(ship);
     visual.hull.name = `Ship_${ship.kind}`;
   }
@@ -480,7 +547,8 @@ export class ShipSystem {
           float haze = exp(-distance * 0.00055);
           vColor = shipLight.rgb * uShipNight * on * haze;
           float lamp = max(max(shipLight.r, shipLight.g), shipLight.b) > 2.0 ? 1.0 : 0.0;
-          gl_PointSize = (lamp > 0.5 ? 3.4 : 2.2) * uPixelRatio * on;
+          // A few pixels far off, larger as she comes near (a lit window is a metre across).
+          gl_PointSize = (lamp > 0.5 ? 3.4 : 2.2) * uPixelRatio * on * clamp(260.0 / max(distance, 1.0), 1.0, 2.6);
           gl_Position = projectionMatrix * view;
         }
       `,

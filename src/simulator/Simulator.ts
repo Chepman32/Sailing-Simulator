@@ -9,6 +9,7 @@ import { ShipShadows } from "./ships/ShipShadows";
 import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
 import { FlareCamera } from "./camera/FlareCamera";
 import { ScreenLod } from "./core/ScreenLod";
+
 import { GpuTimer } from "./core/GpuTimer";
 import { AUTO_GPU_TARGET_MS, FrameRateGovernor, GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
@@ -44,6 +45,8 @@ import { WakeSystem } from "./vessel/WakeSystem";
 import { WildlifeSystem } from "./wildlife/WildlifeSystem";
 import { ShipSystem } from "./ships/ShipSystem";
 import { FlareSystem } from "./effects/FlareSystem";
+import { FireworksSystem, type FireworksSource } from "./effects/FireworksSystem";
+import { SHIP_SPECS } from "./ships/ShipMath";
 import type { FlareColor } from "./effects/FlareMath";
 import { LootSystem, type LootPickup } from "./effects/LootSystem";
 import { BOTTLE_MESSAGES, isSailColor, LOOT_SHORE_CLEARANCE, lootContents, SAIL_COLORS, type SailColor } from "./effects/LootMath";
@@ -57,6 +60,12 @@ import { AircraftSystem } from "./aircraft/AircraftSystem";
 import { ExploredSea, Track } from "./map/ChartMath";
 import { poiInCell, poisAround, POI_CELL, type PlaceKind, type Poi } from "./effects/PoiMath";
 import type { LootKind } from "./effects/LootMath";
+
+/** Ships keep half their triangles until small, a quarter only far off (see `ScreenLod`). */
+const SHIP_LOD_STEPS = [
+  { ratio: 0.55, below: 0.06 },
+  { ratio: 0.3, below: 0.025 },
+] as const;
 
 const STORAGE_KEY = "sailing-simulator-pro-preferences-v2";
 /** The explored sea is saved apart from the preferences: it changes often and grows. */
@@ -93,6 +102,9 @@ const MAX_REMEMBERED_LOOT = 400;
 const NEAREST_LOOT_RANGE = 340;
 /** Held fast this long, she is offered a tow. */
 const STUCK_SECONDS = 6;
+/** Held this long, she is eased off by herself; this long, towed clear (see `watchStuck`). */
+const AUTO_FREE_SECONDS = 1.5;
+const AUTO_TOW_SECONDS = 9;
 /** Colour of an eruption's light on the scene (linear). */
 const ERUPTION_RGB = [1, 0.36, 0.09] as const;
 
@@ -146,6 +158,8 @@ export class Simulator {
   private reflection?: OceanReflection;
   private rain!: RainSystem;
   private flares!: FlareSystem;
+  private fireworks!: FireworksSystem;
+  private readonly fireworksSource: FireworksSource = { x: 0, y: 0, z: 0, heading: 0, halfLength: 0 };
   private loot!: LootSystem;
   private radio?: RadioSystem;
   private volcanoes!: VolcanoSystem;
@@ -173,6 +187,8 @@ export class Simulator {
   private readonly seenMessages = new Set<string>();
   /** Seconds she has made no way while hard by a shore, a hull or a reef. */
   private stuckTime = 0;
+  /** Seconds left of easing her off an obstacle (see `watchStuck`). */
+  private freeingTime = 0;
   private readonly flareLaunchPoint = new THREE.Vector3();
   private readonly splashPoint = new THREE.Vector3();
   private mirrorHidden: THREE.Object3D[] = [];
@@ -395,6 +411,9 @@ export class Simulator {
       this.reflection = new OceanReflection(this.quality.settings.reflectionScale);
       this.rain = new RainSystem(this.scene, this.quality.settings.rainDrops);
       this.flares = new FlareSystem(this.scene);
+      this.fireworks = new FireworksSystem(this.scene, (position, crackle) =>
+        this.audio.fireworkBoom(position, this.camera.camera.position.distanceTo(position), crackle),
+      );
       this.aircraft = new AircraftSystem(this.scene);
       this.loot = new LootSystem(
         this.scene,
@@ -830,9 +849,45 @@ export class Simulator {
     this.audio.setMonolith(monolith ? camera.position.distanceTo(this.listenerPoint.set(monolith.poi.x, 6, monolith.poi.z)) : Infinity, this.listenerPoint);
   }
 
+  /** The cruise liner's fireworks: from her top deck when she is within sight. */
+  private updateFireworks(delta: number): void {
+    const camera = this.camera.camera.position;
+    let liner: (typeof this.ships.ships)[number] | null = null;
+    let nearest = Infinity;
+    for (const ship of this.ships.ships) {
+      if (!ship.active || ship.kind !== "cruise") continue;
+      const distance = Math.hypot(ship.x - camera.x, ship.z - camera.z);
+      if (distance < nearest) {
+        nearest = distance;
+        liner = ship;
+      }
+    }
+    const source = this.fireworksSource;
+    if (liner) {
+      source.x = liner.x;
+      source.z = liner.z;
+      source.y = SHIP_SPECS.cruise.freeboard + 30;
+      source.heading = liner.heading;
+      source.halfLength = liner.halfLength;
+    }
+    this.fireworks.update(delta, this.environmentState.nightFactor, liner ? source : null, camera);
+  }
+
   private watchStuck(delta: number): void {
     const telemetry = this.physics.telemetry;
     const yacht = this.physics.position;
+    // Easing her off goes on for a few seconds once begun, until she is clear.
+    if (this.freeingTime > 0) {
+      this.freeingTime -= delta;
+      const clear = Math.min(
+        this.islands.shoreClearance(yacht.x, yacht.z, this.obstacleNormal),
+        this.physics.hullClearance?.(yacht.x, yacht.z, { x: 0, z: 0 }) ?? 1e6,
+      );
+      if (this.freeingTime <= 0 || clear > 14) {
+        this.freeingTime = 0;
+        this.physics.freeing = null;
+      }
+    }
     if (telemetry.speedKnots > 0.9) {
       this.stuckTime = 0;
       return;
@@ -846,6 +901,21 @@ export class Simulator {
     const trying = telemetry.grounding > 0.05 || (this.state.engineRunning ? Math.abs(controls.throttle) > 0.15 : controls.sailTrim > 0.45);
     const wasStuck = this.stuckTime > STUCK_SECONDS;
     this.stuckTime = hemmed && trying && telemetry.speedKnots < 0.45 ? this.stuckTime + delta : Math.max(0, this.stuckTime - delta * 2);
+    // She is never left stuck: after a moment held against a coast, a ship or
+    // the shallows she is eased off into open water by herself, and if even
+    // that fails the tow takes her clear.
+    if (this.stuckTime > AUTO_FREE_SECONDS) {
+      const shore = this.islands.shoreClearance(yacht.x, yacht.z, this.obstacleNormal);
+      const hullNormal = { x: 0, z: 0 };
+      const hull = this.physics.hullClearance?.(yacht.x, yacht.z, hullNormal) ?? 1e6;
+      const normal = hull < shore ? hullNormal : this.obstacleNormal;
+      this.physics.freeing = { x: normal.x, z: normal.z };
+      this.freeingTime = 3;
+      if (this.stuckTime > AUTO_TOW_SECONDS && this.rescueBoat()) {
+        this.physics.freeing = null;
+        this.freeingTime = 0;
+      }
+    }
     if (wasStuck !== this.stuckTime > STUCK_SECONDS) this.hud.emit(this.snapshot());
   }
 
@@ -1059,6 +1129,7 @@ export class Simulator {
     if (!this.initialized) return;
     this.physics.reset();
     this.flares.clear();
+    this.fireworks.clear();
     this.flareCamera.stop();
     this.wake.reset();
     this.state.controls.throttle = 0;
@@ -1088,6 +1159,7 @@ export class Simulator {
     setShoalField(null);
     this.rain?.dispose(this.scene);
     this.flares?.dispose();
+    this.fireworks?.dispose();
     this.loot?.dispose();
     this.volcanoes?.dispose();
     this.aircraft?.dispose();
@@ -1176,7 +1248,9 @@ export class Simulator {
     if (this.lodScan <= 0) {
       this.lodScan = 2;
       this.lod.register(this.wildlife.group, 2500);
-      this.lod.register(this.ships.group, 3000);
+      // A ship is a long, flat-sided landmark: aggressive simplification turns
+      // her into a lumpy toy at a kilometre, so her levels are gentler.
+      this.lod.register(this.ships.group, 3000, SHIP_LOD_STEPS);
     }
     this.lod.update(this.camera.camera);
     if (this.flareCamera.running) {
@@ -1232,6 +1306,7 @@ export class Simulator {
     this.updatePlaces(delta);
     this.updateChart();
     this.updateAircraft(delta);
+    this.updateFireworks(delta);
     this.watchStuck(delta);
     // Palm shadows on the sand follow the sun, softer under the moon.
     this.islands.updateShadows(
@@ -1244,6 +1319,7 @@ export class Simulator {
     this.underwater.setPalette(this.environment.current.palette);
     this.ships.setNight(this.environmentState.nightFactor);
     this.wildlife.setLightDirection(this.environment.lightDirection);
+    this.wildlife.setNight(this.environmentState.nightFactor);
     this.underwater.setTime(this.elapsed);
     const weather = this.environment.currentWeather;
     const audioWeather = this.audioWeather;

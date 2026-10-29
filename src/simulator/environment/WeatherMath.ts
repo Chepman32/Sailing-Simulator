@@ -63,7 +63,7 @@ export const WEATHER_PRESETS: Readonly<Record<WeatherKind, Readonly<WeatherSampl
   overcast: { cloudCover: 0.74, overcast: 0.65, rain: 0, wind: 1.18, waves: 1.35, storm: 0.03, breaking: 0.09, haze: 0.05, sunshine: 0 },
   rain: { cloudCover: 0.82, overcast: 0.8, rain: 0.45, wind: 1.32, waves: 1.75, storm: 0.14, breaking: 0.1, haze: 0.22, sunshine: 0 },
   downpour: { cloudCover: 0.9, overcast: 0.92, rain: 0.85, wind: 1.6, waves: 2.4, storm: 0.38, breaking: 0.14, haze: 0.5, sunshine: 0 },
-  storm: { cloudCover: 0.94, overcast: 1, rain: 0.9, wind: 2.4, waves: 3.3, storm: 0.82, breaking: 0.26, haze: 0.58, sunshine: 0 },
+  storm: { cloudCover: 0.94, overcast: 1, rain: 0.9, wind: 2.4, waves: 3.9, storm: 0.82, breaking: 0.26, haze: 0.58, sunshine: 0 },
   hurricane: { cloudCover: 0.97, overcast: 1, rain: 1, wind: 3.3, waves: 4.5, storm: 1, breaking: 0.42, haze: 0.74, sunshine: 0 },
 };
 

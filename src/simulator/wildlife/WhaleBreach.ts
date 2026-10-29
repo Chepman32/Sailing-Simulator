@@ -284,7 +284,7 @@ export function stepBreach(
         state.phase = "waiting";
         state.elapsed = 0;
         state.y = -40;
-        state.countdown = between(random, BREACH_MIN_INTERVAL, BREACH_MAX_INTERVAL);
+        state.countdown = between(random, BREACH_MIN_INTERVAL, BREACH_MAX_INTERVAL) * (world.rarity ?? 1);
       }
       break;
     }

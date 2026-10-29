@@ -20,6 +20,11 @@ export type MarineWorld = {
   seabedDepth(x: number, z: number): number;
   /** Metres from the rendered waterline of the nearest island; negative on land. */
   shoreDistance(x: number, z: number): number;
+  /**
+   * How much longer the waits between shows are (a shark's fin, a breach):
+   * 1 by day; at night the animals are about but seen less often.
+   */
+  rarity?: number;
 };
 
 /** The yacht, as far as wildlife is concerned. */

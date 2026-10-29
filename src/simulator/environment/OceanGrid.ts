@@ -12,7 +12,13 @@
  * stage keeps shading those waves analytically.
  */
 
-export const OCEAN_SIZE = 3600;
+/**
+ * Edge of the square grid, metres. It reaches almost to the camera's far
+ * plane (3.4 km) along the axes: ships appear up to two kilometres off and
+ * islands and the volcano are drawn farther still, and anything standing
+ * beyond the water's edge would seem to hover over the painted horizon.
+ */
+export const OCEAN_SIZE = 6600;
 const INNER_FRACTION = 0.6;
 
 export type OceanGrid = {

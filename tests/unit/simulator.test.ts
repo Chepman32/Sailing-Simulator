@@ -464,8 +464,17 @@ test("engines give a realistic top speed, steerage from prop wash, and correct h
   assert.ok(coasting.engineShaft > 0.8, "the shafts must spool down, not stop instantly");
 });
 
-test("shoal water adds drag without stopping the yacht", () => {
-  const shoal: IslandPhysics = { ...OPEN_WATER, depthAt: () => 1.2 };
+test("shoal water never holds her: no drag, and she is eased back toward deep water", () => {
+  // The coast lies toward −Z (the outward normal is +Z).
+  const shoal: IslandPhysics = {
+    ...OPEN_WATER,
+    depthAt: () => 1.2,
+    shoreClearance: (_x, _z, normal) => {
+      normal.x = 0;
+      normal.z = 1;
+      return 20;
+    },
+  };
   const run = (islands: IslandPhysics) => {
     const physics = new VesselPhysics(CALM, islands);
     physics.heading = MEAN_WIND_HEADING;
@@ -477,8 +486,13 @@ test("shoal water adds drag without stopping the yacht", () => {
   const shallow = run(shoal);
   assert.equal(deep.telemetry.grounding, 0);
   assert.equal(shallow.telemetry.grounding, 1);
-  assert.ok(shallow.telemetry.speedKnots < deep.telemetry.speedKnots, "shallow water must cost speed");
-  assert.ok(shallow.telemetry.speedKnots > deep.telemetry.speedKnots * 0.4, "but never pin her in place");
+  assert.ok(shallow.telemetry.speedKnots > deep.telemetry.speedKnots * 0.8, "never pinned in place");
+  // Heading for the shore, she is turned back: no way toward it is kept.
+  const physics = new VesselPhysics(CALM, shoal);
+  physics.heading = Math.PI;
+  physics.velocity.set(0, 0, -3);
+  for (let step = 0; step < 3 * 60; step += 1) physics.fixedUpdate(1 / 60, { throttle: 0, rudder: 0, sailTrim: 0.2 }, false);
+  assert.ok(physics.velocity.z > -0.2, `still driving onto the shoal at ${physics.velocity.z.toFixed(2)} m/s`);
 });
 
 const COAST: IslandPhysics = {

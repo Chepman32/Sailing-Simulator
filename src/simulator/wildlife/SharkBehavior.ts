@@ -222,7 +222,7 @@ function beginInvestigate(agent: SharkAgent, random: RandomSource): void {
 
 function beginFinShow(agent: SharkAgent, vessel: VesselState, world: MarineWorld, random: RandomSource): void {
   agent.sinceFinShow = 0;
-  agent.nextFinShow = between(random, SHARK_FIN_SHOW_INTERVAL.min, SHARK_FIN_SHOW_INTERVAL.max);
+  agent.nextFinShow = between(random, SHARK_FIN_SHOW_INTERVAL.min, SHARK_FIN_SHOW_INTERVAL.max) * (world.rarity ?? 1);
   agent.direction = random() < 0.5 ? -1 : 1;
   agent.finSide = random() < 0.5 ? -1 : 1;
   const motion = agent.motion;

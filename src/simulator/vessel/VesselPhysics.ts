@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { clamp, smoothstep } from "../math";
-import type { OceanSample } from "../environment/OceanMath";
+import { getSeaScale, type OceanSample } from "../environment/OceanMath";
 import { sampleWind, type WindSample } from "../environment/WindMath";
 import type { SimulatorControls } from "../types";
 import { AIR_DENSITY, createSailState, solveSail, type SailState } from "./SailAerodynamics";
@@ -76,6 +76,9 @@ const MASS = 6200;
 const SURGE_MASS = MASS * 1.08;
 const SWAY_MASS = MASS * 1.75;
 const YAW_INERTIA = 78000;
+/** Arcade helm: turn rate at full helm once the rudders bite (rad/s), and how fast she takes it up (1/s). */
+const ARCADE_TURN_RATE = 0.48;
+const ARCADE_HELM_RESPONSE = 9;
 
 // --- Propulsion ------------------------------------------------------------
 // Twin high-output outboards: about 20 kn flat out in calm water, 13 kn at
@@ -142,7 +145,8 @@ const WAVE_SURGE_COUPLING = 0.3;
 const WAVE_SWAY_COUPLING = 0.12;
 
 // --- Shoal water -----------------------------------------------------------
-const SHOAL_DRAG_DEPTH = 4;
+/** Acceleration (m/s²) easing her off shallow water toward deep water. */
+const SHALLOWS_PUSH = 2.4;
 const GROUNDING_START_DEPTH = 2.4;
 const GROUNDING_FULL_DEPTH = 1.3;
 
@@ -216,6 +220,7 @@ export class VesselPhysics {
     return hull;
   };
   private readonly profileNormal = { x: 0, z: 1 };
+  private readonly shallowsNormal = { x: 0, z: 1 };
   private readonly hullContact = (x: number, z: number, normal: { x: number; z: number }): number =>
     this.hullClearance ? this.hullClearance(x, z, normal) : 1e6;
   /** Whether the obstacle nearest the yacht is a ship's hull rather than a coast. */
@@ -314,10 +319,10 @@ export class VesselPhysics {
     const thrust = propellerThrust(this.engineShaft, forwardSpeed);
 
     // --- Hull --------------------------------------------------------------
-    const shoal = 1 + 1.2 * smoothstep(SHOAL_DRAG_DEPTH, GROUNDING_FULL_DEPTH, depth);
+    // Shallow water does not drag her to a stop: she never runs aground (see
+    // the shallows' push below), `grounding` only says how close she came.
     const grounding = smoothstep(GROUNDING_START_DEPTH, GROUNDING_FULL_DEPTH, depth);
-    const hullDrag =
-      -(SURGE_DRAG_QUADRATIC * forwardSpeed * Math.abs(forwardSpeed) + SURGE_DRAG_LINEAR * forwardSpeed) * shoal;
+    const hullDrag = -(SURGE_DRAG_QUADRATIC * forwardSpeed * Math.abs(forwardSpeed) + SURGE_DRAG_LINEAR * forwardSpeed);
     // The keels are lifting foils: they only resist leeway once water flows
     // along them, and they stall if asked for too much.
     const keelLimit = KEEL_STALL * waterSpeedSquared;
@@ -354,14 +359,38 @@ export class VesselPhysics {
     this.velocity.addScaledVector(this.forward, (forceForward / SURGE_MASS) * delta);
     this.velocity.addScaledVector(this.right, (forceRight / SWAY_MASS) * delta);
     this.velocity.y = 0;
+    // The shallows turn her away instead of holding her: her way toward the
+    // shore is taken off and she is eased back toward deep water, so no
+    // shoal, reef or sandbar can leave her aground.
+    if (this.freeing) this.free(this.freeing.x, this.freeing.z, delta);
+    if (grounding > 0) {
+      const normal = this.shallowsNormal;
+      this.islands.shoreClearance(this.position.x, this.position.z, normal);
+      const toward = -(this.velocity.x * normal.x + this.velocity.z * normal.z);
+      if (toward > 0) {
+        const take = toward * (1 - Math.exp(-6 * grounding * delta));
+        this.velocity.x += normal.x * take;
+        this.velocity.z += normal.z * take;
+      }
+      this.velocity.x += normal.x * SHALLOWS_PUSH * grounding * delta;
+      this.velocity.z += normal.z * SHALLOWS_PUSH * grounding * delta;
+    }
 
     const yawMoment =
       -rudderSide * RUDDER_ARM +
       sailSide * SAIL_CENTRE_LEAD +
       windageRight * WINDAGE_CENTRE_LEAD -
       YAW_DAMPING_QUADRATIC * this.yawRate * Math.abs(this.yawRate) -
-      YAW_DAMPING_LINEAR * (1 + Math.abs(forwardSpeed) + grounding * 3) * this.yawRate;
+      YAW_DAMPING_LINEAR * (1 + Math.abs(forwardSpeed)) * this.yawRate;
     this.yawRate = clamp(this.yawRate + (yawMoment / YAW_INERTIA) * delta, -1.2, 1.2);
+    // Arcade helm (a game's convention, not a yacht's): the turn the helm asks
+    // for is there at once and at a brisk rate even slow under sail, and she
+    // stops turning as soon as it is centred. Flow over the rudders (way or
+    // the propellers' race) still decides whether she answers at all, and
+    // going astern reverses it.
+    const helmGrip = smoothstep(0.12, 2.2, Math.abs(rawRudderFlow));
+    const helmTarget = clamp(controls.rudder, -1, 1) * ARCADE_TURN_RATE * helmGrip * Math.sign(rawRudderFlow || 1);
+    this.yawRate += (helmTarget - this.yawRate) * (1 - Math.exp(-ARCADE_HELM_RESPONSE * helmGrip * delta));
     this.heading += this.yawRate * delta;
     this.position.addScaledVector(this.velocity, delta);
 
@@ -409,6 +438,23 @@ export class VesselPhysics {
     ) {
       this.reset();
     }
+  }
+
+  /**
+   * A helping hand off whatever holds her, set by `Simulator.watchStuck`
+   * (null when she is free): the direction away from the obstacle.
+   */
+  freeing: { x: number; z: number } | null = null;
+
+  /** Eases her out along `normal` (away from the obstacle) and turns her bow that way. */
+  private free(normalX: number, normalZ: number, delta: number): void {
+    const out = this.velocity.x * normalX + this.velocity.z * normalZ;
+    if (out < 1.6) {
+      this.velocity.x += normalX * 2.5 * delta;
+      this.velocity.z += normalZ * 2.5 * delta;
+    }
+    const turn = Math.atan2(Math.sin(Math.atan2(normalX, normalZ) - this.heading), Math.cos(Math.atan2(normalX, normalZ) - this.heading));
+    this.heading += clamp(turn, -0.5 * delta, 0.5 * delta);
   }
 
   /** Remembers the pose before a step, the earlier end of the span a frame is drawn in. */
@@ -569,22 +615,27 @@ export class VesselPhysics {
 
     // Vessel.root uses +Z as the bow and applies rotation.z = -roll, so a
     // positive pitch lowers the bow and a positive roll lowers starboard.
-    this.wavePitchTarget = clamp(-Math.atan(this.waveSlopeForward) * WAVE_PITCH_RESPONSE, -0.2, 0.2);
-    this.waveRollTarget = clamp(-Math.atan(this.waveSlopeRight) * WAVE_ROLL_RESPONSE, -0.2, 0.2);
+    // In a storm sea she is thrown about: the steep faces of a gale take her
+    // bows up and drop them, and she rolls hard on the beam seas.
+    const stormy = smoothstep(1.4, 3.8, getSeaScale());
+    const pitchReach = 0.2 + 0.13 * stormy;
+    const rollReach = 0.2 + 0.15 * stormy;
+    this.wavePitchTarget = clamp(-Math.atan(this.waveSlopeForward) * WAVE_PITCH_RESPONSE * (1 + 0.8 * stormy), -pitchReach, pitchReach);
+    this.waveRollTarget = clamp(-Math.atan(this.waveSlopeRight) * WAVE_ROLL_RESPONSE * (1 + 0.9 * stormy), -rollReach, rollReach);
     const runningTrim = -clamp(absoluteSpeed * absoluteSpeed * 0.0009, 0, 0.03);
-    const pitchTarget = clamp(this.wavePitchTarget + clamp(trimLoad, -0.06, 0.06) + runningTrim, -0.26, 0.26);
-    const rollTarget = clamp(this.waveRollTarget + clamp(heelLoad, -0.2, 0.2), -0.34, 0.34);
+    const pitchTarget = clamp(this.wavePitchTarget + clamp(trimLoad, -0.06, 0.06) + runningTrim, -0.26 - 0.1 * stormy, 0.26 + 0.1 * stormy);
+    const rollTarget = clamp(this.waveRollTarget + clamp(heelLoad, -0.2, 0.2), -0.34 - 0.08 * stormy, 0.34 + 0.08 * stormy);
 
     this.pitchRate +=
       ((pitchTarget - this.pitch) * PITCH_FREQUENCY * PITCH_FREQUENCY -
         this.pitchRate * 2 * PITCH_DAMPING * PITCH_FREQUENCY) * delta;
     this.pitchRate = clamp(this.pitchRate, -1.2, 1.2);
-    this.pitch = clamp(this.pitch + this.pitchRate * delta, -0.32, 0.32);
+    this.pitch = clamp(this.pitch + this.pitchRate * delta, -0.42, 0.42);
 
     this.rollRate +=
       ((rollTarget - this.roll) * ROLL_FREQUENCY * ROLL_FREQUENCY -
         this.rollRate * 2 * ROLL_DAMPING * ROLL_FREQUENCY) * delta;
     this.rollRate = clamp(this.rollRate, -1.4, 1.4);
-    this.roll = clamp(this.roll + this.rollRate * delta, -0.4, 0.4);
+    this.roll = clamp(this.roll + this.rollRate * delta, -0.48, 0.48);
   }
 }

@@ -878,8 +878,9 @@ export class AudioSystem {
 
     // --- Water and wind --------------------------------------------------------
     // A high sea roars: more water, and more of its low end.
+    // A fair day's sea is barely heard: a faint wash, a little more under way.
     const heavySea = clamp((weather.waves - 1) / 3.5, 0, 1);
-    this.waveGain?.gain.setTargetAtTime(0.24 + clamp(speed / 7, 0, 1) * 0.18 + heavySea * 0.34, now, 0.5);
+    this.waveGain?.gain.setTargetAtTime(0.035 + clamp(speed / 7, 0, 1) * 0.035 + Math.pow(heavySea, 0.8) * 0.5, now, 0.5);
     this.waveFilter?.frequency.setTargetAtTime(1100 + heavySea * 900, now, 0.8);
     // The wind: barely a breath on a fair day, a roaring, howling thing in a
     // storm (see WindSoundMath). Driven by the weather, not by the yacht's
@@ -935,6 +936,66 @@ export class AudioSystem {
    * the air absorbs the high frequencies and the sound from different parts
    * of the channel arrives spread out in time.
    */
+  /**
+   * A firework shell bursting `distance` metres off at `position`, heard
+   * `distance / 343` s later: a deep thud that carries over the water, a
+   * sharp report when near, and for a crackle shell a spatter of pops after.
+   */
+  fireworkBoom(position: { x: number; y: number; z: number }, distance: number, crackle = false): void {
+    const context = this.context;
+    if (!context || context.state !== "running" || !this.environmentBus || !this.enabled) return;
+    const start = context.currentTime + Math.max(0, distance) / 343;
+    const far = clamp((distance - 200) / 2600, 0, 1);
+    const level = 0.5 * (1 - far * 0.75);
+    this.thunderBuffer ??= this.createNoiseBuffer(6.5, "brown");
+    const panner = context.createPanner();
+    panner.panningModel = "equalpower";
+    panner.distanceModel = "linear";
+    panner.rolloffFactor = 0;
+    if (panner.positionX) {
+      panner.positionX.value = position.x;
+      panner.positionY.value = position.y;
+      panner.positionZ.value = position.z;
+    } else {
+      panner.setPosition(position.x, position.y, position.z);
+    }
+    panner.connect(this.environmentBus);
+    const thud = context.createBufferSource();
+    thud.buffer = this.thunderBuffer;
+    thud.playbackRate.value = 1.1 + Math.random() * 0.3;
+    const low = context.createBiquadFilter();
+    low.type = "lowpass";
+    low.frequency.setValueAtTime(900 * (1 - far * 0.6), start);
+    low.frequency.exponentialRampToValueAtTime(120, start + 1.2);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(level, start + 0.012);
+    gain.gain.exponentialRampToValueAtTime(level * 0.25, start + 0.35);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.9 + far);
+    thud.connect(low).connect(gain).connect(panner);
+    thud.start(start, Math.random() * 3);
+    thud.stop(start + 3);
+    if (crackle) {
+      for (let pop = 0; pop < 14; pop += 1) {
+        const at = start + 0.25 + Math.random() * 1.1;
+        const click = context.createBufferSource();
+        click.buffer = this.thunderBuffer;
+        click.playbackRate.value = 2.5 + Math.random();
+        const band = context.createBiquadFilter();
+        band.type = "highpass";
+        band.frequency.value = 1400 - far * 800;
+        const popGain = context.createGain();
+        popGain.gain.setValueAtTime(0.0001, at);
+        popGain.gain.exponentialRampToValueAtTime(level * 0.35 * (0.5 + Math.random() * 0.5), at + 0.004);
+        popGain.gain.exponentialRampToValueAtTime(0.0001, at + 0.06);
+        click.connect(band).connect(popGain).connect(panner);
+        click.start(at, Math.random() * 5);
+        click.stop(at + 0.1);
+      }
+    }
+    window.setTimeout(() => panner.disconnect(), (start - context.currentTime + 3.5) * 1000);
+  }
+
   thunder(distance: number, delay = 0, pan = 0): void {
     const context = this.context;
     if (!context || context.state !== "running" || !this.environmentBus) return;
@@ -1444,7 +1505,7 @@ export class AudioSystem {
     this.waveFilter.frequency.value = 1100;
     this.waveFilter.Q.value = 0.45;
     this.waveGain = this.context.createGain();
-    this.waveGain.gain.value = 0.24;
+    this.waveGain.gain.value = 0.035;
     waves.connect(this.waveFilter).connect(this.waveGain).connect(this.environmentBus);
     waves.start();
 
