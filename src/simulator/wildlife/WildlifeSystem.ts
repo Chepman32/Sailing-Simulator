@@ -22,6 +22,15 @@ export type WildlifeCounts = {
   fishDensity: number;
 };
 
+/** Seconds the sea's animals take to go deep before a storm (and to come back). */
+export const STORM_LEAVE = 12;
+/** How deep they go: well past what the water lets anyone see. */
+const STORM_DEPTH = 60;
+/** `WeatherSample.storm` above which they leave (a storm is 0.82, a downpour 0.38)… */
+export const STORM_LEAVE_ABOVE = 0.55;
+/** …and below which they come back. */
+export const STORM_RETURN_BELOW = 0.45;
+
 /**
  * Owns every animal and the shared view of the world they live in: the
  * rendered wave surface, the bathymetry, the yacht and each other. Larger
@@ -42,6 +51,9 @@ export class WildlifeSystem {
   private readonly sharkObstacles: { x: number; z: number; radius: number }[] = [];
   private readonly world: MarineWorld;
   private gullClock = 0;
+  /** 0 … 1: how far the sea's animals have gone from a storm (see `setStorm`). */
+  private stormAway = 0;
+  private stormLeaving = false;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -49,8 +61,25 @@ export class WildlifeSystem {
     assets: AssetManager,
     counts: WildlifeCounts,
     underwater: UnderwaterLight,
-    effects: WaterEffects,
+    surfaceEffects: WaterEffects,
   ) {
+    // Splashes, fin trails and blows stop as soon as the animals start to
+    // leave: from then on they are going down, not breaking the surface.
+    const calm = () => this.stormAway < 0.02;
+    const effects: WaterEffects = {
+      splash: (position, intensity, kind, velocity) => {
+        if (calm()) surfaceEffects.splash(position, intensity, kind, velocity);
+      },
+      trail: (position, heading, strength, width) => {
+        if (calm()) surfaceEffects.trail(position, heading, strength, width);
+      },
+      shed: (position, velocity, count, size) => {
+        if (calm()) surfaceEffects.shed(position, velocity, count, size);
+      },
+      ripple: (position, strength) => {
+        if (calm()) surfaceEffects.ripple(position, strength);
+      },
+    };
     this.group.name = "External_GLTF_Wildlife_System";
     this.marineGroup.name = "Marine_Wildlife";
     this.group.add(this.marineGroup);
@@ -79,7 +108,8 @@ export class WildlifeSystem {
     // The distant breacher flies through the air, so it lives outside the
     // underwater group (it shows in the water's mirror); it is still seen
     // through the water whenever it is below the surface.
-    this.breach = new WhaleBreachController(this.group, ocean, this.world, assets, effects);
+    // A leap already in the air when a storm comes still lands with its splash.
+    this.breach = new WhaleBreachController(this.group, ocean, this.world, assets, surfaceEffects);
     this.breach.materials.forEach((material) => underwater.apply(material));
     this.fish = new ReefFishController(this.marineGroup, ocean, assets, underwater, counts.fishDensity);
     // Gulls rest head to wind; the trade wind's mean direction is enough for that.
@@ -89,7 +119,7 @@ export class WildlifeSystem {
       assets,
       counts.gulls,
       { surfaceHeight: (x, z) => ocean.sample(x, z).height, windX: 6.8 / windLength, windZ: 4.2 / windLength },
-      { splash: (position, intensity, kind, velocity) => effects.splash(position, intensity, kind, velocity), ripple: (position, strength) => effects.ripple(position, strength) },
+      { splash: (position, intensity, kind, velocity) => surfaceEffects.splash(position, intensity, kind, velocity), ripple: (position, strength) => surfaceEffects.ripple(position, strength) },
     );
   }
 
@@ -105,8 +135,44 @@ export class WildlifeSystem {
     vessel.heading = physics.heading;
     vessel.speed = Math.max(0, physics.telemetry.forwardSpeed);
 
+    // In a storm the whales, sharks, dolphins and fish go deep and stay
+    // there: they sink out of sight over STORM_LEAVE seconds, and come
+    // back up the same way once it has blown over.
+    const step = Math.min(Math.max(delta, 0), 0.1) / STORM_LEAVE;
+    this.stormAway = this.stormLeaving ? Math.min(1, this.stormAway + step) : Math.max(0, this.stormAway - step);
+    const sink = this.stormAway * this.stormAway * (3 - 2 * this.stormAway);
+    this.marineGroup.position.y = -sink * STORM_DEPTH;
+    this.marineGroup.visible = this.stormAway < 1;
+    if (this.stormAway < 1) this.updateMarine(delta, physics, camera);
+
+    // Gull clips are sampled at about 30 Hz; their flight is integrated every frame.
+    this.gullClock = Math.min(0.12, this.gullClock + delta);
+    const gullAnimation = this.gullClock >= 1 / 30 ? this.gullClock : 0;
+    if (gullAnimation > 0) this.gullClock = 0;
+    this.gulls.update(delta, physics, gullAnimation);
+  }
+
+  /**
+   * Storm strength from the weather (`WeatherSample.storm`): from a storm on
+   * (with some hysteresis, so a squall on the edge does not send them up and
+   * down) the sea is left to the waves.
+   */
+  setStorm(storm: number): void {
+    if (storm > STORM_LEAVE_ABOVE) this.stormLeaving = true;
+    else if (storm < STORM_RETURN_BELOW) this.stormLeaving = false;
+  }
+
+  /** 1 when the sea's animals are about, 0 when a storm has sent them all deep. */
+  get presence(): number {
+    return 1 - this.stormAway;
+  }
+
+  private updateMarine(delta: number, physics: VesselPhysics, camera: THREE.Camera): void {
+    const vessel = this.vessel;
     this.whales.update(delta, vessel, camera);
-    this.breach.update(delta, vessel, camera);
+    // A breach is a leap into the air: none once the animals are leaving
+    // (one already in the air is let finish).
+    if (this.stormAway === 0 || this.breach.breaching) this.breach.update(delta, vessel, camera);
     const whale = this.whales.obstacle();
     this.sharkObstacles.length = 0;
     if (whale) this.sharkObstacles.push({ x: whale.position.x, z: whale.position.z, radius: whale.radius });
@@ -131,12 +197,6 @@ export class WildlifeSystem {
     this.dolphins.collectPositions(this.predators);
     for (const shark of this.sharks) shark.collectPositions(this.predators);
     this.fish.update(delta, physics, camera, this.predators);
-
-    // Gull clips are sampled at about 30 Hz; their flight is integrated every frame.
-    this.gullClock = Math.min(0.12, this.gullClock + delta);
-    const gullAnimation = this.gullClock >= 1 / 30 ? this.gullClock : 0;
-    if (gullAnimation > 0) this.gullClock = 0;
-    this.gulls.update(delta, physics, gullAnimation);
   }
 
   /** Calls given by gulls disturbed on the water or taking off, since the last call. */
@@ -169,6 +229,7 @@ export class WildlifeSystem {
    */
   collectPhotoSubjects(out: PhotoSubject[]): PhotoSubject[] {
     out.length = 0;
+    if (this.stormAway > 0) return out;
     const breach = this.breach.breaching;
     if (breach) out.push({ kind: "breach", x: breach.x, y: Math.max(0, breach.y), z: breach.z, size: 34 });
     const whale = this.whales.obstacle();

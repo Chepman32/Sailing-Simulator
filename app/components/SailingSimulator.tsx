@@ -927,15 +927,19 @@ export function SailingSimulator() {
   // Keyboard commands (the helm and the throttle are the simulator's own keys).
   const keyHandler = useRef<(event: KeyboardEvent) => void>(() => {});
   const onKey = (event: KeyboardEvent) => {
-    if (!ready || photoMode || event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+    if (!ready || event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     if (isTypingTarget(event.target)) return;
     if (event.code === "KeyT") {
+      // From the cinematic view too: it closes, and he steps away.
+      if (photoMode) exitPhotoMode();
+      setChartOpen(false);
       // Away from the helm and back (on foot the walk keys are the diver's own).
       if (away) simulatorRef.current?.returnToHelm();
       else simulatorRef.current?.leaveHelm();
       event.preventDefault();
       return;
     }
+    if (photoMode) return;
     // On deck and in the water the signals, flares and camera keys are not his.
     if (away && ["KeyF", "KeyG", "KeyH", "KeyB", "KeyV", "KeyR"].includes(event.code)) return;
     switch (event.code) {

@@ -1405,6 +1405,7 @@ export class Simulator {
     this.ships.setNight(this.environmentState.nightFactor);
     this.wildlife.setLightDirection(this.environment.lightDirection);
     this.wildlife.setNight(this.environmentState.nightFactor);
+    this.wildlife.setStorm(this.environment.currentWeather.storm);
     this.underwater.setTime(this.elapsed);
     const weather = this.environment.currentWeather;
     const audioWeather = this.audioWeather;
@@ -1579,7 +1580,7 @@ export class Simulator {
       this.diverWater,
       diver?.torch ?? false,
     );
-    this.diveFish?.update(delta, swimming, camera.position, seabedHeight, this.swimSurface);
+    this.diveFish?.update(delta, swimming, camera.position, seabedHeight, this.swimSurface, this.wildlife.presence);
   }
 
   private lootIsOpen(x: number, z: number): boolean {

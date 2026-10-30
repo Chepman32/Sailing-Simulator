@@ -191,9 +191,18 @@ export class DiveFish {
 
   /**
    * One frame. `diver` is the diver's eyes; `ground(x, z)` the sand's height;
-   * `surface(x, z)` the water's.
+   * `surface(x, z)` the water's. `presence` 1 … 0: below 1 the schools
+   * leave (a storm), heading off into the murk, and at 0 they are gone.
    */
-  update(delta: number, active: boolean, diver: THREE.Vector3, ground: (x: number, z: number) => number, surface: (x: number, z: number) => number): void {
+  update(
+    delta: number,
+    active: boolean,
+    diver: THREE.Vector3,
+    ground: (x: number, z: number) => number,
+    surface: (x: number, z: number) => number,
+    presence = 1,
+  ): void {
+    active = active && presence > 0;
     this.group.visible = active;
     if (!active) {
       this.placed = false;
@@ -206,12 +215,14 @@ export class DiveFish {
       // The school's home wanders round the diver.
       school.wanderPhase += dt * 0.05;
       const angle = school.wanderPhase * 2 + species.length * 40;
-      const homeX = diver.x + Math.cos(angle) * species.range * 0.6;
-      const homeZ = diver.z + Math.sin(angle * 1.3) * species.range * 0.6;
+      // Leaving: the home slides away from the diver, far into the murk.
+      const away = species.range * 0.6 + (1 - presence) * 80;
+      const homeX = diver.x + Math.cos(angle) * away;
+      const homeZ = diver.z + Math.sin(angle * 1.3) * away;
       const sand = ground(homeX, homeZ);
       const top = surface(homeX, homeZ) - 1.2;
       const homeY = clamp(sand + (species.above[0] + species.above[1]) * 0.5, sand + species.above[0], top);
-      if (!this.placed || Math.hypot(school.homeX - diver.x, school.homeZ - diver.z) > species.range * 3) {
+      if (!this.placed || (presence >= 1 && Math.hypot(school.homeX - diver.x, school.homeZ - diver.z) > species.range * 3)) {
         // (Re)start out of sight: round the home, swimming the same way.
         for (const fish of school.fish) {
           fish.x = homeX + (Math.random() - 0.5) * 4;
@@ -225,12 +236,19 @@ export class DiveFish {
       school.homeX = homeX;
       school.homeY = homeY;
       school.homeZ = homeZ;
-      this.steer(school, dt, diver, ground, surface);
+      this.steer(school, dt, diver, ground, surface, 1 + (1 - presence) * 1.6);
     }
     this.placed = true;
   }
 
-  private steer(school: School, dt: number, diver: THREE.Vector3, ground: (x: number, z: number) => number, surface: (x: number, z: number) => number): void {
+  private steer(
+    school: School,
+    dt: number,
+    diver: THREE.Vector3,
+    ground: (x: number, z: number) => number,
+    surface: (x: number, z: number) => number,
+    hurry: number,
+  ): void {
     const species = school.species;
     const fish = school.fish;
     const length = species.length;
@@ -281,9 +299,9 @@ export class DiveFish {
       fy += (cy - f.y) * 0.35 + (ay - f.vy) * 0.6;
       fz += (cz - f.z) * 0.35 + (az - f.vz) * 0.6;
       // Home.
-      fx += (school.homeX - f.x) * 0.06;
+      fx += (school.homeX - f.x) * 0.06 * hurry;
       fy += (school.homeY - f.y) * 0.12;
-      fz += (school.homeZ - f.z) * 0.06;
+      fz += (school.homeZ - f.z) * 0.06 * hurry;
       // Keep clear of the diver: a bubble they will not enter.
       const dx = f.x - diver.x;
       const dy = f.y - diver.y;
@@ -305,7 +323,7 @@ export class DiveFish {
       f.vz += fz * dt;
       // Cruise speed, a little faster when fleeing.
       const speed = Math.hypot(f.vx, f.vy, f.vz);
-      const want = species.speed * (d < species.shy * 1.5 ? 1.8 : 1);
+      const want = species.speed * (d < species.shy * 1.5 ? 1.8 : 1) * hurry;
       const k = speed > 1e-4 ? clamp(speed + (want - speed) * dt * 2, want * 0.4, want * 2.2) / speed : 1;
       f.vx *= k;
       f.vy *= k * 0.7;
