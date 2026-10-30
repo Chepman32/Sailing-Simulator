@@ -63,6 +63,8 @@ export class EnvironmentSystem {
   private readonly flareColor = new THREE.Color();
   private flareRgb: readonly [number, number, number] = [0, 0, 0];
   private flareBrightness = 0;
+  /** How far a flare's light carries (the flare gun's upgrade), × the stock reach. */
+  private flareReach = 1;
   /** Flare light falling on the yacht right now, weighed against the sky's. */
   private flareLight = 0;
   // Image-based lighting: the analytic sky is captured into a prefiltered
@@ -214,7 +216,8 @@ export class EnvironmentSystem {
    * swings the key light toward it and tints the sea, the sails and the
    * foam in its colour — as lightning does, without adding a light.
    */
-  setFlare(position: THREE.Vector3 | null, brightness: number, rgb: readonly [number, number, number]): void {
+  setFlare(position: THREE.Vector3 | null, brightness: number, rgb: readonly [number, number, number], reach = 1): void {
+    this.flareReach = Math.max(0.2, reach);
     this.flareBrightness = position ? Math.max(0, brightness) : 0;
     if (position) this.flarePosition.copy(position);
     this.flareRgb = rgb;
@@ -323,7 +326,7 @@ export class EnvironmentSystem {
     this.skyUniforms.uCloudTime.value = this.cloudClock;
     // A flare: the light it throws on the yacht (and on the sea around her).
     const flareWeight = flareSceneWeight(night) * this.flareBrightness;
-    this.flareLight = flareWeight > 0 ? flareIllumination(1, this.flarePosition.distanceTo(focus)) * flareWeight : 0;
+    this.flareLight = flareWeight > 0 ? flareIllumination(1, this.flarePosition.distanceTo(focus) / this.flareReach) * flareWeight : 0;
     if (this.flareLight > 0.002) {
       const [fr, fg, fb] = this.flareRgb;
       const tint = this.flareLight;

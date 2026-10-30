@@ -17,6 +17,7 @@ import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
 import { distanceFromWaterline, islandsInCell, worldCell } from "./environment/IslandMath";
+import { traderSpot } from "./environment/IslandProps";
 import { OceanReflection } from "./environment/OceanReflection";
 import { OceanSystem } from "./environment/OceanSystem";
 import { setShoalField, significantWaveHeight } from "./environment/OceanMath";
@@ -60,10 +61,33 @@ import { AircraftSystem } from "./aircraft/AircraftSystem";
 import { ExploredSea, Track } from "./map/ChartMath";
 import { poiInCell, poisAround, POI_CELL, type PlaceKind, type Poi } from "./effects/PoiMath";
 import type { LootKind } from "./effects/LootMath";
+import { nearestHullClearance } from "./ships/ShipMath";
 import { DiverController, type DiverPrompt } from "./diver/DiverController";
 import { DeckField } from "./diver/DeckField";
 import { DIVE_DEPTH, type DiverMode } from "./diver/DiverMath";
-import { seabedHeight, UnderwaterWorld } from "./diver/UnderwaterWorld";
+import { reefDensity, seabedHeight, UnderwaterWorld } from "./diver/UnderwaterWorld";
+import {
+  bagByKind,
+  bagValue,
+  createEconomyState,
+  decorDefinition,
+  engineBoost,
+  flareBoost,
+  gearBoost,
+  MAX_TAKEN_FINDS,
+  restoreEconomy,
+  sonarDepth,
+  sonarRange,
+  upgradeDefinition,
+  upgradePrice,
+  type DecorSlot,
+  type EconomyState,
+  type FindKind,
+  type SeabedFind,
+  type UpgradeId,
+} from "./economy/EconomyMath";
+import { SeabedLoot, type SonarContact } from "./economy/SeabedLoot";
+import { Traders, type TraderSpot } from "./economy/Traders";
 import { DiveFish } from "./diver/DiveFish";
 import { HelmStation, HULL_TRANSOM_Z } from "./vessel/HelmStation";
 import { HULL_CENTER_Z, HULL_HALF_BEAM, HULL_HALF_LENGTH, HULL_OFFSET_X } from "./environment/shaders/oceanShader";
@@ -109,12 +133,20 @@ export type ChartFeatures = {
   yacht: { x: number; z: number; heading: number };
   wind: { x: number; z: number };
   islands: ChartIsland[];
+  /** What the sonar sees on the sea floor, by tier. */
+  sonar: { x: number; z: number; tier: 1 | 2 | 3 }[];
+  /** The island traders (on every island with a pier). */
+  traders: { x: number; z: number }[];
   places: ChartPlace[];
   loot: { kind: LootKind; x: number; z: number }[];
   explored: ExploredSea;
   track: Track;
   night: number;
 };
+/** Where the economy (gold aside: the bag, upgrades, decor, finds taken) is kept. */
+const ECONOMY_KEY = "sailing-simulator-economy-v1";
+/** Seconds between two sweeps of the sonar. */
+const SONAR_INTERVAL = 1.2;
 /** Picked-up things remembered across visits (the oldest are forgotten and float again). */
 const MAX_REMEMBERED_LOOT = 400;
 /** Things afloat nearer than this are pointed out in the interface, metres. */
@@ -138,6 +170,9 @@ function shipShadowSize(preset: string): number {
 
 /** A resize is applied once the container's size has held this long (ms). */
 const RESIZE_SETTLE_MS = 140;
+
+/** Seconds the camera takes to fly between the wheel and the skipper's eyes. */
+const CAMERA_HANDOFF = 0.9;
 
 export class Simulator {
   private readonly scene = new THREE.Scene();
@@ -174,6 +209,18 @@ export class Simulator {
   private deckField: DeckField | null = null;
   private underwaterWorld?: UnderwaterWorld;
   private diveFish?: DiveFish;
+  /** The economy: bag, upgrades, decor, finds taken (gold is `state.doubloons`). */
+  private economy: EconomyState = createEconomyState();
+  private readonly takenFinds = new Set<string>();
+  private takenVersion = 0;
+  private seabedLoot?: SeabedLoot;
+  private traders?: Traders;
+  private readonly traderSpotList: TraderSpot[] = [];
+  private sonarContacts: SonarContact[] = [];
+  private sonarClock = 0;
+  private promptDetail: string | null = null;
+  private reachableFind: SeabedFind | null = null;
+  private readonly visitorPoint = new THREE.Vector3();
   private underwaterAmount = 0;
   private readonly diverWater = new THREE.Color();
   private readonly diverLight = new THREE.Color();
@@ -197,6 +244,16 @@ export class Simulator {
   private readonly groundBase = (x: number, z: number): number => Math.max(seabedHeight(x, z), this.islands.terrainHeightAt(x, z));
   /** What a walker stands on: the ground, or a pier's planks. */
   private readonly groundWalk = (x: number, z: number): number => Math.max(this.groundBase(x, z), this.islands.pierDeckAt(x, z));
+  /**
+   * A short, eased flight of the camera from where it was to where the new
+   * view wants it (leaving the wheel for the skipper's eyes, or coming back),
+   * so a change of view is never a cut.
+   */
+  private readonly handoff = { active: false, time: 0, from: new THREE.Vector3(), fromQuaternion: new THREE.Quaternion() };
+  /** Camera shake: the engine's jolt as it starts or dies, its idle tremor, and a volcano's rumble. */
+  private readonly shakeOffset = new THREE.Vector3();
+  private shakeClock = 0;
+  private engineJolt = 0;
   /** Where the world is centred for the fine sea and the islands: the yacht, or the skipper away from her. */
   private readonly worldFocus = new THREE.Vector3();
   private updateWorldFocus(): THREE.Vector3 {
@@ -295,6 +352,8 @@ export class Simulator {
     private readonly options: SimulatorOptions = {},
   ) {
     this.state = this.loadState();
+    this.economy = this.loadEconomy();
+    for (const key of this.economy.taken) this.takenFinds.add(key);
     this.loadChart();
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -360,6 +419,9 @@ export class Simulator {
         this.environment?.setShadowMapSize(this.quality.settings.shadowMapSize);
         this.environment?.setSkyDetail(this.quality.settings.skyDetail);
         this.ocean?.setQuality(this.quality.settings);
+        this.islands?.setGrass(this.quality.settings.grassRadius, this.quality.settings.grassDensity);
+        this.lod.fullDetail = this.quality.settings.fullDetail;
+        this.applyTextureQuality(true);
         this.islands?.setDrawScale(preset === "low" ? 0.7 : 1);
         this.rain?.setDrops(this.quality.settings.rainDrops);
         this.post?.setQuality(this.quality.settings);
@@ -393,6 +455,8 @@ export class Simulator {
         Math.max(1024, this.quality.settings.shadowMapSize),
       );
       this.islands.setDrawScale(this.quality.current === "low" ? 0.7 : 1);
+      this.islands.setGrass(this.quality.settings.grassRadius, this.quality.settings.grassDensity);
+      this.lod.fullDetail = this.quality.settings.fullDetail;
       this.physics = new VesselPhysics(this.ocean, this.islands);
       // Merchant ships and liners passing at a distance, or lying at anchor.
       // The nearest ships cast their own sun shadows (a depth atlas; off on the low preset).
@@ -497,6 +561,11 @@ export class Simulator {
           this.setEngineRunning(true);
           this.options.onKeyAction?.("engine-on");
         },
+        toggleEngine: () => {
+          const running = !this.state.engineRunning;
+          this.setEngineRunning(running);
+          this.options.onKeyAction?.(running ? "engine-on-space" : "engine-off-space");
+        },
       });
       this.input.autoCenter = this.state.autoCenterHelm;
       this.touch = new TouchControls(this.canvas, {
@@ -512,9 +581,27 @@ export class Simulator {
       });
       this.underwaterWorld = new UnderwaterWorld(this.scene, this.underwater, this.quality.settings.oceanDetail);
       this.diveFish = new DiveFish(this.scene, this.underwater);
+      this.seabedLoot = new SeabedLoot(
+        this.scene,
+        this.underwater,
+        {
+          // The bottom the diver swims over (an island's rising slope included).
+          depth: (x, z) => -this.groundBase(x, z),
+          reef: (x, z) => reefDensity(x, z),
+          ground: this.groundBase,
+        },
+        this.takenFinds,
+      );
+      this.traders = new Traders(this.scene);
       this.diver = new DiverController(
         this.canvas,
-        { surface: this.swimSurface, seabedDepth: (x, z) => -this.groundBase(x, z), floatLine: this.swimFloatLine },
+        {
+          surface: this.swimSurface,
+          seabedDepth: (x, z) => -this.groundBase(x, z),
+          floatLine: this.swimFloatLine,
+          // A passing ship's side is a wall to a swimmer as much as to the yacht.
+          obstacle: (x, z, normal) => nearestHullClearance(this.ships.ships, x, z, normal),
+        },
         { offsetX: HULL_OFFSET_X, centreZ: HULL_CENTER_Z, halfLength: HULL_HALF_LENGTH, halfBeam: HULL_HALF_BEAM + 0.2, draught: 1.25, freeboard: 1.4 },
         {
           splash: (position, speed) => {
@@ -550,9 +637,11 @@ export class Simulator {
         {
           ground: this.groundWalk,
           surface: this.swimSurface,
-          obstacle: (x, z, normal) => this.islands.obstacleClearance(x, z, normal),
+          obstacle: (x, z, normal) => this.landObstacle(x, z, normal),
         },
       );
+      this.applyEconomy();
+      this.applyTextureQuality(true);
       this.canvas.addEventListener("click", this.onCanvasClick);
       this.resizeObserver = new ResizeObserver(this.requestResize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
@@ -780,6 +869,8 @@ export class Simulator {
   }
 
   setEngineRunning(running: boolean): void {
+    // The hull shudders as the engine catches (and once more as it dies).
+    if (running !== this.state.engineRunning) this.engineJolt = running ? 1 : 0.6;
     applyEnginePower(this.state, running);
     this.audio?.setEngineMuted(this.state.engineMuted);
     this.audio?.setEngineRunning(running);
@@ -1076,6 +1167,7 @@ export class Simulator {
     const discovered = new Set(this.state.discoveredPlaces);
     const islands: ChartIsland[] = [];
     const places: ChartPlace[] = [];
+    const traders: { x: number; z: number }[] = [];
     // At most 48 × 48 cells (58 km): the chart never shows more than that.
     const c0 = Math.max(worldCell(x0) - 1, worldCell((x0 + x1) / 2) - 24);
     const c1 = Math.min(worldCell(x1) + 1, worldCell((x0 + x1) / 2) + 24);
@@ -1097,6 +1189,8 @@ export class Simulator {
             height: island.height,
             volcano: Boolean(island.volcano),
           });
+          const trader = traderSpot(island, this.islands.profile(island));
+          if (trader) traders.push({ x: trader.x, z: trader.z });
           if (island.volcano) {
             const key = `volcano:${island.id}`;
             places.push({ key, kind: "volcano", x: island.centerX, z: island.centerZ, discovered: discovered.has(key) });
@@ -1134,12 +1228,176 @@ export class Simulator {
       yacht: { x: yacht.x, z: yacht.z, heading: this.physics.heading },
       wind: { x: this.physics.wind.x, z: this.physics.wind.z },
       islands,
+      sonar: this.sonarContacts.map((contact) => ({ x: contact.x, z: contact.z, tier: contact.tier })),
+      traders,
       places,
       loot: this.loot.items.map((item) => ({ kind: item.kind, x: item.x, z: item.z })),
       explored: this.explored,
       track: this.track,
       night: this.environmentState.nightFactor,
     };
+  }
+
+  // --- Economy: finds, traders, upgrades, decor ------------------------------------------
+
+  private loadEconomy(): EconomyState {
+    try {
+      return restoreEconomy(JSON.parse(localStorage.getItem(ECONOMY_KEY) ?? "null"));
+    } catch {
+      return createEconomyState();
+    }
+  }
+
+  private persistEconomy(): void {
+    this.economy.taken = [...this.takenFinds].slice(-MAX_TAKEN_FINDS);
+    try {
+      localStorage.setItem(ECONOMY_KEY, JSON.stringify(this.economy));
+    } catch {
+      // Storage full or blocked: the economy still works for this visit.
+    }
+  }
+
+  /** Puts the bought upgrades and decor to work on the yacht, the diver and his gear. */
+  private applyEconomy(): void {
+    const levels = this.economy.upgrades;
+    if (this.physics) this.physics.engineBoost = engineBoost(levels.engine);
+    if (this.flares) {
+      const flare = flareBoost(levels.flare);
+      this.flares.boost = { apex: flare.apex, burn: flare.burn, power: flare.power };
+    }
+    const gear = gearBoost(levels.tank, levels.fins, levels.torch);
+    if (this.diver) {
+      this.diver.gear.swim = gear.swim;
+      this.diver.gear.air = gear.air;
+    }
+    this.underwaterWorld?.setTorchBoost(gear.torch, gear.torchRange);
+    if (this.vessel) {
+      this.vessel.setMonitorLevel(levels.monitor);
+      const { flag, charm, bobble } = this.economy.equipped;
+      this.vessel.setDecor(flag, charm, bobble);
+    }
+    this.sonarClock = 0;
+  }
+
+  /** The finds on the sea floor, the traders ashore and the sonar's sweep. */
+  private updateEconomy(delta: number): void {
+    const diver = this.diver;
+    const eye = this.camera.camera.position;
+    const swimming = Boolean(diver?.active && diver.mode === "swim");
+    this.seabedLoot?.update(delta, eye, swimming && this.underwaterAmount > 0.05, this.takenVersion);
+    if (this.traders) {
+      this.islands.traderSpots(this.traderSpotList);
+      const ashore = diver?.active && (diver.mode === "land" || (diver.mode === "swim" && diver.wading > 0.2));
+      this.traders.update(delta, this.traderSpotList, this.groundWalk, ashore ? eye : null, eye);
+    }
+    this.sonarClock -= delta;
+    if (this.sonarClock > 0 || !this.seabedLoot) return;
+    this.sonarClock = SONAR_INTERVAL;
+    const level = this.economy.upgrades.sonar;
+    const yacht = this.physics.position;
+    if (level > 0) this.seabedLoot.scan(yacht.x, yacht.z, sonarRange(level), sonarDepth(level), level, this.sonarContacts);
+    else this.sonarContacts.length = 0;
+    this.vessel.setSonar(this.sonarContacts, level, level > 0 ? sonarRange(level) : 0);
+  }
+
+  /** What a walker bumps into ashore: rocks, trunks, buildings, and the traders themselves. */
+  private landObstacle(x: number, z: number, normal: { x: number; z: number }): number {
+    let best = this.islands.obstacleClearance(x, z, normal);
+    for (const spot of this.traderSpotList) {
+      const dx = x - spot.x;
+      const dz = z - spot.z;
+      if (Math.abs(dx) > 2 || Math.abs(dz) > 2) continue;
+      const length = Math.hypot(dx, dz);
+      const clearance = length - 0.3;
+      if (clearance >= best) continue;
+      best = clearance;
+      normal.x = length > 1e-6 ? dx / length : 1;
+      normal.z = length > 1e-6 ? dz / length : 0;
+    }
+    return best;
+  }
+
+  /** The diver's hand closes on a find: a chest is opened on the spot, the rest go in the bag. */
+  private takeFind(find: SeabedFind): void {
+    if (this.takenFinds.has(find.key)) return;
+    this.takenFinds.add(find.key);
+    if (this.takenFinds.size > MAX_TAKEN_FINDS) {
+      const oldest = this.takenFinds.values().next().value;
+      if (oldest !== undefined) this.takenFinds.delete(oldest);
+    }
+    this.takenVersion += 1;
+    const chest = find.kind === "chest";
+    if (chest) this.state.doubloons += find.value;
+    else this.economy.bag.push({ kind: find.kind, value: find.value });
+    this.audio.pickup(chest ? "chest" : find.tier === 2 ? "treasure" : "find");
+    this.diverScratch.set(find.x, this.groundBase(find.x, find.z) + 0.2, find.z);
+    this.underwaterWorld?.emitBubbles(this.diverScratch, chest ? 60 : 18, 0.03, chest ? 0.7 : 0.3);
+    this.persistEconomy();
+    if (chest) this.persistState();
+    this.options.onFind?.({ kind: find.kind, tier: find.tier, value: find.value, chest });
+    this.hud.emit(this.snapshot());
+  }
+
+  /** Sells finds from the bag to the trader: one kind, or everything (null). Returns the gold paid. */
+  sellFinds(kind: FindKind | null = null): number {
+    let paid = 0;
+    const kept = [];
+    for (const item of this.economy.bag) {
+      if (kind === null || item.kind === kind) paid += item.value;
+      else kept.push(item);
+    }
+    if (paid <= 0) return 0;
+    this.economy.bag = kept;
+    this.state.doubloons += paid;
+    this.audio.coins(paid);
+    this.persistEconomy();
+    this.persistState();
+    this.hud.emit(this.snapshot());
+    return paid;
+  }
+
+  /** Buys the next level of an upgrade, if there is one and the gold will stretch to it. */
+  buyUpgrade(id: UpgradeId): boolean {
+    const definition = upgradeDefinition(id);
+    const level = this.economy.upgrades[id];
+    if (level >= definition.max) return false;
+    const price = upgradePrice(definition.base, level);
+    if (this.state.doubloons < price) return false;
+    this.state.doubloons -= price;
+    this.economy.upgrades[id] = level + 1;
+    this.applyEconomy();
+    this.audio.coins(price);
+    this.persistEconomy();
+    this.persistState();
+    this.hud.emit(this.snapshot());
+    return true;
+  }
+
+  /** Buys a piece of decor (and puts it up straight away). */
+  buyDecor(id: string): boolean {
+    const definition = decorDefinition(id);
+    if (!definition || this.economy.decor.includes(id) || this.state.doubloons < definition.price) return false;
+    this.state.doubloons -= definition.price;
+    this.economy.decor.push(id);
+    this.audio.coins(definition.price);
+    this.equipDecor(definition.slot, id);
+    this.persistState();
+    return true;
+  }
+
+  /** Puts up (or takes down, with null) the decor of a slot. */
+  equipDecor(slot: DecorSlot, id: string | null): void {
+    if (id !== null && (!this.economy.decor.includes(id) || decorDefinition(id)?.slot !== slot)) return;
+    this.economy.equipped[slot] = id;
+    this.applyEconomy();
+    this.persistEconomy();
+    this.hud.emit(this.snapshot());
+  }
+
+  /** A dialog over the skipper's own view: he stands still and leaves the keys to it. */
+  setDiverFrozen(frozen: boolean): void {
+    this.diver?.setFrozen(frozen);
+    if (frozen) this.diver?.releasePointer();
   }
 
   /** The floatplane and the airliners: their flight, their sound, the photographer. */
@@ -1252,6 +1510,9 @@ export class Simulator {
     this.input?.dispose();
     this.canvas.removeEventListener("click", this.onCanvasClick);
     this.diver?.dispose();
+    this.persistEconomy();
+    this.seabedLoot?.dispose();
+    this.traders?.dispose();
     this.underwaterWorld?.dispose();
     this.diveFish?.dispose();
     this.radio?.dispose();
@@ -1367,11 +1628,14 @@ export class Simulator {
       // A ship is a long, flat-sided landmark: aggressive simplification turns
       // her into a lumpy toy at a kilometre, so her levels are gentler.
       this.lod.register(this.ships.group, 3000, SHIP_LOD_STEPS);
+      // Textures of things built since (a ship's model, an island) get the preset's filtering.
+      this.applyTextureQuality(false);
     }
     if (this.diver?.active) {
       this.diver.updateCamera(this.camera.camera, this.vessel.root, this.physics.heading, this.physics.roll, this.physics.pitch, delta);
     }
     this.updateUnderwater(delta);
+    this.updateEconomy(delta);
     this.lod.update(this.camera.camera);
     if (this.diver?.active) {
       // His own eyes: no director, no flare camera.
@@ -1383,6 +1647,8 @@ export class Simulator {
     } else {
       this.directPhoto(delta);
     }
+    this.applyHandoff(delta);
+    this.updateShake(delta);
     this.environment.setWeatherKind(this.currentWeatherKind());
     // The brightest flare in the air lights the scene; failing that, the
     // liner's fireworks (each burst flashes on the sea in its colours), or an
@@ -1390,7 +1656,7 @@ export class Simulator {
     const flare = this.flares.brightest();
     const fireworkLight = flare ? null : this.fireworks.light();
     const eruptionLight = flare || fireworkLight ? null : this.volcanoes.eruptionLight;
-    if (flare) this.environment.setFlare(flare.position, flare.brightness, flare.rgb);
+    if (flare) this.environment.setFlare(flare.position, flare.brightness, flare.rgb, flareBoost(this.economy.upgrades.flare).reach);
     else if (fireworkLight) this.environment.setFlare(fireworkLight.position, fireworkLight.brightness * FIREWORK_LIGHT, fireworkLight.rgb);
     else if (eruptionLight) this.environment.setFlare(eruptionLight.position, eruptionLight.brightness, ERUPTION_RGB);
     else this.environment.setFlare(null, 0, ERUPTION_RGB);
@@ -1553,6 +1819,10 @@ export class Simulator {
 
   private onDiverMode(mode: DiverMode): void {
     const away = mode !== "helm";
+    // Off the wheel into his eyes, or back to the wheel: the camera flies
+    // there rather than cutting (not from under the water, whose view would
+    // drag the surface through the frame).
+    if (mode === "leap" || (mode === "helm" && (this.diver?.cameraDepth ?? -1) < 0)) this.startHandoff();
     if (mode !== "leap") this.vessel.setSkipperLeap(null);
     this.input.enabled = !away;
     this.physics.hoveTo = away;
@@ -1577,7 +1847,28 @@ export class Simulator {
       }
     }
     diver.update(delta, this.vessel.root, this.physics.velocity, this.physics.heading, this.deckField, HelmStation.STAND_FEET);
+    // A find within reach under the water; a trader on the beach.
+    this.promptDetail = null;
+    this.reachableFind = null;
+    if (!diver.prompt && diver.inControl) {
+      if (diver.mode === "swim" && diver.depth > 0.3 && this.seabedLoot) {
+        this.visitorPoint.set(diver.swim.x, diver.swim.y, diver.swim.z);
+        const find = this.seabedLoot.reachable(this.visitorPoint);
+        if (find) {
+          diver.prompt = "pickup";
+          this.reachableFind = find;
+          this.promptDetail = find.kind;
+        }
+      } else if (diver.mode === "land" && this.traders?.within(diver.walk.x, diver.walk.z)) {
+        diver.prompt = "trade";
+      }
+    }
     const action: DiverPrompt = diver.consumeInteract();
+    if (action === "pickup" && this.reachableFind) this.takeFind(this.reachableFind);
+    if (action === "trade") {
+      diver.releasePointer();
+      this.options.onTrade?.();
+    }
     if (action === "helm") {
       this.returnToHelm();
     } else if (action === "board" && this.deckField) {
@@ -1593,6 +1884,58 @@ export class Simulator {
       this.torchOffered = true;
       if (this.environmentState.nightFactor > 0.55) diver.torch = true;
     }
+  }
+
+  private startHandoff(): void {
+    const camera = this.camera.camera;
+    this.handoff.active = true;
+    this.handoff.time = 0;
+    this.handoff.from.copy(camera.position);
+    this.handoff.fromQuaternion.copy(camera.quaternion);
+  }
+
+  /** Eases the camera from where the last view left it into the new one over `CAMERA_HANDOFF` s. */
+  private applyHandoff(delta: number): void {
+    const handoff = this.handoff;
+    if (!handoff.active) return;
+    handoff.time += Math.min(delta, 0.05);
+    const t = Math.min(1, handoff.time / CAMERA_HANDOFF);
+    // Cubic ease in and out: no jerk as it leaves or as it arrives.
+    const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const camera = this.camera.camera;
+    camera.position.lerpVectors(handoff.from, camera.position, e);
+    camera.quaternion.slerpQuaternions(handoff.fromQuaternion, camera.quaternion, e);
+    camera.updateMatrixWorld();
+    if (t >= 1) handoff.active = false;
+  }
+
+  /**
+   * The camera's shake for this frame: the engine's jolt as it starts or
+   * dies and its idle tremor (felt at the wheel and on deck, not from a
+   * distance), and a volcano's rumble when it is near.
+   */
+  private updateShake(delta: number): void {
+    this.shakeClock += delta;
+    this.engineJolt = Math.max(0, this.engineJolt - delta * 1.8);
+    const camera = this.camera.camera.position;
+    const yacht = this.physics.position;
+    const nearYacht = 1 - smoothstep(6, 18, Math.hypot(camera.x - yacht.x, camera.y - yacht.y, camera.z - yacht.z));
+    const aboard = this.diver?.mode === "swim" || this.diver?.mode === "land" ? 0 : nearYacht;
+    const revs = this.state.engineRunning ? 0.35 + Math.min(1, Math.abs(this.physics.engineShaft)) * 0.65 : 0;
+    const engine = aboard * (revs * 0.0016 + this.engineJolt * this.engineJolt * 0.014);
+    const volcano = this.volcanoes.shakeAt(camera.x, camera.z) * 0.06;
+    const amplitude = engine + volcano;
+    if (amplitude < 1e-5) {
+      this.shakeOffset.set(0, 0, 0);
+      return;
+    }
+    const t = this.shakeClock;
+    // A few incommensurate tones: a buzz, not a wobble.
+    this.shakeOffset.set(
+      (Math.sin(t * 61.3) + Math.sin(t * 37.1 + 1.3) * 0.6) * 0.5,
+      (Math.sin(t * 53.7 + 0.7) + Math.sin(t * 29.3 + 2.1) * 0.7) * 0.55,
+      (Math.sin(t * 47.9 + 2.9) + Math.sin(t * 33.7) * 0.5) * 0.45,
+    ).multiplyScalar(amplitude);
   }
 
   /** Under the water: the haze, the surface from below, the sound, the reef and its life. */
@@ -1698,9 +2041,21 @@ export class Simulator {
       timer.begin();
     }
     this.shipShadows?.render(this.scene, this.ships.ships, this.ships.roots, this.camera.camera.position, this.environment.lightDirection);
+    // The shake is laid on for the draw only, so no camera ever integrates it.
+    const camera = this.camera.camera;
+    const shaken = this.shakeOffset.lengthSq() > 0;
+    if (shaken) {
+      camera.position.add(this.shakeOffset);
+      camera.updateMatrixWorld();
+    }
     // From under the water the mirror image of the world above is never seen.
     if (this.underwaterAmount < 0.5) this.renderReflection();
+    if (this.quality.settings.godRays) this.aimSunShafts(camera);
     this.post.render(this.frameDelta, this.elapsed);
+    if (shaken) {
+      camera.position.sub(this.shakeOffset);
+      camera.updateMatrixWorld();
+    }
     if (this.pendingCaptures.length > 0) {
       const resolvers = this.pendingCaptures.splice(0);
       // toBlob copies the drawing buffer synchronously, right after the draw,
@@ -1710,6 +2065,62 @@ export class Simulator {
     timer?.end();
     this.watchFrame();
   };
+
+  /**
+   * Where the sun is on screen for the shafts, and how much of it shines:
+   * none below the horizon, at night, under the water or behind the camera,
+   * fading as the sun leaves the frame (shafts still stream in from a sun
+   * just off its edge) and as cloud closes over the sky.
+   */
+  private aimSunShafts(camera: THREE.PerspectiveCamera): void {
+    const sky = this.ocean.skyUniforms;
+    const sun = sky.uSunDirection.value;
+    this.sunScreen.copy(sun).multiplyScalar(800).add(camera.position).project(camera);
+    const inFront = this.sunScreen.z < 1 ? 1 : 0;
+    const x = this.sunScreen.x * 0.5 + 0.5;
+    const y = this.sunScreen.y * 0.5 + 0.5;
+    const outside = Math.max(0, Math.abs(x - 0.5) - 0.5, Math.abs(y - 0.5) - 0.5);
+    const onScreen = 1 - smoothstep(0, 0.45, outside);
+    const up = smoothstep(-0.03, 0.1, sun.y);
+    const clear = 1 - smoothstep(0.55, 0.95, sky.uCloudCover.value) * 0.8;
+    const visibility = inFront * onScreen * up * (1 - sky.uNight.value) * clear * (1 - this.underwaterAmount);
+    this.post.setSun(x, y, visibility, sky.uSunColor.value);
+  }
+
+  private readonly sunScreen = new THREE.Vector3();
+
+  /** Each texture's own anisotropy, before a preset raised it. */
+  private readonly baseAnisotropy = new WeakMap<THREE.Texture, number>();
+  private appliedAnisotropy = -1;
+
+  /**
+   * Anisotropic filtering for every mip-mapped texture in the scene: the
+   * preset's level (16× on ultra, capped by the GPU), never below what a
+   * texture asked for itself. `all` revisits every texture (after a preset
+   * change); otherwise only ones not yet seen at this level are touched.
+   */
+  private applyTextureQuality(all: boolean): void {
+    const level = Math.min(this.quality.settings.anisotropy, this.renderer.capabilities.getMaxAnisotropy());
+    if (all) this.appliedAnisotropy = level;
+    const keys = ["map", "normalMap", "roughnessMap", "metalnessMap", "aoMap", "emissiveMap", "alphaMap", "bumpMap"] as const;
+    this.scene.traverse((object) => {
+      const material = (object as THREE.Mesh).material;
+      if (!material) return;
+      for (const entry of Array.isArray(material) ? material : [material]) {
+        for (const key of keys) {
+          const texture = (entry as unknown as Record<string, THREE.Texture | null | undefined>)[key];
+          if (!texture || !(texture instanceof THREE.Texture)) continue;
+          const mipmapped = texture.generateMipmaps || texture.mipmaps.length > 1;
+          if (!mipmapped || texture.minFilter === THREE.NearestFilter || texture.minFilter === THREE.LinearFilter) continue;
+          if (!this.baseAnisotropy.has(texture)) this.baseAnisotropy.set(texture, texture.anisotropy);
+          const wanted = Math.max(this.baseAnisotropy.get(texture)!, this.appliedAnisotropy);
+          if (texture.anisotropy === wanted) continue;
+          texture.anisotropy = wanted;
+          texture.needsUpdate = true;
+        }
+      }
+    });
+  }
 
   /**
    * Every couple of seconds reads a few pixels of the finished frame. Sky
@@ -1993,9 +2404,19 @@ export class Simulator {
         depth: this.diver?.depth ?? 0,
         air: this.diver?.airLeft ?? 1,
         prompt: this.diver?.prompt ?? null,
+        promptDetail: this.promptDetail,
         torch: this.diver?.torch ?? false,
         underwater: this.underwaterAmount > 0.5,
         pointerLocked: this.diver?.pointerLocked ?? false,
+      },
+      economy: {
+        bagCount: this.economy.bag.length,
+        bagValue: bagValue(this.economy.bag),
+        bag: bagByKind(this.economy.bag),
+        upgrades: { ...this.economy.upgrades },
+        decor: [...this.economy.decor],
+        equipped: { ...this.economy.equipped },
+        sonarContacts: this.sonarContacts.length,
       },
       fps: this.fps,
       status: this.status,
@@ -2018,9 +2439,9 @@ export class Simulator {
       // down while another app had the focus) left every later visit on the
       // low preset; the old `quality` field is therefore ignored.
       const chosen = (saved as { qualityChoice?: string }).qualityChoice;
-      if (chosen === "low" || chosen === "medium" || chosen === "high") {
-        // A phone keeps a chosen preset too, but never the high one.
-        base.quality = this.coarseDevice && chosen === "high" ? "medium" : chosen;
+      if (chosen === "low" || chosen === "medium" || chosen === "high" || chosen === "ultra") {
+        // A phone keeps a chosen preset too, but never the high or ultra one.
+        base.quality = this.coarseDevice && (chosen === "high" || chosen === "ultra") ? "medium" : chosen;
         this.chosenQuality = base.quality;
       }
       if (typeof saved.soundEnabled === "boolean") base.soundEnabled = saved.soundEnabled;

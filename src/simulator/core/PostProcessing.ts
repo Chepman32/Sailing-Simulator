@@ -3,7 +3,10 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { Pass } from "three/addons/postprocessing/Pass.js";
+import { AmbientOcclusionPass } from "./AmbientOcclusion";
 import type { QualitySettings } from "./QualityManager";
+import { SunShaftsPass } from "./SunShafts";
 
 /**
  * HDR presentation pipeline.
@@ -127,6 +130,21 @@ const FinishShader = {
   `,
 };
 
+/**
+ * Notes which of the composer's two targets the scene was just drawn into,
+ * and so whose depth texture holds this frame's depth (the targets swap
+ * every frame), for the passes that read depth.
+ */
+class DepthTap extends Pass {
+  constructor(private readonly consumers: readonly { depth: THREE.Texture | null }[]) {
+    super();
+    this.needsSwap = false;
+  }
+  override render(_renderer: THREE.WebGLRenderer, _writeBuffer: THREE.WebGLRenderTarget, readBuffer: THREE.WebGLRenderTarget): void {
+    for (const consumer of this.consumers) consumer.depth = readBuffer.depthTexture;
+  }
+}
+
 /** The bloom bright-pass shader with its input made finite (see `HDR_CEILING`). */
 export function hardenBrightPass(source: string): string {
   const read = "vec4 texel = texture2D( tDiffuse, vUv );";
@@ -139,6 +157,11 @@ export class PostProcessing {
   private readonly renderPass: RenderPass;
   private readonly bloom: UnrealBloomPass;
   private readonly finish: ShaderPass;
+  private readonly tap: DepthTap;
+  private readonly occlusion: AmbientOcclusionPass;
+  private readonly shafts: SunShaftsPass;
+  /** Whether the scene targets carry depth textures (ambient occlusion or sun shafts on). */
+  private depthTextures = false;
   /** False on the rare GPU that cannot render to a half-float target. */
   private readonly supported: boolean;
   private active: boolean;
@@ -182,9 +205,52 @@ export class PostProcessing {
     this.bloom.materialHighPassFilter.fragmentShader = hardenBrightPass(this.bloom.materialHighPassFilter.fragmentShader);
     this.bloom.materialHighPassFilter.needsUpdate = true;
     this.finish = new ShaderPass(FinishShader);
+    this.occlusion = new AmbientOcclusionPass(scene, camera, this.width * pixelRatio, this.height * pixelRatio);
+    this.shafts = new SunShaftsPass(this.width * pixelRatio, this.height * pixelRatio);
+    this.shafts.camera = camera;
+    this.tap = new DepthTap([this.occlusion, this.shafts]);
     this.composer.addPass(this.renderPass);
+    this.composer.addPass(this.tap);
+    this.composer.addPass(this.occlusion);
+    this.composer.addPass(this.shafts);
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.finish);
+    this.applyDepthPasses(quality);
+  }
+
+  /**
+   * Ambient occlusion and sun shafts read the scene's depth: the targets
+   * then carry depth textures (resolved from the multisampled buffer)
+   * instead of plain depth buffers. Changing that needs new GPU storage.
+   */
+  private applyDepthPasses(quality: QualitySettings): void {
+    this.occlusion.enabled = quality.ambientOcclusion;
+    this.shafts.enabled = quality.godRays;
+    const wanted = quality.ambientOcclusion || quality.godRays;
+    if (wanted === this.depthTextures) return;
+    this.depthTextures = wanted;
+    for (const target of [this.composer.renderTarget1, this.composer.renderTarget2]) {
+      target.depthTexture?.dispose();
+      if (wanted) {
+        const depth = new THREE.DepthTexture(target.width, target.height);
+        depth.type = THREE.UnsignedIntType;
+        depth.name = "SceneDepth";
+        target.depthTexture = depth;
+      } else {
+        target.depthTexture = null;
+      }
+      target.dispose();
+    }
+  }
+
+  /**
+   * The sun for the shafts: its place on screen (uv), how much of it shines
+   * (0 below the horizon, behind the camera or at night … 1) and its colour.
+   */
+  setSun(x: number, y: number, visibility: number, color: THREE.Color): void {
+    this.shafts.sun.set(x, y);
+    this.shafts.visibility = visibility;
+    this.shafts.tint.copy(color);
   }
 
   get enabled(): boolean {
@@ -203,6 +269,8 @@ export class PostProcessing {
   setCamera(camera: THREE.Camera): void {
     this.camera = camera;
     this.renderPass.camera = camera;
+    this.occlusion.setCamera(camera);
+    this.shafts.camera = camera;
   }
 
   setQuality(quality: QualitySettings): void {
@@ -218,6 +286,7 @@ export class PostProcessing {
       this.composer.renderTarget1.dispose();
       this.composer.renderTarget2.dispose();
     }
+    this.applyDepthPasses(quality);
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
   }
 
@@ -252,6 +321,7 @@ export class PostProcessing {
   /** A diver's view under the water (0 … 1). */
   setUnderwater(amount: number): void {
     this.finish.uniforms.uUnderwater!.value = amount;
+    this.occlusion.underwater = amount > 0.5 ? 1 : 0;
   }
 
   render(delta: number, time: number): void {
@@ -267,6 +337,8 @@ export class PostProcessing {
   dispose(): void {
     this.bloom.dispose();
     this.finish.dispose();
+    this.occlusion.dispose();
+    this.shafts.dispose();
     this.composer.dispose();
   }
 

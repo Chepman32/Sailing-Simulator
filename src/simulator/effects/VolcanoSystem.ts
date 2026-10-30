@@ -18,6 +18,8 @@ import {
   GRAVITY,
   PLUME_LIFE,
   plumePuff,
+  precursorAt,
+  volcanoTremor,
   SHOCK_PUFFS,
   shockPuff,
   SPARKS,
@@ -75,6 +77,10 @@ type Visual = {
   /** Light and roar of the eruption under way, for the scene and the sound. */
   light: number;
   roar: number;
+  /** The warning before an eruption (0…1), the fountain and the eruption's age, for the tremor. */
+  precursor: number;
+  fountain: number;
+  age: number;
 };
 
 const lavaVertex = /* glsl */ `
@@ -202,6 +208,9 @@ export class VolcanoSystem {
         landingSlot: Number.NaN,
         light: 0,
         roar: 0,
+        precursor: 0,
+        fountain: 0,
+        age: -1,
       };
       this.group.add(visual.plume.mesh, visual.ash.mesh, visual.embers.mesh, glow, jet);
       this.visuals.push(visual);
@@ -256,6 +265,20 @@ export class VolcanoSystem {
   private readonly ashPoint: AshPoint = { x: 0, y: 0, z: 0, radius: 0, opacity: 0, fresh: 0 };
   private readonly ember: Ember = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, t: 0 };
 
+  /**
+   * How hard the ground shakes at (x, z), 0…1: the warning's tremor, the
+   * blast and the fountain, strong near the volcano and gone far off.
+   */
+  shakeAt(x: number, z: number): number {
+    let shake = 0;
+    for (const visual of this.visuals) {
+      if (!visual.island) continue;
+      const distance = Math.hypot(visual.crater.x - x, visual.crater.z - z);
+      shake = Math.max(shake, volcanoTremor(visual.precursor, visual.fountain, visual.age, distance));
+    }
+    return shake;
+  }
+
   update(
     time: number,
     x: number,
@@ -291,16 +314,23 @@ export class VolcanoSystem {
         nearestDistance = distance;
         this.nearest = visual;
       }
-      const eruption = eruptionAt(time, island.seed + island.id % 997, this.eruption);
-      const glow = craterGlow(time, eruption);
+      const seed = island.seed + island.id % 997;
+      const eruption = eruptionAt(time, seed, this.eruption);
+      // Half a minute of warning: the plume thickens and darkens, a low rumble, a tremor.
+      const precursor = precursorAt(time, seed);
+      const glow = craterGlow(time, eruption) * (1 + precursor * 0.6);
       const fountain = fountainActivity(eruption);
+      visual.precursor = precursor;
+      visual.fountain = fountain;
+      visual.age = eruption.age;
       if (eruption.age >= 0 && eruption.age < 1 && eruption.slot !== visual.lastSlot) {
         visual.lastSlot = eruption.slot;
         this.events.push({ x: crater.x, y: crater.y, z: crater.z, strength: eruption.strength });
       }
       if (visual === this.nearest && eruption.age >= 0) this.nearestStrength = fountain;
       visual.light = eruption.age >= 0 ? (glow - 0.5) * 7 : 0;
-      visual.roar = fountain;
+      // The rumble of the warning grows into the eruption's roar.
+      visual.roar = Math.max(fountain, precursor * 0.5);
       visual.plume.setLight(lightDirection, sunLight, ambient);
       visual.ash.setLight(lightDirection, sunLight, ambient);
 
@@ -333,16 +363,18 @@ export class VolcanoSystem {
         const age = (time + phase * PLUME_LIFE) % PLUME_LIFE;
         const p = plumePuff(age, phase, driftX, driftZ, this.point);
         const fire = glow * Math.exp(-p.y / 50) * fireReach * 0.5;
-        const albedo = 0.78 - 0.18 * Math.min(1, p.y / 220);
+        // Before an eruption the plume swells, thickens and darkens with ash.
+        const swell = 1 + precursor * 0.55 * Math.exp(-age / 30);
+        const albedo = (0.78 - 0.18 * Math.min(1, p.y / 220)) * (1 - precursor * 0.55);
         plume.push(
           crater.x + p.x,
           crater.y + 4 + p.y,
           crater.z + p.z,
-          p.radius * 2.3,
+          p.radius * 2.3 * swell,
           albedo,
           albedo * 0.97,
           albedo * 0.95,
-          p.opacity * 0.38,
+          Math.min(0.95, p.opacity * 0.38 * (1 + precursor * 1.6)),
           2.4 * fire,
           0.62 * fire,
           0.14 * fire,

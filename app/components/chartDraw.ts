@@ -655,6 +655,58 @@ function drawLoot(context: CanvasRenderingContext2D, camera: ChartCamera, data: 
   }
 }
 
+const SONAR_COLORS: Record<1 | 2 | 3, string> = { 1: "160, 220, 235", 2: "120, 255, 215", 3: "255, 206, 96" };
+
+/** What the yacht's sonar sees on the sea floor: a diamond per find, tinted by tier, pulsing. */
+function drawSonar(context: CanvasRenderingContext2D, camera: ChartCamera, data: ChartFeatures, style: ChartStyle): void {
+  if (!data.sonar?.length) return;
+  for (const contact of data.sonar) {
+    const [x, y] = toScreen(camera, contact.x, contact.z);
+    if (x < -10 || x > camera.width + 10 || y < -10 || y > camera.height + 10) continue;
+    const rgb = SONAR_COLORS[contact.tier];
+    const r = (style.mini ? 2.6 : 4) * (contact.tier === 3 ? 1.35 : 1);
+    const pulse = 0.55 + 0.45 * Math.sin(style.time * 3 + contact.x * 0.05 + contact.z * 0.03);
+    context.fillStyle = `rgba(${rgb}, ${0.18 * pulse})`;
+    context.beginPath();
+    context.arc(x, y, r * 2.8, 0, Math.PI * 2);
+    context.fill();
+    context.fillStyle = `rgba(${rgb}, 0.95)`;
+    context.strokeStyle = "rgba(2, 20, 28, 0.8)";
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(x, y - r);
+    context.lineTo(x + r, y);
+    context.lineTo(x, y + r);
+    context.lineTo(x - r, y);
+    context.closePath();
+    context.fill();
+    context.stroke();
+  }
+}
+
+/** The island traders: a small gold coin on a dark disc at each hut. */
+function drawTraders(context: CanvasRenderingContext2D, camera: ChartCamera, data: ChartFeatures, style: ChartStyle): void {
+  if (!data.traders?.length || camera.mpp > 60) return;
+  const r = style.mini ? 3.4 : 5.5;
+  for (const trader of data.traders) {
+    if (!data.explored.seen(trader.x, trader.z)) continue;
+    const [x, y] = toScreen(camera, trader.x, trader.z);
+    if (x < -10 || x > camera.width + 10 || y < -10 || y > camera.height + 10) continue;
+    context.fillStyle = "rgba(20, 14, 2, 0.75)";
+    context.beginPath();
+    context.arc(x, y, r + 2, 0, Math.PI * 2);
+    context.fill();
+    const coin = context.createRadialGradient(x - r * 0.3, y - r * 0.35, 0, x, y, r);
+    coin.addColorStop(0, "#fff6c8");
+    coin.addColorStop(0.5, "#f2c14e");
+    coin.addColorStop(1, "#a8720f");
+    context.fillStyle = coin;
+    context.beginPath();
+    context.arc(x, y, r, 0, Math.PI * 2);
+    context.fill();
+  }
+}
+
 /** Draws the whole chart into `context` (whose canvas is width·dpr × height·dpr). */
 export function drawChart(context: CanvasRenderingContext2D, camera: ChartCamera, data: ChartFeatures, style: ChartStyle): void {
   context.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
@@ -687,6 +739,8 @@ export function drawChart(context: CanvasRenderingContext2D, camera: ChartCamera
   drawTrack(context, camera, data.track.points, style.mini);
   drawLoot(context, camera, data, style);
   drawFog(context, camera, data.explored, style.time);
+  drawTraders(context, camera, data, style);
+  drawSonar(context, camera, data, style);
   // Found places first, so their names win over the question marks'.
   const boxes: Box[] = [];
   const shown = data.places.filter((place) => place.discovered || data.explored.seen(place.x, place.z));

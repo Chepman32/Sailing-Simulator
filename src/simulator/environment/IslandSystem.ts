@@ -31,7 +31,8 @@ import {
 } from "./IslandMath";
 import { ISLAND_SLOT_UNIFORMS } from "./SurfMath";
 import { createBarkTextures, createFrondTexture, createPalmVariants, type PalmPart, type PalmVariant } from "./PalmModels";
-import { buildGrass, createGrassMaterial, createLeafClusterTexture } from "./IslandVegetation";
+import { buildGrass, createGrassMaterial, createLeafClusterTexture, grassAmount } from "./IslandVegetation";
+import { GrassField } from "./GrassField";
 import { patchMaterialShader } from "../core/ShaderPatch";
 import {
   furnishIsland,
@@ -40,6 +41,7 @@ import {
   islandClearings,
   islandPoint,
   islandProfile,
+  traderSpot,
   LIGHTHOUSE_SCALE,
   pierClearance,
   type IslandProfile,
@@ -56,6 +58,8 @@ type IslandVisual = {
   lod: THREE.LOD;
   batches: THREE.Mesh[];
   trunks: THREE.Vector4[];
+  /** Boulders and tors a walker goes round (world x, z and radius). */
+  stones: THREE.Vector3[];
   /** Boulders, scrub, pier, hut, lighthouse (see IslandProps), and what glows at night. */
   furniture: THREE.Mesh[];
   pier: PierFootprint | null;
@@ -113,6 +117,9 @@ export class IslandSystem {
   private readonly palmTextures: THREE.Texture[] = [];
   private leafMaterial: THREE.Material | null = null;
   private readonly grassMaterial: THREE.MeshStandardMaterial;
+  /** Dense instanced grass round the viewer (off on the low preset). */
+  private grassField: GrassField | null = null;
+  private readonly clearingCache = new Map<number, ReturnType<typeof islandClearings>>();
   private readonly surface: IslandSurfaceUniforms = createIslandSurfaceUniforms();
   private readonly palmShadows: PalmShadowMap;
   /** Every trunk's foot (x, y, z, radius); the nearest fill the contact-shading slots. */
@@ -226,6 +233,8 @@ export class IslandSystem {
         if (gap > ISLAND_RELEASE_RADIUS) {
           this.releaseIsland(visual);
           this.built.delete(id);
+          this.invalidateGrass(island);
+          this.clearingCache.delete(island.id);
           released = true;
         }
       }
@@ -236,6 +245,7 @@ export class IslandSystem {
       const definition = this.pending.pop()!;
       if (this.built.has(definition.id)) continue;
       this.built.set(definition.id, this.buildIsland(definition));
+      this.invalidateGrass(definition);
       built += 1;
     }
     if (built > 0) this.collect();
@@ -272,6 +282,8 @@ export class IslandSystem {
     this.palmWind.value = time;
     for (const visual of this.built.values()) if (visual.beam) visual.beam.rotation.y = time * BEAM_SPEED + visual.definition.id * 0.7;
     this.palmStrength.value = Math.min(3.2, Math.max(0.4, wind));
+    // The dense grass grows round the eyes (the diver's ashore, else the camera's).
+    if (this.grassField && viewer) this.grassField.update(time, wind, viewer, viewer.y > -0.5);
     this.surface.uSurfTime.value = time;
     selectIslandSlots(focusX, focusZ, ISLAND_SLOT_UNIFORMS.uIslandShape.value, ISLAND_SLOT_UNIFORMS.uIslandFrame.value);
     this.seabed.position.x = Math.round(focusX / 50) * 50;
@@ -427,6 +439,10 @@ export class IslandSystem {
         if (Math.abs(trunk.x - x) > 3 || Math.abs(trunk.z - z) > 3) continue;
         consider(trunk.x, trunk.z, 0.16 + trunk.w * 0.08);
       }
+      for (const stone of visual.stones) {
+        if (Math.abs(stone.x - x) > stone.z + 3 || Math.abs(stone.y - z) > stone.z + 3) continue;
+        consider(stone.x, stone.y, stone.z);
+      }
       const profile = this.profile(island);
       if (profile.lighthouseAngle !== null) {
         const spot = islandPoint(island, 0.5, profile.lighthouseAngle);
@@ -441,7 +457,17 @@ export class IslandSystem {
     return best;
   }
 
-  /** The island's character, hills and buildings (cached: decided from its id). */
+  /** The traders of the islands built round here: where each stands and which way he faces. */
+  traderSpots(out: { id: number; x: number; z: number; facing: number }[] = []): { id: number; x: number; z: number; facing: number }[] {
+    out.length = 0;
+    for (const visual of this.built.values()) {
+      const spot = traderSpot(visual.definition, this.profile(visual.definition));
+      if (spot) out.push({ id: visual.definition.id, ...spot });
+    }
+    return out;
+  }
+
+    /** The island's character, hills and buildings (cached: decided from its id). */
   profile(island: IslandDefinition): IslandProfile {
     let profile = this.profiles.get(island.id);
     if (!profile) {
@@ -552,7 +578,81 @@ export class IslandSystem {
     return target;
   }
 
+  /**
+   * The dense grass: its reach (m) and fraction of the full density (0 off).
+   * The field is built on first use and shares the islands' shadows.
+   */
+  setGrass(radius: number, density: number): void {
+    if (radius <= 0 || density <= 0) {
+      this.grassField?.setQuality(0, 0);
+      return;
+    }
+    this.grassField ??= new GrassField(
+      this.scene,
+      {
+        amount: (x, z) => this.turfAt(x, z),
+        ground: (x, z) => this.terrainHeightAt(x, z),
+        landIn: (x0, z0, x1, z1) => {
+          for (const visual of this.built.values()) {
+            const island = visual.definition;
+            if (island.volcano) continue;
+            const reach = island.beachRadius * Math.max(1, island.scaleZ) * MAX_EDGE_NOISE;
+            if (island.centerX + reach < x0 || island.centerX - reach > x1 || island.centerZ + reach < z0 || island.centerZ - reach > z1) continue;
+            return true;
+          }
+          return false;
+        },
+      },
+      this.sky,
+      (material) => patchMaterialShader(material, "grass-field-shadows", (shader) => addIslandShadows(shader, this.surface, 2)),
+    );
+    this.grassField.setQuality(radius, density);
+  }
+
+  /**
+   * How much turf grows at (x, z), 0…1: the island's own grass line (the
+   * same as its tussocks'), nothing in clearings (round the hut and the
+   * lighthouse), on rocks or against palm trunks, nor on a volcano.
+   */
+  turfAt(x: number, z: number): number {
+    for (const visual of this.built.values()) {
+      const island = visual.definition;
+      if (island.volcano || island.beachRadius < 12) continue;
+      const reach = island.beachRadius * Math.max(1, island.scaleZ) * MAX_EDGE_NOISE;
+      if (Math.abs(x - island.centerX) > reach || Math.abs(z - island.centerZ) > reach) continue;
+      const lx = x - island.centerX;
+      const lz = z - island.centerZ;
+      const { grass } = grassAmount(island, lx, lz);
+      if (grass <= 0) continue;
+      let clearings = this.clearingCache.get(island.id);
+      if (!clearings) {
+        clearings = islandClearings(island, this.profile(island));
+        this.clearingCache.set(island.id, clearings);
+      }
+      // The grass thins out over the last couple of metres into a clearing, not at a ruled ring.
+      let edge = Number.POSITIVE_INFINITY;
+      for (const clearing of clearings) edge = Math.min(edge, Math.hypot(lx - clearing.x, lz - clearing.z) - clearing.radius);
+      if (edge < 0) return 0;
+      const thinning = smoothstep(0, 2.2, edge);
+      for (const stone of visual.stones) {
+        if (Math.abs(stone.x - x) < stone.z + 0.3 && Math.abs(stone.y - z) < stone.z + 0.3 && Math.hypot(stone.x - x, stone.y - z) < stone.z + 0.15) return 0;
+      }
+      for (const trunk of visual.trunks) {
+        if (Math.abs(trunk.x - x) < 0.45 && Math.abs(trunk.z - z) < 0.45) return grass * 0.3 * thinning;
+      }
+      return grass * thinning;
+    }
+    return 0;
+  }
+
+  private invalidateGrass(island: IslandDefinition): void {
+    if (!this.grassField) return;
+    const reach = island.beachRadius * Math.max(1, island.scaleZ) * MAX_EDGE_NOISE;
+    this.grassField.invalidateArea(island.centerX - reach, island.centerZ - reach, island.centerX + reach, island.centerZ + reach);
+  }
+
   dispose(): void {
+    this.grassField?.dispose();
     this.palmShadows.dispose();
     this.terrainMaterial.dispose();
     this.grassMaterial.dispose();
@@ -693,7 +793,8 @@ export class IslandSystem {
       beam.visible = false;
       islandGroup.add(beam);
     }
-    return { definition: island, group: islandGroup, holder, lod, batches, trunks, furniture, pier: built.pier, beam, grass };
+    const stones = built.stones.map((stone) => new THREE.Vector3(island.centerX + stone.x, island.centerZ + stone.z, stone.radius));
+    return { definition: island, group: islandGroup, holder, lod, batches, trunks, stones, furniture, pier: built.pier, beam, grass };
   }
 
   /**

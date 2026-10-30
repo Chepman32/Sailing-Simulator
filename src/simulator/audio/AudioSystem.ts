@@ -848,11 +848,13 @@ export class AudioSystem {
 
   setEngineRunning(running: boolean): void {
     const starting = running && !this.engineRunning;
+    const stopping = !running && this.engineRunning;
     this.engineRunning = running;
     this.updateEngineBusGain();
     if (starting) {
       void this.resumeFromGesture().then(() => this.playEngineStartCue());
     }
+    if (stopping) this.playEngineStopCue();
   }
 
   /**
@@ -1150,6 +1152,104 @@ export class AudioSystem {
       oscillator.start(start);
       oscillator.stop(start + 0.08);
       oscillator.onended = () => gain.disconnect();
+    }
+  }
+
+  /**
+   * A find taken off the sea floor, heard through the water: a dull knock
+   * of the thing against the hand, a ringing tone for a treasure, and for a
+   * chest the lid's creak and the soft clink of the gold inside.
+   */
+  pickup(kind: "find" | "treasure" | "chest"): void {
+    const context = this.context;
+    const bus = this.diverBus;
+    if (!context || !bus || context.state !== "running" || !this.enabled) return;
+    const now = context.currentTime;
+    const knock = context.createOscillator();
+    knock.type = "sine";
+    knock.frequency.setValueAtTime(kind === "chest" ? 120 : 210, now);
+    knock.frequency.exponentialRampToValueAtTime(kind === "chest" ? 60 : 110, now + 0.18);
+    const knockGain = context.createGain();
+    knockGain.gain.setValueAtTime(0, now);
+    knockGain.gain.linearRampToValueAtTime(kind === "chest" ? 0.22 : 0.14, now + 0.008);
+    knockGain.gain.exponentialRampToValueAtTime(0.0005, now + 0.3);
+    knock.connect(knockGain).connect(bus);
+    knock.start(now);
+    knock.stop(now + 0.32);
+    knock.onended = () => knockGain.disconnect();
+    // Water bends every note down and blurs it.
+    const muffle = context.createBiquadFilter();
+    muffle.type = "lowpass";
+    muffle.frequency.value = 1800;
+    muffle.connect(bus);
+    const tones = kind === "find" ? [740] : kind === "treasure" ? [660, 990, 1320] : [520, 780, 1040, 1560];
+    tones.forEach((frequency, index) => {
+      const start = now + 0.06 + index * 0.075;
+      const tone = context.createOscillator();
+      tone.type = "triangle";
+      tone.frequency.setValueAtTime(frequency, start);
+      tone.frequency.linearRampToValueAtTime(frequency * 0.985, start + 0.6);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(kind === "find" ? 0.035 : 0.05, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0004, start + (kind === "find" ? 0.45 : 0.9));
+      tone.connect(gain).connect(muffle);
+      tone.start(start);
+      tone.stop(start + 1);
+      tone.onended = () => gain.disconnect();
+    });
+    if (kind === "chest") {
+      // The lid: a slow, rasping creak.
+      const creak = context.createOscillator();
+      creak.type = "sawtooth";
+      creak.frequency.setValueAtTime(70, now + 0.05);
+      creak.frequency.linearRampToValueAtTime(140, now + 0.55);
+      const band = context.createBiquadFilter();
+      band.type = "bandpass";
+      band.frequency.value = 600;
+      band.Q.value = 4;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0, now + 0.05);
+      gain.gain.linearRampToValueAtTime(0.05, now + 0.2);
+      gain.gain.exponentialRampToValueAtTime(0.0005, now + 0.6);
+      creak.connect(band).connect(gain).connect(bus);
+      creak.start(now + 0.05);
+      creak.stop(now + 0.62);
+      creak.onended = () => gain.disconnect();
+      this.coinClinks(context, muffle, now + 0.45, 14, 0.03);
+    }
+    window.setTimeout(() => muffle.disconnect(), 2500);
+  }
+
+  /** Gold counted out on a trader's table (bigger sums ring longer). */
+  coins(amount: number): void {
+    const context = this.context;
+    const bus = this.environmentBus;
+    if (!context || !bus || context.state !== "running" || !this.enabled) return;
+    const count = Math.round(6 + Math.min(18, Math.log2(1 + Math.max(0, amount) / 20) * 3));
+    this.coinClinks(context, bus, context.currentTime + 0.02, count, 0.045);
+  }
+
+  /** A run of small metallic clinks: two inharmonic partials each, scattered in time. */
+  private coinClinks(context: AudioContext, destination: AudioNode, start: number, count: number, level: number): void {
+    let time = start;
+    for (let index = 0; index < count; index += 1) {
+      time += 0.025 + Math.random() * 0.07;
+      const base = 2600 + Math.random() * 2200;
+      for (const ratio of [1, 2.76]) {
+        const oscillator = context.createOscillator();
+        oscillator.type = "sine";
+        oscillator.frequency.value = base * ratio;
+        const gain = context.createGain();
+        const peak = (level * (0.6 + Math.random() * 0.4)) / ratio;
+        gain.gain.setValueAtTime(0, time);
+        gain.gain.linearRampToValueAtTime(peak, time + 0.002);
+        gain.gain.exponentialRampToValueAtTime(0.0002, time + 0.09 + Math.random() * 0.12);
+        oscillator.connect(gain).connect(destination);
+        oscillator.start(time);
+        oscillator.stop(time + 0.25);
+        oscillator.onended = () => gain.disconnect();
+      }
     }
   }
 
@@ -1886,6 +1986,57 @@ export class AudioSystem {
     starter.connect(starterFilter).connect(gain).connect(this.engineBus);
     starter.start(now);
     starter.stop(now + 0.8);
+  }
+
+  /**
+   * The engine switched off: the last few firings slow and die away, a
+   * shudder through the hull and a puff from the exhaust. Played on the
+   * environment bus, since the engine's own bus falls silent at once.
+   */
+  private playEngineStopCue(): void {
+    const context = this.context;
+    const bus = this.environmentBus;
+    if (!context || !bus || context.state !== "running" || !this.enabled || this.engineMuted) return;
+    const now = context.currentTime;
+    const firing = context.createOscillator();
+    firing.type = "sawtooth";
+    firing.frequency.setValueAtTime(ENGINE_IDLE_FIRING, now);
+    firing.frequency.exponentialRampToValueAtTime(ENGINE_IDLE_FIRING * 0.28, now + 0.95);
+    const body = context.createBiquadFilter();
+    body.type = "lowpass";
+    body.frequency.setValueAtTime(420, now);
+    body.frequency.exponentialRampToValueAtTime(110, now + 0.95);
+    body.Q.value = 1.4;
+    const level = context.createGain();
+    level.gain.setValueAtTime(0.0001, now);
+    level.gain.exponentialRampToValueAtTime(0.12, now + 0.04);
+    level.gain.exponentialRampToValueAtTime(0.05, now + 0.5);
+    level.gain.exponentialRampToValueAtTime(0.0001, now + 1.05);
+    firing.connect(body).connect(level).connect(bus);
+    firing.start(now);
+    firing.stop(now + 1.1);
+    // The exhaust's last breath: a short low puff of noise.
+    const length = Math.floor(context.sampleRate * 0.35);
+    const buffer = context.createBuffer(1, length, context.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let index = 0; index < length; index += 1) data[index] = (Math.random() * 2 - 1) * Math.pow(1 - index / length, 2);
+    const puff = context.createBufferSource();
+    puff.buffer = buffer;
+    const puffFilter = context.createBiquadFilter();
+    puffFilter.type = "lowpass";
+    puffFilter.frequency.value = 260;
+    const puffLevel = context.createGain();
+    puffLevel.gain.value = 0.07;
+    puff.connect(puffFilter).connect(puffLevel).connect(bus);
+    puff.start(now + 0.85);
+    window.setTimeout(() => {
+      firing.disconnect();
+      body.disconnect();
+      level.disconnect();
+      puff.disconnect();
+      puffFilter.disconnect();
+      puffLevel.disconnect();
+    }, 1800);
   }
 
   /** Output that places a one-shot sound at a world position. */

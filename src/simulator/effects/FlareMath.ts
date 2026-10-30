@@ -57,27 +57,45 @@ export type FlareLaunch = {
   windZ: number;
   /** Per-flare random seed, for the flicker. */
   seed: number;
+  /**
+   * The flare gun's upgrade (see `EconomyMath.flareBoost`): how high it
+   * climbs (× the stock apex), how long it burns (× the stock burn) and how
+   * bright it is. Omitted: the stock gun.
+   */
+  apex?: number;
+  burn?: number;
+  power?: number;
 };
+
+/** When a flare launched with burn `burn` stops burning, and when its light is gone, s. */
+export function flareBurnEnd(burn = 1): number {
+  return FLARE_BURN_END + (FLARE_BURN_END - FLARE_RISE) * (Math.max(1, burn) - 1);
+}
+
+export function flareLife(burn = 1): number {
+  return flareBurnEnd(burn) + FLARE_FADE;
+}
 
 export type FlarePoint = { x: number; y: number; z: number };
 
-/** Height above the launch point at `age`, m. */
-export function flareHeight(age: number): number {
+/** Height above the launch point at `age`, m (`apex` the height it climbs to). */
+export function flareHeight(age: number, apex = FLARE_APEX): number {
   if (age <= 0) return 0;
   if (age < FLARE_RISE) {
     // Decelerating climb: fast off the launcher, slowing to the apex.
     const t = age / FLARE_RISE;
-    return FLARE_APEX * (1 - (1 - t) * (1 - t));
+    return apex * (1 - (1 - t) * (1 - t));
   }
-  return Math.max(0, FLARE_APEX - (age - FLARE_RISE) * FLARE_SINK);
+  return Math.max(0, apex - (age - FLARE_RISE) * FLARE_SINK);
 }
 
 /** Position of the flare (the rocket, then the star) at `age`. */
 export function flarePosition(launch: FlareLaunch, age: number, out: FlarePoint): FlarePoint {
-  const climb = flareHeight(age);
+  const apex = FLARE_APEX * (launch.apex ?? 1);
+  const climb = flareHeight(age, apex);
   const rise = Math.min(age, FLARE_RISE) / FLARE_RISE;
   // The lean is spent during the climb; afterwards the parachute drifts.
-  const lean = FLARE_APEX * FLARE_LEAN * rise * rise;
+  const lean = apex * FLARE_LEAN * rise * rise;
   const drift = Math.max(0, age - FLARE_RISE) * FLARE_DRIFT;
   out.x = launch.x + launch.leanX * lean + launch.windX * drift;
   out.y = launch.y + climb;
@@ -97,12 +115,14 @@ export function flareFlicker(age: number, seed: number): number {
  * Light of the flare at `age`, 0…~1.1: the small spark of the motor while it
  * climbs, the ignition flash at the apex, the long burn and the dying out.
  */
-export function flareBrightness(age: number, seed: number): number {
-  if (age <= 0 || age >= FLARE_LIFE) return 0;
+export function flareBrightness(age: number, seed: number, burn = 1): number {
+  const end = flareBurnEnd(burn);
+  const life = flareLife(burn);
+  if (age <= 0 || age >= life) return 0;
   if (age < FLARE_RISE) return 0.07 + 0.05 * smoothstep(0, 0.4, age);
   const sinceIgnition = age - FLARE_RISE;
   const ignite = smoothstep(0, 0.35, sinceIgnition);
-  const out = 1 - smoothstep(FLARE_BURN_END, FLARE_LIFE, age);
+  const out = 1 - smoothstep(end, life, age);
   return Math.max(0.07 * out, ignite * out * flareFlicker(age, seed));
 }
 

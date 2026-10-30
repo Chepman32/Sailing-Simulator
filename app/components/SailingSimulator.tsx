@@ -3,14 +3,16 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
-import type { CameraMode, Discovery, LightingMode, LoadingState, QualityChoice } from "@/src/simulator/types";
+import type { CameraMode, Discovery, FindEvent, LightingMode, LoadingState, QualityChoice } from "@/src/simulator/types";
 import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
 import { SoundPrompt } from "./SoundPrompt";
 import { usePwaInstall } from "./usePwaInstall";
 import { gravityRollDegrees, requestTiltPermission, screenAngle, screenRollDegrees, STEERING_STORAGE_KEY, swipeToRudder, tiltToRudder, wheelToRudder } from "./steering";
-import { featureText, getFeatureMessages } from "./featureMessages";
+import { featureText, fill, getFeatureMessages } from "./featureMessages";
 import { DiverHud } from "./DiverHud";
 import { ControlsCard } from "./ControlsCard";
+import { ShopModal } from "./ShopModal";
+import { findName, getShopMessages } from "./shopMessages";
 import { DustNotices, type NoticeItem } from "./DustNotice";
 import { getDiverMessages } from "./diverMessages";
 import { ChartView } from "./ChartView";
@@ -358,6 +360,7 @@ export function SailingSimulator() {
   const { canInstall, install: installApp } = usePwaInstall();
   // The controls card: open by itself on the first visit, and on H or the "?" button.
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [shopOpen, setShopOpen] = useState(false);
   const [controlsFirst, setControlsFirst] = useState(false);
   const [coarsePointer, setCoarsePointer] = useState(false);
   const closeControls = useCallback(() => {
@@ -369,6 +372,12 @@ export function SailingSimulator() {
       // The card simply shows again next time.
     }
     // Back in the skipper's eyes: the click that closed the card captures the mouse again.
+    simulatorRef.current?.setDiverFrozen(false);
+    simulatorRef.current?.requestDiverPointer();
+  }, []);
+  const closeShop = useCallback(() => {
+    setShopOpen(false);
+    simulatorRef.current?.setDiverFrozen(false);
     simulatorRef.current?.requestDiverPointer();
   }, []);
 
@@ -590,8 +599,15 @@ export function SailingSimulator() {
   const away = snapshot.diver.mode !== "helm";
   const closeChart = useCallback(() => setChartOpen(false), []);
   // Callbacks the simulator holds for its lifetime reach the current render through this.
-  type LatestHandlers = { keyAction: (action: string) => void; discovery: (discovery: Discovery) => void; radioFailed: (station: string) => void };
-  const latest = useRef<LatestHandlers>({ keyAction: () => {}, discovery: () => {}, radioFailed: () => {} });
+  type LatestHandlers = {
+    keyAction: (action: string) => void;
+    discovery: (discovery: Discovery) => void;
+    radioFailed: (station: string) => void;
+    find: (find: FindEvent) => void;
+    trade: () => void;
+  };
+  const latest = useRef<LatestHandlers>({ keyAction: () => {}, discovery: () => {}, radioFailed: () => {}, find: () => {}, trade: () => {} });
+  const shopWords = useMemo(() => getShopMessages(language), [language]);
   const cameraLabels = useMemo<Record<CameraMode, string>>(() => ({
     chase: messages.chase,
     helm: messages.helm,
@@ -603,7 +619,8 @@ export function SailingSimulator() {
     low: messages.low,
     medium: messages.medium,
     high: messages.high,
-  }), [messages]);
+    ultra: voyage.qualityUltra,
+  }), [messages, voyage]);
 
   useEffect(() => {
     const applyPreferredLanguage = () => {
@@ -675,6 +692,8 @@ export function SailingSimulator() {
           onKeyAction: (action) => latest.current.keyAction(action),
           onDiscovery: (discovery) => latest.current.discovery(discovery),
           onRadioFailed: (station) => latest.current.radioFailed(station),
+          onFind: (find) => latest.current.find(find),
+          onTrade: () => latest.current.trade(),
         });
         simulatorRef.current = simulator;
         // Development builds only: lets visual checks drive the scene from a
@@ -810,6 +829,8 @@ export function SailingSimulator() {
   const handlers: LatestHandlers = {
     keyAction: (action) => {
       if (action === "engine-on") showNotice(voyage.engineOnKey);
+      else if (action === "engine-on-space") showNotice(voyage.engineOnSpace);
+      else if (action === "engine-off-space") showNotice(voyage.engineOffSpace);
     },
     discovery: (discovery) => {
       discoveryId.current += 1;
@@ -818,6 +839,16 @@ export function SailingSimulator() {
       try { navigator.vibrate?.(discovery.kind === "poi" ? [20, 40, 20] : 16); } catch { /* not available */ }
     },
     radioFailed: () => showNotice(voyage.radioFailed),
+    find: (find) => {
+      showNotice(find.chest ? fill(shopWords.chestNotice, { gold: find.value }) : fill(shopWords.foundNotice, { name: findName(shopWords, find.kind), gold: find.value }));
+      try { navigator.vibrate?.(find.chest ? [30, 50, 30, 50, 60] : 14); } catch { /* not available */ }
+    },
+    trade: () => {
+      if (controlsOpen) return;
+      setChartOpen(false);
+      simulatorRef.current?.setDiverFrozen(true);
+      setShopOpen(true);
+    },
   };
   useEffect(() => {
     latest.current = handlers;
@@ -938,12 +969,14 @@ export function SailingSimulator() {
     if (!ready || event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     if (isTypingTarget(event.target)) return;
     // The controls card: H opens and closes it, Esc closes it; it holds the keys while open.
+    // The shop holds the keys while it is open (it closes itself on Esc and E).
+    if (shopOpen) return;
     if (event.code === "KeyH") {
       if (controlsOpen) closeControls();
       else {
         if (photoMode) exitPhotoMode();
         setChartOpen(false);
-        simulatorRef.current?.releaseDiverPointer();
+        simulatorRef.current?.setDiverFrozen(true);
         setControlsOpen(true);
       }
       event.preventDefault();
@@ -1145,12 +1178,29 @@ export function SailingSimulator() {
         <ControlsCard messages={voyage} touch={coarsePointer} firstVisit={controlsFirst} onClose={closeControls} />
       )}
 
+      {ready && shopOpen && !controlsOpen && (
+        <ShopModal
+          economy={snapshot.economy}
+          gold={snapshot.doubloons}
+          messages={shopWords}
+          onClose={closeShop}
+          actions={{
+            sell: (kind) => simulatorRef.current?.sellFinds(kind) ?? 0,
+            buyUpgrade: (id) => simulatorRef.current?.buyUpgrade(id) ?? false,
+            buyDecor: (id) => simulatorRef.current?.buyDecor(id) ?? false,
+            equip: (slot, id) => simulatorRef.current?.equipDecor(slot, id),
+          }}
+        />
+      )}
+
       {/* Faded rather than removed, so leaving photo mode is a smooth return;
           inert keeps the hidden controls out of reach meanwhile. */}
       {ready && away && !photoMode && (
         <DiverHud
           diver={snapshot.diver}
           messages={diverWords}
+          shop={shopWords}
+          wallet={{ gold: snapshot.doubloons, bag: snapshot.economy.bagCount }}
           touch={coarsePointer}
           actions={{
             returnToHelm: () => simulatorRef.current?.returnToHelm(),
@@ -1630,6 +1680,7 @@ export function SailingSimulator() {
                 <div className="logbook" aria-label={voyage.logbook}>
                   <span title={voyage.doubloons}>🪙 {snapshot.doubloons}</span>
                   <span title={voyage.flamingos}>🦩 {snapshot.flamingos}</span>
+                  {snapshot.economy.bagCount > 0 && <span title={shopWords.bag}>🎒 {snapshot.economy.bagCount}</span>}
                   <span title={voyage.placesFound}>🧭 {new Set(snapshot.discoveredPlaces.map((key) => key.split(":")[0])).size}/4</span>
                 </div>
               </div>
@@ -1678,6 +1729,8 @@ export function SailingSimulator() {
                   <select value={snapshot.qualityChoice} onChange={(event) => setQuality(event.target.value as QualityChoice)}>
                     <option value="auto">{messages.auto}</option>
                     <option value="low">{messages.low}</option><option value="medium">{messages.medium}</option><option value="high">{messages.high}</option>
+                    {/* The full pipeline is for a desktop GPU: not offered on a phone or tablet. */}
+                    {(!coarsePointer || snapshot.quality === "ultra") && <option value="ultra">{voyage.qualityUltra}</option>}
                   </select>
                 </label>
                 <label className="language-picker">

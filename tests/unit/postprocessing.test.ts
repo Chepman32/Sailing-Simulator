@@ -17,3 +17,21 @@ test("the guard maps NaN and negatives to zero and caps what could overflow a ha
   assert.ok(SANE_COLOR_GLSL.includes("c.r >= 0.0"), "a NaN fails the comparison and becomes zero");
   assert.ok(HDR_CEILING > 20 && HDR_CEILING < 65504, "above any real light, far below half-float overflow");
 });
+
+test("the ultra preset is everything at its best, and automatic mode steps down from it", async () => {
+  const { QUALITY_SETTINGS, stepDown } = await import("../../src/simulator/core/QualityManager");
+  const { high, ultra } = QUALITY_SETTINGS;
+  assert.equal(ultra.shadowMapSize, 4096);
+  assert.equal(ultra.anisotropy, 16);
+  assert.equal(ultra.msaaSamples, 8);
+  assert.ok(ultra.ambientOcclusion && ultra.godRays && ultra.oceanMicro && ultra.fullDetail);
+  assert.ok(!high.ambientOcclusion && !high.godRays && !high.fullDetail, "the high preset stays affordable");
+  for (const key of ["pixelBudget", "oceanSegments", "reflectionScale", "grassRadius", "grassDensity", "maxDpr"] as const) {
+    assert.ok(ultra[key] >= high[key], `${key} is no lower than on high`);
+  }
+  assert.equal(QUALITY_SETTINGS.low.grassRadius, 0, "no dense grass on the low preset");
+  assert.equal(stepDown("ultra"), "high");
+  assert.equal(stepDown("high"), "medium");
+  assert.equal(stepDown("medium"), "low");
+  assert.equal(stepDown("low"), "low");
+});

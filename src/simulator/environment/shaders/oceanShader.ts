@@ -218,6 +218,7 @@ export const oceanFragmentShader = /* glsl */ `
   uniform float uTime;
   uniform float uFoamDensity;
   uniform float uDetail;
+  uniform float uMicro;
   uniform vec3 uVesselPosition;
   uniform vec2 uVesselForward;
   uniform float uVesselSpeed;
@@ -490,6 +491,15 @@ ${detailCalls}
         // Chop a metre across, from no particular direction, so the swell's
         // straight crest lines never read as ruled bands in the glitter.
         rippleLayer(base * 0.85 + uTime * vec2(-0.21, 0.33), 1.25, 0.12, footprint, gust, 1.0, slope, lostVariance);
+      }
+      if (uMicro > 0.5) {
+        // Capillary waves (ultra): the finest roughness of the water, a few
+        // centimetres long and quick, crossing each other at an angle. Seen
+        // only close by (each layer fades as the pixel footprint outgrows
+        // it, its slopes handed on to the roughness), they turn the glitter
+        // near the yacht into a fine, living sparkle.
+        rippleLayer(base * 13.0 + uTime * vec2(0.92, -0.57), 0.077, 0.1, footprint, gust, RIPPLE_STRETCH, slope, lostVariance);
+        rippleLayer(mat2(0.6, -0.8, 0.8, 0.6) * base * 27.0 - uTime * vec2(0.74, 1.13), 0.037, 0.075, footprint, gust, 1.0, slope, lostVariance);
       }
       // The wind sea: short steep waves a few metres long, in no single
       // direction, with sharp crests. From a height they are what makes the

@@ -11,8 +11,11 @@ import {
   hop,
   hullDistance,
   JUMP_SPEED,
+  plunge,
+  plunge as plunge_,
   refillAir,
   RUN_SPEED,
+  RUN_STRIDE,
   STEP_UP,
   stepSwim,
   stepWalk,
@@ -21,6 +24,7 @@ import {
   WADE_START,
   wadingDepth,
   WALK_SPEED,
+  WALK_STRIDE,
   type DiverMode,
   type GroundWorld,
   type SwimInput,
@@ -32,7 +36,7 @@ import {
 import { LEAP_SECONDS, leapVelocity } from "./LeapMath";
 
 /** What the player could do right here with the interact key. */
-export type DiverPrompt = "helm" | "board" | null;
+export type DiverPrompt = "helm" | "board" | "pickup" | "trade" | null;
 
 /** Keys the diver listens to (the sailing keys are off while he is out of the helm). */
 const KEYS = new Set([
@@ -101,6 +105,8 @@ export class DiverController {
   private holdUp = false;
   private holdDown = false;
   private sprintHeld = false;
+  /** Diving gear bought from the traders: fins (× swimming speed) and tank (× air). */
+  readonly gear = { swim: 1, air: 1 };
   /** Torch on (toggled by the player; nights switch it on by itself once). */
   torch = false;
   private readonly eye = new THREE.Vector3();
@@ -120,8 +126,6 @@ export class DiverController {
   /** His body as the simulator poses it during the leap. */
   readonly leapView: LeapView = { eye: new THREE.Vector3(), feet: new THREE.Vector3(), yaw: 0, pitch: 0 };
   private leapSplashed = false;
-  /** The plunge of an entry is still carrying him (he comes up by himself unless he swims down). */
-  private plunging = false;
   /** Eyes lagging behind a sudden change of height (standing up out of the water, slipping in), m. */
   private eyeLag = 0;
   private readonly leapScratch = { x: 0, y: 0, z: 0 };
@@ -213,7 +217,6 @@ export class DiverController {
     this.releasePointer();
     this.keys.clear();
     this.leapTime = 0;
-    this.plunging = false;
     this.setMode("helm");
   }
 
@@ -258,7 +261,6 @@ export class DiverController {
     } else if (this.mode === "land") {
       this.jumpRequested = true;
     } else if (this.mode === "swim" && hop(this.swim, this.world)) {
-      this.plunging = false;
     }
   }
 
@@ -303,12 +305,30 @@ export class DiverController {
   };
 
   private readonly onMouseMove = (event: MouseEvent): void => {
-    if (!this.pointerLocked || !this.active || !this.inControl) return;
+    if (!this.pointerLocked || !this.active || !this.inControl || this.frozen) return;
     this.look(event.movementX, event.movementY, false);
   };
 
+  /**
+   * A dialog is open over his view (the trader's shop, the controls card):
+   * the keys are the dialog's, and he stands still until it closes.
+   */
+  setFrozen(frozen: boolean): void {
+    this.frozen = frozen;
+    if (!frozen) return;
+    this.keys.clear();
+    this.stickX = 0;
+    this.stickY = 0;
+    this.holdUp = false;
+    this.holdDown = false;
+    this.sprintHeld = false;
+    this.interactRequested = false;
+  }
+
+  private frozen = false;
+
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (!this.active || !KEYS.has(event.code)) return;
+    if (!this.active || this.frozen || !KEYS.has(event.code)) return;
     const target = event.target;
     if (target instanceof HTMLInputElement && target.type !== "range") return;
     if (target instanceof HTMLTextAreaElement) return;
@@ -380,17 +400,15 @@ export class DiverController {
     const swim = this.swim;
     swim.x = view.eye.x;
     swim.z = view.eye.z;
-    swim.y = Math.min(view.eye.y, eyeSurface - 0.1);
+    swim.y = Math.min(view.eye.y, eyeSurface - 0.05);
     swim.vx = vx * 0.35;
     swim.vz = vz * 0.35;
-    swim.vy = Math.max(-2.4, local.y * 0.45);
     swim.air = this.air;
-    swim.ascending = true;
-    swim.airborne = false;
     swim.splashed = 0;
     swim.breath = 0;
     swim.surface = Number.NaN;
-    this.plunging = true;
+    // In feet first at speed: about a metre under, then up again.
+    plunge(swim, -local.y);
     this.yaw = heading + view.yaw;
     this.pitch = view.pitch;
     if (!this.leapSplashed) this.hooks.splash(this.scratch.set(swim.x, eyeSurface, swim.z), 4);
@@ -420,13 +438,13 @@ export class DiverController {
     }
     const moving = Math.hypot(walk.vx, walk.vz);
     if (walk.grounded && moving > 0.3) {
-      this.stepClock += (dt * moving) / (input.sprint ? 1.25 : 0.72);
+      this.stepClock += (dt * moving) / (input.sprint ? RUN_STRIDE : WALK_STRIDE);
       if (this.stepClock >= 1) {
         this.stepClock -= 1;
         if (water > 0.12) this.hooks.wade?.(this.scratch.set(walk.x, walk.y + water, walk.z));
         else this.hooks.footstep(input.sprint);
       }
-      this.bobClock += dt * moving * 4.2;
+      this.bobClock += (dt * moving * Math.PI * 2) / (input.sprint ? RUN_STRIDE : WALK_STRIDE);
     }
     const surfaceAtFeet = this.world.surface(walk.x, walk.z);
     if (water > SWIM_START && (walk.grounded || walk.y + 0.4 < surfaceAtFeet)) {
@@ -439,13 +457,16 @@ export class DiverController {
       this.eyeLag += walk.y + EYE_HEIGHT - (surface + SURFACE_EYE);
       swim.x = walk.x;
       swim.z = walk.z;
-      swim.y = plunge > 0 ? surface - 0.3 - Math.min(1.2, plunge * 0.22) : surface + SURFACE_EYE;
+      swim.y = plunge > 0 ? surface - 0.05 : surface + SURFACE_EYE;
       swim.vx = walk.vx * 0.7;
       swim.vz = walk.vz * 0.7;
-      swim.vy = plunge > 0 ? -Math.min(2, plunge * 0.4) : 0;
-      swim.ascending = plunge > 0;
-      this.plunging = plunge > 0;
-      if (plunge > 0) this.eyeLag = 0;
+      swim.vy = 0;
+      swim.ascending = false;
+      swim.plunging = false;
+      if (plunge > 0) {
+        plunge_(swim, plunge);
+        this.eyeLag = 0;
+      }
       swim.airborne = false;
       swim.surface = Number.NaN;
       swim.air = this.air;
@@ -468,19 +489,25 @@ export class DiverController {
     this.deckVelocity.x += ((wishX / length) * speed - this.deckVelocity.x) * (1 - Math.exp(-control * dt));
     this.deckVelocity.z += ((wishZ / length) * speed - this.deckVelocity.z) * (1 - Math.exp(-control * dt));
 
-    // Move each axis on its own, so a wall stops one and he slides along it.
-    for (const axis of ["x", "z"] as const) {
-      const step = this.deckVelocity[axis] * dt;
-      if (Math.abs(step) < 1e-6) continue;
-      const nextX = axis === "x" ? this.feet.x + step : this.feet.x;
-      const nextZ = axis === "z" ? this.feet.z + step : this.feet.z;
-      const footing = deck.footing(nextX, nextZ, this.feet.y, this.grounded ? STEP_UP : 0.15);
-      if (footing.wall) {
-        this.deckVelocity[axis] = 0;
-        continue;
+    // Swept in moves shorter than a stanchion is thick, each axis on its own,
+    // so a wall stops one and he slides along it; his whole body (not a
+    // point) is kept off walls, the mast and the rails, so the eyes never
+    // come close enough to look through them.
+    const travel = Math.hypot(this.deckVelocity.x, this.deckVelocity.z) * dt;
+    const moves = Math.min(24, Math.max(1, Math.ceil(travel / 0.04)));
+    for (let move = 0; move < moves; move += 1) {
+      for (const axis of ["x", "z"] as const) {
+        const step = (this.deckVelocity[axis] * dt) / moves;
+        if (Math.abs(step) < 1e-6) continue;
+        const nextX = axis === "x" ? this.feet.x + step : this.feet.x;
+        const nextZ = axis === "z" ? this.feet.z + step : this.feet.z;
+        if (deck.blocked(nextX, nextZ, this.feet.y, this.grounded ? STEP_UP : 0.15)) {
+          this.deckVelocity[axis] = 0;
+          continue;
+        }
+        this.feet.x = nextX;
+        this.feet.z = nextZ;
       }
-      this.feet.x = nextX;
-      this.feet.z = nextZ;
     }
 
     const floor = deck.footing(this.feet.x, this.feet.z, this.feet.y, this.grounded ? STEP_UP : 0.05);
@@ -504,12 +531,12 @@ export class DiverController {
     // Footsteps.
     const moving = Math.hypot(this.deckVelocity.x, this.deckVelocity.z);
     if (this.grounded && moving > 0.3) {
-      this.stepClock += dt * moving / (input.sprint ? 1.25 : 0.72);
+      this.stepClock += (dt * moving) / (input.sprint ? RUN_STRIDE : WALK_STRIDE);
       if (this.stepClock >= 1) {
         this.stepClock -= 1;
         this.hooks.footstep(input.sprint);
       }
-      this.bobClock += dt * moving * 4.2;
+      this.bobClock += (dt * moving * Math.PI * 2) / (input.sprint ? RUN_STRIDE : WALK_STRIDE);
     }
 
     // Over the side: into the sea.
@@ -524,14 +551,13 @@ export class DiverController {
       swim.x = this.scratch.x;
       swim.z = this.scratch.z;
       // The plunge carries him under for a moment.
-      swim.y = surface - 0.25 - Math.min(1.6, fall * 0.28);
+      swim.y = surface - 0.05;
       swim.vx = vx * 0.6;
       swim.vz = vz * 0.6;
-      swim.vy = -Math.min(2.5, fall * 0.5);
+      swim.vy = 0;
       swim.air = this.air;
       // The plunge carries him under; he comes back up by himself.
-      swim.ascending = true;
-      this.plunging = true;
+      plunge(swim, Math.max(2, fall));
       swim.airborne = false;
       swim.splashed = 0;
       swim.surface = Number.NaN;
@@ -559,12 +585,8 @@ export class DiverController {
     swimInput.sprint = input.sprint;
     swimInput.yaw = this.yaw;
     swimInput.pitch = this.pitch;
-    // The plunge brings him back up by himself, unless he swims down.
-    if (this.plunging && (input.vertical < 0 || (input.y > 0.3 && this.pitch < -0.45))) {
-      this.plunging = false;
-      if (swim.air > 0) swim.ascending = false;
-    }
-    if (this.plunging && !swim.ascending) this.plunging = false;
+    swimInput.speedScale = this.gear.swim;
+    swimInput.tankScale = this.gear.air;
     // While the script still runs the view settles from looking down at the water.
     if (!this.inControl) this.pitch += (-0.05 - this.pitch) * (1 - Math.exp(-2.2 * dt));
     const depth = stepSwim(swim, swimInput, this.world, dt);
@@ -589,7 +611,6 @@ export class DiverController {
       walk.landed = 0;
       this.air = swim.air;
       this.eyeLag += swim.y - (ground + EYE_HEIGHT);
-      this.plunging = false;
       this.hooks.wade?.(this.scratch.set(swim.x, surfaceHere, swim.z));
       this.setMode("land");
       this.prompt = null;
@@ -669,8 +690,13 @@ export class DiverController {
     if (Math.abs(this.eyeLag) < 1e-3) this.eyeLag = 0;
     if (this.mode === "leap") {
       const view = this.leapView;
+      // The steps out from behind the wheel to the edge: the head bobs with
+      // each footfall and sways a little from foot to foot.
+      const t = this.leapTime;
+      const stepping = smoothstep(0.55, 0.75, t) * (1 - smoothstep(1.35, 1.6, t));
       camera.position.copy(view.eye);
-      camera.rotation.set(view.pitch - pitch * 0.25, heading + view.yaw + Math.PI, roll * 0.25, "YXZ");
+      camera.position.y += Math.sin(t * 13) * 0.02 * stepping;
+      camera.rotation.set(view.pitch - pitch * 0.25, heading + view.yaw + Math.PI, roll * 0.25 + Math.sin(t * 6.5) * 0.014 * stepping, "YXZ");
     } else if (this.mode === "land") {
       const walk = this.walk;
       const bob = Math.sin(this.bobClock) * 0.028 * (walk.grounded ? 1 : 0);
@@ -692,7 +718,7 @@ export class DiverController {
       camera.position.set(swim.x, swim.y + sway + this.eyeLag, swim.z);
       // Floating, the eyes never dip into the drawn surface (it would show
       // the sea from inside, neither from above nor from below).
-      if (swim.airborne || (this.depth < DIVE_DEPTH * 0.5 && !swim.ascending)) {
+      if (swim.airborne || (this.depth < DIVE_DEPTH * 0.5 && !swim.ascending && !swim.plunging)) {
         const line = (this.world.floatLine ?? this.world.surface)(swim.x, swim.z);
         camera.position.y = Math.max(camera.position.y, line + SURFACE_EYE * 0.6);
       }

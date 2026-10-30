@@ -167,11 +167,11 @@ export function shaftTargetForThrottle(throttle: number): number {
  * Propeller thrust in newtons. Thrust follows shaft speed squared and fades as
  * the hull catches up with the water the propellers are throwing aft.
  */
-export function propellerThrust(shaft: number, forwardSpeed: number): number {
+export function propellerThrust(shaft: number, forwardSpeed: number, boost: { thrust: number; fade: number } = { thrust: 1, fade: 1 }): number {
   const direction = Math.sign(shaft);
   if (direction === 0) return 0;
-  const bollard = direction > 0 ? AHEAD_BOLLARD_THRUST : ASTERN_BOLLARD_THRUST;
-  const advance = clamp((forwardSpeed * direction) / THRUST_FADE_SPEED, -0.4, 1);
+  const bollard = (direction > 0 ? AHEAD_BOLLARD_THRUST : ASTERN_BOLLARD_THRUST) * boost.thrust;
+  const advance = clamp((forwardSpeed * direction) / (THRUST_FADE_SPEED * boost.fade), -0.4, 1);
   return direction * bollard * shaft * shaft * (1 - 0.6 * advance);
 }
 
@@ -204,6 +204,8 @@ export class VesselPhysics {
   private blended = false;
   /** Signed propeller shaft speed as a fraction of maximum. */
   engineShaft = 0;
+  /** The engine upgrade: more thrust, a higher top speed, a quicker answer (see `EconomyMath.engineBoost`). */
+  engineBoost = { thrust: 1, fade: 1, response: 1 };
   /** Collision avoidance near islands and ships; `guard.output` is what the helm actually does. */
   readonly guard: ShoreGuardState = createShoreGuard();
   /** Distance to the nearest ship's hull, if ships exist; the guard avoids it like a shore. */
@@ -314,9 +316,9 @@ export class VesselPhysics {
     this.engineShaft = moveToward(
       this.engineShaft,
       shaftTarget,
-      (spoolingUp ? SHAFT_SPOOL_UP : SHAFT_SPOOL_DOWN) * delta,
+      (spoolingUp ? SHAFT_SPOOL_UP : SHAFT_SPOOL_DOWN) * this.engineBoost.response * delta,
     );
-    const thrust = propellerThrust(this.engineShaft, forwardSpeed);
+    const thrust = propellerThrust(this.engineShaft, forwardSpeed, this.engineBoost);
 
     // --- Hull --------------------------------------------------------------
     // Shallow water does not drag her to a stop: she never runs aground (see

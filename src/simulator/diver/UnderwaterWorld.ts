@@ -203,7 +203,7 @@ function staghornGeometry(): THREE.BufferGeometry {
     const angle = (trunk / 5) * Math.PI * 2 + hash(trunk, 1, 1);
     branch(parts, new THREE.Vector3(Math.cos(angle) * 0.1, 0, Math.sin(angle) * 0.1), new THREE.Vector3(Math.cos(angle) * 0.5, 1, Math.sin(angle) * 0.5), 0.32, 0.05, 3, trunk + 11);
   }
-  const merged = mergeGeometries(parts.map((part) => part.toNonIndexed()), false)!;
+  const merged = mergeGeometries(parts.map((part) => (part.index ? part.toNonIndexed() : part)), false)!;
   parts.forEach((part) => part.dispose());
   merged.computeVertexNormals();
   return paintAll(merged, (_x, y, _z, out) => {
@@ -621,6 +621,16 @@ export class UnderwaterWorld {
   private readonly bubbleList: Bubble[] = [];
   readonly torch: THREE.SpotLight;
   private readonly swayTime = { value: 0 };
+  /**
+   * Origin of the sand's pattern: the world's position snapped to 2 km
+   * squares, so its noise is worked out on small numbers wherever the yacht
+   * has sailed (far from the world's origin float precision turns fine
+   * grain into blocks and bands).
+   */
+  private readonly sandOrigin = { value: new THREE.Vector2() };
+  /** The torch's upgrade: × its brightness and × its reach. */
+  private torchPower = 1;
+  private torchRange = 1;
   private time = 0;
 
   constructor(
@@ -764,10 +774,15 @@ export class UnderwaterWorld {
 
   /** Sand: ripples, rubble and weed, as relief and colour in the shader. */
   private sandSurface(material: THREE.MeshStandardMaterial): void {
-    patchMaterialShader(material, "dive-sand-v2", (shader) => {
+    const origin = this.sandOrigin;
+    patchMaterialShader(material, "dive-sand-v3", (shader) => {
+      shader.uniforms.uSandOrigin = origin;
       shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", "#include <common>\nvarying vec3 vSandWorld;")
-        .replace("#include <worldpos_vertex>", "#include <worldpos_vertex>\nvSandWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+        .replace("#include <common>", "#include <common>\nvarying vec3 vSandWorld;\nuniform vec2 uSandOrigin;")
+        .replace(
+          "#include <worldpos_vertex>",
+          "#include <worldpos_vertex>\nvSandWorld = (modelMatrix * vec4(transformed, 1.0)).xyz - vec3(uSandOrigin.x, 0.0, uSandOrigin.y);",
+        );
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
@@ -780,14 +795,17 @@ export class UnderwaterWorld {
           }
           // Wave ripples in the sand: long sinuous crests whose heading wanders
           // from patch to patch, sharp-crested and round-troughed like real
-          // ones, with a finer set crossing them in the shallows.
+          // ones, with a finer set crossing them in the shallows. The crests
+          // bend through a slow warp of the phase (never a rotation about the
+          // origin, whose turn would be multiplied by the distance from it and
+          // pack the crests ever closer far out): their spacing stays within
+          // about 0.6–3 m everywhere.
           float sandRipples(vec2 p) {
-            float heading = (sandNoise(p * 0.045 + 3.0) - 0.5) * 1.4;
-            vec2 across = vec2(cos(0.6 + heading), sin(0.6 + heading));
-            float warp = sandNoise(p * 0.35) * 3.0 + sandNoise(p * 1.1) * 0.6;
-            float wave = 0.5 + 0.5 * sin(dot(p, across) * 5.8 + warp * 2.2);
+            const vec2 across = vec2(0.825, 0.565);
+            float bend = sandNoise(p * 0.045 + 3.0) * 60.0 + sandNoise(p * 0.35) * 6.6 + sandNoise(p * 1.1) * 1.3;
+            float wave = 0.5 + 0.5 * sin(dot(p, across) * 5.8 + bend);
             float crest = 1.0 - pow(1.0 - wave, 1.8);
-            float fine = 0.5 + 0.5 * sin(dot(p, vec2(-across.y, across.x)) * 13.0 + sandNoise(p * 2.3) * 4.0);
+            float fine = 0.5 + 0.5 * sin(dot(p, vec2(-across.y, across.x)) * 13.0 + sandNoise(p * 0.06 - 5.0) * 70.0 + sandNoise(p * 2.3) * 4.0);
             float fineAmount = sandNoise(p * 0.12 - 9.0);
             return crest * 2.0 - 1.0 + (fine - 0.5) * 0.2 * fineAmount;
           }
@@ -922,6 +940,14 @@ export class UnderwaterWorld {
     });
   }
 
+  /** A brighter, farther-reaching torch (the gear upgrade). */
+  setTorchBoost(power: number, range: number): void {
+    this.torchPower = Math.max(0.1, power);
+    this.torchRange = Math.max(0.1, range);
+    this.torch.distance = 32 * this.torchRange;
+    this.torch.angle = Math.min(0.62, 0.42 + (this.torchRange - 1) * 0.08);
+  }
+
   /** Plunge or breath: `count` bubbles of up to `size` m at `position`. */
   emitBubbles(position: THREE.Vector3, count: number, size: number, spread = 0.08): void {
     for (let index = 0; index < count; index += 1) {
@@ -961,6 +987,7 @@ export class UnderwaterWorld {
   ): void {
     this.time += delta;
     this.swayTime.value = this.time;
+    this.sandOrigin.value.set(Math.floor(centre.x / 2048) * 2048, Math.floor(centre.z / 2048) * 2048);
     this.group.visible = active;
     if (!active) {
       this.torch.intensity = 0;
@@ -1036,7 +1063,7 @@ export class UnderwaterWorld {
     this.torch.position.copy(camera.position).add(new THREE.Vector3(0.18, -0.15, 0).applyQuaternion(camera.quaternion));
     this.torch.target.position.copy(camera.position).addScaledVector(forward, 10);
     this.torch.target.updateMatrixWorld();
-    this.torch.intensity += ((torchOn ? 55 : 0) - this.torch.intensity) * (1 - Math.exp(-delta * 12));
+    this.torch.intensity += ((torchOn ? 55 * this.torchPower : 0) - this.torch.intensity) * (1 - Math.exp(-delta * 12));
   }
 
   private placeSeabed(x: number, z: number): void {

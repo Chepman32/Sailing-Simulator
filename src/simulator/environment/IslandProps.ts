@@ -297,7 +297,10 @@ function transformed(geometry: THREE.BufferGeometry, x: number, y: number, z: nu
 
 type Surface = (radial: number, angle: number) => number;
 type LeafBuffers = { positions: number[]; uvs: number[]; colors: number[]; normals: number[] };
-type Parts = { solid: THREE.BufferGeometry[]; glow: THREE.BufferGeometry[]; leaves: LeafBuffers };
+/** Something solid a walker goes round: centre (island-local) and radius, m. */
+export type PropFootprint = { x: number; z: number; radius: number };
+
+type Parts = { solid: THREE.BufferGeometry[]; glow: THREE.BufferGeometry[]; leaves: LeafBuffers; stones: PropFootprint[] };
 
 /** Granite boulders: clusters on the shore, half in the water, and a few on the hills. */
 function addBoulders(island: IslandDefinition, profile: IslandProfile, surface: Surface, parts: Parts): void {
@@ -323,6 +326,7 @@ function addBoulders(island: IslandDefinition, profile: IslandProfile, surface: 
       const tone = hash(id, 500 + seed) < 0.4 ? pink : granite;
       const geometry = blob(size, 0.62 + hash(id, 600 + seed) * 0.25, seed * 1.7 + id * 0.01, 2, 0.16);
       transformed(geometry, point.x, ground + size * 0.25, point.z, hash(id, 700 + seed) * 6.28, (hash(id, 800 + seed) - 0.5) * 0.5);
+      parts.stones.push({ x: point.x, z: point.z, radius: size * 0.85 });
       parts.solid.push(
         painted(geometry, (x, y, z, out) => {
           const n = Math.sin(x * 2.1 + z * 1.7 + seed) * 0.5 + 0.5;
@@ -346,6 +350,7 @@ function addBoulders(island: IslandDefinition, profile: IslandProfile, surface: 
         const a = Math.atan2(z / island.scaleZ, x);
         const geometry = blob(size, 0.75, seed * 2.3 + index, 2, 0.14);
         transformed(geometry, x, surface(radial, a) + size * 0.35, z, hash(id, 930 + seed) * 6.28, 0.2);
+        parts.stones.push({ x, z, radius: size * 0.8 });
         parts.solid.push(painted(geometry, (px, py, pz, out) => {
           const n = Math.sin(px * 1.9 - pz * 2.3 + seed) * 0.5 + 0.5;
           out.copy(granite).multiplyScalar(0.88 + n * 0.2).lerp(lichen, smoothstep(0.6, 1, n) * 0.4);
@@ -452,6 +457,23 @@ function addPier(island: IslandDefinition, profile: IslandProfile, parts: Parts)
     dirZ: dir.z,
     length: length + 2.4,
     halfWidth: width * 0.95 + 0.6,
+  };
+}
+
+/**
+ * Where the island's trader stands (an island with a pier has one): on the
+ * sand in front of the stilt hut's porch, facing the sea and the pier.
+ * World x, z and the heading he faces (0 along +Z), or null.
+ */
+export function traderSpot(island: IslandDefinition, profile: IslandProfile): { x: number; z: number; facing: number } | null {
+  if (profile.pierAngle === null) return null;
+  const angle = profile.pierAngle + 0.2;
+  const spot = islandPoint(island, 0.74, angle);
+  const dir = outward(island, angle);
+  return {
+    x: island.centerX + spot.x + dir.x * 4.4,
+    z: island.centerZ + spot.z + dir.z * 4.4,
+    facing: Math.atan2(dir.x, dir.z),
   };
 }
 
@@ -658,11 +680,13 @@ export type IslandFurniture = {
   pier: PierFootprint | null;
   /** Island-local position of the lighthouse's lamp, if it has one. */
   lamp: THREE.Vector3 | null;
+  /** Boulders and tors a walker goes round (island-local). */
+  stones: PropFootprint[];
 };
 
 /** Builds everything that furnishes an island (see `islandProfile`). */
 export function furnishIsland(island: IslandDefinition, profile: IslandProfile, surface: Surface): IslandFurniture {
-  const parts: Parts = { solid: [], glow: [], leaves: { positions: [], uvs: [], colors: [], normals: [] } };
+  const parts: Parts = { solid: [], glow: [], leaves: { positions: [], uvs: [], colors: [], normals: [] }, stones: [] };
   const clearings = islandClearings(island, profile);
   addBoulders(island, profile, surface, parts);
   addShrubs(island, profile, surface, clearings, parts);
@@ -676,7 +700,7 @@ export function furnishIsland(island: IslandDefinition, profile: IslandProfile, 
     if (merged) computeBoundingSphereFast(merged);
     return merged;
   };
-  return { solid: merge(parts.solid), glow: merge(parts.glow), leaves: leafGeometry(parts.leaves), pier, lamp };
+  return { solid: merge(parts.solid), glow: merge(parts.glow), leaves: leafGeometry(parts.leaves), pier, lamp, stones: parts.stones };
 }
 
 /** Signed distance from (x, z) to a pier's footprint (negative inside) and the outward normal. */

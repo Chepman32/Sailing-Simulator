@@ -155,6 +155,30 @@ const SAND_DECLARATIONS = /* glsl */ `
     }
     return occlusion;
   }
+
+  // Sun sparkle: quartz grains and shell flakes whose facets happen to
+  // mirror the sun into the eye. Grains are looked up on a grid sized to the
+  // pixel (two neighbouring sizes blended), so the glitter is stable at any
+  // distance: crisp single points underfoot, a fine shimmer further off, and
+  // gone into the sand's sheen before it could flicker. Each cell holds one
+  // facet tilted at random; it flashes when it bisects the eye and the sun.
+  float sandGlintLevel(vec2 p, float level, vec3 halfway) {
+    float cell = 0.004 * exp2(level);
+    vec2 c = floor(p / cell);
+    float present = step(skyHash(c * 0.731 + level * 17.13), 0.32);
+    vec2 tilt = (vec2(skyHash(c + 3.17 + level), skyHash(c - 7.71 - level)) - 0.5) * 0.85;
+    vec3 facet = normalize(vec3(tilt.x, 1.0, tilt.y));
+    float align = dot(facet, halfway);
+    return present * smoothstep(0.9965, 0.9995, align);
+  }
+
+  float sandSparkle(vec2 p, float footprint, vec3 halfway) {
+    float level = clamp(log2(max(footprint, 1.0e-5) / 0.004), 0.0, 7.0);
+    float l0 = floor(level);
+    float glint = mix(sandGlintLevel(p, l0, halfway), sandGlintLevel(p, l0 + 1.0, halfway), level - l0);
+    // Further off a pixel averages many grains: fewer, fainter flashes.
+    return glint / (1.0 + level * 0.9) * (1.0 - smoothstep(4.5, 7.0, level));
+  }
 `;
 
 /** Decorates the island terrain material with sand, swash and palm shadows. */
@@ -163,7 +187,7 @@ export function applyIslandSurface(
   surface: IslandSurfaceUniforms,
   sky: Record<string, THREE.IUniform>,
 ): void {
-  patchMaterialShader(material, "island-surface-v3", (shader) => {
+  patchMaterialShader(material, "island-surface-v4", (shader) => {
     Object.assign(shader.uniforms, sky, surface, ISLAND_SLOT_UNIFORMS);
     shader.vertexShader = injectAfter(
       shader.vertexShader.replace(
@@ -301,6 +325,14 @@ export function applyIslandSurface(
         float relief = skyNoise(sandPosition * 1.7);
         bump += (vec2(skyNoise(sandPosition * 1.7 + vec2(0.3, 0.0)), skyNoise(sandPosition * 1.7 + vec2(0.0, 0.3))) - relief)
           * 0.35 * rippleResolved * vSandMask;
+        // Grain-scale relief: each grain a tiny facet of its own, then
+        // clusters of grains, both fading out before they could shimmer.
+        float microResolved = 1.0 - smoothstep(0.003, 0.012, sandFootprint);
+        vec2 grainCell = floor(sandPosition * 260.0);
+        bump += (vec2(skyHash(grainCell + 1.3), skyHash(grainCell - 4.1)) - 0.5) * 0.55 * microResolved * vSandMask * (1.0 - sandWet * 0.7);
+        float clusterResolved = 1.0 - smoothstep(0.008, 0.035, sandFootprint);
+        vec2 clusterCell = floor(sandPosition * 70.0);
+        bump += (vec2(skyHash(clusterCell + 9.7), skyHash(clusterCell - 2.9)) - 0.5) * 0.22 * clusterResolved * vSandMask;
         vec3 bumpView = (viewMatrix * vec4(-bump.x, 0.0, -bump.y, 0.0)).xyz;
         normal = normalize(normal + bumpView);
       }
@@ -338,6 +370,19 @@ export function applyIslandSurface(
       float palmShade = palmShadowAt(vSandWorld, 8.0);
       reflectedLight.directDiffuse *= palmShade;
       reflectedLight.directSpecular *= palmShade;
+      if (vSandMask > 0.01) {
+        // Glitter on dry sand in the sun (none in the palms' shade, on the
+        // swash sheet or at night); damp sand sparkles less.
+        vec3 sunWorld = normalize(uSunDirection);
+        float sunUp = smoothstep(-0.02, 0.15, sunWorld.y) * (1.0 - uNight);
+        if (sunUp > 0.0) {
+          vec3 toEyeWorld = normalize(cameraPosition - vSandWorld);
+          vec3 halfway = normalize(toEyeWorld + sunWorld);
+          float sparkle = sandSparkle(sandPosition, sandFootprint, halfway);
+          float weight = sparkle * sunUp * (1.0 - sandWet * 0.75) * (1.0 - smoothstep(0.0, 0.03, sheet)) * vSandMask * palmShade * (1.0 - uCloudCover * 0.6);
+          reflectedLight.directSpecular += uSunColor * weight * 5.0;
+        }
+      }
       float trunkShade = trunkOcclusion(vSandWorld.xz);
       reflectedLight.indirectDiffuse *= trunkShade;
       reflectedLight.directDiffuse *= mix(1.0, trunkShade, 0.5);

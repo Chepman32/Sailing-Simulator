@@ -208,3 +208,28 @@ test("the leap over the side: hands off, a turn outboard, a jump clear of the hu
   assert.ok(clearAt > 0.7, `clears the deck edge in the air (${clearAt.toFixed(2)} m)`);
   assert.ok(eyesUnder < LEAP_SECONDS, `under before control returns (${eyesUnder.toFixed(2)} s)`);
 });
+
+test("a jump in carries him about a metre down, then the water floats him up or he swims on down", async () => {
+  const { plunge, RUN_SPEED, WALK_SPEED } = await import("../../src/simulator/diver/DiverMath");
+  const deepest = (input: SwimInput, seconds: number) => {
+    const state = createSwimState(0, -0.1, 0);
+    plunge(state);
+    let lowest = 0;
+    let depth = 0;
+    for (let t = 0; t < seconds; t += 1 / 60) {
+      depth = stepSwim(state, input, calm, 1 / 60);
+      lowest = Math.max(lowest, depth);
+    }
+    return { lowest, depth, state };
+  };
+  const drift = deepest(still(), 6);
+  assert.ok(drift.lowest > 0.7 && drift.lowest < 1.5, `plunged to ${drift.lowest.toFixed(2)} m`);
+  assert.ok(drift.depth < DIVE_DEPTH, "and floats back up to the surface by himself");
+  assert.equal(drift.state.plunging, false);
+  // Kicking down from the plunge he keeps going.
+  const dive = deepest(still({ vertical: -1 }), 4);
+  assert.ok(dive.depth > 2.5, `swam on down to ${dive.depth.toFixed(2)} m`);
+  // Walking is the old running pace; sprinting half as fast again.
+  assert.ok(WALK_SPEED >= 2.8 && WALK_SPEED <= 3);
+  assert.ok(RUN_SPEED / WALK_SPEED >= 1.5 && RUN_SPEED / WALK_SPEED <= 1.6);
+});

@@ -100,6 +100,9 @@ export class ScreenLod {
   }
 
   /** Picks each mesh's level for this camera. Cheap: one distance per registered mesh. */
+  /** Every mesh at its full detail whatever its size on screen (the ultra preset). */
+  fullDetail = false;
+
   update(camera: THREE.PerspectiveCamera): void {
     this.buildPending();
     const focal = 1 / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
@@ -120,7 +123,7 @@ export class ScreenLod {
       const distance = Math.max(0.1, this.centre.distanceTo(camera.position));
       // Size relative to the half-height of the view.
       const size = (radius / distance) * focal * 0.5;
-      const level = chooseLodLevel(size, entry.current, entry.steps);
+      const level = this.fullDetail ? 0 : chooseLodLevel(size, entry.current, entry.steps);
       if (level !== entry.current) {
         entry.current = level;
         mesh.geometry = level === 0 ? entry.full : entry.levels[level - 1]!;

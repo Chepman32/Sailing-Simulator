@@ -10,7 +10,10 @@ import * as THREE from "three";
  * layers: the cockpit sole under the hardtop, the hardtop itself). Standing
  * at some height, the floor is the highest layer no more than a step above
  * the feet; a cell whose every layer is higher is a wall; a cell with none
- * is the sea.
+ * is the sea. Upright surfaces (the mast, stanchions, the sides of the
+ * cabin and the helm pedestal, a seat's front) are kept as well, as the
+ * height span they occupy in each cell: wherever one stands between a step
+ * and head height it is a wall too, so nothing upright is walked through.
  */
 
 /** Cell size, m. */
@@ -33,11 +36,15 @@ export class DeckField {
   readonly rows: number;
   /** LAYERS heights per cell, NaN for none, highest first. */
   private readonly heights: Float32Array;
+  /** Lowest and highest point of upright surfaces in each cell, NaN for none. */
+  private readonly uprightLow: Float32Array;
+  private readonly uprightHigh: Float32Array;
 
   constructor(root: THREE.Object3D, skip: (object: THREE.Object3D) => boolean = () => false) {
     root.updateMatrixWorld(true);
     const toRoot = new THREE.Matrix4().copy(root.matrixWorld).invert();
     const triangles: number[] = [];
+    const upright: number[] = [];
     const matrix = new THREE.Matrix4();
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
@@ -66,7 +73,10 @@ export class DeckField {
         const area = normal.length();
         if (area < 1e-6) continue;
         // Either winding: an imported model's triangles face either way.
-        if (Math.abs(normal.y) / area < FLOOR_COSINE) continue;
+        if (Math.abs(normal.y) / area < FLOOR_COSINE) {
+          upright.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+          continue;
+        }
         triangles.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
         box.expandByPoint(a).expandByPoint(b).expandByPoint(c);
       }
@@ -78,6 +88,70 @@ export class DeckField {
     this.rows = Math.max(1, Math.ceil((box.max.z - this.minZ) / CELL) + 2);
     this.heights = new Float32Array(this.columns * this.rows * LAYERS).fill(Number.NaN);
     for (let offset = 0; offset < triangles.length; offset += 9) this.rasterise(triangles, offset);
+    this.uprightLow = new Float32Array(this.columns * this.rows).fill(Number.NaN);
+    this.uprightHigh = new Float32Array(this.columns * this.rows).fill(Number.NaN);
+    for (let offset = 0; offset < upright.length; offset += 9) this.rasteriseUpright(upright, offset);
+  }
+
+  /**
+   * An upright triangle seen from above is a sliver: it is sampled over its
+   * surface (closer than half a cell) and each cell it crosses keeps the
+   * span of heights it covers there.
+   */
+  private rasteriseUpright(t: number[], o: number): void {
+    const ax = t[o]!, ay = t[o + 1]!, az = t[o + 2]!;
+    const bx = t[o + 3]!, by = t[o + 4]!, bz = t[o + 5]!;
+    const cx = t[o + 6]!, cy = t[o + 7]!, cz = t[o + 8]!;
+    // Only what reaches into the deck's footprint matters.
+    if (Math.max(ax, bx, cx) < this.minX || Math.max(az, bz, cz) < this.minZ) return;
+    const edge = Math.max(Math.hypot(bx - ax, by - ay, bz - az), Math.hypot(cx - ax, cy - ay, cz - az), Math.hypot(cx - bx, cy - by, cz - bz));
+    const steps = Math.min(140, Math.max(1, Math.ceil(edge / (CELL * 0.5))));
+    for (let i = 0; i <= steps; i += 1) {
+      for (let j = 0; j <= steps - i; j += 1) {
+        const u = i / steps;
+        const v = j / steps;
+        const w = 1 - u - v;
+        const x = ax * w + bx * u + cx * v;
+        const y = ay * w + by * u + cy * v;
+        const z = az * w + bz * u + cz * v;
+        const column = Math.floor((x - this.minX) / CELL);
+        const row = Math.floor((z - this.minZ) / CELL);
+        if (column < 0 || row < 0 || column >= this.columns || row >= this.rows) continue;
+        const cell = row * this.columns + column;
+        const low = this.uprightLow[cell]!;
+        const high = this.uprightHigh[cell]!;
+        this.uprightLow[cell] = Number.isNaN(low) ? y : Math.min(low, y);
+        this.uprightHigh[cell] = Number.isNaN(high) ? y : Math.max(high, y);
+      }
+    }
+  }
+
+  /** Whether something upright stands in the cell at (x, z) between a step and head height. */
+  private uprightAt(x: number, z: number, feetY: number, stepUp: number): boolean {
+    const column = Math.floor((x - this.minX) / CELL);
+    const row = Math.floor((z - this.minZ) / CELL);
+    if (column < 0 || row < 0 || column >= this.columns || row >= this.rows) return false;
+    const cell = row * this.columns + column;
+    const high = this.uprightHigh[cell]!;
+    if (Number.isNaN(high)) return false;
+    return high > feetY + stepUp && this.uprightLow[cell]! < feetY + HEADROOM;
+  }
+
+  /**
+   * Whether a body of `radius` standing at (x, z) with its feet at `feetY`
+   * would be inside anything (a wall, the mast, a stanchion): checked round
+   * its outline, so the eyes never come close enough to see through a wall.
+   */
+  blocked(x: number, z: number, feetY: number, stepUp: number, radius = 0.24): boolean {
+    for (let index = 0; index <= 8; index += 1) {
+      const angle = (index / 8) * Math.PI * 2;
+      const r = index === 8 ? 0 : radius;
+      const px = x + Math.cos(angle) * r;
+      const pz = z + Math.sin(angle) * r;
+      if (this.uprightAt(px, pz, feetY, stepUp)) return true;
+      if (this.floor(px, pz, feetY, stepUp).wall) return true;
+    }
+    return false;
   }
 
   /** Writes one triangle's heights into the cells whose centres it covers. */
@@ -147,6 +221,7 @@ export class DeckField {
     const column = Math.floor((x - this.minX) / CELL);
     const row = Math.floor((z - this.minZ) / CELL);
     if (column < 0 || row < 0 || column >= this.columns || row >= this.rows) return { found: false, height: -Infinity, wall: false };
+    if (this.uprightAt(x, z, feetY, stepUp)) return { found: false, height: -Infinity, wall: true };
     const base = (row * this.columns + column) * LAYERS;
     for (let layer = 0; layer < LAYERS; layer += 1) {
       const value = this.heights[base + layer]!;

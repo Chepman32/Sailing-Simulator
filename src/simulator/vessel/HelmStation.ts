@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { WideMonitor, type SonarBlip } from "./WideMonitor";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { islandEdgeNoise, islandsWithin, WATERLINE_RADIAL, type IslandDefinition } from "../environment/IslandMath";
@@ -162,6 +163,12 @@ export class HelmStation {
   private range: number = 600;
   private nightPainted = -1;
   private readonly point = { x: 0, y: 0 };
+  /** The widescreen display that replaces the stock ones (the monitor upgrade). */
+  private readonly wide: WideMonitor | null;
+  private screens: THREE.Mesh | null = null;
+  private sonarContacts: readonly SonarBlip[] = [];
+  private sonarLevel = 0;
+  private sonarReach = 0;
 
   constructor() {
     this.group.name = "HelmStation";
@@ -300,6 +307,7 @@ export class HelmStation {
     ]);
     const screenMesh = new THREE.Mesh(screens, this.screenMaterial);
     screenMesh.name = "HelmDisplays";
+    this.screens = screenMesh;
 
     // --- Compass: a card that keeps north, under a glass dome ---------------------
     const cardGeometry = new THREE.CircleGeometry(0.058, 40);
@@ -360,6 +368,8 @@ export class HelmStation {
     this.lever.position.set(HELM_X + 0.2, 1.38, -3.48);
 
     this.group.add(compositeMesh, steelMesh, screenMesh, this.card, dome, wheelMount, this.lever);
+    this.wide = typeof document !== "undefined" ? new WideMonitor(POD_CENTRE.clone(), POD_TILT) : null;
+    if (this.wide) this.group.add(this.wide.group);
     this.geometries.push(compositeGeometry, steelGeometry, screens, cardGeometry, dome.geometry, rim, spokeGeometry, leverParts);
     this.paintCard();
   }
@@ -378,6 +388,22 @@ export class HelmStation {
 
   /** Where the skipper's feet are: on the deck behind the wheel (vessel space). */
   static readonly STAND_FEET = new THREE.Vector3(HELM_X, DECK_Y, HELM_EYE.z);
+
+  /** The monitor upgrade's level: from the first, one wide display in place of the stock three. */
+  setMonitorLevel(level: number): void {
+    if (!this.wide) return;
+    this.wide.setLevel(level);
+    if (this.screens) this.screens.visible = !this.wide.active;
+    this.displayClock = DISPLAY_INTERVAL;
+  }
+
+  /** What the sonar sees (drawn on whichever display is fitted), its level and its reach, m. */
+  setSonar(contacts: readonly SonarBlip[], level: number, reach: number): void {
+    this.sonarContacts = contacts;
+    this.sonarLevel = level;
+    this.sonarReach = reach;
+    this.wide?.setContacts(contacts);
+  }
 
   /** Ships for the chart plotter's targets (shared by reference). */
   setTraffic(traffic: readonly HelmTraffic[]): void {
@@ -398,6 +424,10 @@ export class HelmStation {
     this.screenMaterial.emissiveIntensity = THREE.MathUtils.lerp(1.05, 0.42, night);
     (this.card.material as THREE.MeshStandardMaterial).emissiveIntensity = night * 0.35;
 
+    if (this.wide?.active) {
+      this.wide.update(delta, { x: data.x, z: data.z, heading: data.heading, speed: data.speed, depth: data.depth, night, sonarLevel: this.sonarLevel, sonarRange: this.sonarReach }, data.readable);
+      return;
+    }
     this.displayClock += delta;
     if (!data.readable || !this.context || !this.texture) return;
     if (this.displayClock < DISPLAY_INTERVAL) return;
@@ -437,6 +467,7 @@ export class HelmStation {
     this.geometries.forEach((geometry) => geometry.dispose());
     this.materials.forEach((material) => material.dispose());
     this.texture?.dispose();
+    this.wide?.dispose();
   }
 
   // --- Displays ---------------------------------------------------------------------
@@ -530,6 +561,20 @@ export class HelmStation {
         context.stroke();
       }
       context.restore();
+    }
+
+    // Sonar contacts, coloured by worth (chests ringed).
+    for (const contact of this.sonarContacts) {
+      const point = project(contact.x, contact.z);
+      const size = contact.tier === 3 ? 8 : contact.tier === 2 ? 6 : 4;
+      context.fillStyle = contact.tier === 3 ? "#e0a800" : contact.tier === 2 ? "#0f9e7e" : "#5d8fa3";
+      context.beginPath();
+      context.moveTo(point.x, point.y - size);
+      context.lineTo(point.x + size, point.y);
+      context.lineTo(point.x, point.y + size);
+      context.lineTo(point.x - size, point.y);
+      context.closePath();
+      context.fill();
     }
 
     // Own ship, heading up, with her heading line.

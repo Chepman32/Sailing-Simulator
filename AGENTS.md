@@ -215,7 +215,12 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/diver/DeckField.ts` | Layered deck heightfield rasterised from the yacht's meshes (vessel space); `floor`/`footing` report height and walls (a rise above `STEP_UP` and below headroom) |
 | `src/simulator/diver/DiverController.ts` | Modes `helm` → `leap` → `swim` ⇄ `land`, and `deck` after climbing aboard; keyboard/mouse (pointer lock, requested inside the `T` key press or the button click, so no extra click is needed)/touch input, deck walking in the yacht's frame, standing up where the water is shallower than `WADE_START` and swimming again past `SWIM_START`, climbing aboard at the sterns, the first-person camera, prompts and audio hooks. `InputController.enabled` is false and the yacht is hove-to while away from the helm; the fine sea lattice and the islands follow the skipper while he is away (`Simulator.worldFocus`), and he walks on `IslandSystem.terrainHeightAt`, piers (`pierDeckAt`, a jump up) and round `obstacleClearance` |
 | `src/simulator/diver/UnderwaterWorld.ts`, `DiveFish.ts` | Seabed patch, instanced reef, light shafts, marine snow, bubbles, the torch (a `SpotLight` that never leaves the scene, intensity 0 when off) and schooling fish; only updated and visible while the camera is in or near the water |
-| `app/components/DiverHud.tsx`, `diverMessages.ts` | Depth and air gauges, prompts, back-to-helm, touch stick and buttons; texts for all 30 languages |
+| `app/components/DiverHud.tsx`, `diverMessages.ts` | Depth and air gauges, the purse (gold, finds in the bag), prompts (take the helm, climb aboard, pick up a find / open a chest, talk to a trader), back-to-helm, touch stick and buttons; texts for all 30 languages |
+| `src/simulator/economy/EconomyMath.ts` | Pure economy: prices (`upgradePrice = round(base × 1.65^level)`), the upgrades (engine, helm monitor, sonar, flare gun; tank, fins, torch) and what each level does (`engineBoost`, `sonarRange/Depth/RevealsTier`, `monitorFeatures`, `flareBoost`, `gearBoost`), the decor (flags, helm charms, bobbleheads), the sea floor's finds per 40 m cell (`findsInCell`: deterministic, tier 1 junk 10–40 everywhere from 1.4 m, tier 2 artefacts 100–350 commoner deep and on reefs, tier 3 chests 500–1500 only deep or among reefs), the bag and the saved state (`restoreEconomy` checks every field) |
+| `src/simulator/economy/FindModels.ts`, `SeabedLoot.ts` | Procedural meshes per find (vertex colour + `glow` for living coral and gold), drawn instanced round the diver (`DRAW_RADIUS` 70 m) with a glint above each; `reachable` (within `PICKUP_REACH`), `scan` for the sonar (tier first, nearest first, at most `SONAR_LIMIT`) |
+| `src/simulator/economy/Traders.ts` | One island trader per island with a pier (`IslandProps.traderSpot`, in front of the hut), the procedural `HumanFigure` with an idle (breathing, weight shift, hands on hips), turning to look at a visitor and waving once; they block walkers (`Simulator.landObstacle`) |
+| `src/simulator/vessel/YachtDecor.ts`, `WideMonitor.ts` | Bought decor on the yacht (a flag waving to the apparent wind at the port stern, a charm swinging from the helm arch, a spring-headed bobblehead on the pod) and the widescreen helm display (chart with depth map/relief, sonar ring and contacts, big SOG, heading, depth, coordinates) |
+| `app/components/ShopModal.tsx`, `shopMessages.ts` | The trader's shop: tabs «Sell finds», «Yacht upgrades», «Decor», «Gear» (keys 1–4, Esc or E closes), level pips, the effect now and next, prices and how much is missing; English and Russian (others fall back to English) |
 
 ### Build, hosting, and tests
 
@@ -816,6 +821,14 @@ Locale tags are lowercased, underscores become hyphens, regional suffixes fall b
 
 Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI message requires adding it to the English shape and all thirty translations; tests enforce structural completeness. The voyage features' words (`featureMessages.ts`) are a separate table in English and Russian with English as the fallback; translating them into the other languages is open work.
 
+## 19a. Economy: finds, traders, upgrades
+
+- **Gold** is the old `doubloons` (crates still pay into it). Everything else lives in its own key, `sailing-simulator-economy-v1` (`EconomyState`: upgrade levels, the bag, decor owned and put up, the keys of finds taken, newest last, at most `MAX_TAKEN_FINDS`).
+- **Finds** are decided by a hash of their 40 m cell (`findsInCell`), so the sea floor is the same on every visit and a taken find stays gone. Under water (`SeabedLoot.update`) the finds within 70 m are laid out on `Simulator.groundBase` (the same bottom the diver swims over); a find within `PICKUP_REACH` of his eyes gives the `pickup` prompt (E): a chest pays straight into the purse, everything else goes in the bag.
+- **Traders** stand on every island with a pier; within `TRADE_REACH` ashore the prompt is `trade` and E opens `ShopModal` (`SimulatorOptions.onTrade`). While a dialog is open (`Simulator.setDiverFrozen`) the skipper stands still and the keys are the dialog's; closing it captures the mouse again.
+- **Upgrades** are applied in `Simulator.applyEconomy`: `VesselPhysics.engineBoost`, `FlareSystem.boost` (+ `EnvironmentSystem.setFlare` reach), `DiverController.gear` (swim speed, air), `UnderwaterWorld.setTorchBoost`, `Vessel.setMonitorLevel`/`setDecor`. The sonar sweeps every `SONAR_INTERVAL` from the yacht (`SeabedLoot.scan`) into the helm monitor and the chart (`ChartFeatures.sonar`, `traders`).
+- **Progression**: every first level and most decor cost less than a shallow swim's junk; the top engine and sonar levels cost several chests (`tests/unit/economy.test.ts` keeps it so).
+
 ## 20. Quality and performance
 
 | Preset | Max DPR | Pixel budget | Ocean segments | Shadow map | Foam density | Gulls / dolphins | Reef fish | Ocean detail | Sky detail | HDR pipeline | Bloom | MSAA |
@@ -823,6 +836,11 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 | Low | 1.0 | 1.0 MP | 96 | 512 | 0.45 | 3 / 2 | 35% | 0.30 | 0 | off | – | – |
 | Medium | 1.25 | 1.7 MP | 144 | 1024 | 0.70 | 6 / 3 | 60% | 0.55 | 1 | on | 0.20 | 2× |
 | High | 1.5 | 2.6 MP | 224 | 2048 | 0.90 | 6 / 4 | 100% (142 fish) | 1.00 | 1 | on | 0.26 | 4× |
+| Ultra | 2.0 | 4.2 MP | 320 | 4096 | 1.00 | 6 / 6 | 120% | 1.00 + capillaries | 1 | on + GTAO + sun shafts | 0.30 | 8× |
+
+**Ultra** is only ever the player's choice (not offered on touch devices; automatic mode tops out at high and steps down from ultra to high, `stepDown`). On top of high it adds: mirror at 0.75 of the screen, capillary ripple octaves in the ocean normal up close (`uMicro`), ground-truth ambient occlusion (`AmbientOcclusion.ts`: three's GTAO on the scene's own resolved depth, normals rebuilt from depth, applied only to surfaces above the water line because the sea writes no depth), sun shafts (`SunShafts.ts`: open sky round the sun above the horizon, radially blurred at half resolution, added in linear HDR before bloom; `Simulator.aimSunShafts` hides them below the horizon, at night, under water, behind the camera and under heavy cloud), 16× anisotropic filtering (`Simulator.applyTextureQuality`, never lowering what a texture asked for; also 2/4/8× on low/medium/high), meshes at full detail (`ScreenLod.fullDetail`), and the densest grass. MSAA is used rather than TAA (no ghosting on moving waves and wakes) and planar reflections rather than SSR (the sea is one plane; SSR would miss everything off screen).
+
+**Dense grass** (`GrassField.ts`, medium and up: reach 22/32/46 m, density 0.45/0.72/1): instanced clumps of curved blades on a jittered world grid, worked out per 8 m tile (three a frame, nearest first, cached), rich clumps within 13 m and sparse ones beyond, the field sinking into the ground at its edge, root and clump-centre occlusion, gusts rolling along the trade wind, back-lit translucency. `IslandSystem.turfAt` decides where it grows (the islands' grass line, thinning into clearings, never on rocks).
 
 Ocean detail gates fragment work: above 0.2 the detail spectrum and one ripple layer are shaded; above 0.5 the finer ripple layer and the metre-scale chop are added; above 0.6 cloud reflections. Sky detail selects three- or five-octave clouds.
 
@@ -862,6 +880,8 @@ Performance measures in place (keep them when changing these systems):
 - the chart's fog shapes its edge from the cloud texture's alpha kept as numbers when the texture is made (`chartDraw.clouds`), never read back from the canvas (`getImageData` waits for the GPU).
 
 Before increasing visual cost, measure the current bottleneck (`renderer.info.render.calls` and `.triangles` with `info.autoReset` off across the post-processing passes, texture uploads per frame, and a CPU profile of `render`). Favor shader detail, instancing, LOD, texture compression, smaller shadow casters, and bounded effects over more individual objects. The running simulator is `window.__simulator` in development, and in a production build when the page is opened with `?debug` (for profiling the shipped code; never otherwise).
+
+**Sand** (`IslandSurface`) also has grain-scale micro-normals (faded below a pixel) and sun sparkle: per-cell facets on a grid sized to the pixel footprint (two levels blended) that flash when they mirror the sun into the eye, none in shade, on the swash or at night.
 
 ## 21. Local 3D asset manifest
 
@@ -1222,3 +1242,13 @@ When uncertain, prefer a smaller coherent system change with an invariant and te
 - Night wildlife: swimming animals glow faintly blue-green at night (bioluminescence, `UnderwaterLight.apply(material, { glow: true })`, `uUnderwaterGlow`), and shows (a shark's fin, a breach) come about half as often (`MarineWorld.rarity`).
 - Ships at night: an imported model carries its own lights (`modelLights`: lit windows over its accommodation, masthead, sidelights, stern and anchor lights read off its shape) and a grid of lit panes on the accommodation walls (`applyShipWindows`); point lights grow a little as a ship comes near. Model paint is matte (roughness ≥ 0.62) and the ship haze is a little stronger, so a far ship is not a crisp toy. Ship LOD is gentler (`SHIP_LOD_STEPS`).
 - The ocean grid reaches 3.3 km each way (`OCEAN_SIZE` 6600, inside the 3.4 km far plane): ships and islands beyond the old 1.8 km edge stood over the painted horizon and seemed to hover.
+
+## Round notes (helm, decks, volcano, economy, ultra)
+
+- Space at the helm starts and stops the engine (with its own starting and dying sounds, a jolt of the camera, idle tremor felt aboard and the propeller wash); C centres the helm.
+- Walking pace is the old running pace (`WALK_SPEED` 2.9 m/s), sprinting about 1.55× that; footsteps and head bob follow the stride, not the frame.
+- Decks and shore objects are solid: `DeckField` rasterises the yacht's upright faces into walls (`blocked`, swept in small sub-steps so a fast walker cannot tunnel through a rail); on land `stepWalk` is swept the same way round trunks, rocks, buildings and traders. A swimmer is pushed off passing ships (`nearestHullClearance`).
+- Jumping in (`plunge`) carries the diver about a metre down, then buoyancy brings him up unless he swims on down.
+- Leaving the wheel and taking it back, the camera flies between the two views over `CAMERA_HANDOFF` (0.9 s, eased), never cutting.
+- Volcanoes erupt every 6–10 minutes (randomised per volcano, `eruptionStart`), with a 30 s precursor: the plume thickens and darkens, a low rumble grows and the camera shakes when near (`VolcanoSystem.shakeAt`).
+- The diver's sand ripples bend by a warp of their phase, not a rotation about the world origin (whose turn, multiplied by the distance from the origin, packed the crests into moiré stripes a few hundred metres out), and the pattern is worked out relative to a 2 km-snapped origin (`UnderwaterWorld.sandOrigin`).

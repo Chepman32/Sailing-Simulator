@@ -44,6 +44,8 @@ export type InputHooks = {
   engineRunning: () => boolean;
   /** Start the engine: pressing W with it stopped does that first. */
   startEngine: () => void;
+  /** Space at the helm: the engine on or off. */
+  toggleEngine: () => void;
 };
 
 /**
@@ -146,7 +148,8 @@ export class InputController {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (keyBelongsToElement(event.target, event.code)) return;
     if (DRIVING_KEYS.includes(event.code)) event.preventDefault();
-    if (event.code === "Space" || event.code === "KeyC") this.centerRudder();
+    if (event.code === "KeyC") this.centerRudder();
+    if (event.code === "Space" && !event.repeat) this.hooks.toggleEngine();
     // Throttle up with the engine stopped: start it first (the obvious wish).
     if ((event.code === "KeyW" || event.code === "ArrowUp") && !event.repeat && !this.hooks.engineRunning()) this.hooks.startEngine();
     this.keys.add(event.code);

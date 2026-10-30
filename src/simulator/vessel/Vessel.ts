@@ -11,6 +11,8 @@ import {
   RUDDER_SPAN,
 } from "./Appendages";
 import { HELM_EYE, HelmStation, type HelmTraffic } from "./HelmStation";
+import { YachtDecor } from "./YachtDecor";
+import type { SonarBlip } from "./WideMonitor";
 import { Skipper } from "./Skipper";
 import { ShipBell } from "./ShipBell";
 import { audibleSlam, boomPivotPose, boomTarget, createBoomState, steadyLeewardSide, stepBoom } from "./BoomDynamics";
@@ -74,6 +76,8 @@ export class Vessel {
   private readonly hulls: HullProfile[] = [];
   private readonly boomPivot = new THREE.Group();
   private readonly helm = new HelmStation();
+  /** Flag, charm and bobblehead bought from the traders. */
+  private decor?: YachtDecor;
   private skipper?: Skipper;
   private bell?: ShipBell;
   /** The mast's forward face at its foot (vessel space) and the cabin top there; set by `classifyParts`. */
@@ -176,6 +180,7 @@ export class Vessel {
     this.root.add(this.jib.group);
     this.bell = new ShipBell(this.mastFront, this.mastFootY);
     this.root.add(this.bell.group);
+    this.decor = new YachtDecor(this.root);
     this.skipper = new Skipper(this.root, {
       feet: HelmStation.STAND_FEET,
       eyeHeight: HELM_EYE.y - HelmStation.STAND_FEET.y,
@@ -224,6 +229,20 @@ export class Vessel {
   /** The skipper is hidden from his own eyes (the helm camera). */
   setCrewVisible(visible: boolean): void {
     if (this.skipper) this.skipper.visible = visible;
+  }
+
+  /** Flies, hangs and stands the decor chosen (null takes it down). */
+  setDecor(flag: string | null, charm: string | null, bobble: string | null): void {
+    this.decor?.setDecor(flag, charm, bobble);
+  }
+
+  /** The helm monitor's level and what the sonar sees (with its level and reach, m). */
+  setMonitorLevel(level: number): void {
+    this.helm.setMonitorLevel(level);
+  }
+
+  setSonar(contacts: readonly SonarBlip[], level: number, reach: number): void {
+    this.helm.setSonar(contacts, level, reach);
   }
 
   /** The skipper's leap over the side, `t` seconds in (null: back at the wheel). */
@@ -324,6 +343,7 @@ export class Vessel {
       readable: lighting?.helmReadable ?? false,
     });
     this.skipper?.update(time, delta, physics.roll, physics.pitch, physics.yawRate, physics.telemetry.forwardSpeed, telemetry.apparentWindSpeed);
+    this.decor?.update(delta, physics);
     this.bell?.update(delta, physics.roll, physics.pitch);
     // Follow the simulated shaft so the screws spool up and down with the
     // engines instead of snapping to the lever position.
@@ -373,6 +393,7 @@ export class Vessel {
     });
     this.generatedGeometries.forEach((geometry) => geometry.dispose());
     this.skipper?.dispose();
+    this.decor?.dispose();
     this.helm.dispose();
     this.jib.dispose();
     this.bell?.dispose();

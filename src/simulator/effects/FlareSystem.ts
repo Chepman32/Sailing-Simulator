@@ -7,6 +7,8 @@ import {
   FLARE_SMOKE_LIFE,
   MAX_FLARES,
   flareBrightness,
+  flareBurnEnd,
+  FLARE_BURN_END,
   flarePosition,
   smokeOpacity,
   smokeRadius,
@@ -130,6 +132,9 @@ export class FlareSystem {
   private last: Flare | null = null;
 
   /** Fires a flare from (x, y, z), leaning downwind; false while reloading. */
+  /** The flare gun's upgrade: climb, burn time, brightness (multipliers of the stock gun). */
+  boost = { apex: 1, burn: 1, power: 1 };
+
   launch(color: FlareColor, x: number, y: number, z: number, windX: number, windZ: number): boolean {
     if (this.reload > 0) return false;
     this.reload = FLARE_RELOAD;
@@ -153,6 +158,9 @@ export class FlareSystem {
     launch.windZ = windZ;
     this.seed = (this.seed * 16807) % 2147483647;
     launch.seed = (this.seed % 1000) / 100;
+    launch.apex = this.boost.apex;
+    launch.burn = this.boost.burn;
+    launch.power = this.boost.power;
     slot.rgb = FLARE_RGB[color];
     slot.age = 0;
     slot.active = true;
@@ -186,7 +194,8 @@ export class FlareSystem {
     for (const flare of this.flares) {
       if (!flare.active) continue;
       flare.age += dt;
-      if (flare.age > FLARE_SMOKE_LIFE) {
+      const extraBurn = flareBurnEnd(flare.launch.burn) - FLARE_BURN_END;
+      if (flare.age > FLARE_SMOKE_LIFE + extraBurn) {
         flare.active = false;
         flare.core.visible = false;
         flare.halo.visible = false;
@@ -195,10 +204,10 @@ export class FlareSystem {
       }
       const position = flarePosition(flare.launch, flare.age, this.scratch);
       flare.position.set(position.x, position.y, position.z);
-      flare.brightness = flareBrightness(flare.age, flare.launch.seed);
+      flare.brightness = flareBrightness(flare.age, flare.launch.seed, flare.launch.burn) * (flare.launch.power ?? 1);
 
       // Smoke: puffs where the flare has been, drifting downwind.
-      if (flare.age < FLARE_LIFE && flare.age >= flare.nextPuff && flare.puffCount < PUFFS) {
+      if (flare.age < FLARE_LIFE + extraBurn && flare.age >= flare.nextPuff && flare.puffCount < PUFFS) {
         const puff = flare.puffs[flare.puffCount]!;
         puff.born = flare.age;
         puff.x = position.x;

@@ -11,7 +11,25 @@ import {
   type LootItem,
 } from "../../src/simulator/effects/LootMath";
 import { DISCOVERY_RANGE, nearestPoiClearance, POI_CLEARANCE, poiClearance, poisAround, type Poi } from "../../src/simulator/effects/PoiMath";
-import { ashPuff, bombFlight, COLUMN_LIFE, craterGlow, ERUPTION_SLOT, eruptionAt, fountainActivity, plumePuff } from "../../src/simulator/effects/VolcanoMath";
+import {
+  ashPuff,
+  bombFlight,
+  craterGlow,
+  ERUPTION_COOLDOWN_MAX,
+  ERUPTION_COOLDOWN_MIN,
+  eruptionAt,
+  eruptionStart,
+  FIRST_ERUPTION_MAX,
+  FIRST_ERUPTION_MIN,
+  fountainActivity,
+  plumePuff,
+  PRECURSOR_SECONDS,
+  precursorAt,
+  volcanoTremor,
+} from "../../src/simulator/effects/VolcanoMath";
+
+/** Seconds of fountain counted per eruption by the sampling below (the fountain's audible life). */
+const ERUPTION_LENGTH_SECONDS = 10;
 import { findOpenWater, RESCUE_CLEARANCE } from "../../src/simulator/vessel/RescueMath";
 import { composeJig, drunkenSailor } from "../../src/simulator/audio/MusicMath";
 import { RADIO_STATIONS } from "../../src/simulator/audio/RadioSystem";
@@ -69,17 +87,31 @@ test("a volcano smokes east of the start; its cone rises to a crater", () => {
   const flank = volcanoHeight((VOLCANO_RIM + VOLCANO_FOOT) / 2, 0, volcano.height, volcano.seed);
   assert.ok(rim > flank && flank > volcanoHeight(VOLCANO_FOOT, 0, volcano.height, volcano.seed));
   assert.ok(crater < rim - 5, "a crater, not a peak");
-  let erupting = 0;
-  let columns = 0;
+  // Rare: six to ten minutes apart, the first a few minutes in, each one warned of.
+  const seed = volcano.seed;
+  assert.ok(eruptionStart(0, seed) >= FIRST_ERUPTION_MIN && eruptionStart(0, seed) <= FIRST_ERUPTION_MAX);
+  for (let index = 1; index < 30; index += 1) {
+    const quiet = eruptionStart(index, seed) - eruptionStart(index - 1, seed);
+    assert.ok(quiet >= ERUPTION_COOLDOWN_MIN && quiet <= ERUPTION_COOLDOWN_MAX, `quiet ${quiet.toFixed(0)} s`);
+  }
   const state = { age: -1, strength: 0, slot: 0 };
-  for (let time = 0; time < ERUPTION_SLOT * 40; time += 1) {
-    eruptionAt(time, volcano.seed, state);
-    if (state.age >= 0) columns += 1;
+  const start = eruptionStart(3, seed);
+  assert.ok(precursorAt(start - PRECURSOR_SECONDS - 5, seed) === 0, "quiet before the warning");
+  assert.ok(precursorAt(start - 10, seed) > 0.5, "smoke and rumble in the last half minute");
+  eruptionAt(start - 1, seed, state);
+  assert.ok(state.age < 0 || state.slot !== 3);
+  eruptionAt(start + 2, seed, state);
+  assert.equal(state.slot, 3);
+  assert.ok(fountainActivity(state) > 0.3, "then it erupts");
+  let erupting = 0;
+  const span = 3600 * 3;
+  for (let time = 0; time < span; time += 1) {
+    eruptionAt(time, seed, state);
     if (fountainActivity(state) > 0.05) erupting += 1;
   }
-  const share = erupting / (ERUPTION_SLOT * 40);
-  assert.ok(share > 0.04 && share < 0.16, `the fountain plays now and then, every two minutes or so (${share.toFixed(2)} of the time)`);
-  assert.ok(columns / (ERUPTION_SLOT * 40) < COLUMN_LIFE / ERUPTION_SLOT + 0.01, "one column at a time");
+  const perHour = (erupting / ERUPTION_LENGTH_SECONDS) / 3;
+  assert.ok(perHour > 5 && perHour < 11, `six to ten an hour (${perHour.toFixed(1)})`);
+  assert.ok(volcanoTremor(1, 0, -1, 200) > volcanoTremor(1, 0, -1, 1500) && volcanoTremor(1, 0, -1, 2500) === 0, "felt near, not far");
   assert.ok(craterGlow(10, { age: 2, strength: 1, slot: 0 }) > craterGlow(10, { age: -1, strength: 0, slot: 0 }) * 1.5);
   const point = { x: 0, y: 0, z: 0, radius: 0, opacity: 0 };
   plumePuff(60, 0.3, 5, 0, point);

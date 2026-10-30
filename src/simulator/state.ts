@@ -117,7 +117,16 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   positionX: 0,
   positionZ: 0,
   photoAutoTarget: true,
-  diver: { mode: "helm", wading: 0, depth: 0, air: 1, prompt: null, torch: false, underwater: false, pointerLocked: false },
+  diver: { mode: "helm", wading: 0, depth: 0, air: 1, prompt: null, promptDetail: null, torch: false, underwater: false, pointerLocked: false },
+  economy: {
+    bagCount: 0,
+    bagValue: 0,
+    bag: [],
+    upgrades: { engine: 0, monitor: 0, sonar: 0, flare: 0, tank: 0, fins: 0, torch: 0 },
+    decor: [],
+    equipped: { flag: null, charm: null, bobble: null },
+    sonarContacts: 0,
+  },
   fps: 60,
   status: "loading",
 };

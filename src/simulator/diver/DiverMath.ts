@@ -24,9 +24,12 @@ export type DiverMode = "helm" | "leap" | "deck" | "swim" | "land";
 
 /** Eye height over the deck or the sand, standing. */
 export const EYE_HEIGHT = 1.62;
-/** Walking and running on deck, m/s. */
-export const WALK_SPEED = 1.45;
-export const RUN_SPEED = 2.9;
+/** Walking and running, m/s: a brisk walk, and a sprint about half as fast again. */
+export const WALK_SPEED = 2.9;
+export const RUN_SPEED = 4.5;
+/** Stride, m: footsteps and the bob of the head follow it. */
+export const WALK_STRIDE = 1.0;
+export const RUN_STRIDE = 1.5;
 export const JUMP_SPEED = 3.7;
 export const GRAVITY = 9.81;
 /** The highest step taken without a jump (a coaming, a cockpit step). */
@@ -48,6 +51,16 @@ export const DIVE_DEPTH = 0.55;
 /** Closest the eyes come to the sand, m. */
 export const SEABED_CLEARANCE = 0.55;
 
+/**
+ * Entering the water from a height: the body goes in at speed, the water
+ * brakes it hard (drag on a body is high) and buoyancy turns it round, so a
+ * jump from the deck carries the eyes about a metre under before he comes
+ * back up, unless he swims on down.
+ */
+export const PLUNGE_DRAG = 2.6;
+export const PLUNGE_BUOYANCY = 1.35;
+/** Speed the body goes under at from a jump off the deck, m/s (fixed: the water takes the rest). */
+export const PLUNGE_SPEED = 3.3;
 /** Upward speed of a kick out of the water at the surface (a swimmer's lunge), m/s. */
 export const HOP_SPEED = 2.6;
 /** Water shallower than this under a swimmer and he stands up (m, surface to ground). */
@@ -58,6 +71,9 @@ export const SWIM_START = 1.3;
 export const WADE_SLOWDOWN = 0.55;
 /** Steepest ground he walks up without a jump (rise over run). */
 export const MAX_WALK_SLOPE = 1.6;
+
+/** Half the width of his body: how close he comes to a trunk or a wall, m. */
+export const BODY_RADIUS = 0.3;
 
 /** Seconds of air in a full tank breathed at the surface (12 l at 200 bar, a relaxed breath). */
 export const TANK_SECONDS = 50 * 60;
@@ -75,6 +91,10 @@ export type SwimInput = {
   sprint: boolean;
   yaw: number;
   pitch: number;
+  /** Fins: × the swimming speeds (1 the stock pair). */
+  speedScale?: number;
+  /** Tank: × its capacity (1 the stock tank). */
+  tankScale?: number;
 };
 
 export type SwimWorld = {
@@ -82,6 +102,12 @@ export type SwimWorld = {
   surface: (x: number, z: number) => number;
   /** Depth of water at (x, z), m (positive). */
   seabedDepth: (x: number, z: number) => number;
+  /**
+   * Distance from (x, z) to the nearest hull or wall standing in the water
+   * (a passing ship's side; negative inside) and its outward direction in
+   * `normal`; omitted or Infinity where there is none.
+   */
+  obstacle?: (x: number, z: number, normal: { x: number; z: number }) => number;
   /**
    * Height the floating eyes keep clear of at (x, z), m. The drawn sea is a
    * mesh of triangles a metre or two across: between its vertices it can lie
@@ -111,10 +137,24 @@ export type SwimState = {
   airborne: boolean;
   /** Set by the step in which an airborne swimmer fell back in (his speed down, m/s); cleared by the caller. */
   splashed: number;
+  /** Carried down by an entry from a height (`plunge`): drag and buoyancy, not his own kicks. */
+  plunging: boolean;
 };
 
 export function createSwimState(x: number, y: number, z: number, air = 1): SwimState {
-  return { x, y, z, vx: 0, vy: 0, vz: 0, air, breath: 0, ascending: false, surface: Number.NaN, airborne: false, splashed: 0 };
+  return { x, y, z, vx: 0, vy: 0, vz: 0, air, breath: 0, ascending: false, surface: Number.NaN, airborne: false, splashed: 0, plunging: false };
+}
+
+/**
+ * He goes into the water from a height at `speed` m/s downward (capped, the
+ * body brakes on entry): the plunge takes him about a metre under, then
+ * buoyancy brings him back up to float, unless he swims down.
+ */
+export function plunge(state: SwimState, speed = PLUNGE_SPEED): void {
+  state.plunging = true;
+  state.ascending = false;
+  state.airborne = false;
+  state.vy = -clamp(speed, 0.5, PLUNGE_SPEED * 1.2);
 }
 
 /**
@@ -178,13 +218,17 @@ export function isFloating(depth: number, input: SwimInput, ascending: boolean):
  * One step of swimming. Returns how far under the surface the eyes are
  * afterwards (negative above it).
  */
+const obstacleNormal = { x: 0, z: 0 };
+
 export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, dt: number): number {
   const step = clamp(dt, 0, 0.05);
   if (step <= 0) return eyeDepth(state, world);
   const depthBefore = eyeDepth(state, world);
+  // Swimming down on purpose ends a plunge where it is: he carries on diving.
+  if (state.plunging && (input.vertical < 0 || (input.moveY > 0.3 && input.pitch < -0.45))) state.plunging = false;
   if (state.air <= 0) state.ascending = true;
   if (state.ascending && depthBefore < DIVE_DEPTH * 0.5) state.ascending = false;
-  const floating = isFloating(depthBefore, input, state.ascending);
+  const floating = !state.plunging && isFloating(depthBefore, input, state.ascending);
 
   // What he swims for.
   let wishX = 0;
@@ -211,9 +255,9 @@ export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, d
     wishY /= length;
     wishZ /= length;
   }
-  const speed = floating
+  const speed = (floating
     ? input.sprint ? SURFACE_SPRINT_SPEED : SURFACE_SWIM_SPEED
-    : input.sprint ? DIVE_SPRINT_SPEED : DIVE_SPEED;
+    : input.sprint ? DIVE_SPRINT_SPEED : DIVE_SPEED) * (input.speedScale ?? 1);
   const targetVx = wishX * speed;
   const targetVz = wishZ * speed;
   let targetVy = wishY * speed + clamp(input.vertical, -1, 1) * VERTICAL_SPEED;
@@ -231,6 +275,10 @@ export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, d
   }
   if (state.airborne) {
     // Falling: nothing to add.
+  } else if (state.plunging) {
+    // In from a height: the water brakes the fall and buoyancy turns it.
+    state.vy += (-PLUNGE_DRAG * state.vy + PLUNGE_BUOYANCY) * step;
+    if (state.vy > 0 && depthBefore < DIVE_DEPTH) state.plunging = false;
   } else if (floating) {
     // Head out of the water, carried up and down by the waves: a stiff,
     // well damped spring to the float line.
@@ -245,6 +293,21 @@ export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, d
   state.x += state.vx * step;
   state.y += state.vy * step;
   state.z += state.vz * step;
+
+  // Hulls and walls in the water: pushed back out, the speed into them lost.
+  if (world.obstacle) {
+    const normal = obstacleNormal;
+    const clearance = world.obstacle(state.x, state.z, normal) - BODY_RADIUS;
+    if (clearance < 0) {
+      state.x -= normal.x * clearance;
+      state.z -= normal.z * clearance;
+      const inward = state.vx * normal.x + state.vz * normal.z;
+      if (inward < 0) {
+        state.vx -= inward * normal.x;
+        state.vz -= inward * normal.z;
+      }
+    }
+  }
 
   // Never out of the water (but for a kick), never into the sand.
   const surfaceNow = world.surface(state.x, state.z);
@@ -268,15 +331,13 @@ export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, d
 
   state.surface = lineNow;
   const depth = surfaceNow - state.y;
-  state.air = clamp(state.air - airUse(depth, input.sprint) * step, 0, 1);
+  state.air = clamp(state.air - (airUse(depth, input.sprint) / Math.max(0.1, input.tankScale ?? 1)) * step, 0, 1);
   state.breath += step;
   return depth;
 }
 
 // --- On his feet ashore -------------------------------------------------------
 
-/** Half the width of his body: how close he comes to a trunk or a wall, m. */
-export const BODY_RADIUS = 0.3;
 
 export type GroundWorld = {
   /** Height of whatever he stands on at (x, z): a beach, a hillside, the sand under the shallows, m. */
@@ -336,7 +397,7 @@ export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld,
   const water = wadingDepth(state.x, state.z, world);
   // Up to the knees he hardly notices; up to the hips it is a slog.
   const wade = 1 - (1 - WADE_SLOWDOWN) * clamp((water - 0.15) / 0.75, 0, 1);
-  const speed = (input.sprint ? RUN_SPEED * 1.25 : WALK_SPEED * 1.1) * wade;
+  const speed = (input.sprint ? RUN_SPEED : WALK_SPEED) * wade;
   const sinYaw = Math.sin(input.yaw);
   const cosYaw = Math.cos(input.yaw);
   const moveX = clamp(input.moveX, -1, 1);
@@ -353,35 +414,40 @@ export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld,
   state.vx += (wishX * speed - state.vx) * response;
   state.vz += (wishZ * speed - state.vz) * response;
 
-  // Across the ground one axis at a time, so a slope too steep or a wall
-  // stops that axis only and he slides along it.
-  for (let axis = 0; axis < 2; axis += 1) {
-    const move = (axis === 0 ? state.vx : state.vz) * step;
-    if (Math.abs(move) < 1e-7) continue;
-    const nextX = axis === 0 ? state.x + move : state.x;
-    const nextZ = axis === 0 ? state.z : state.z + move;
-    const ground = world.ground(nextX, nextZ);
-    const rise = ground - state.y;
-    const blocked = state.grounded ? rise > Math.max(0.05, Math.abs(move) * MAX_WALK_SLOPE) : rise > 0.05;
-    if (blocked) {
-      if (axis === 0) state.vx = 0;
-      else state.vz = 0;
-      continue;
+  // Swept in short moves (no more than a hand's breadth each), so a fast
+  // frame never carries him through a trunk or over the lip of a cliff.
+  const travel = Math.hypot(state.vx, state.vz) * step;
+  const moves = Math.min(16, Math.max(1, Math.ceil(travel / 0.1)));
+  for (let move = 0; move < moves; move += 1) {
+    // Across the ground one axis at a time, so a slope too steep or a wall
+    // stops that axis only and he slides along it.
+    for (let axis = 0; axis < 2; axis += 1) {
+      const delta = ((axis === 0 ? state.vx : state.vz) * step) / moves;
+      if (Math.abs(delta) < 1e-7) continue;
+      const nextX = axis === 0 ? state.x + delta : state.x;
+      const nextZ = axis === 0 ? state.z : state.z + delta;
+      const ground = world.ground(nextX, nextZ);
+      const rise = ground - state.y;
+      const blocked = state.grounded ? rise > Math.max(0.05, Math.abs(delta) * MAX_WALK_SLOPE) : rise > 0.05;
+      if (blocked) {
+        if (axis === 0) state.vx = 0;
+        else state.vz = 0;
+        continue;
+      }
+      state.x = nextX;
+      state.z = nextZ;
     }
-    state.x = nextX;
-    state.z = nextZ;
-  }
-
-  // Trunks, towers and walls: pushed back out, the speed into them lost.
-  if (world.obstacle) {
-    const clearance = world.obstacle(state.x, state.z, normal) - BODY_RADIUS;
-    if (clearance < 0) {
-      state.x -= normal.x * clearance;
-      state.z -= normal.z * clearance;
-      const inward = state.vx * normal.x + state.vz * normal.z;
-      if (inward < 0) {
-        state.vx -= inward * normal.x;
-        state.vz -= inward * normal.z;
+    // Trunks, towers, rocks and walls: pushed back out, the speed into them lost.
+    if (world.obstacle) {
+      const clearance = world.obstacle(state.x, state.z, normal) - BODY_RADIUS;
+      if (clearance < 0) {
+        state.x -= normal.x * clearance;
+        state.z -= normal.z * clearance;
+        const inward = state.vx * normal.x + state.vz * normal.z;
+        if (inward < 0) {
+          state.vx -= inward * normal.x;
+          state.vz -= inward * normal.z;
+        }
       }
     }
   }

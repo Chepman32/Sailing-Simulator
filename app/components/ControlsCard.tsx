@@ -22,7 +22,8 @@ function keyboardSections(m: FeatureMessages): Section[] {
         { keys: [["S"], ["↓"]], text: m.c_throttleDown },
         { keys: [["A", "D"], ["←", "→"]], text: m.c_helm },
         { keys: [["Q", "E"]], text: m.c_sheet },
-        { keys: [["C"], ["Space"]], text: m.c_center },
+        { keys: [["Space"]], text: m.c_engine },
+        { keys: [["C"]], text: m.c_center },
       ],
     },
     {

@@ -1,5 +1,5 @@
 export type CameraMode = "chase" | "helm" | "orbit" | "drone";
-export type QualityPreset = "low" | "medium" | "high";
+export type QualityPreset = "low" | "medium" | "high" | "ultra";
 /** What the player picked. Only "auto" lets the simulator change the level by itself. */
 export type QualityChoice = QualityPreset | "auto";
 export type LightingMode = "day" | "night";
@@ -83,16 +83,33 @@ export type SimulationSnapshot = {
     /** Air left in the tank, 0…1. */
     air: number;
     /** What the interact key would do here. */
-    prompt: "helm" | "board" | null;
+    prompt: "helm" | "board" | "pickup" | "trade" | null;
+    /** What the prompt is about: the kind of find within reach (for "pickup"). */
+    promptDetail: string | null;
     torch: boolean;
     /** The camera is under the water. */
     underwater: boolean;
     /** The mouse is captured for looking round. */
     pointerLocked: boolean;
   };
+  /** Gold, the finds carried, the upgrades and the decor (see `EconomyMath`). */
+  economy: {
+    /** Finds in the bag: how many, what they fetch, and grouped by kind. */
+    bagCount: number;
+    bagValue: number;
+    bag: { kind: string; count: number; total: number }[];
+    upgrades: Record<string, number>;
+    decor: string[];
+    equipped: { flag: string | null; charm: string | null; bobble: string | null };
+    /** Contacts the sonar has on the sea floor now. */
+    sonarContacts: number;
+  };
   fps: number;
   status: "loading" | "running" | "paused" | "error";
 };
+
+/** Something taken from the sea floor: what, its tier, and gold (paid at once for a chest). */
+export type FindEvent = { kind: string; tier: 1 | 2 | 3; value: number; chest: boolean };
 
 export type SimulatorOptions = {
   onSnapshot?: (snapshot: SimulationSnapshot) => void;
@@ -106,6 +123,10 @@ export type SimulatorOptions = {
   onRadioFailed?: (station: string) => void;
   /** An event in the world worth telling the player (a message in a bottle, a new sail colour). */
   onDiscovery?: (discovery: Discovery) => void;
+  /** A find taken from the sea floor. */
+  onFind?: (find: FindEvent) => void;
+  /** The skipper spoke to an island trader: open the shop. */
+  onTrade?: () => void;
 };
 
 export type Discovery = {

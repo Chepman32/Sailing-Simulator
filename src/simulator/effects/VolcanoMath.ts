@@ -3,8 +3,11 @@ import { clamp, smoothstep } from "../math";
 /**
  * A volcano's moods, in numbers.
  *
- * Between eruptions it breathes a plume of steam and gas. Every two
- * minutes or so it erupts: a blast (a flash and a ring of shocked air), a fountain
+ * Between eruptions it breathes a plume of steam and gas. Eruptions are
+ * rare events, six to ten minutes apart (the first a few minutes into a
+ * voyage). Half a minute before one the mountain gives warning: the plume
+ * thickens and darkens, a low rumble rises and the ground shakes near it.
+ * Then it erupts: a blast (a flash and a ring of shocked air), a fountain
  * of incandescent bombs that arc out of the crater and tumble down the
  * cone, a dark ash column that rushes up hundreds of metres, slows,
  * mushrooms into an umbrella and is carried off by the wind, and in a
@@ -14,8 +17,14 @@ import { clamp, smoothstep } from "../math";
  * `VolcanoSystem` draws it and the sound and the camera follow it.
  */
 
-/** Seconds between the starts of two eruption slots. */
-export const ERUPTION_SLOT = 105;
+/** Shortest and longest quiet between two eruptions, s (6–10 minutes). */
+export const ERUPTION_COOLDOWN_MIN = 360;
+export const ERUPTION_COOLDOWN_MAX = 600;
+/** When the first eruption of a voyage comes, s: soon enough to be seen. */
+export const FIRST_ERUPTION_MIN = 150;
+export const FIRST_ERUPTION_MAX = 270;
+/** Seconds of warning before an eruption: smoke, rumble, tremor. */
+export const PRECURSOR_SECONDS = 30;
 /** How long the lava fountain plays, s. */
 export const ERUPTION_LENGTH = 9;
 /** How long the vent feeds the ash column, s (hard at first, waning). */
@@ -52,25 +61,88 @@ export type Eruption = {
   slot: number;
 };
 
+/** Start times of each volcano's eruptions, grown as time goes on (by seed). */
+const schedules = new Map<number, number[]>();
+
+/**
+ * When eruption `index` (0, 1, 2…) of the volcano with `seed` starts, s:
+ * the first a few minutes in, then a randomised quiet of six to ten minutes
+ * between each. Deterministic, so every frame rate and every look agrees.
+ */
+export function eruptionStart(index: number, seed: number): number {
+  let starts = schedules.get(seed);
+  if (!starts) {
+    if (schedules.size > 64) schedules.clear();
+    starts = [FIRST_ERUPTION_MIN + hash(0, seed * 41 + 5) * (FIRST_ERUPTION_MAX - FIRST_ERUPTION_MIN)];
+    schedules.set(seed, starts);
+  }
+  while (starts.length <= index) {
+    const k = starts.length;
+    const quiet = ERUPTION_COOLDOWN_MIN + hash(k, seed * 17 + 3) * (ERUPTION_COOLDOWN_MAX - ERUPTION_COOLDOWN_MIN);
+    starts.push(starts[k - 1]! + quiet);
+  }
+  return starts[index]!;
+}
+
+/** Index of the last eruption to start at or before `time` (−1 before the first). */
+function lastEruption(time: number, seed: number): number {
+  if (time < eruptionStart(0, seed)) return -1;
+  // The quiet is at least ERUPTION_COOLDOWN_MIN: a first guess from below.
+  let index = Math.max(0, Math.floor((time - eruptionStart(0, seed)) / ERUPTION_COOLDOWN_MAX) - 1);
+  while (eruptionStart(index + 1, seed) <= time) index += 1;
+  return index;
+}
+
 /**
  * The eruption whose column is in the sky at `time` for a volcano with
- * `seed`, if any: about four slots in five erupt, anywhere in the slot
- * that leaves the column its whole life.
+ * `seed`, if any.
  */
 export function eruptionAt(time: number, seed: number, out: Eruption): Eruption {
   out.age = -1;
   out.strength = 0;
   out.slot = 0;
-  const slot = Math.floor(time / ERUPTION_SLOT);
-  if (hash(slot, seed * 131 + 7) > 0.8) return out;
-  const start = slot * ERUPTION_SLOT + hash(slot, seed * 17 + 3) * (ERUPTION_SLOT - COLUMN_LIFE);
-  const age = time - start;
+  const index = lastEruption(time, seed);
+  if (index < 0) return out;
+  const age = time - eruptionStart(index, seed);
   if (age >= 0 && age < COLUMN_LIFE) {
     out.age = age;
-    out.strength = 0.5 + 0.5 * hash(slot, seed * 29 + 11);
-    out.slot = slot;
+    // Rare, so each one is a big one.
+    out.strength = 0.72 + 0.28 * hash(index, seed * 29 + 11);
+    out.slot = index;
   }
   return out;
+}
+
+/**
+ * The warning before an eruption, 0…1: rising through the last
+ * `PRECURSOR_SECONDS` before it, full at the blast, and fading over the
+ * first seconds of the eruption itself.
+ */
+export function precursorAt(time: number, seed: number): number {
+  const next = eruptionStart(lastEruption(time, seed) + 1, seed);
+  const ahead = next - time;
+  let warning = 0;
+  if (ahead <= PRECURSOR_SECONDS) {
+    const t = 1 - ahead / PRECURSOR_SECONDS;
+    warning = t * t * (3 - 2 * t);
+  }
+  const index = lastEruption(time, seed);
+  if (index >= 0) {
+    const age = time - eruptionStart(index, seed);
+    if (age >= 0 && age < 8) warning = Math.max(warning, 1 - age / 8);
+  }
+  return warning;
+}
+
+/**
+ * How hard the ground shakes at `distance` m from the crater, 0…1: the
+ * tremor of the warning, then the blast and the fountain's pounding, felt
+ * strongly within a few hundred metres and not at all past two kilometres.
+ */
+export function volcanoTremor(precursor: number, fountain: number, age: number, distance: number): number {
+  const near = 1 - smoothstep(250, 2000, distance);
+  const blast = age >= 0 && age < 3 ? Math.exp(-age * 1.4) : 0;
+  return near * clamp(precursor * 0.32 + fountain * 0.55 + blast, 0, 1.2);
 }
 
 /** Whether the fountain (and the roar) is going: the first `ERUPTION_LENGTH` s. */

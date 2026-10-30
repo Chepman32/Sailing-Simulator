@@ -52,6 +52,7 @@ export class OceanSystem {
       uAmbientColor: { value: new THREE.Color() },
       uFoamDensity: { value: quality.foamDensity },
       uDetail: { value: quality.oceanDetail },
+      uMicro: { value: quality.oceanMicro ? 1 : 0 },
       uVesselPosition: { value: new THREE.Vector3() },
       uVesselForward: { value: new THREE.Vector2(0, 1) },
       uVesselSpeed: { value: 0 },
@@ -254,6 +255,7 @@ export class OceanSystem {
   setQuality(quality: QualitySettings): void {
     this.uniforms.uFoamDensity.value = quality.foamDensity;
     this.uniforms.uDetail.value = quality.oceanDetail;
+    this.uniforms.uMicro.value = quality.oceanMicro ? 1 : 0;
     if (quality.oceanSegments === this.segments) return;
     const previousGeometry = this.mesh.geometry;
     const { geometry, cellSize } = createFocusedOceanGeometry(quality.oceanSegments);

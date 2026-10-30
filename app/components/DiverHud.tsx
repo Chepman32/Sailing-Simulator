@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { SimulationSnapshot } from "@/src/simulator/types";
 import type { DiverMessages } from "./diverMessages";
+import { fill } from "./featureMessages";
+import { findName, type ShopMessages } from "./shopMessages";
 
 /** What the HUD asks of the simulator. */
 export type DiverActions = {
@@ -17,6 +19,9 @@ export type DiverActions = {
 type Props = {
   diver: SimulationSnapshot["diver"];
   messages: DiverMessages;
+  shop: ShopMessages;
+  /** Gold in the purse and finds in the bag. */
+  wallet: { gold: number; bag: number };
   touch: boolean;
   actions: DiverActions;
 };
@@ -29,7 +34,7 @@ const HINT_SECONDS = 9;
  * interact key would do here, the way back to the helm, and on a touch
  * screen a movement stick and buttons to rise, dive and use.
  */
-export function DiverHud({ diver, messages, touch, actions }: Props) {
+export function DiverHud({ diver, messages, shop, wallet, touch, actions }: Props) {
   const [hint, setHint] = useState(true);
   const leaping = diver.mode === "leap";
   useEffect(() => {
@@ -50,7 +55,18 @@ export function DiverHud({ diver, messages, touch, actions }: Props) {
       : ashore
         ? diver.wading > 0.15 ? messages.wading : messages.ashore
         : diving ? messages.diving : messages.swimming;
-  const promptText = diver.prompt === "helm" ? messages.takeHelm : diver.prompt === "board" ? messages.board : null;
+  const promptText =
+    diver.prompt === "helm"
+      ? messages.takeHelm
+      : diver.prompt === "board"
+        ? messages.board
+        : diver.prompt === "trade"
+          ? shop.talkTrader
+          : diver.prompt === "pickup"
+            ? diver.promptDetail === "chest"
+              ? shop.openChest
+              : fill(shop.pickUp, { name: findName(shop, diver.promptDetail ?? "") })
+            : null;
 
   return (
     <div className={`diver-hud${diver.underwater ? " is-underwater" : ""}`}>
@@ -72,6 +88,13 @@ export function DiverHud({ diver, messages, touch, actions }: Props) {
           </>
         )}
         {diver.torch && <span className="diver-torch-on" aria-label={messages.torch}>●</span>}
+        {(inWater || ashore) && (
+          <span className="diver-wallet" aria-label={`${shop.gold}: ${wallet.gold}, ${shop.bag}: ${wallet.bag}`}>
+            <span className="diver-wallet-coin" aria-hidden="true" />
+            {wallet.gold.toLocaleString()}
+            {wallet.bag > 0 && <span className="diver-wallet-bag"><span aria-hidden="true">🎒</span>{wallet.bag}</span>}
+          </span>
+        )}
       </div>
 
       <button type="button" className="diver-helm" onClick={actions.returnToHelm} title={`${messages.backToHelm} (T)`}>
@@ -84,7 +107,7 @@ export function DiverHud({ diver, messages, touch, actions }: Props) {
       {lowAir && <p className="diver-warning" role="alert">{messages.lowAir}</p>}
 
       {promptText && (
-        <button type="button" className="diver-prompt" onClick={actions.interact}>
+        <button type="button" className={`diver-prompt${diver.prompt === "pickup" && diver.promptDetail === "chest" ? " is-treasure" : ""}`} onClick={actions.interact}>
           {!touch && <kbd>E</kbd>}
           <span>{promptText}</span>
         </button>
