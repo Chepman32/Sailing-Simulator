@@ -660,7 +660,11 @@ export class WakeSystem {
     return this.group;
   }
 
-  splash(position: THREE.Vector3, intensity = 1, kind: SplashKind = "entry", velocity?: THREE.Vector3): void {
+  /**
+   * @param mist whether a cloud of fine spray hangs over the splash; off for
+   *   the skipper's own splashes, whose eyes are in the middle of it.
+   */
+  splash(position: THREE.Vector3, intensity = 1, kind: SplashKind = "entry", velocity?: THREE.Vector3, mist = true): void {
     const profile = calculateSplashProfile(intensity, kind);
     const surface = this.ocean.sample(position.x, position.z).height;
     const speed = velocity ? Math.hypot(velocity.x, velocity.z) : 0;
@@ -696,7 +700,7 @@ export class WakeSystem {
     }
 
     const blow = kind === "blow";
-    for (let index = 0; index < profile.mistCount; index += 1) {
+    for (let index = 0; index < (mist ? profile.mistCount : 0); index += 1) {
       const particle = this.nextParticle();
       if (!particle) break;
       particle.active = true;

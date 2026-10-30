@@ -20,6 +20,9 @@ export type DiverMessages = {
   onDeck: string;
   swimming: string;
   diving: string;
+  /** On his feet on an island, and knee- or waist-deep in the shallows. */
+  ashore: string;
+  wading: string;
   hintKeys: string;
   hintTouch: string;
   clickToLook: string;
@@ -28,7 +31,7 @@ export type DiverMessages = {
   bar?: string;
 };
 
-const EN: DiverMessages = {
+const EN: BaseDiverMessages = {
   leaveHelm: "Leave the helm",
   takeHelm: "Take the helm",
   backToHelm: "Back to the helm",
@@ -43,12 +46,48 @@ const EN: DiverMessages = {
   onDeck: "On deck",
   swimming: "Swimming",
   diving: "Diving",
-  hintKeys: "WASD move · mouse look · Space jump / up · C down · Shift faster · E use · F torch · T helm",
+  hintKeys: "WASD move · mouse look · Space jump / up · C down · Shift faster · E use · F torch · T helm · H all controls",
   hintTouch: "Left stick to move · drag to look · buttons to rise, dive and use",
   clickToLook: "Click to look around with the mouse",
 };
 
-const MESSAGES: Partial<Record<LanguageCode, DiverMessages>> = {
+/** Ashore and wading, in every language (merged into the tables below). */
+const ON_FOOT: Record<LanguageCode, [string, string]> = {
+  en: ["Ashore", "Wading"],
+  zh: ["上岸", "涉水"],
+  hi: ["किनारे पर", "पानी में चलना"],
+  es: ["En tierra", "Vadeando"],
+  fr: ["À terre", "Dans l'eau"],
+  ar: ["على الشاطئ", "خوض في الماء"],
+  bn: ["তীরে", "জলে হাঁটা"],
+  pt: ["Em terra", "Na água rasa"],
+  ru: ["На берегу", "Вброд"],
+  ur: ["ساحل پر", "پانی میں چلنا"],
+  id: ["Di darat", "Mengarungi air"],
+  de: ["An Land", "Im Wasser watend"],
+  ja: ["上陸", "浅瀬"],
+  sw: ["Ufukweni", "Majini kwa miguu"],
+  mr: ["किनाऱ्यावर", "पाण्यातून चालणे"],
+  te: ["ఒడ్డున", "నీటిలో నడక"],
+  tr: ["Karada", "Suda yürüyüş"],
+  ta: ["கரையில்", "நீரில் நடை"],
+  vi: ["Trên bờ", "Lội nước"],
+  ko: ["상륙", "얕은 물"],
+  it: ["A terra", "In acqua bassa"],
+  fa: ["در ساحل", "راه رفتن در آب"],
+  pl: ["Na lądzie", "Brodzenie"],
+  uk: ["На березі", "Вбрід"],
+  nl: ["Aan land", "Waden"],
+  th: ["บนฝั่ง", "ลุยน้ำ"],
+  gu: ["કિનારે", "પાણીમાં ચાલવું"],
+  fil: ["Nasa pampang", "Lumulusong"],
+  ms: ["Di darat", "Meranduk air"],
+  he: ["על החוף", "הליכה במים"],
+};
+
+type BaseDiverMessages = Omit<DiverMessages, "ashore" | "wading">;
+
+const MESSAGES: Partial<Record<LanguageCode, BaseDiverMessages>> = {
   en: EN,
   ru: {
     leaveHelm: "Выйти из-за штурвала",
@@ -65,7 +104,7 @@ const MESSAGES: Partial<Record<LanguageCode, DiverMessages>> = {
     onDeck: "На палубе",
     swimming: "Плавание",
     diving: "Погружение",
-    hintKeys: "WASD — движение · мышь — обзор · Пробел — прыжок / вверх · C — вниз · Shift — быстрее · E — действие · F — фонарь · T — к штурвалу",
+    hintKeys: "WASD — движение · мышь — обзор · Пробел — прыжок / вверх · C — вниз · Shift — быстрее · E — действие · F — фонарь · T — к штурвалу · H — всё управление",
     hintTouch: "Левый джойстик — движение · перетаскивание — обзор · кнопки — всплыть, нырнуть, действие",
     clickToLook: "Щёлкните, чтобы осматриваться мышью",
     metres: "м",
@@ -186,7 +225,8 @@ const MESSAGES: Partial<Record<LanguageCode, DiverMessages>> = {
 };
 
 export function getDiverMessages(language: LanguageCode): DiverMessages {
-  return MESSAGES[language] ?? EN;
+  const [ashore, wading] = ON_FOOT[language] ?? ON_FOOT.en;
+  return { ...(MESSAGES[language] ?? EN), ashore, wading };
 }
 
 /** Every language has the full set (checked by the tests). */

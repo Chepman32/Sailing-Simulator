@@ -226,6 +226,20 @@ export class Vessel {
     if (this.skipper) this.skipper.visible = visible;
   }
 
+  /** The skipper's leap over the side, `t` seconds in (null: back at the wheel). */
+  setSkipperLeap(t: number | null): void {
+    this.skipper?.leap(t);
+  }
+
+  /** The skipper's eyes in the world, and his leap pose (valid while leaping). */
+  skipperEyes(out: THREE.Vector3): THREE.Vector3 {
+    return this.skipper ? this.skipper.eyes(out) : out.copy(HELM_EYE).applyMatrix4(this.root.matrixWorld);
+  }
+
+  get skipperLeap(): Readonly<import("../diver/LeapMath").LeapPose> | null {
+    return this.skipper?.leapPoseNow ?? null;
+  }
+
   /** Dyes the mainsail (sRGB hex). */
   setSailColor(hex: number): void {
     this.sailSystem.setColor(hex);

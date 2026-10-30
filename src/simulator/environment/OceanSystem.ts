@@ -195,7 +195,13 @@ export class OceanSystem {
     (this.uniforms.uImpacts.value as THREE.Vector4[]).forEach((impact) => impact.set(0, 0, 0, 0));
   }
 
-  update(time: number, focus: THREE.Vector3, heading = 0, speed = 0): void {
+  /**
+   * @param focus the yacht (her hull and wake are cut into the surface there)
+   * @param gridFocus where the fine lattice is centred: the yacht, or the
+   *   skipper when he is ashore or swimming off on his own, so the water
+   *   round the eyes is always the finest the grid draws.
+   */
+  update(time: number, focus: THREE.Vector3, heading = 0, speed = 0, gridFocus: { x: number; z: number } = focus): void {
     this.currentTime = time;
     this.uniforms.uVesselSpeed.value = Math.abs(speed);
     this.uniforms.uTime.value = time;
@@ -203,8 +209,8 @@ export class OceanSystem {
     (this.uniforms.uVesselForward.value as THREE.Vector2).set(Math.sin(heading), Math.cos(heading));
     // Re-centre in whole cells: the dense lattice stays locked to the world,
     // so vertices never slide across the waves they are sampling.
-    this.mesh.position.x = Math.round(focus.x / this.cellSize) * this.cellSize;
-    this.mesh.position.z = Math.round(focus.z / this.cellSize) * this.cellSize;
+    this.mesh.position.x = Math.round(gridFocus.x / this.cellSize) * this.cellSize;
+    this.mesh.position.z = Math.round(gridFocus.z / this.cellSize) * this.cellSize;
   }
 
   /** Where a gust is darkening the sea: centre, radius and strength (0 none). */
@@ -227,6 +233,10 @@ export class OceanSystem {
    */
   setUnderside(under: boolean, fogColor: THREE.Color, density: number): void {
     this.uniforms.uCameraUnder.value = under ? 1 : 0;
+    // From below the surface is a ceiling: it hides whatever is above it,
+    // including the see-through things drawn after it (fireworks, a
+    // volcano's ash and glow, flares, contrails).
+    this.mesh.material.depthWrite = under;
     (this.uniforms.uUnderFogColor.value as THREE.Color).copy(fogColor);
     this.uniforms.uUnderFogDensity.value = density;
   }

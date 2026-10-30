@@ -583,50 +583,71 @@ ${detailCalls}
     // catching the light from below.
     if (!gl_FrontFacing) {
       if (uCameraUnder < 0.5) discard;
-      // Ripples matter more from below: the calm field is too smooth.
-      // The fine ripples alias into a mosaic from below: the window is
-      // bent by the larger waves and only shimmers with the small ones.
-      vec3 under = normalize(vec3(-(swellSlope.x * 0.85 + (slope.x - swellSlope.x) * 0.18), 1.0, -(swellSlope.y * 0.85 + (slope.y - swellSlope.y) * 0.18)));
+      // From below the surface is bent mostly by the long waves: the fine
+      // ripples only make the light shimmer. A normal with the full ripple
+      // field shreds the window into hard-edged blobs that read as oil on
+      // glass, so the swell carries it and the ripples are a whisper.
+      vec2 bend = swellSlope * 0.55 + (slope - swellSlope) * 0.1;
+      vec3 under = normalize(vec3(-bend.x, 1.0, -bend.y));
       vec3 ray = -viewDirection;
-      vec3 out_ = refract(ray, -under, 1.333);
       float cosI = clamp(dot(ray, under), 0.0, 1.0);
-      vec3 depths = uUnderFogColor * 0.62;
-      vec3 seen;
-      if (dot(out_, out_) > 1.0e-4) {
-        vec3 skyDirection = normalize(out_);
-        skyDirection.y = max(skyDirection.y, 0.015);
-        vec3 sky = skyAtmosphere(skyDirection);
-        vec4 clouds = skyClouds(skyDirection, -1.0);
-        sky = mix(sky, clouds.rgb, clouds.a);
-        float sunAmount = max(dot(skyDirection, uSunDirection), 0.0);
-        sky += uSunColor * (pow(sunAmount, 1200.0) * 9.0 + pow(sunAmount, 120.0) * 0.35) * (1.0 - uNight) * smoothstep(-0.05, 0.1, uSunDirection.y);
-        float moonAmount = max(dot(skyDirection, uMoonDirection), 0.0);
-        sky += vec3(0.6, 0.7, 0.9) * pow(moonAmount, 900.0) * 1.5 * uNight;
-        // Fresnel going out of the water: near the window's edge almost all
-        // the light is reflected back down.
-        float cosT = sqrt(max(0.0, 1.0 - 1.777 * (1.0 - cosI * cosI)));
-        float rs = (1.333 * cosI - cosT) / (1.333 * cosI + cosT);
-        float rp = (cosI - 1.333 * cosT) / (cosI + 1.333 * cosT);
-        float reflectance = clamp(0.5 * (rs * rs + rp * rp), 0.0, 1.0);
-        seen = mix(sky * 1.15, depths, reflectance);
-      } else {
-        // Total internal reflection: the depths, rippled, and the light
-        // scattered up from the water column catching the facets.
-        float facet = pow(max(dot(reflect(ray, -under), uLightDirection * vec3(1.0, -1.0, 1.0)), 0.0), 12.0);
-        seen = depths * (0.92 + 0.16 * skyNoise(vWorldPosition.xz * 0.7 + uTime * 0.2)) + uLightColor * facet * 0.03;
-      }
-      // Foam and the wake float on top: pale patches against the light.
+      // Snell: past 48.6° from the normal nothing leaves the water. The edge
+      // of the window is soft — every pixel holds a range of slopes — and
+      // the light near it is mostly reflected back down (Fresnel).
+      float sinT2 = 1.777 * (1.0 - cosI * cosI);
+      float window = smoothstep(1.0, 0.86, sinT2);
+      float cosT = sqrt(max(0.0, 1.0 - sinT2));
+      float rs = (1.333 * cosI - cosT) / (1.333 * cosI + cosT);
+      float rp = (cosI - 1.333 * cosT) / (cosI + 1.333 * cosT);
+      float transmitted = window * (1.0 - clamp(0.5 * (rs * rs + rp * rp), 0.0, 1.0));
+      // Far off, at a grazing look, the window cannot open: only a slope of
+      // forty degrees would show the sky there, and the haze takes the rest.
+      transmitted *= smoothstep(0.32, 0.62, ray.y);
+
+      // What the water mirrors beyond the window: the water column below,
+      // darker toward the depths, lighter toward the bright window it
+      // reflects the scattered light of. It is not a mirror sheet: the
+      // long waves only swing its shade a little.
+      vec3 mirrored = reflect(ray, -under);
+      float down = clamp(-mirrored.y, 0.0, 1.0);
+      vec3 depths = uUnderFogColor * mix(1.05, 0.55, down);
+      float swell = dot(bend, vec2(0.7, 0.5));
+      depths *= 0.94 + 0.12 * clamp(swell * 3.0, -1.0, 1.0);
+      depths += uUnderFogColor * 0.5 * smoothstep(0.62, 1.0, sinT2) * (1.0 - window);
+
+      // Through the window: the sky squeezed into a circle, bent by the
+      // waves, the sun a hard spot in it; refracted out of the water.
+      vec3 out_ = refract(ray, -under, 1.333);
+      vec3 skyDirection = dot(out_, out_) > 1.0e-4 ? normalize(out_) : vec3(0.0, 1.0, 0.0);
+      skyDirection.y = max(skyDirection.y, 0.02);
+      vec3 sky = skyAtmosphere(skyDirection);
+      vec4 clouds = skyClouds(skyDirection, -1.0);
+      // Through a moving surface clouds are a soft brightening, never crisp shapes.
+      sky = mix(sky, clouds.rgb, clouds.a * 0.22);
+      // Squeezed into the window and scattered on its way down, the sky is a
+      // luminous, nearly even glow tinted by the water, brightest overhead.
+      sky = mix(sky, vec3(dot(sky, vec3(0.3, 0.5, 0.2))), 0.55) * (1.15 + 0.35 * cosI);
+      float sunAmount = max(dot(skyDirection, uSunDirection), 0.0);
+      float day = (1.0 - uNight) * smoothstep(-0.05, 0.1, uSunDirection.y);
+      sky += uSunColor * (pow(sunAmount, 900.0) * 7.0 + pow(sunAmount, 60.0) * 0.4) * day;
+      float moonAmount = max(dot(skyDirection, uMoonDirection), 0.0);
+      sky += vec3(0.6, 0.7, 0.9) * pow(moonAmount, 900.0) * 1.5 * uNight;
+      // The light leaving the water was tinted by it on the way up.
+      sky *= mix(vec3(1.0), uUnderFogColor / max(max(uUnderFogColor.g, uUnderFogColor.b), 1.0e-3), 0.25);
+      // The ripples break the window's light into a fine shimmer.
+      float shimmer = 0.9 + 0.2 * skyNoise(vWorldPosition.xz * 2.3 + (slope - swellSlope) * 6.0 + uTime * 0.35);
+      vec3 seen = mix(depths, sky * shimmer, transmitted);
+
+      // Foam and the wake float on top: a lace of bubbles, pale against the light.
       vec3 wakeUnder = vec3(0.0);
       if (uWakeTexel > 0.0) {
         vec2 wakeUv = (vWorldPosition.xz - uWakeArea.xy) / uWakeArea.z + 0.5;
         if (all(greaterThan(wakeUv, vec2(0.0))) && all(lessThan(wakeUv, vec2(1.0)))) wakeUnder = vec3(texture2D(uWakeMap, wakeUv).r);
       }
-      // Seen from below foam is a lace of bubbles, not a sheet: broken up by
-      // the same marbling as from above and only a little brighter than the
-      // light coming through it.
       float laceUnder = foamCover(clamp(wakeUnder.r, 0.0, 1.0) * 0.8, foamMarble(vWorldPosition.xz * 1.4, uTime), 0.18);
       seen = mix(seen, (uAmbientColor * 0.7 + uLightColor * 0.18) * (1.0 - uNight * 0.7), laceUnder * 0.45);
-      float haze = 1.0 - exp(-viewDistance * uUnderFogDensity * 0.85);
+      // The water between: the far surface fades into the blue.
+      float haze = 1.0 - exp(-viewDistance * uUnderFogDensity * 0.9);
       seen = mix(seen, uUnderFogColor, haze);
       gl_FragColor = vec4(max(seen, 0.0), 1.0);
       #include <tonemapping_fragment>
@@ -634,6 +655,13 @@ ${detailCalls}
       return;
     }
 
+    // Seen from close to the water (a swimmer's eyes) the backs of ripples
+    // and wavelets face away from the eye: those facets are hidden behind
+    // their own crests, and a normal turned away from the view would light
+    // them as a grazing mirror of the pale horizon — white bands on the
+    // sea. The normal is leaned back toward the eye just enough to face it.
+    float facing = dot(normal, viewDirection);
+    if (facing < 0.08) normal = normalize(normal + viewDirection * (0.08 - facing));
     float nDotV = clamp(dot(normal, viewDirection), 0.02, 1.0);
     float roughness = clamp(sqrt(0.0014 + lostVariance * 2.0), 0.035, 0.42);
 
@@ -643,12 +671,22 @@ ${detailCalls}
     // would, which is why a real sea horizon is darker than the sky above it.
     fresnel *= 1.0 - roughness * 0.55;
     vec3 reflected = reflect(-viewDirection, normal);
-    reflected.y = abs(reflected.y) + roughness * 0.55;
+    // A ray glancing off a wave face downward meets the next wave, not the
+    // sky: from low over the water those facets mirror the sea itself.
+    float mirrorsSea = smoothstep(0.03, -0.1, reflected.y);
+    // Eyes just over the water see every facet at a glancing angle; the
+    // pale band of sky at the horizon would whiten half the sea. Ripples too
+    // small to resolve tilt those glances up into the bluer sky, and spread
+    // the mirror: a swimmer's sea is blue-grey with bright streaks, not white.
+    float eyeLow = 1.0 - smoothstep(0.8, 3.2, cameraPosition.y);
+    reflected.y = abs(reflected.y) + roughness * 0.55 + eyeLow * 0.26;
+    fresnel *= 1.0 - eyeLow * 0.42 * smoothstep(0.55, 0.95, 1.0 - nDotV);
     reflected = normalize(reflected);
     vec3 reflection = skyAtmosphere(reflected);
     // Seen in the water the sky is paler than overhead: the light is mixed by
     // the many facets of each pixel and the spray above them.
     reflection = mix(reflection, vec3(dot(reflection, vec3(0.3, 0.5, 0.2))), 0.14);
+    reflection = mix(reflection, uDeepColor * 1.5 + uAmbientColor * 0.06, mirrorsSea * 0.85);
     if (uDetail > 0.6) {
       // Clouds are mirrored through a partly calmed normal: the full ripple
       // field would smear them into streaks, where the eye expects shapes.
@@ -656,7 +694,7 @@ ${detailCalls}
       vec3 calmReflected = reflect(-viewDirection, calmNormal);
       calmReflected.y = abs(calmReflected.y) + 0.02;
       vec4 clouds = skyClouds(normalize(calmReflected), -1.0);
-      reflection = mix(reflection, clouds.rgb, clouds.a * 0.85);
+      reflection = mix(reflection, clouds.rgb, clouds.a * 0.85 * (1.0 - mirrorsSea));
     }
     // The yacht, the islands and the birds, mirrored and bent by the waves.
     if (uReflectionStrength > 0.0) {

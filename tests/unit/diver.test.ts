@@ -6,6 +6,7 @@ import {
   airUse,
   createSwimState,
   DIVE_DEPTH,
+  hop,
   hullDistance,
   isFloating,
   minutesLeft,
@@ -118,4 +119,92 @@ test("the diver HUD is translated into every interface language", async () => {
     const messages = getDiverMessages(code) as Record<string, string | undefined>;
     for (const key of required) assert.ok(messages[key] && messages[key]!.length > 0, `${code}.${key}`);
   }
+});
+
+test("ashore he walks up a beach, round a trunk, jumps and lands, and slows in the water", async () => {
+  const { createWalkState, stepWalk, wadingDepth, JUMP_SPEED, WALK_SPEED, BODY_RADIUS } = await import("../../src/simulator/diver/DiverMath");
+  // A beach rising one in ten toward +Z from the waterline at z = 0, a trunk at z = 6.
+  const beach = {
+    ground: (_x: number, z: number) => z * 0.1,
+    surface: () => 0,
+    obstacle: (x: number, z: number, normal: { x: number; z: number }) => {
+      const dx = x - 0;
+      const dz = z - 6;
+      const length = Math.hypot(dx, dz) || 1;
+      normal.x = dx / length;
+      normal.z = dz / length;
+      return length - 0.2;
+    },
+  };
+  const walk = createWalkState(0.05, -0.8, -8);
+  const input = { moveX: 0, moveY: 1, sprint: false, yaw: 0, jump: false };
+  let wetSpeed = 0;
+  for (let t = 0; t < 12; t += 1 / 60) {
+    stepWalk(walk, input, beach, 1 / 60);
+    if (t > 1 && t < 1.1) wetSpeed = Math.hypot(walk.vx, walk.vz);
+  }
+  assert.ok(wetSpeed < WALK_SPEED * 0.95, `the water slows him (${wetSpeed.toFixed(2)} m/s)`);
+  assert.ok(walk.z > 4, `up the beach (${walk.z.toFixed(1)} m)`);
+  assert.ok(Math.hypot(walk.x, walk.z - 6) >= 0.2 + BODY_RADIUS - 0.02, "round the trunk, not through it");
+  assert.ok(Math.abs(walk.y - beach.ground(walk.x, walk.z)) < 0.02, "feet on the sand");
+  assert.equal(wadingDepth(walk.x, walk.z, beach), 0);
+  // A jump: up and back down onto the sand.
+  input.moveY = 0;
+  input.jump = true;
+  const start = walk.y;
+  let top = start;
+  for (let t = 0; t < 1.5; t += 1 / 60) {
+    stepWalk(walk, input, beach, 1 / 60);
+    input.jump = false;
+    top = Math.max(top, walk.y);
+  }
+  assert.ok(top - start > (JUMP_SPEED * JUMP_SPEED) / (2 * 9.81) * 0.8, "a real jump");
+  assert.ok(walk.grounded && walk.landed > 2, "landed");
+  // A cliff stops him; a slope a person climbs does not.
+  const cliff = { ground: (x: number) => (x > 1 ? 3 : 0), surface: () => -5 };
+  const below = createWalkState(0, 0, 0);
+  for (let t = 0; t < 2; t += 1 / 60) stepWalk(below, { moveX: 0, moveY: 1, sprint: false, yaw: Math.PI / 2, jump: false }, cliff, 1 / 60);
+  assert.ok(below.x < 1.01, "a wall of rock is not walked up");
+});
+
+test("a kick at the surface lifts him out of the water and he falls back in", () => {
+  const state = createSwimState(0, SURFACE_EYE, 0);
+  assert.ok(hop(state, calm));
+  let top = state.y;
+  let splashed = 0;
+  for (let t = 0; t < 2; t += 1 / 60) {
+    stepSwim(state, still(), calm, 1 / 60);
+    top = Math.max(top, state.y);
+    if (state.splashed > 0) splashed = state.splashed;
+  }
+  assert.ok(top > SURFACE_EYE + 0.25, `out of the water (${top.toFixed(2)} m)`);
+  assert.ok(splashed > 1 && !state.airborne, "back in with a splash");
+  assert.ok(Math.abs(state.y - SURFACE_EYE) < 0.15, "floating again");
+  const deep = createSwimState(0, -4, 0);
+  assert.equal(hop(deep, calm), false, "no kick from four metres down");
+});
+
+test("the floating eyes keep clear of the highest water round them", () => {
+  const world: SwimWorld = { surface: () => 0, seabedDepth: () => 12, floatLine: () => 0.2 };
+  const { state } = run(world, still(), 5, createSwimState(0, SURFACE_EYE, 0));
+  assert.ok(state.y > 0.2 + SURFACE_EYE - 0.03, `eyes over the float line (${state.y.toFixed(2)} m)`);
+});
+
+test("the leap over the side: hands off, a turn outboard, a jump clear of the hull, eyes under before control returns", async () => {
+  const { leapPose, LEAP_SECONDS, LEAP_TAKEOFF } = await import("../../src/simulator/diver/LeapMath");
+  assert.equal(leapPose(0).release, 0);
+  assert.ok(leapPose(1).release > 0.99, "hands off the wheel within the first second");
+  assert.ok(leapPose(LEAP_TAKEOFF - 0.01).turn > 1.5, "facing outboard before he jumps");
+  assert.ok(leapPose(LEAP_TAKEOFF - 0.1).crouch > 0.5, "crouches for the spring");
+  // Feet start on the deck 0.62 m over the sea at x = 1.72; the hull's side is at 2.17.
+  let clearAt = Number.NaN;
+  let eyesUnder = Number.NaN;
+  for (let t = LEAP_TAKEOFF; t < LEAP_SECONDS + 1; t += 0.01) {
+    const pose = leapPose(t);
+    const feetY = 0.62 + pose.y;
+    if (Number.isNaN(clearAt) && 1.72 + pose.x > 2.3) clearAt = feetY;
+    if (Number.isNaN(eyesUnder) && feetY + 1.55 < 0) eyesUnder = t;
+  }
+  assert.ok(clearAt > 0.7, `clears the deck edge in the air (${clearAt.toFixed(2)} m)`);
+  assert.ok(eyesUnder < LEAP_SECONDS, `under before control returns (${eyesUnder.toFixed(2)} s)`);
 });

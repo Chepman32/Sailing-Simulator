@@ -10,12 +10,13 @@ import { usePwaInstall } from "./usePwaInstall";
 import { gravityRollDegrees, requestTiltPermission, screenAngle, screenRollDegrees, STEERING_STORAGE_KEY, swipeToRudder, tiltToRudder, wheelToRudder } from "./steering";
 import { featureText, getFeatureMessages } from "./featureMessages";
 import { DiverHud } from "./DiverHud";
+import { ControlsCard } from "./ControlsCard";
+import { DustNotices, type NoticeItem } from "./DustNotice";
 import { getDiverMessages } from "./diverMessages";
 import { ChartView } from "./ChartView";
 import {
   DiscoveryCard,
   LootChip,
-  QuickStart,
   RadioPlayer,
   SignalButtons,
   StationBanner,
@@ -65,7 +66,7 @@ async function savePhoto(blob: Blob): Promise<void> {
 
 /** Downloads plus scene steps (`LOAD_STEPS_TOTAL` in AssetManager), for the bar before the first report. */
 const ASSET_LOAD_TOTAL = 16;
-/** Set once the first-run guide has been finished or skipped. */
+/** Set once the first-run controls card has been seen and closed. */
 const GUIDE_STORAGE_KEY = "sailing-onboarding-done";
 const SAIL_SWATCHES: { id: string; color: string }[] = [
   { id: "white", color: "#dcd8ca" },
@@ -328,8 +329,9 @@ export function SailingSimulator() {
   const [rudderInput, setRudderInput] = useState(0);
   const [throttleInput, setThrottleInput] = useState(0);
   const [engineInput, setEngineInput] = useState(false);
-  const [engineNotice, setEngineNotice] = useState("");
-  const [noticeKey, setNoticeKey] = useState(0);
+  // What a control has just done: the newest pill, and older ones still crumbling to dust.
+  const [notices, setNotices] = useState<NoticeItem[]>([]);
+  const noticeId = useRef(0);
   const [language, setLanguage] = useState<LanguageCode>("en");
   const rudderDragging = useRef(false);
   const swipeStart = useRef<{ x: number; value: number; width: number } | null>(null);
@@ -346,7 +348,6 @@ export function SailingSimulator() {
     soundArrivedTimer.current = window.setTimeout(() => setSoundArrived(false), 900);
   }, []);
   useEffect(() => () => window.clearTimeout(soundArrivedTimer.current), []);
-  const engineNoticeTimer = useRef<number | undefined>(undefined);
   // Finds and discoveries wait their turn for the card at the top.
   const [discoveries, setDiscoveries] = useState<DiscoveryView[]>([]);
   const discoveryId = useRef(0);
@@ -355,16 +356,20 @@ export function SailingSimulator() {
   const [panelTab, setPanelTab] = useState<"scene" | "yacht">("scene");
   const [confirmRestart, setConfirmRestart] = useState(false);
   const { canInstall, install: installApp } = usePwaInstall();
-  // First-run guide: 1–3 while it runs, 0 once done (decided after mount, from storage).
-  const [guideStep, setGuideStep] = useState(0);
+  // The controls card: open by itself on the first visit, and on H or the "?" button.
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [controlsFirst, setControlsFirst] = useState(false);
   const [coarsePointer, setCoarsePointer] = useState(false);
-  const finishGuide = useCallback(() => {
-    setGuideStep(0);
+  const closeControls = useCallback(() => {
+    setControlsOpen(false);
+    setControlsFirst(false);
     try {
       window.localStorage.setItem(GUIDE_STORAGE_KEY, "1");
     } catch {
-      // The guide simply shows again next time.
+      // The card simply shows again next time.
     }
+    // Back in the skipper's eyes: the click that closed the card captures the mouse again.
+    simulatorRef.current?.requestDiverPointer();
   }, []);
 
   // Keep the phone awake while the yacht is on screen: a screen that dims in the middle of a passage is the
@@ -560,10 +565,9 @@ export function SailingSimulator() {
     const check = window.setTimeout(() => {
       if (anySeen) return;
       setTiltSteering(false);
-      setEngineNotice(getFeatureMessages(language).tiltUnavailable);
-      setNoticeKey((key) => key + 1);
-      window.clearTimeout(engineNoticeTimer.current);
-      engineNoticeTimer.current = window.setTimeout(() => setEngineNotice(""), 2400);
+      noticeId.current += 1;
+      const id = noticeId.current;
+      setNotices((list) => [...list.slice(-3), { id, text: getFeatureMessages(language).tiltUnavailable }]);
       try {
         window.localStorage.setItem(STEERING_STORAGE_KEY, "slider");
       } catch {
@@ -644,7 +648,10 @@ export function SailingSimulator() {
         if (disposed) return;
         // Client-only facts, read once the page is in the browser.
         setCoarsePointer(window.matchMedia("(pointer: coarse)").matches);
-        if (!readGuideDone()) setGuideStep(1);
+        if (!readGuideDone()) {
+          setControlsOpen(true);
+          setControlsFirst(true);
+        }
         simulator = new simulatorModule.Simulator(canvas, {
           onSnapshot: (nextSnapshot) => {
             // A transition: React renders the interface in short slices and
@@ -653,12 +660,6 @@ export function SailingSimulator() {
             startTransition(() => {
               setSnapshot(nextSnapshot);
               setEngineInput(nextSnapshot.engineRunning);
-              // The first-run guide ticks itself off as the player does each thing.
-              setGuideStep((step) => {
-                if (step === 1 && (nextSnapshot.engineRunning || nextSnapshot.speedKnots > 1.2)) return 2;
-                if (step === 2 && Math.abs(nextSnapshot.rudderDegrees) > 8) return 3;
-                return step;
-              });
             });
           },
           onLoading: setLoading,
@@ -692,7 +693,6 @@ export function SailingSimulator() {
 
     return () => {
       disposed = true;
-      if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
       simulator?.dispose();
       if (simulatorRef.current === simulator) simulatorRef.current = null;
     };
@@ -721,19 +721,19 @@ export function SailingSimulator() {
   };
   /** A plaque naming what a switch has just done, for a couple of seconds. */
   const showNotice = (text: string) => {
-    setEngineNotice(text);
-    setNoticeKey((key) => key + 1);
-    if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
-    engineNoticeTimer.current = window.setTimeout(() => setEngineNotice(""), 2400);
+    noticeId.current += 1;
+    const id = noticeId.current;
+    // A few at most: the newest, and the ones before it still turning to dust.
+    setNotices((list) => [...list.slice(-3), { id, text }]);
   };
+  const dropNotice = useCallback((id: number) => setNotices((list) => list.filter((item) => item.id !== id)), []);
   const resetScene = () => {
     if (!loading.ready || error) return;
     rudderDragging.current = false;
     throttleDragging.current = false;
     setRudderInput(0);
     setThrottleInput(0);
-    setEngineNotice("");
-    if (engineNoticeTimer.current !== undefined) window.clearTimeout(engineNoticeTimer.current);
+    setNotices([]);
     simulatorRef.current?.reset();
     showNotice(messages.reset);
   };
@@ -884,21 +884,9 @@ export function SailingSimulator() {
     setPhotoHint(true);
     // The camera now turns by itself to whales, dolphins, sharks, eruptions and ships' horns.
     simulatorRef.current?.setPhotoMode(true);
-    if (guideStep === 3) finishGuide();
   };
 
-  const guideWasRunning = useRef(false);
-  useEffect(() => {
-    if (guideStep > 0) guideWasRunning.current = true;
-  }, [guideStep]);
-  useEffect(() => {
-    // Back from the guide's photo mode: one word of encouragement.
-    if (!photoMode && guideStep === 0 && guideWasRunning.current && readGuideDone()) {
-      guideWasRunning.current = false;
-      showNotice(voyage.guideDone);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photoMode, guideStep]);
+
 
   // The minimap sits in the bottom-left corner just above the rudder, whatever
   // height the rudder panel has at this size: its top edge is measured and
@@ -924,11 +912,56 @@ export function SailingSimulator() {
     };
   }, [ready]);
 
+  const unlockSound = () => {
+    const simulator = simulatorRef.current;
+    if (!simulator) return;
+    // Run the complete unlock path during pointerdown. On iOS WebKit the
+    // AudioContext state change can remove this button before a later click is
+    // dispatched, so click alone is not a reliable first-gesture handler.
+    simulator.setSoundEnabled(true);
+    simulator.startAudioFromUser();
+  };
+
+  /** M: sound on or off (the key is the player asking for it, so it may start the audio). */
+  const toggleSoundKey = () => {
+    const simulator = simulatorRef.current;
+    if (!simulator) return;
+    const playing = snapshot.soundEnabled && snapshot.audioReady;
+    if (playing) simulator.setSoundEnabled(false);
+    else unlockSound();
+    showNotice(playing ? voyage.soundKeyOff : voyage.soundKeyOn);
+  };
+
   // Keyboard commands (the helm and the throttle are the simulator's own keys).
   const keyHandler = useRef<(event: KeyboardEvent) => void>(() => {});
   const onKey = (event: KeyboardEvent) => {
     if (!ready || event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     if (isTypingTarget(event.target)) return;
+    // The controls card: H opens and closes it, Esc closes it; it holds the keys while open.
+    if (event.code === "KeyH") {
+      if (controlsOpen) closeControls();
+      else {
+        if (photoMode) exitPhotoMode();
+        setChartOpen(false);
+        simulatorRef.current?.releaseDiverPointer();
+        setControlsOpen(true);
+      }
+      event.preventDefault();
+      return;
+    }
+    if (controlsOpen) {
+      if (event.code === "Escape") {
+        closeControls();
+        event.preventDefault();
+      }
+      return;
+    }
+    // Sound on and off from anywhere, the skipper's own eyes and the cinematic view included.
+    if (event.code === "KeyM") {
+      toggleSoundKey();
+      event.preventDefault();
+      return;
+    }
     if (event.code === "KeyT") {
       // From the cinematic view too: it closes, and he steps away.
       if (photoMode) exitPhotoMode();
@@ -941,7 +974,7 @@ export function SailingSimulator() {
     }
     if (photoMode) return;
     // On deck and in the water the signals, flares and camera keys are not his.
-    if (away && ["KeyF", "KeyG", "KeyH", "KeyB", "KeyV", "KeyR"].includes(event.code)) return;
+    if (away && ["KeyF", "KeyG", "KeyJ", "KeyB", "KeyV", "KeyR", "KeyO"].includes(event.code)) return;
     switch (event.code) {
       case "KeyP":
         setChartOpen(false);
@@ -950,7 +983,7 @@ export function SailingSimulator() {
       case "KeyN":
         setChartOpen((value) => !value);
         break;
-      case "KeyH":
+      case "KeyJ":
         playSignal("horn");
         break;
       case "KeyB":
@@ -962,7 +995,7 @@ export function SailingSimulator() {
       case "KeyG":
         launchFlare("green");
         break;
-      case "KeyM":
+      case "KeyO":
         if (event.shiftKey) stepRadio(-1);
         else if (snapshot.radioStation && snapshot.radioStation === stations[stations.length - 1]!.id) tuneRadio(null);
         else stepRadio(1);
@@ -1015,15 +1048,6 @@ export function SailingSimulator() {
     showNotice(`${messages.sound}: ${snapshot.soundEnabled ? messages.off : messages.on}`);
   };
 
-  const unlockSound = () => {
-    const simulator = simulatorRef.current;
-    if (!simulator) return;
-    // Run the complete unlock path during pointerdown. On iOS WebKit the
-    // AudioContext state change can remove this button before a later click is
-    // dispatched, so click alone is not a reliable first-gesture handler.
-    simulator.setSoundEnabled(true);
-    simulator.startAudioFromUser();
-  };
 
   const changeLanguage = (nextLanguage: LanguageCode) => {
     setLanguage(nextLanguage);
@@ -1113,6 +1137,14 @@ export function SailingSimulator() {
 
       {photoMode && photoHint && <p className="photo-toast" aria-hidden="true">{messages.photoModeHint}</p>}
 
+      {/* What a control has just done: over everything, the skipper's own
+          view included (the cinematic view keeps its picture clean). */}
+      {!photoMode && <DustNotices items={notices} onGone={dropNotice} />}
+
+      {ready && controlsOpen && (
+        <ControlsCard messages={voyage} touch={coarsePointer} firstVisit={controlsFirst} onClose={closeControls} />
+      )}
+
       {/* Faded rather than removed, so leaving photo mode is a smooth return;
           inert keeps the hidden controls out of reach meanwhile. */}
       {ready && away && !photoMode && (
@@ -1160,11 +1192,6 @@ export function SailingSimulator() {
             with each other or with the controls at any screen size. */}
         {/* What a control has just done: a short plaque a little below the
             centre of the screen, over everything, never in the way of a tap. */}
-        {engineNotice && (
-          <div className="action-toast" role="status" aria-live="polite" key={noticeKey}>
-            {engineNotice}
-          </div>
-        )}
 
         <div className="notice-stack">
           <SoundPrompt
@@ -1174,7 +1201,6 @@ export function SailingSimulator() {
             onUnlock={unlockSound}
             onArrived={onSoundPromptArrived}
           />
-          {ready && !discoveries.length && <QuickStart step={guideStep} touch={coarsePointer} messages={voyage} onSkip={finishGuide} />}
           {ready && (
             <DiscoveryCard key={discoveries[0]?.id ?? 0} discovery={discoveries[0] ?? null} messages={voyage} onClose={closeDiscovery} onHoist={(color) => {
               hoistSail(color);
@@ -1182,7 +1208,7 @@ export function SailingSimulator() {
             }} />
           )}
           {ready && snapshot.stuck && <StuckChip messages={voyage} onRescue={rescueBoat} />}
-          {ready && !discoveries.length && guideStep === 0 && <LootChip loot={snapshot.nearestLoot} messages={voyage} />}
+          {ready && !discoveries.length && !controlsOpen && <LootChip loot={snapshot.nearestLoot} messages={voyage} />}
         </div>
 
         {ready && portraitPhone && !rotateHintDismissed && (
@@ -1251,7 +1277,7 @@ export function SailingSimulator() {
           <button
             ref={photoButtonRef}
             type="button"
-            className={`scene-action${guideStep === 3 ? " guide-target" : ""}`}
+            className="scene-action"
             disabled={!loading.ready || Boolean(error)}
             title={`${messages.photoMode} (P). ${messages.photoModeHint}`}
             aria-describedby="photo-mode-hint"
@@ -1283,6 +1309,18 @@ export function SailingSimulator() {
           >
             <ControlIcon name="map" />
             <span className="scene-action-label">{messages.map}</span>
+          </button>
+          <button
+            type="button"
+            className="scene-action controls-action"
+            disabled={!ready}
+            aria-haspopup="dialog"
+            aria-label={voyage.controlsButton}
+            title={`${voyage.controlsButton} (H)`}
+            onClick={() => setControlsOpen(true)}
+          >
+            <span className="controls-glyph" aria-hidden="true">?</span>
+            <span className="scene-action-label">{voyage.controlsButton}</span>
           </button>
           <p id="photo-mode-hint" className="photo-mode-hint">{messages.photoModeHint}</p>
           <RadioPlayer
@@ -1629,6 +1667,7 @@ export function SailingSimulator() {
                     <li>{voyage.keySignals}</li>
                     <li>{voyage.keyMore}</li>
                   </ul>
+                  <button type="button" className="key-help-open" onClick={() => setControlsOpen(true)}>{voyage.controlsButton} · H</button>
                 </div>
               )}
               </>)}
@@ -1659,7 +1698,7 @@ export function SailingSimulator() {
         </section>
 
         <div className="primary-controls">
-          <section ref={rudderRef} className={`rudder-control${guideStep === 2 ? " guide-target" : ""}${tiltSteering ? " is-tilt" : ""}`} aria-label={messages.rudder}>
+          <section ref={rudderRef} className={`rudder-control${tiltSteering ? " is-tilt" : ""}`} aria-label={messages.rudder}>
             <div
               className="helm-wheel"
               role="presentation"
@@ -1783,7 +1822,7 @@ export function SailingSimulator() {
           <section className={`throttle-control ${engineInput ? "" : "is-off"}`} aria-label={`${messages.engine} · ${messages.throttle}`}>
             <button
               type="button"
-              className={`engine-toggle${guideStep === 1 ? " guide-target" : ""}`}
+              className="engine-toggle"
               role="switch"
               aria-checked={engineInput}
               aria-label={`${messages.engine}: ${engineInput ? messages.on : messages.off}`}

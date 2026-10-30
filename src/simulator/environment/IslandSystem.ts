@@ -17,6 +17,7 @@ import {
 import {
   islandEdgeNoise,
   islandsAround,
+  MAX_EDGE_NOISE,
   islandsWithin,
   selectIslandSlots,
   shoreClearance,
@@ -37,6 +38,7 @@ import {
   hillHeight,
   inClearing,
   islandClearings,
+  islandPoint,
   islandProfile,
   LIGHTHOUSE_SCALE,
   pierClearance,
@@ -356,6 +358,84 @@ export class IslandSystem {
         best = distance;
         normal.x = scratch.x;
         normal.z = scratch.z;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Height of an island's ground at (x, z) — beach, hills, crater, and the
+   * apron that runs on under the shallows — as drawn; −Infinity where no
+   * island's terrain is. Someone walking ashore stands on this.
+   */
+  terrainHeightAt(x: number, z: number): number {
+    let best = Number.NEGATIVE_INFINITY;
+    for (const island of islandsAround(x, z)) {
+      const dx = x - island.centerX;
+      const dz = (z - island.centerZ) / island.scaleZ;
+      const r = Math.sqrt(dx * dx + dz * dz);
+      if (r > island.beachRadius * MAX_EDGE_NOISE * MAX_VISIBLE_TERRAIN_RADIUS_SCALE) continue;
+      const angle = Math.atan2(dz, dx);
+      const radial = r / (island.beachRadius * islandEdgeNoise(angle, island));
+      if (radial > MAX_VISIBLE_TERRAIN_RADIUS_SCALE) continue;
+      const height = this.terrainSurfaceHeight(island, radial, angle);
+      if (height > best) best = height;
+    }
+    return best;
+  }
+
+  /** Top of a pier's planking over (x, z), or −Infinity (the deck is 1.15 m over the sea, see `IslandProps.addPier`). */
+  pierDeckAt(x: number, z: number): number {
+    for (const visual of this.built.values()) {
+      const pier = visual.pier;
+      if (!pier || Math.abs(pier.x - x) > pier.length + 4 || Math.abs(pier.z - z) > pier.length + 4) continue;
+      const dx = x - pier.x;
+      const dz = z - pier.z;
+      const along = dx * pier.dirX + dz * pier.dirZ;
+      const across = Math.abs(-dx * pier.dirZ + dz * pier.dirX);
+      // The footprint is padded for the yacht; the walk is the planks: a
+      // 2.3 m deck and the T at its end.
+      const deckLength = pier.length - 2.4;
+      if (along < -0.2 || along > deckLength + 2.4) continue;
+      if (across < (along > deckLength - 0.3 ? 2.25 : 1.15)) return 1.18;
+    }
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  /**
+   * Distance from (x, z) to the nearest thing standing on an island that a
+   * walker goes round (a palm trunk, a lighthouse, a hut; negative inside)
+   * and its outward direction in `normal`; Infinity where there is none.
+   */
+  obstacleClearance(x: number, z: number, normal: { x: number; z: number }): number {
+    let best = Number.POSITIVE_INFINITY;
+    const consider = (cx: number, cz: number, radius: number) => {
+      const dx = x - cx;
+      const dz = z - cz;
+      const length = Math.sqrt(dx * dx + dz * dz);
+      const distance = length - radius;
+      if (distance >= best) return;
+      best = distance;
+      normal.x = length > 1e-6 ? dx / length : 1;
+      normal.z = length > 1e-6 ? dz / length : 0;
+    };
+    for (const visual of this.built.values()) {
+      const island = visual.definition;
+      const reach = island.beachRadius * Math.max(1, island.scaleZ) * 1.2 + 10;
+      if (Math.abs(island.centerX - x) > reach || Math.abs(island.centerZ - z) > reach) continue;
+      for (const trunk of visual.trunks) {
+        if (Math.abs(trunk.x - x) > 3 || Math.abs(trunk.z - z) > 3) continue;
+        consider(trunk.x, trunk.z, 0.16 + trunk.w * 0.08);
+      }
+      const profile = this.profile(island);
+      if (profile.lighthouseAngle !== null) {
+        const spot = islandPoint(island, 0.5, profile.lighthouseAngle);
+        // The granite plinth, the tower's foot.
+        consider(island.centerX + spot.x, island.centerZ + spot.z, 2.55 * LIGHTHOUSE_SCALE);
+      }
+      if (profile.pierAngle !== null) {
+        const spot = islandPoint(island, 0.74, profile.pierAngle + 0.2);
+        consider(island.centerX + spot.x, island.centerZ + spot.z, 2.3);
       }
     }
     return best;

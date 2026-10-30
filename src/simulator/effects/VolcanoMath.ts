@@ -3,8 +3,8 @@ import { clamp, smoothstep } from "../math";
 /**
  * A volcano's moods, in numbers.
  *
- * Between eruptions it breathes a plume of steam and gas. About once a
- * minute it erupts: a blast (a flash and a ring of shocked air), a fountain
+ * Between eruptions it breathes a plume of steam and gas. Every two
+ * minutes or so it erupts: a blast (a flash and a ring of shocked air), a fountain
  * of incandescent bombs that arc out of the crater and tumble down the
  * cone, a dark ash column that rushes up hundreds of metres, slows,
  * mushrooms into an umbrella and is carried off by the wind, and in a
@@ -15,7 +15,7 @@ import { clamp, smoothstep } from "../math";
  */
 
 /** Seconds between the starts of two eruption slots. */
-export const ERUPTION_SLOT = 62;
+export const ERUPTION_SLOT = 105;
 /** How long the lava fountain plays, s. */
 export const ERUPTION_LENGTH = 9;
 /** How long the vent feeds the ash column, s (hard at first, waning). */
@@ -54,14 +54,15 @@ export type Eruption = {
 
 /**
  * The eruption whose column is in the sky at `time` for a volcano with
- * `seed`, if any: about five slots in six erupt, early in the slot.
+ * `seed`, if any: about four slots in five erupt, anywhere in the slot
+ * that leaves the column its whole life.
  */
 export function eruptionAt(time: number, seed: number, out: Eruption): Eruption {
   out.age = -1;
   out.strength = 0;
   out.slot = 0;
   const slot = Math.floor(time / ERUPTION_SLOT);
-  if (hash(slot, seed * 131 + 7) > 0.84) return out;
+  if (hash(slot, seed * 131 + 7) > 0.8) return out;
   const start = slot * ERUPTION_SLOT + hash(slot, seed * 17 + 3) * (ERUPTION_SLOT - COLUMN_LIFE);
   const age = time - start;
   if (age >= 0 && age < COLUMN_LIFE) {

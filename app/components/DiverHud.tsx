@@ -31,14 +31,25 @@ const HINT_SECONDS = 9;
  */
 export function DiverHud({ diver, messages, touch, actions }: Props) {
   const [hint, setHint] = useState(true);
+  const leaping = diver.mode === "leap";
   useEffect(() => {
+    // The hint waits for the leap to end: it is about what he can do now.
+    if (leaping) return;
     const timer = window.setTimeout(() => setHint(false), HINT_SECONDS * 1000);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [leaping]);
+  // Going over the side: only his own eyes, nothing in the way.
+  if (leaping) return null;
   const inWater = diver.mode === "swim";
+  const ashore = diver.mode === "land";
   const diving = inWater && diver.depth > 0.6;
   const lowAir = diving && diver.air < 0.15;
-  const status = diver.mode === "deck" ? messages.onDeck : diving ? messages.diving : messages.swimming;
+  const status =
+    diver.mode === "deck"
+      ? messages.onDeck
+      : ashore
+        ? diver.wading > 0.15 ? messages.wading : messages.ashore
+        : diving ? messages.diving : messages.swimming;
   const promptText = diver.prompt === "helm" ? messages.takeHelm : diver.prompt === "board" ? messages.board : null;
 
   return (
@@ -94,6 +105,11 @@ export function DiverHud({ diver, messages, touch, actions }: Props) {
             </button>
             {inWater ? (
               <>
+                {!diving && (
+                  <button type="button" className="diver-button" onClick={actions.jump} aria-label={messages.jump}>
+                    <span aria-hidden="true">⤒</span>
+                  </button>
+                )}
                 <HoldButton label={messages.up} glyph="▲" onHold={(on) => actions.hold(on, false)} />
                 <HoldButton label={messages.down} glyph="▼" onHold={(on) => actions.hold(false, on)} />
               </>

@@ -75,7 +75,9 @@ export type SimulationSnapshot = {
   photoAutoTarget: boolean;
   /** The skipper away from the helm: on deck, or swimming and diving. */
   diver: {
-    mode: "helm" | "deck" | "swim";
+    mode: "helm" | "leap" | "deck" | "swim" | "land";
+    /** Water round his legs ashore, m (0 on dry land). */
+    wading: number;
     /** Eyes under the surface, m. */
     depth: number;
     /** Air left in the tank, 0…1. */

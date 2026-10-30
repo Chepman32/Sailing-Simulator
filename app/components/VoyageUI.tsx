@@ -147,7 +147,7 @@ export function SignalButtons({
   return (
     <>
       <span className="scene-divider" aria-hidden="true" />
-      <button type="button" className="scene-action signal-action" disabled={disabled} title={`${messages.horn} (H)`} aria-label={messages.horn} onClick={onHorn}>
+      <button type="button" className="scene-action signal-action" disabled={disabled} title={`${messages.horn} (J)`} aria-label={messages.horn} onClick={onHorn}>
         <VoyageIcon name="horn" />
         <span className="scene-action-label">{messages.horn}</span>
       </button>
@@ -260,7 +260,7 @@ export function RadioPlayer({
         disabled={disabled}
         aria-expanded={open}
         aria-label={`${messages.radio}: ${playing ? playing.name : messages.radioOff}`}
-        title={`${messages.radio} (M)`}
+        title={`${messages.radio} (O)`}
         onClick={() => setOpen((value) => !value)}
         style={playing ? ({ "--station": playing.accent } as React.CSSProperties) : undefined}
       >

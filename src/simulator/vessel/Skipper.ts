@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { FOREARM_LENGTH, HumanFigure, SHIN_LENGTH, THIGH_LENGTH, UPPER_ARM_LENGTH } from "./HumanFigure";
+import { createLeapPose, leapPose, type LeapPose } from "../diver/LeapMath";
 
 /** Where the skipper stands and what he holds, from the helm station (vessel space). */
 export type SkipperStand = {
@@ -96,6 +97,10 @@ export class Skipper {
   private lastY = Number.NaN;
   private heaveVelocity = 0;
   private dip = 0;
+  /** Seconds into a leap over the side (first person), or null at the wheel. */
+  private leapTime: number | null = null;
+  private readonly leapState: LeapPose = createLeapPose();
+  private readonly freeHand = new THREE.Vector3();
 
   constructor(private readonly root: THREE.Object3D, private readonly stand: SkipperStand) {
     this.scale = stand.eyeHeight / FIGURE_EYE_HEIGHT;
@@ -117,8 +122,50 @@ export class Skipper {
     this.figure.mesh.visible = value;
   }
 
+  /**
+   * Plays the leap over the side `t` seconds in (see `LeapMath`), or with
+   * null puts him back at the wheel. While leaping the player looks out of
+   * his eyes: the head is folded away so it never fills the view, and the
+   * rest of him (hands, arms, chest, legs) is seen as one's own body.
+   */
+  leap(t: number | null): void {
+    const head = this.figure.bone("head");
+    if (t === null) {
+      if (this.leapTime !== null) {
+        this.leapTime = null;
+        head.scale.setScalar(1);
+        const mesh = this.figure.mesh;
+        mesh.position.set(this.stand.feet.x, this.stand.feet.y - 0.03 * this.scale, this.stand.feet.z);
+        mesh.rotation.set(0, 0, 0);
+      }
+      return;
+    }
+    this.leapTime = t;
+    head.scale.setScalar(0.001);
+  }
+
+  /** His body's heading in the leap, radians from the bow (0 at the wheel). */
+  get leapTurn(): number {
+    return this.leapTime === null ? 0 : this.leapState.turn;
+  }
+
+  /** The leap pose now (valid while leaping). */
+  get leapPoseNow(): Readonly<LeapPose> {
+    return this.leapState;
+  }
+
+  /** Where his eyes are, in the world (call after `update`). */
+  eyes(out: THREE.Vector3): THREE.Vector3 {
+    out.set(0, 0.16, 0.13);
+    return this.figure.bone("neck").localToWorld(out);
+  }
+
   update(time: number, delta: number, heel: number, pitch: number, yawRate: number, forwardSpeed: number, apparentWind = 6): void {
     if (!this.figure.mesh.visible) return;
+    if (this.leapTime !== null) {
+      this.poseLeap(this.leapTime, time, apparentWind);
+      return;
+    }
     const figure = this.figure;
     const step = Math.min(0.05, Math.max(0, delta));
     figure.uniforms.uFigureTime.value = time;
@@ -241,6 +288,70 @@ export class Skipper {
       figure.solveTwoBone(`upperArm${side}`, `forearm${side}`, UPPER_ARM_LENGTH * this.scale, FOREARM_LENGTH * this.scale, this.target, this.pole);
       figure.bone(`hand${side}`).rotation.set(0.3 - handTilt * 1.2, 0, sign * (0.4 - handTilt * 0.3));
     }
+  }
+
+  /** The figure posed for a moment of the leap over the side. */
+  private poseLeap(t: number, time: number, apparentWind: number): void {
+    const figure = this.figure;
+    const mesh = figure.mesh;
+    const pose = leapPose(t, this.leapState);
+    figure.uniforms.uFigureTime.value = time;
+    figure.uniforms.uFigureWind.value = Math.min(1.4, Math.max(0.15, apparentWind / 9));
+    figure.resetPose();
+    const { feet } = this.stand;
+    mesh.position.set(feet.x + pose.x, feet.y + pose.y - 0.03 * this.scale, feet.z + pose.z);
+    mesh.rotation.set(0, pose.turn, 0);
+
+    // The body: knees bend for the spring, he leans into it, then stretches.
+    const hips = figure.bone("hips");
+    hips.position.set(0, 0.96 - pose.crouch * 0.3, 0);
+    hips.rotation.set(pose.crouch * 0.38 - Math.max(0, pose.arms) * 0.06, 0, 0);
+    figure.bone("spine").rotation.set(0.07 + pose.crouch * 0.22, pose.lookYaw * 0.3, 0);
+    figure.bone("chest").rotation.set(0.03 + pose.crouch * 0.1, pose.lookYaw * 0.2, 0);
+    figure.bone("neck").rotation.set(-pose.lookPitch * 0.35, pose.lookYaw * 0.3, 0);
+    figure.bone("head").rotation.set(-pose.lookPitch * 0.5, pose.lookYaw * 0.4, 0);
+    mesh.updateMatrixWorld(true);
+
+    // Legs: soles on the deck (or drawn up in the air).
+    for (const side of ["L", "R"] as const) {
+      const sign = side === "L" ? 1 : -1;
+      this.target.set(sign * 0.12, 0.04 + pose.tuck * 0.42, 0.04 + pose.tuck * 0.28);
+      this.pole.set(sign * 0.18, 0.5, 0.9);
+      mesh.localToWorld(this.target);
+      mesh.localToWorld(this.pole);
+      figure.solveTwoBone(`thigh${side}`, `shin${side}`, THIGH_LENGTH * this.scale, SHIN_LENGTH * this.scale, this.target, this.pole);
+      this.levelFoot(side);
+    }
+
+    // Arms: off the rim, then at his sides, back for the spring, up as he goes.
+    const ride = Math.max(-MAX_HAND_RIDE, Math.min(MAX_HAND_RIDE, this.stand.wheelAngle()));
+    this.stand.rimPoint(Math.PI / 2 + GRIP_OFFSET + ride, this.rim[0]!);
+    this.stand.rimPoint(Math.PI / 2 - GRIP_OFFSET + ride, this.rim[1]!);
+    const firstX = this.root.worldToLocal(this.localPoint.copy(this.rim[0]!)).x;
+    const secondX = this.root.worldToLocal(this.localPoint.copy(this.rim[1]!)).x;
+    const leftIndex = firstX >= secondX ? 0 : 1;
+    const swing = pose.arms;
+    for (const side of ["L", "R"] as const) {
+      const sign = side === "L" ? 1 : -1;
+      // Where a free hand goes (figure space).
+      if (swing < 0) {
+        this.freeHand.set(sign * 0.24, 0.86, 0.08).lerp(this.localPoint.set(sign * 0.21, 0.94 - pose.crouch * 0.12, -0.4), -swing);
+      } else {
+        this.freeHand.set(sign * 0.24, 0.86, 0.08).lerp(this.localPoint.set(sign * 0.24, 1.98, 0.16), swing);
+      }
+      // A hand just let go rises a little off the rim before it drops.
+      // Hands just let go rise off the rim and open, drawn back toward the chest before they drop.
+      const lift = Math.sin(pose.release * Math.PI) * (1 - Math.abs(swing));
+      this.freeHand.y += lift * 0.3;
+      this.freeHand.z += lift * 0.12;
+      mesh.localToWorld(this.freeHand);
+      this.target.copy(this.rim[side === "L" ? leftIndex : 1 - leftIndex]!).lerp(this.freeHand, pose.release);
+      this.pole.set(sign * 0.6, 1.0, -0.45);
+      mesh.localToWorld(this.pole);
+      figure.solveTwoBone(`upperArm${side}`, `forearm${side}`, UPPER_ARM_LENGTH * this.scale, FOREARM_LENGTH * this.scale, this.target, this.pole);
+      figure.bone(`hand${side}`).rotation.set(0.3 - Math.max(0, swing) * 0.6, 0, sign * 0.4);
+    }
+    mesh.updateMatrixWorld(true);
   }
 
   dispose(): void {

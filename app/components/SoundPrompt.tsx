@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { createDust, grainLook, stepDust } from "./dustMath";
+import { animateDust } from "./dustCanvas";
 
 /**
  * The "tap for sound" prompt, and how it leaves.
@@ -31,7 +31,7 @@ type Props = {
   onArrived: () => void;
 };
 
-type Snapshot = {
+export type PillSnapshot = {
   left: number;
   top: number;
   width: number;
@@ -41,8 +41,10 @@ type Snapshot = {
   ratio: number;
 };
 
+type Snapshot = PillSnapshot;
+
 /** Paints the pill as it looks on screen (see `.audio-unlock` in globals.css). */
-function paintPill(pill: HTMLElement): Snapshot | null {
+export function paintPill(pill: HTMLElement): PillSnapshot | null {
   const rect = pill.getBoundingClientRect();
   if (rect.width < 2 || rect.height < 2) return null;
   const ratio = Math.min(3, window.devicePixelRatio || 1);
@@ -95,7 +97,9 @@ function paintPill(pill: HTMLElement): Snapshot | null {
 }
 
 export function SoundPrompt({ active, targetRef, label, onUnlock, onArrived }: Props) {
-  const [phase, setPhase] = useState<Phase>(active ? "visible" : "gone");
+  const [ownPhase, setPhase] = useState<Phase>(active ? "visible" : "gone");
+  // Sound started some other way: it leaves at once.
+  const phase: Phase = !active && ownPhase === "visible" ? "snapping" : ownPhase;
   const pillRef = useRef<HTMLButtonElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -109,11 +113,6 @@ export function SoundPrompt({ active, targetRef, label, onUnlock, onArrived }: P
     const timer = window.setTimeout(() => setPhase((current) => (current === "visible" ? "snapping" : current)), SOUND_PROMPT_SECONDS * 1000);
     return () => window.clearTimeout(timer);
   }, [active]);
-
-  // Sound started some other way: leave at once.
-  useEffect(() => {
-    if (!active && phase === "visible") setPhase("snapping");
-  }, [active, phase]);
 
   // Photograph the pill just before it is replaced by its dust.
   useLayoutEffect(() => {
@@ -132,81 +131,26 @@ export function SoundPrompt({ active, targetRef, label, onUnlock, onArrived }: P
   useEffect(() => {
     if (phase !== "snapping" || !snapshot) return;
     const canvas = canvasRef.current;
-    const context = canvas?.getContext("2d");
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    if (!canvas || !context || reduced) {
+    if (!canvas || reduced) {
       const timer = window.setTimeout(() => {
         setPhase("gone");
         onArrived();
       }, reduced ? 260 : 0);
       return () => window.clearTimeout(timer);
     }
-    const ratio = snapshot.ratio;
-    canvas.width = Math.ceil(window.innerWidth * ratio);
-    canvas.height = Math.ceil(window.innerHeight * ratio);
-    const pixels = snapshot.picture.getContext("2d")!.getImageData(0, 0, snapshot.picture.width, snapshot.picture.height);
-    const palette: string[] = [];
-    const paletteIndex = new Map<number, number>();
-    const dust = createDust(snapshot.left, snapshot.top, snapshot.width, snapshot.height, (x, y) => {
-      const px = Math.min(pixels.width - 1, Math.floor(x * ratio));
-      const py = Math.min(pixels.height - 1, Math.floor(y * ratio));
-      const offset = (py * pixels.width + px) * 4;
-      if (pixels.data[offset + 3]! < 90) return -1;
-      // Colours quantised to 5 bits a channel keep the palette small.
-      const key = ((pixels.data[offset]! >> 3) << 10) | ((pixels.data[offset + 1]! >> 3) << 5) | (pixels.data[offset + 2]! >> 3);
-      let index = paletteIndex.get(key);
-      if (index === undefined) {
-        index = palette.length;
-        paletteIndex.set(key, index);
-        palette.push(`rgb(${pixels.data[offset]},${pixels.data[offset + 1]},${pixels.data[offset + 2]})`);
-      }
-      return index;
-    });
-    // Grains are drawn grouped by colour, so the fill colour changes rarely.
-    const order = Array.from({ length: dust.count }, (_, index) => index).sort((a, b) => dust.colour[a]! - dust.colour[b]!);
-    let frame = 0;
-    let last = performance.now();
-    let time = 0;
-    let finished = false;
-    const draw = (now: number) => {
-      const dt = (now - last) / 1000;
-      last = now;
-      time += dt;
-      const target = targetRef.current?.getBoundingClientRect();
-      const targetX = target ? target.left + target.width / 2 : 24;
-      const targetY = target ? target.top + target.height / 2 : 24;
-      const visible = stepDust(dust, dt, targetX, targetY, time);
-      context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      context.clearRect(0, 0, window.innerWidth, window.innerHeight);
-      let colour = -1;
-      for (const index of order) {
-        const age = dust.age[index]!;
-        const life = dust.life[index]!;
-        if (age >= life) continue;
-        const look = grainLook(age, life);
-        if (dust.colour[index] !== colour) {
-          colour = dust.colour[index]!;
-          context.fillStyle = palette[colour]!;
-        }
-        context.globalAlpha = look.alpha;
-        // Grains still in the picture overlap a hair, so it shows no seams before the wave reaches it.
-        const size = age < 0 ? dust.size + 0.6 : dust.size * look.scale;
-        context.fillRect(dust.x[index]!, dust.y[index]!, size, size);
-      }
-      context.globalAlpha = 1;
-      if (visible === 0) {
-        finished = true;
+    return animateDust(
+      canvas,
+      snapshot,
+      () => {
+        const target = targetRef.current?.getBoundingClientRect();
+        return { x: target ? target.left + target.width / 2 : 24, y: target ? target.top + target.height / 2 : 24 };
+      },
+      () => {
         setPhase("gone");
         onArrived();
-        return;
-      }
-      frame = requestAnimationFrame(draw);
-    };
-    frame = requestAnimationFrame(draw);
-    return () => {
-      cancelAnimationFrame(frame);
-      if (!finished) context.clearRect(0, 0, canvas.width, canvas.height);
-    };
+      },
+    );
   }, [phase, snapshot, targetRef, onArrived]);
 
   if (phase === "gone") return null;

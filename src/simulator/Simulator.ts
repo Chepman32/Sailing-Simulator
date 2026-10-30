@@ -181,6 +181,30 @@ export class Simulator {
   private readonly diverScratch = new THREE.Vector3();
   private torchOffered = false;
   private readonly swimSurface = (x: number, z: number): number => this.ocean.sample(x, z).height;
+  /**
+   * The highest the drawn sea comes within a stride of (x, z): the swimmer's
+   * eyes float clear of this, never inside a triangle of the surface mesh.
+   */
+  private readonly swimFloatLine = (x: number, z: number): number => {
+    let top = this.ocean.sample(x, z).height;
+    for (let index = 0; index < 6; index += 1) {
+      const angle = (index / 6) * Math.PI * 2;
+      top = Math.max(top, this.ocean.sample(x + Math.cos(angle) * 0.9, z + Math.sin(angle) * 0.9).height);
+    }
+    return top + 0.04;
+  };
+  /** Sand or beach under (x, z): the sea floor, or an island's ground where it is higher. */
+  private readonly groundBase = (x: number, z: number): number => Math.max(seabedHeight(x, z), this.islands.terrainHeightAt(x, z));
+  /** What a walker stands on: the ground, or a pier's planks. */
+  private readonly groundWalk = (x: number, z: number): number => Math.max(this.groundBase(x, z), this.islands.pierDeckAt(x, z));
+  /** Where the world is centred for the fine sea and the islands: the yacht, or the skipper away from her. */
+  private readonly worldFocus = new THREE.Vector3();
+  private updateWorldFocus(): THREE.Vector3 {
+    const camera = this.camera.camera.position;
+    if (this.diver?.active && this.diver.mode !== "leap") this.worldFocus.set(camera.x, 0, camera.z);
+    else this.worldFocus.copy(this.physics.position);
+    return this.worldFocus;
+  }
   private readonly sampleSurface = (x: number, z: number) => this.ocean.sample(x, z);
   private camera!: CameraController;
   private input!: InputController;
@@ -490,12 +514,14 @@ export class Simulator {
       this.diveFish = new DiveFish(this.scene, this.underwater);
       this.diver = new DiverController(
         this.canvas,
-        { surface: this.swimSurface, seabedDepth: (x, z) => -seabedHeight(x, z) },
+        { surface: this.swimSurface, seabedDepth: (x, z) => -this.groundBase(x, z), floatLine: this.swimFloatLine },
         { offsetX: HULL_OFFSET_X, centreZ: HULL_CENTER_Z, halfLength: HULL_HALF_LENGTH, halfBeam: HULL_HALF_BEAM + 0.2, draught: 1.25, freeboard: 1.4 },
         {
           splash: (position, speed) => {
             const intensity = Math.min(3, 0.7 + speed * 0.35);
-            this.wake.splash(position, intensity, "entry");
+            // His own splash, seen from inside it: the ring and the white
+            // water, but no cloud of spray hanging round his eyes.
+            this.wake.splash(position, Math.min(1.1, intensity * 0.6), "entry", undefined, false);
             this.audio.splash(intensity, "entry", 0, position);
             this.diverScratch.copy(position);
             this.diverScratch.y -= 0.7;
@@ -512,10 +538,19 @@ export class Simulator {
           inhale: (depth) => this.audio.regulatorInhale(depth),
           footstep: (running) => this.audio.footstep(running),
           stroke: (position) => {
-            this.wake.splash(position, 0.28, "slap");
+            this.wake.splash(position, 0.28, "slap", undefined, false);
             this.audio.splash(0.28, "slap", 0, position);
           },
           modeChanged: (mode) => this.onDiverMode(mode),
+          wade: (position) => {
+            this.wake.splash(position, 0.2, "slap", undefined, false);
+            this.audio.splash(0.2, "slap", 0, position);
+          },
+        },
+        {
+          ground: this.groundWalk,
+          surface: this.swimSurface,
+          obstacle: (x, z, normal) => this.islands.obstacleClearance(x, z, normal),
         },
       );
       this.canvas.addEventListener("click", this.onCanvasClick);
@@ -1251,7 +1286,7 @@ export class Simulator {
 
   private readonly fixedUpdate = (fixedDelta: number): void => {
     this.elapsed += fixedDelta;
-    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
+    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed, this.worldFocus);
     this.input.update(fixedDelta);
     if (!this.state.engineRunning) this.state.controls.throttle = 0;
     this.ships.fixedUpdate(fixedDelta, this.elapsed, this.physics.position, this.physics.heading, this.physics.wind);
@@ -1290,13 +1325,18 @@ export class Simulator {
 
   private updateFrame(delta: number): void {
     this.frameDelta = delta;
-    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed);
+    const focus = this.updateWorldFocus();
+    this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed, focus);
     this.islands.setNight(this.environmentState.nightFactor);
-    this.islands.update(this.elapsed, this.environment.currentWeather.wind, this.physics.position.x, this.physics.position.z, this.camera.camera.position);
+    this.islands.update(this.elapsed, this.environment.currentWeather.wind, focus.x, focus.z, this.camera.camera.position);
     // The helm camera looks out through the skipper's eyes: he steps out of
     // its way. Away from the helm the player is the skipper.
     const diving = this.diver?.active ?? false;
+    // Going over the side the player sees his own body: the skipper is posed by the leap.
+    const leaping = this.diver?.mode === "leap";
+    if (leaping) this.vessel.setSkipperLeap(this.diver!.leapTime);
     this.vessel.setCrewVisible(
+      leaping ||
       !diving &&
         (this.state.cameraMode !== "helm" || this.flareCamera.blend > 0.3 || this.photo.blend > 0.3) &&
         this.camera.camera.position.distanceToSquared(this.vessel.worldPoint(this.vessel.helmEye, this.helmPoint)) > 1.2,
@@ -1398,8 +1438,8 @@ export class Simulator {
       this.renderer,
       this.environment.lightDirection,
       0.82 * (1 - this.environmentState.nightFactor * 0.45),
-      this.physics.position.x,
-      this.physics.position.z,
+      this.worldFocus.x,
+      this.worldFocus.z,
     );
     this.underwater.setPalette(this.environment.current.palette);
     this.ships.setNight(this.environmentState.nightFactor);
@@ -1459,11 +1499,11 @@ export class Simulator {
     });
     this.state.controls.throttle = 0;
     this.state.controls.rudder = 0;
-    const spot = HelmStation.STAND_FEET.clone();
-    spot.z -= 0.3;
-    const floor = this.deckField.top(spot.x, spot.z, spot.y + 0.15);
-    if (Number.isFinite(floor)) spot.y = floor;
-    this.diver.leaveHelm(spot, 0);
+    // Over the side: a few seconds through his eyes, then the water. The
+    // key or the button that asked for it is a user gesture, so the mouse
+    // is captured for looking round right away, without another click.
+    this.diver.startLeap();
+    this.diver.requestPointer();
   }
 
   /** Back to the wheel (from anywhere: a quick way home from a dive). */
@@ -1497,12 +1537,23 @@ export class Simulator {
     if (this.diver) this.diver.torch = !this.diver.torch;
   }
 
+  /** Captures the mouse for the skipper's eyes (call inside a click or key press). */
+  requestDiverPointer(): void {
+    if (this.diver?.active) this.diver.requestPointer();
+  }
+
+  /** Lets the mouse go (a card or a panel over the view). */
+  releaseDiverPointer(): void {
+    this.diver?.releasePointer();
+  }
+
   private readonly onCanvasClick = (): void => {
     if (this.diver?.active) this.diver.requestPointer();
   };
 
   private onDiverMode(mode: DiverMode): void {
     const away = mode !== "helm";
+    if (mode !== "leap") this.vessel.setSkipperLeap(null);
     this.input.enabled = !away;
     this.physics.hoveTo = away;
     if (!away) {
@@ -1515,6 +1566,16 @@ export class Simulator {
 
   private updateDiver(delta: number): void {
     const diver = this.diver!;
+    if (diver.mode === "leap") {
+      const pose = this.vessel.skipperLeap;
+      const view = diver.leapView;
+      this.vessel.skipperEyes(view.eye);
+      if (pose) {
+        view.feet.set(HelmStation.STAND_FEET.x + pose.x, HelmStation.STAND_FEET.y + pose.y, HelmStation.STAND_FEET.z + pose.z).applyMatrix4(this.vessel.root.matrixWorld);
+        view.yaw = pose.turn + pose.lookYaw;
+        view.pitch = pose.lookPitch;
+      }
+    }
     diver.update(delta, this.vessel.root, this.physics.velocity, this.physics.heading, this.deckField, HelmStation.STAND_FEET);
     const action: DiverPrompt = diver.consumeInteract();
     if (action === "helm") {
@@ -1556,8 +1617,13 @@ export class Simulator {
     );
     const density = 0.034 + Math.max(0, depth) * 0.0005 + (1 - daylight) * 0.012 + this.environment.currentWeather.storm * 0.02;
     this.environment.setUnderwater(amount, this.diverWater, density);
-    this.islands.setDeepSeabedVisible(!(active && diver!.mode === "swim"));
-    this.ocean.setUnderside(amount > 0.5, this.diverWater, density);
+    // The diver's detailed bottom (bright sand, reef) belongs to the view
+    // under the water; from the surface the sea's own deep bottom is seen
+    // through it, as from the yacht.
+    const below = active && diver!.mode === "swim" && amount > 0.01;
+    this.islands.setDeepSeabedVisible(!below);
+    // The surface is drawn from below as soon as the eyes are under it at all.
+    this.ocean.setUnderside(depth > 0, this.diverWater, density);
     this.underwater.setView(amount);
     this.post.setUnderwater(amount);
     this.audio.setUnderwater(amount, Math.max(0, depth), active && diver!.mode === "swim" && depth > DIVE_DEPTH);
@@ -1566,7 +1632,7 @@ export class Simulator {
     this.sunDown.set(-sun.x / 1.333, 0, -sun.z / 1.333);
     this.sunDown.y = -Math.sqrt(Math.max(0.05, 1 - this.sunDown.x * this.sunDown.x - this.sunDown.z * this.sunDown.z));
     setLinearRgb(this.diverLight, palette.lightColor);
-    const swimming = active && diver!.mode === "swim";
+    const swimming = below;
     this.underwaterWorld?.update(
       delta,
       camera.position,
@@ -1923,6 +1989,7 @@ export class Simulator {
       photoAutoTarget: this.photoAutoTarget,
       diver: {
         mode: this.diver?.mode ?? "helm",
+        wading: this.diver?.wading ?? 0,
         depth: this.diver?.depth ?? 0,
         air: this.diver?.airLeft ?? 1,
         prompt: this.diver?.prompt ?? null,

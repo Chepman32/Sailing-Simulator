@@ -78,7 +78,7 @@ test("a volcano smokes east of the start; its cone rises to a crater", () => {
     if (fountainActivity(state) > 0.05) erupting += 1;
   }
   const share = erupting / (ERUPTION_SLOT * 40);
-  assert.ok(share > 0.08 && share < 0.3, `the fountain plays now and then (${share.toFixed(2)} of the time)`);
+  assert.ok(share > 0.04 && share < 0.16, `the fountain plays now and then, every two minutes or so (${share.toFixed(2)} of the time)`);
   assert.ok(columns / (ERUPTION_SLOT * 40) < COLUMN_LIFE / ERUPTION_SLOT + 0.01, "one column at a time");
   assert.ok(craterGlow(10, { age: 2, strength: 1, slot: 0 }) > craterGlow(10, { age: -1, strength: 0, slot: 0 }) * 1.5);
   const point = { x: 0, y: 0, z: 0, radius: 0, opacity: 0 };

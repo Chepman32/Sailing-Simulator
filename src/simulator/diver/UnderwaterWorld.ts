@@ -38,14 +38,21 @@ const SEABED_STEP = 4;
 const REEF_CELL = 3;
 const REEF_RADIUS = 62;
 /** Most of each kind of prop. */
-const PROP_CAPACITY = 700;
+const PROP_CAPACITY = 1100;
 const SHAFTS = 30;
 const SNOW = 2600;
 const SNOW_BOX = 26;
 const BUBBLES = 360;
 
-type PropKind = "rock" | "brain" | "staghorn" | "table" | "fan" | "sponge" | "grass" | "urchin" | "star" | "softcoral";
-const PROP_KINDS: readonly PropKind[] = ["rock", "brain", "staghorn", "table", "fan", "sponge", "grass", "urchin", "star", "softcoral"];
+type PropKind =
+  | "rock" | "brain" | "staghorn" | "table" | "fan" | "sponge" | "grass" | "urchin" | "star" | "softcoral"
+  | "shell" | "pebbles" | "cucumber" | "dollar" | "rubble";
+const PROP_KINDS: readonly PropKind[] = [
+  "rock", "brain", "staghorn", "table", "fan", "sponge", "grass", "urchin", "star", "softcoral",
+  "shell", "pebbles", "cucumber", "dollar", "rubble",
+];
+/** The small things strewn over the sand between the reefs. */
+const LITTER_KINDS: readonly PropKind[] = ["shell", "pebbles", "cucumber", "dollar", "rubble", "grass"];
 
 function hash(x: number, y: number, salt: number): number {
   let h = Math.imul((x | 0) ^ 0x27d4eb2d, 0x85ebca6b) ^ Math.imul((y | 0) + salt * 0x9e3779b9, 0xc2b2ae35);
@@ -82,7 +89,9 @@ export function depthForShore(x: number, z: number, shore: number): number {
 export function seabedRelief(x: number, z: number, shore: number): number {
   const open = smoothstep(SHELF_WIDTH * 0.6, SHELF_WIDTH * 1.6, shore);
   const dunes = (valueNoise(x * 0.045, z * 0.045) - 0.5) * 1.6 + (valueNoise(x * 0.13 + 17, z * 0.13 - 4) - 0.5) * 0.5;
-  return dunes * open;
+  // Hummocks and scours a stride or two across, all over the bottom.
+  const hummocks = (valueNoise(x * 0.42 - 3.1, z * 0.42 + 8.3) - 0.5) * 0.22 + (valueNoise(x * 1.1 + 5.7, z * 1.1 - 2.2) - 0.5) * 0.06;
+  return dunes * open + hummocks * smoothstep(0, 6, shore);
 }
 
 /** The detailed seabed's height at (x, z): the world's depth, with dunes. */
@@ -345,6 +354,99 @@ function softCoralGeometry(): THREE.BufferGeometry {
   return paintAll(merged, (_x, y, _z, out) => out.setRGB(0.62, 0.34, 0.55).lerp(new THREE.Color(0.85, 0.65, 0.78), smoothstep(0.1, 0.4, y)));
 }
 
+function shellGeometry(): THREE.BufferGeometry {
+  // A cockle: a low dome with ribs running out from the hinge.
+  const geometry = new THREE.SphereGeometry(0.06, 24, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+  const position = geometry.getAttribute("position");
+  for (let index = 0; index < position.count; index += 1) {
+    const x = position.getX(index);
+    const z = position.getZ(index);
+    const angle = Math.atan2(z, x);
+    const rib = 1 + Math.pow(Math.abs(Math.cos(angle * 9)), 4) * 0.07;
+    // Squashed to a fan shape, the hinge at −Z.
+    position.setXYZ(index, x * rib * (1 - z * 3), position.getY(index) * 0.42, z * rib * 0.85);
+  }
+  geometry.computeVertexNormals();
+  return paintAll(geometry, (x, y, z, out) => {
+    const band = 0.5 + 0.5 * Math.sin(Math.hypot(x, z) * 170);
+    out.setRGB(0.93, 0.84, 0.74).lerp(new THREE.Color(0.8, 0.55, 0.45), band * 0.35 + (y < 0.004 ? 0.2 : 0));
+  });
+}
+
+function pebblesGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (let stone = 0; stone < 7; stone += 1) {
+    const r = 0.025 + hash(stone, 1, 21) * 0.05;
+    const geometry = new THREE.IcosahedronGeometry(r, 1);
+    geometry.scale(1 + hash(stone, 2, 21) * 0.5, 0.45 + hash(stone, 3, 21) * 0.25, 1);
+    geometry.rotateY(hash(stone, 4, 21) * Math.PI);
+    const angle = hash(stone, 5, 21) * Math.PI * 2;
+    const spread = Math.sqrt(hash(stone, 6, 21)) * 0.22;
+    geometry.translate(Math.cos(angle) * spread, r * 0.2, Math.sin(angle) * spread);
+    const tone = 0.32 + hash(stone, 7, 21) * 0.35;
+    const warm = hash(stone, 8, 21) * 0.08;
+    paintAll(geometry, (_x, _y, _z, out) => out.setRGB(tone + warm, tone, tone - warm * 0.5));
+    parts.push(geometry.toNonIndexed());
+    geometry.dispose();
+  }
+  const merged = mergeGeometries(parts, false)!;
+  parts.forEach((part) => part.dispose());
+  merged.computeVertexNormals();
+  return merged;
+}
+
+function cucumberGeometry(): THREE.BufferGeometry {
+  // A sea cucumber lying on the sand: a soft, warty sausage, a little bent.
+  const geometry = new THREE.CapsuleGeometry(0.045, 0.24, 6, 12);
+  geometry.rotateZ(Math.PI / 2);
+  const position = geometry.getAttribute("position");
+  for (let index = 0; index < position.count; index += 1) {
+    const x = position.getX(index);
+    const y = position.getY(index);
+    const z = position.getZ(index);
+    const wart = noise3(x * 60, y * 60, z * 60) * 0.012;
+    const scale = 1 + wart / 0.045;
+    position.setXYZ(index, x, y * scale * 0.8 + 0.035, z * scale + x * x * 1.2);
+  }
+  geometry.computeVertexNormals();
+  return paintAll(geometry, (x, y, z, out) => {
+    const spot = noise3(x * 70, y * 70, z * 70);
+    out.setRGB(0.22, 0.15, 0.1).lerp(new THREE.Color(0.55, 0.42, 0.28), spot > 0.62 ? 0.7 : 0);
+  });
+}
+
+function dollarGeometry(): THREE.BufferGeometry {
+  // A sand dollar: a flat disc with its five-petal flower.
+  const geometry = new THREE.CylinderGeometry(0.045, 0.048, 0.008, 28, 1);
+  geometry.translate(0, 0.004, 0);
+  return paintAll(geometry, (x, y, z, out) => {
+    const angle = Math.atan2(z, x);
+    const r = Math.hypot(x, z) / 0.045;
+    const petal = Math.abs(Math.cos(angle * 2.5)) > 0.72 && r > 0.2 && r < 0.75 && y > 0.007;
+    out.setRGB(0.86, 0.82, 0.72).multiplyScalar(petal ? 0.78 : 1);
+  });
+}
+
+function rubbleGeometry(): THREE.BufferGeometry {
+  // Broken coral: bleached branch pieces and a crumb or two.
+  const parts: THREE.BufferGeometry[] = [];
+  for (let piece = 0; piece < 6; piece += 1) {
+    const length = 0.08 + hash(piece, 1, 33) * 0.16;
+    const geometry = new THREE.CylinderGeometry(0.012, 0.018, length, 6, 1);
+    geometry.rotateZ(Math.PI / 2 + (hash(piece, 2, 33) - 0.5) * 0.4);
+    geometry.rotateY(hash(piece, 3, 33) * Math.PI);
+    const angle = hash(piece, 4, 33) * Math.PI * 2;
+    const spread = Math.sqrt(hash(piece, 5, 33)) * 0.28;
+    geometry.translate(Math.cos(angle) * spread, 0.014, Math.sin(angle) * spread);
+    parts.push(geometry.toNonIndexed());
+    geometry.dispose();
+  }
+  const merged = mergeGeometries(parts, false)!;
+  parts.forEach((part) => part.dispose());
+  merged.computeVertexNormals();
+  return paintAll(merged, (x, y, z, out) => out.setRGB(0.88, 0.85, 0.78).multiplyScalar(0.82 + noise3(x * 40, y * 40, z * 40) * 0.25));
+}
+
 const GEOMETRY_BUILDERS: Record<PropKind, () => THREE.BufferGeometry> = {
   rock: rockGeometry,
   brain: brainGeometry,
@@ -356,6 +458,11 @@ const GEOMETRY_BUILDERS: Record<PropKind, () => THREE.BufferGeometry> = {
   urchin: urchinGeometry,
   star: starGeometry,
   softcoral: softCoralGeometry,
+  shell: shellGeometry,
+  pebbles: pebblesGeometry,
+  cucumber: cucumberGeometry,
+  dollar: dollarGeometry,
+  rubble: rubbleGeometry,
 };
 
 /** Colours an instance of each kind may take (multiplied into its vertex colours). */
@@ -370,6 +477,11 @@ const PALETTES: Record<PropKind, readonly number[]> = {
   urchin: [0xffffff],
   star: [0xffffff, 0xff7080, 0x70a0ff],
   softcoral: [0xffffff, 0xffc0a0, 0xa0d0ff, 0xffe0a0],
+  shell: [0xffffff, 0xffe0d0, 0xf0d8b0, 0xe8c8d8],
+  pebbles: [0xffffff, 0xe8e0d4, 0xd0d4d8],
+  cucumber: [0xffffff, 0xc09080, 0x806050],
+  dollar: [0xffffff, 0xf0e8d8],
+  rubble: [0xffffff, 0xf4ece0, 0xe8e0e8],
 };
 
 type PropLayer = { kind: PropKind; mesh: THREE.InstancedMesh; count: number };
@@ -538,7 +650,7 @@ export class UnderwaterWorld {
       geometry.computeBoundingSphere();
       const material = new THREE.MeshStandardMaterial({
         vertexColors: true,
-        roughness: kind === "brain" || kind === "rock" ? 0.9 : 0.7,
+        roughness: kind === "brain" || kind === "rock" || kind === "pebbles" || kind === "rubble" ? 0.9 : kind === "shell" ? 0.45 : 0.7,
         metalness: 0,
         side: kind === "fan" || kind === "grass" || kind === "sponge" ? THREE.DoubleSide : THREE.FrontSide,
       });
@@ -652,7 +764,7 @@ export class UnderwaterWorld {
 
   /** Sand: ripples, rubble and weed, as relief and colour in the shader. */
   private sandSurface(material: THREE.MeshStandardMaterial): void {
-    patchMaterialShader(material, "dive-sand-v1", (shader) => {
+    patchMaterialShader(material, "dive-sand-v2", (shader) => {
       shader.vertexShader = shader.vertexShader
         .replace("#include <common>", "#include <common>\nvarying vec3 vSandWorld;")
         .replace("#include <worldpos_vertex>", "#include <worldpos_vertex>\nvSandWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;");
@@ -666,10 +778,33 @@ export class UnderwaterWorld {
             vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
             return mix(mix(sandHash(i), sandHash(i + vec2(1, 0)), f.x), mix(sandHash(i + vec2(0, 1)), sandHash(i + vec2(1, 1)), f.x), f.y);
           }
-          // Wave ripples in the sand: long crests, a little sinuous.
+          // Wave ripples in the sand: long sinuous crests whose heading wanders
+          // from patch to patch, sharp-crested and round-troughed like real
+          // ones, with a finer set crossing them in the shallows.
           float sandRipples(vec2 p) {
+            float heading = (sandNoise(p * 0.045 + 3.0) - 0.5) * 1.4;
+            vec2 across = vec2(cos(0.6 + heading), sin(0.6 + heading));
             float warp = sandNoise(p * 0.35) * 3.0 + sandNoise(p * 1.1) * 0.6;
-            return sin(dot(p, vec2(0.82, 0.57)) * 5.8 + warp * 2.2);
+            float wave = 0.5 + 0.5 * sin(dot(p, across) * 5.8 + warp * 2.2);
+            float crest = 1.0 - pow(1.0 - wave, 1.8);
+            float fine = 0.5 + 0.5 * sin(dot(p, vec2(-across.y, across.x)) * 13.0 + sandNoise(p * 2.3) * 4.0);
+            float fineAmount = sandNoise(p * 0.12 - 9.0);
+            return crest * 2.0 - 1.0 + (fine - 0.5) * 0.2 * fineAmount;
+          }
+          // Sparse round things a few centimetres across on a cell grid:
+          // returns the distance to the nearest one (cell units) and its seed.
+          vec2 sandDots(vec2 p, float cell, float chance) {
+            vec2 c = floor(p / cell);
+            vec2 best = vec2(9.0, 0.0);
+            for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+              vec2 k = c + vec2(float(i), float(j));
+              float h = sandHash(k * 1.37 + 0.5);
+              if (h > chance) continue;
+              vec2 centre = (k + vec2(sandHash(k + 7.1), sandHash(k - 3.3))) * cell;
+              float d = length(p - centre) / cell;
+              if (d < best.x) best = vec2(d, h / chance);
+            }
+            return best;
           }`,
         )
         .replace(
@@ -677,14 +812,42 @@ export class UnderwaterWorld {
           `#include <color_fragment>
           {
             vec2 p = vSandWorld.xz;
-            float grain = sandNoise(p * 40.0) * 0.5 + sandNoise(p * 9.0) * 0.5;
-            float ripple = sandRipples(p);
-            // Pale coral sand, with darker rubble and patches of weed.
-            vec3 sand = vec3(0.86, 0.79, 0.62) * (0.84 + grain * 0.22 + ripple * 0.05);
+            // Metres one pixel covers here: detail finer than that fades to
+            // its average instead of shimmering into moiré rings.
+            float footprint = length(fwidth(p));
+            float fineDetail = 1.0 - smoothstep(0.012, 0.035, footprint);
+            float rippleDetail = 1.0 - smoothstep(0.09, 0.3, footprint);
+            float grain = mix(0.5, sandNoise(p * 40.0), fineDetail) * 0.5 + sandNoise(p * 9.0) * 0.5;
+            float speckle = mix(0.5, sandHash(floor(p * 160.0)), fineDetail * 0.6);
+            float ripple = sandRipples(p) * rippleDetail;
+            // Coral sand: pale, with broad drifts of lighter and darker sand
+            // and a faint pink of crushed shell here and there.
+            float drift = sandNoise(p * 0.07 + 41.0);
+            vec3 sand = mix(vec3(0.8, 0.74, 0.6), vec3(0.92, 0.87, 0.74), drift);
+            sand = mix(sand, vec3(0.9, 0.78, 0.72), smoothstep(0.62, 0.85, sandNoise(p * 0.21 - 17.0)) * 0.35);
+            sand *= 0.84 + grain * 0.2 + (speckle - 0.5) * 0.12;
+            // The crests are scoured clean and bright; fine dark detritus
+            // settles in the troughs.
+            sand *= mix(0.9, 1.04, ripple * 0.5 + 0.5);
+            // Rubble, dark grains and bits of shell.
             float rubble = smoothstep(0.62, 0.8, sandNoise(p * 0.6 + 13.0)) * smoothstep(0.45, 0.6, sandNoise(p * 5.0));
             sand = mix(sand, vec3(0.5, 0.46, 0.4) * (0.8 + grain * 0.4), rubble * 0.7);
-            float weed = smoothstep(0.66, 0.84, sandNoise(p * 0.18 - 7.0)) * smoothstep(0.35, 0.65, sandNoise(p * 3.0 + 2.0));
-            sand = mix(sand, vec3(0.28, 0.36, 0.16) * (0.8 + grain * 0.3), weed * 0.6);
+            vec2 grit = sandDots(p, 0.07, 0.16);
+            float dotDetail = 1.0 - smoothstep(0.02, 0.05, footprint);
+            sand = mix(sand, vec3(0.3, 0.29, 0.27), (1.0 - smoothstep(0.12, 0.2, grit.x)) * 0.65 * dotDetail);
+            vec2 shell = sandDots(p + 3.7, 0.11, 0.12);
+            sand = mix(sand, mix(vec3(1.0, 0.95, 0.88), vec3(0.95, 0.72, 0.68), step(0.6, shell.y)), (1.0 - smoothstep(0.1, 0.17, shell.x)) * 0.8 * dotDetail);
+            // Burrows: a small dark hole in a pale ring of thrown-up sand.
+            vec2 burrow = sandDots(p - 11.0, 0.9, 0.06);
+            float burrowDetail = 1.0 - smoothstep(0.06, 0.15, footprint);
+            float ring = smoothstep(0.08, 0.06, abs(burrow.x - 0.1));
+            sand = mix(sand, sand * 1.12, ring * 0.6 * burrowDetail);
+            sand = mix(sand, vec3(0.12, 0.1, 0.08), smoothstep(0.045, 0.025, burrow.x) * burrowDetail);
+            // Patches of turf and sea grass, thickest in the meadows.
+            float meadow = smoothstep(0.5, 0.8, sandNoise(p * 0.05 - vec2(11.0, -23.0)));
+            float weed = max(smoothstep(0.66, 0.84, sandNoise(p * 0.18 - 7.0)) * smoothstep(0.35, 0.65, sandNoise(p * 3.0 + 2.0)), meadow * smoothstep(0.3, 0.6, sandNoise(p * 1.7 + 4.0)));
+            float blades = 1.0 + (0.5 * sandNoise(vec2(p.x * 22.0, p.y * 3.0) + sandNoise(p * 4.0) * 3.0) - 0.25) * fineDetail;
+            sand = mix(sand, vec3(0.22, 0.32, 0.13) * blades * (0.8 + grain * 0.3), weed * 0.7);
             diffuseColor.rgb *= sand;
           }`,
         )
@@ -692,14 +855,19 @@ export class UnderwaterWorld {
           "#include <normal_fragment_maps>",
           `#include <normal_fragment_maps>
           {
-            float h = sandRipples(vSandWorld.xz) * 0.012 + sandNoise(vSandWorld.xz * 30.0) * 0.002;
+            vec2 p = vSandWorld.xz;
+            vec2 burrow = sandDots(p - 11.0, 0.9, 0.06);
+            float mound = smoothstep(0.2, 0.08, burrow.x) * 0.012 - smoothstep(0.05, 0.02, burrow.x) * 0.02;
+            float h = sandRipples(p) * 0.016 + sandNoise(p * 30.0) * 0.0025 + sandNoise(p * 7.0) * 0.004 + mound;
+            float footprint = length(fwidth(p));
             vec3 dPdx = dFdx(-vViewPosition);
             vec3 dPdy = dFdy(-vViewPosition);
             vec3 R1 = cross(dPdy, normal);
             vec3 R2 = cross(normal, dPdx);
             float fDet = dot(dPdx, R1);
             vec3 grad = sign(fDet) * (dFdx(h) * R1 + dFdy(h) * R2);
-            normal = normalize(abs(fDet) * normal - grad * 1.4);
+            // Relief finer than a pixel is let go rather than shimmering.
+            normal = normalize(abs(fDet) * normal - grad * 1.05 * (1.0 - smoothstep(0.03, 0.12, footprint)));
           }`,
         );
     });
@@ -959,6 +1127,26 @@ export class UnderwaterWorld {
           const oz = item === 0 ? pz : pz + (hash(cx, cz, 20 + item) - 0.5) * REEF_CELL * 0.9;
           this.placeProp(layer, ox, oz, hash(cx * 7 + item, cz * 3, 30), reef, shore);
         }
+        // Litter on the sand: shells, pebbles, a sea cucumber, broken coral
+        // near the reefs; meadows of sea grass in patches. Only near the
+        // diver, where something a hand across can be seen at all.
+        if (dx * dx + dz * dz < 30 * 30) {
+          const meadow = smoothstep(0.55, 0.75, valueNoise(px * 0.05 - 11, pz * 0.05 + 23)) * (1 - reef);
+          for (let bit = 0; bit < 5; bit += 1) {
+            const r = hash(cx * 11 + bit, cz * 13, 50);
+            const grass = meadow > 0 && bit < 4 && r < meadow * 0.95;
+            if (!grass && r > 0.42) continue;
+            const pick = hash(cx * 17 + bit, cz * 19, 51);
+            const kind: PropKind = grass
+              ? "grass"
+              : pick < 0.3 ? "shell" : pick < 0.55 ? "pebbles" : pick < 0.66 ? "cucumber" : pick < 0.76 ? "dollar" : reef > 0.15 ? "rubble" : "shell";
+            const layer = byKind.get(kind)!;
+            if (layer.count >= PROP_CAPACITY) continue;
+            const ox = px + (hash(cx, cz * 3 + bit, 52) - 0.5) * REEF_CELL;
+            const oz = pz + (hash(cx * 3 + bit, cz, 53) - 0.5) * REEF_CELL;
+            this.placeProp(layer, ox, oz, hash(cx * 5 + bit, cz * 7, 54), reef, shore);
+          }
+        }
       }
     }
     for (const layer of this.props) {
@@ -1004,16 +1192,22 @@ export class UnderwaterWorld {
       urchin: [0.8, 1.3],
       star: [0.7, 1.2],
       softcoral: [0.8, 1.6],
+      shell: [0.7, 1.5],
+      pebbles: [0.8, 1.6],
+      cucumber: [0.8, 1.4],
+      dollar: [0.8, 1.3],
+      rubble: [0.8, 1.6],
     };
     const [low, high] = sizes[kind];
-    const size = (low + (high - low) * hash(Math.floor(seed * 1e6), 1, 40)) * (0.75 + reef * 0.4);
+    const size = (low + (high - low) * hash(Math.floor(seed * 1e6), 1, 40)) * (LITTER_KINDS.includes(kind) && kind !== "grass" ? 1 : 0.75 + reef * 0.4);
     const yaw = hash(Math.floor(seed * 1e6), 2, 40) * Math.PI * 2;
-    const tilt = kind === "fan" ? 0 : (hash(Math.floor(seed * 1e6), 3, 40) - 0.5) * 0.25;
+    const flat = kind === "shell" || kind === "dollar" || kind === "cucumber" || kind === "pebbles" || kind === "rubble";
+    const tilt = kind === "fan" ? 0 : (hash(Math.floor(seed * 1e6), 3, 40) - 0.5) * (flat ? 0.1 : 0.25);
     scratchEuler.set(tilt, yaw, tilt * 0.6, "YXZ");
     scratchQuaternion.setFromEuler(scratchEuler);
     const squash = kind === "rock" ? 0.7 + hash(Math.floor(seed * 1e6), 4, 40) * 0.6 : 1;
     scratchScale.set(size, size * squash, size);
-    scratchPosition.set(x, ground - (kind === "rock" ? size * 0.12 : kind === "star" ? 0 : 0.05), z);
+    scratchPosition.set(x, ground - (kind === "rock" ? size * 0.12 : kind === "star" || flat ? 0.005 : 0.05), z);
     scratchMatrix.compose(scratchPosition, scratchQuaternion, scratchScale);
     layer.mesh.setMatrixAt(layer.count, scratchMatrix);
     const palette = PALETTES[kind];
