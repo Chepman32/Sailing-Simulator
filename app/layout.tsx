@@ -33,9 +33,20 @@ export const metadata: Metadata = {
     description: "High-fidelity interactive tropical sailing simulator.",
     images: ["/og.png"],
   },
+  // The manifest link is written in <head> below: through `metadata` it would
+  // be made absolute against `metadataBase`, and a manifest on another origin
+  // makes the app uninstallable on any other host (previews, custom domains).
+  applicationName: "Sailing Simulator",
+  appleWebApp: {
+    capable: true,
+    title: "Sailing Simulator",
+    statusBarStyle: "black-translucent",
+  },
+  formatDetection: { telephone: false },
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
+    apple: "/apple-touch-icon.png",
   },
 };
 
@@ -46,6 +57,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        <link rel="manifest" href="/manifest.webmanifest" />
+      </head>
       <body>{children}</body>
     </html>
   );

@@ -1,12 +1,36 @@
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
+import { batchStaticMeshes, coincidentShells } from "../core/StaticBatching";
+import type { EnvironmentPalette } from "../environment/EnvironmentPalette";
+import type { UnderwaterLight } from "../environment/UnderwaterLight";
 import type { SimulatorControls } from "../types";
-import type { VesselPhysics } from "./VesselPhysics";
+import {
+  createPropellerGeometry,
+  createRudderGeometry,
+  createSaildriveGeometry,
+  RUDDER_SPAN,
+} from "./Appendages";
+import { HELM_EYE, HelmStation, type HelmTraffic } from "./HelmStation";
+import { YachtDecor } from "./YachtDecor";
+import type { SonarBlip } from "./WideMonitor";
+import { Skipper } from "./Skipper";
+import { ShipBell } from "./ShipBell";
+import { audibleSlam, boomPivotPose, boomTarget, createBoomState, steadyLeewardSide, stepBoom } from "./BoomDynamics";
 import { SailSystem } from "./SailSystem";
+import { JibSail } from "./JibSail";
+import type { VesselPhysics } from "./VesselPhysics";
+import { YachtShading } from "./YachtShading";
 
 export const MAX_PROPELLER_RPM = 600;
 const MIN_ACTIVE_PROPELLER_RPM = 220;
 const PROPELLER_RESPONSE = 7.5;
+/** Matches the physics: the HUD maps full helm to 35 degrees. */
+const MAX_RUDDER_ANGLE = 0.61;
+/**
+ * Night-light intensities (candela): port, starboard, stern, the cockpit
+ * lantern and the masthead light. They stay in the scene by day at zero.
+ */
+const NAVIGATION_LIGHT_INTENSITY = [6, 6, 5, 24, 8] as const;
 
 export function propellerRpmForThrottle(throttle: number): number {
   const magnitude = THREE.MathUtils.clamp(Math.abs(throttle), 0, 1);
@@ -14,19 +38,67 @@ export function propellerRpmForThrottle(throttle: number): number {
   return Math.sign(throttle) * THREE.MathUtils.lerp(MIN_ACTIVE_PROPELLER_RPM, MAX_PROPELLER_RPM, magnitude);
 }
 
+export type VesselLighting = {
+  camera: THREE.Camera;
+  lightDirection: THREE.Vector3;
+  palette: EnvironmentPalette;
+  /** For the helm displays: whether the engine runs, and whether anyone is close enough to read them. */
+  engineRunning?: boolean;
+  helmReadable?: boolean;
+};
+
+type HullProfile = {
+  centerX: number;
+  minZ: number;
+  maxZ: number;
+  /** Lowest hull surface in 0.1 m stations along Z. */
+  bottom: Map<number, number>;
+};
+
+const STATION = 0.1;
+/** Meshes whose bounds agree this closely are copies of one shell. */
+const SHELL_TOLERANCE = 0.06;
+/** Parts with a bounding radius under this (metres) skip the mirror and the shadow map. */
+const SMALL_PART_RADIUS = 0.4;
+
 export class Vessel {
   readonly root = new THREE.Group();
   private readonly model: THREE.Group;
   private readonly sailSystem: SailSystem;
+  private readonly jib = new JibSail();
+  private readonly shading = new YachtShading();
   private readonly rudders: THREE.Object3D[] = [];
   private readonly propellers: THREE.Mesh[] = [];
   private readonly generatedMeshes: THREE.Mesh[] = [];
-  private readonly navigationLights = new THREE.Group();
+  private readonly generatedGeometries: THREE.BufferGeometry[] = [];
+  private readonly navigationLights: THREE.PointLight[] = [];
+  private readonly navigationLamps = new THREE.Group();
+  private readonly hulls: HullProfile[] = [];
+  private readonly boomPivot = new THREE.Group();
+  private readonly helm = new HelmStation();
+  /** Flag, charm and bobblehead bought from the traders. */
+  private decor?: YachtDecor;
+  private skipper?: Skipper;
+  private bell?: ShipBell;
+  /** The mast's forward face at its foot (vessel space) and the cabin top there; set by `classifyParts`. */
+  private readonly mastFront = new THREE.Vector3(0, 0, 1.9);
+  private mastFootY = 1.3;
+  /** Where the horns are: on the mast's forward face below the spreaders (vessel space). */
+  private readonly hornLocal = new THREE.Vector3(0, 4.6, 1.95);
+  /** Parts left out of the planar mirror (see `batchStaticParts`). */
+  readonly mirrorSkipped: THREE.Object3D[] = [];
+  private readonly boom = createBoomState();
+  private authoredBoomAngle = 0;
+  private hasRig = false;
+  private pendingSlam = 0;
+  /** The side the sails show (`steadyLeewardSide`): steadier than the physics' sign. */
+  private leewardShown = 1;
   private propellerAngularVelocity = 0;
 
   constructor(
     private readonly scene: THREE.Scene,
     assets: AssetManager,
+    private readonly underwater: UnderwaterLight,
   ) {
     this.root.name = "VesselRoot";
     this.root.rotation.order = "YXZ";
@@ -58,8 +130,8 @@ export class Vessel {
         if (material instanceof THREE.MeshStandardMaterial) {
           const name = material.name.toLowerCase();
           if (name.includes("cloth")) {
-            material.color.set(0xf5f0df);
-            material.roughness = 0.76;
+            material.color.set(0xdcd8ca);
+            material.roughness = 0.82;
             material.metalness = 0;
             material.side = THREE.DoubleSide;
             material.transparent = false;
@@ -69,33 +141,139 @@ export class Vessel {
             material.emissive.set(0x000000);
             material.emissiveIntensity = 0;
           } else if (name.includes("fiberglass")) {
-            material.color.set(0xf2f4f2);
-            material.roughness = 0.3;
-            material.metalness = 0.04;
+            // Polished gelcoat: a glossy dielectric that mirrors sky and sea.
+            material.color.set(0xd9dcdb);
+            material.roughness = 0.24;
+            material.metalness = 0;
+            material.envMapIntensity = 1.15;
           } else if (name.includes("stainless")) {
-            material.metalness = 0.88;
-            material.roughness = 0.2;
+            material.metalness = 1;
+            material.roughness = 0.16;
+            material.envMapIntensity = 1.3;
           } else if (name === "glass") {
-            material.color.set(0x173e4b);
+            // Tinted glazing shows mostly reflection at deck-level angles.
+            material.color.set(0x0c2a36);
             material.transparent = true;
-            material.opacity = 0.38;
-            material.roughness = 0.12;
-            material.metalness = 0.08;
+            material.opacity = 0.62;
+            material.roughness = 0.04;
+            material.metalness = 0;
+            material.envMapIntensity = 1.8;
             material.depthWrite = false;
           } else if (name.includes("rough_white")) {
-            material.color.set(0xe9e8e1);
-            material.roughness = 0.72;
+            material.color.set(0xd2d3cf);
+            material.roughness = 0.3;
+            material.envMapIntensity = 1.1;
           }
         }
         return material;
       });
       object.material = Array.isArray(object.material) ? cloned : cloned[0];
-      if (object.name.toLowerCase().includes("rudder")) this.rudders.push(object);
     });
     this.root.add(this.model);
     this.root.updateMatrixWorld(true);
     this.sailSystem = new SailSystem(this.model);
-    this.createWorkingDetails();
+    this.classifyParts();
+    this.batchStaticParts();
+    this.createAppendages();
+    this.createNavigationLights();
+    this.root.add(this.helm.group);
+    this.root.add(this.jib.group);
+    this.bell = new ShipBell(this.mastFront, this.mastFootY);
+    this.root.add(this.bell.group);
+    this.decor = new YachtDecor(this.root);
+    this.skipper = new Skipper(this.root, {
+      feet: HelmStation.STAND_FEET,
+      eyeHeight: HELM_EYE.y - HelmStation.STAND_FEET.y,
+      rimPoint: (angle, target) => this.helm.rimPoint(angle, target),
+      wheelAngle: () => this.helm.wheelAngle,
+    });
+    this.skipSmallParts();
+  }
+
+  /**
+   * The fittings smaller than a hand span (the helm's instruments and
+   * compass, the jib's blocks, cleats, lines) are each a draw call of their
+   * own and cover a few pixels: they are left out of the blurred planar
+   * mirror and cast no shadow. The navigation lamps keep their reflection,
+   * which is what is seen of them on the water at night.
+   */
+  private skipSmallParts(): void {
+    this.root.updateMatrixWorld(true);
+    const skipped = new Set(this.mirrorSkipped);
+    this.root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh || object instanceof THREE.Line) || object instanceof THREE.SkinnedMesh) return;
+      if (skipped.has(object)) return;
+      const geometry = object.geometry as THREE.BufferGeometry;
+      if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+      const radius = (geometry.boundingSphere?.radius ?? 0) * object.matrixWorld.getMaxScaleOnAxis();
+      if (radius >= SMALL_PART_RADIUS) return;
+      object.castShadow = false;
+      const material = Array.isArray(object.material) ? object.material[0] : object.material;
+      if (material instanceof THREE.MeshBasicMaterial) return;
+      this.mirrorSkipped.push(object);
+    });
+  }
+
+  /** The bell's clapper strikes (the sound itself is `AudioSystem.bell`). */
+  strikeBell(): void {
+    this.bell?.strike(1);
+    window.setTimeout(() => this.bell?.strike(0.86), 460);
+  }
+
+  /** Where the bell and the horns are now, in the world. */
+  signalPoints(bell: THREE.Vector3, horn: THREE.Vector3): void {
+    bell.copy(this.bell?.soundPoint ?? this.mastFront).applyMatrix4(this.root.matrixWorld);
+    horn.copy(this.hornLocal).applyMatrix4(this.root.matrixWorld);
+  }
+
+  /** The skipper is hidden from his own eyes (the helm camera). */
+  setCrewVisible(visible: boolean): void {
+    if (this.skipper) this.skipper.visible = visible;
+  }
+
+  /** Flies, hangs and stands the decor chosen (null takes it down). */
+  setDecor(flag: string | null, charm: string | null, bobble: string | null): void {
+    this.decor?.setDecor(flag, charm, bobble);
+  }
+
+  /** The helm monitor's level and what the sonar sees (with its level and reach, m). */
+  setMonitorLevel(level: number): void {
+    this.helm.setMonitorLevel(level);
+  }
+
+  setSonar(contacts: readonly SonarBlip[], level: number, reach: number): void {
+    this.helm.setSonar(contacts, level, reach);
+  }
+
+  /** The skipper's leap over the side, `t` seconds in (null: back at the wheel). */
+  setSkipperLeap(t: number | null): void {
+    this.skipper?.leap(t);
+  }
+
+  /** The skipper's eyes in the world, and his leap pose (valid while leaping). */
+  skipperEyes(out: THREE.Vector3): THREE.Vector3 {
+    return this.skipper ? this.skipper.eyes(out) : out.copy(HELM_EYE).applyMatrix4(this.root.matrixWorld);
+  }
+
+  get skipperLeap(): Readonly<import("../diver/LeapMath").LeapPose> | null {
+    return this.skipper?.leapPoseNow ?? null;
+  }
+
+  /** Dyes the mainsail (sRGB hex). */
+  setSailColor(hex: number): void {
+    this.sailSystem.setColor(hex);
+    this.jib.setColor(hex);
+  }
+
+
+  /** Where the helmsman's eyes are, in vessel space (the helm camera's anchor). */
+  get helmEye(): THREE.Vector3 {
+    return HELM_EYE;
+  }
+
+  /** Ships the chart plotter shows. */
+  setChartTraffic(traffic: readonly HelmTraffic[]): void {
+    this.helm.setTraffic(traffic);
   }
 
   update(
@@ -104,20 +282,74 @@ export class Vessel {
     time: number,
     delta: number,
     nightFactor: number,
+    lighting?: VesselLighting,
   ): void {
     this.root.position.copy(physics.position);
     this.root.rotation.set(physics.pitch, physics.heading, -physics.roll, "YXZ");
+    this.root.updateMatrixWorld(true);
     this.sailSystem.update(
       time,
-      physics.telemetry.apparentWindAngle,
       physics.telemetry.apparentWindSpeed,
+      physics.telemetry.sailLuff,
       controls.sailTrim,
       delta,
     );
+    this.leewardShown = steadyLeewardSide(this.leewardShown, physics.telemetry.apparentWindAngle);
+    this.jib.update(
+      time,
+      delta,
+      physics.telemetry.sheetAngle,
+      this.leewardShown,
+      physics.telemetry.sailLuff,
+      physics.telemetry.apparentWindSpeed,
+      controls.sailTrim,
+    );
+    if (this.hasRig) {
+      const target = boomTarget(
+        physics.telemetry.sheetAngle,
+        this.leewardShown,
+        physics.telemetry.sailLuff,
+        time,
+      );
+      // Integrate in short steps so a slow frame cannot destabilise the swing.
+      let remaining = Math.min(delta, 0.1);
+      while (remaining > 1e-5) {
+        const step = Math.min(remaining, 1 / 60);
+        const slam = audibleSlam(stepBoom(this.boom, target, step), physics.telemetry.apparentWindAngle, physics.telemetry.apparentWindSpeed);
+        this.pendingSlam = Math.max(this.pendingSlam, slam);
+        remaining -= step;
+      }
+      const pose = boomPivotPose(this.boom.angle, this.authoredBoomAngle);
+      this.boomPivot.rotation.y = pose.rotationY;
+      this.boomPivot.scale.x = pose.mirror;
+    }
     this.rudders.forEach((rudder) => {
-      rudder.rotation.y = -controls.rudder * 0.58;
+      rudder.rotation.y = -controls.rudder * MAX_RUDDER_ANGLE;
     });
-    const targetAngularVelocity = propellerRpmForThrottle(controls.throttle) * Math.PI * 2 / 60;
+    const telemetry = physics.telemetry;
+    this.helm.update(delta, {
+      x: physics.position.x,
+      z: physics.position.z,
+      heading: physics.heading,
+      speed: Math.hypot(physics.velocity.x, physics.velocity.z),
+      depth: telemetry.depth,
+      apparentWindSpeed: telemetry.apparentWindSpeed,
+      apparentWindAngle: telemetry.apparentWindAngle,
+      shaft: physics.engineShaft,
+      engineRunning: lighting?.engineRunning ?? Math.abs(physics.engineShaft) > 0.01,
+      throttle: controls.throttle,
+      rudder: controls.rudder,
+      night: nightFactor,
+      readable: lighting?.helmReadable ?? false,
+    });
+    this.skipper?.update(time, delta, physics.roll, physics.pitch, physics.yawRate, physics.telemetry.forwardSpeed, telemetry.apparentWindSpeed);
+    this.decor?.update(delta, physics);
+    this.bell?.update(delta, physics.roll, physics.pitch);
+    // Follow the simulated shaft so the screws spool up and down with the
+    // engines instead of snapping to the lever position.
+    const shaft = physics.engineShaft;
+    const targetAngularVelocity =
+      Math.abs(shaft) < 0.001 ? 0 : Math.sign(shaft) * MAX_PROPELLER_RPM * Math.abs(shaft) * Math.PI * 2 / 60;
     this.propellerAngularVelocity = THREE.MathUtils.damp(
       this.propellerAngularVelocity,
       targetAngularVelocity,
@@ -129,7 +361,23 @@ export class Vessel {
       const sideDirection = index % 2 === 0 ? 1 : -1;
       propeller.rotation.z += this.propellerAngularVelocity * delta * sideDirection;
     });
-    this.navigationLights.visible = nightFactor > 0.18;
+    // Lights stay in the scene so the number of lights, and therefore every
+    // compiled lit shader, never changes at dusk.
+    const lit = THREE.MathUtils.smoothstep(nightFactor, 0.12, 0.3);
+    this.navigationLights.forEach((light, index) => {
+      light.intensity = NAVIGATION_LIGHT_INTENSITY[index] * lit;
+    });
+    this.navigationLamps.visible = lit > 0.01;
+    if (lighting) {
+      this.shading.update(this.root, time, lighting.camera, lighting.lightDirection, lighting.palette);
+    }
+  }
+
+  /** Strength in [0, 1] of a boom slam since the last call, for audio. */
+  consumeBoomSlam(): number {
+    const slam = this.pendingSlam;
+    this.pendingSlam = 0;
+    return slam;
   }
 
   worldPoint(local: THREE.Vector3, target: THREE.Vector3): THREE.Vector3 {
@@ -138,48 +386,272 @@ export class Vessel {
 
   dispose(): void {
     this.scene.remove(this.root);
-    this.model.traverse((object) => {
+    this.root.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
       const materials = Array.isArray(object.material) ? object.material : [object.material];
       materials.forEach((material) => material.dispose());
     });
-    this.generatedMeshes.forEach((mesh) => {
-      mesh.geometry.dispose();
-      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      materials.forEach((material) => material.dispose());
-    });
+    this.generatedGeometries.forEach((geometry) => geometry.dispose());
+    this.skipper?.dispose();
+    this.decor?.dispose();
+    this.helm.dispose();
+    this.jib.dispose();
+    this.bell?.dispose();
   }
 
-  private createWorkingDetails(): void {
-    const propellerMaterial = new THREE.MeshStandardMaterial({ color: 0xc9a74a, metalness: 0.84, roughness: 0.24 });
-    [-1.52, 1.52].forEach((x) => {
-      const propeller = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.065, 0.12), propellerMaterial.clone());
-      propeller.position.set(x, -0.86, -4.42);
-      propeller.castShadow = true;
+  /**
+   * Finds the hulls, deck, mast, boom and sail by shape rather than by name:
+   * the source file's node names are generic ("Cylinder.004").
+   */
+  private classifyParts(): void {
+    const inverseRoot = this.root.matrixWorld.clone().invert();
+    const box = new THREE.Box3();
+    const point = new THREE.Vector3();
+    let mast: THREE.Box3 | null = null;
+    let boom: { mesh: THREE.Mesh; bounds: THREE.Box3 } | null = null;
+    let sail: THREE.Mesh | null = null;
+    const meshes: THREE.Mesh[] = [];
+    this.model.traverse((object) => {
+      if (object instanceof THREE.Mesh) meshes.push(object);
+    });
+
+    meshes.forEach((mesh) => {
+      mesh.geometry.computeBoundingBox();
+      if (!mesh.geometry.boundingBox) return;
+      box.copy(mesh.geometry.boundingBox).applyMatrix4(mesh.matrixWorld).applyMatrix4(inverseRoot);
+      const size = box.getSize(point);
+      const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      const name = material.name.toLowerCase();
+      if (name.includes("cloth")) {
+        sail = mesh;
+        if (material instanceof THREE.MeshStandardMaterial) {
+          this.shading.applySail(material);
+        }
+        return;
+      }
+      if (size.y > 6 && size.x < 0.35 && size.z < 0.45) mast = box.clone();
+      if (size.y < 0.5 && size.z > 3 && box.min.y > 1.2) boom = { mesh, bounds: box.clone() };
+
+      const isHull = box.min.y < -0.9 && Math.abs((box.min.x + box.max.x) / 2) > 1 && size.z > 6;
+      if (isHull) {
+        this.hulls.push(this.measureHull(mesh, inverseRoot, box));
+        if (material instanceof THREE.MeshStandardMaterial) {
+          this.shading.applyHull(material, box.max.y);
+          this.underwater.apply(material);
+        }
+      } else if (name.includes("fiberglass") && material instanceof THREE.MeshStandardMaterial) {
+        this.shading.applyDeck(material);
+      }
+    });
+    this.hulls.sort((left, right) => left.centerX - right.centerX);
+
+    const mastBounds = mast as THREE.Box3 | null;
+    const boomPart = boom as { mesh: THREE.Mesh; bounds: THREE.Box3 } | null;
+    const sailMesh = sail as THREE.Mesh | null;
+    if (mastBounds) {
+      this.mastFront.set((mastBounds.min.x + mastBounds.max.x) / 2, 0, mastBounds.max.z);
+      this.mastFootY = mastBounds.min.y;
+      this.hornLocal.set(this.mastFront.x, mastBounds.min.y + 3.4, mastBounds.max.z + 0.06);
+    }
+    if (!mastBounds || !boomPart || !sailMesh) return;
+    const mastX = (mastBounds.min.x + mastBounds.max.x) / 2;
+    const mastZ = (mastBounds.min.z + mastBounds.max.z) / 2;
+    const outboardX =
+      Math.abs(boomPart.bounds.max.x - mastX) >= Math.abs(boomPart.bounds.min.x - mastX)
+        ? boomPart.bounds.max.x
+        : boomPart.bounds.min.x;
+    this.authoredBoomAngle = Math.atan2(outboardX - mastX, mastZ - boomPart.bounds.min.z);
+    this.boom.angle = this.authoredBoomAngle;
+    this.boomPivot.name = "MainBoomPivot";
+    this.boomPivot.position.set(mastX, 0, mastZ);
+    this.root.add(this.boomPivot);
+    this.boomPivot.updateMatrixWorld(true);
+    // attach() keeps each part exactly where it was while re-parenting it.
+    this.boomPivot.attach(boomPart.mesh);
+    this.boomPivot.attach(sailMesh);
+    this.hasRig = true;
+  }
+
+  /**
+   * Merges the model's fixed parts by material (see `StaticBatching`): about
+   * forty meshes become nine, in the colour pass and in the shadow pass. The
+   * boom and sail were moved onto the boom pivot by `classifyParts` and stay
+   * separate. Stacked copies of one shell keep drawing, since they differ in
+   * detail, but only the first casts a shadow.
+   */
+  private batchStaticParts(): void {
+    const meshes: THREE.Mesh[] = [];
+    this.model.traverse((object) => {
+      if (object instanceof THREE.Mesh && !Array.isArray(object.material)) meshes.push(object);
+    });
+    const keyOf = (mesh: THREE.Mesh): string => {
+      const material = mesh.material as THREE.Material;
+      return `${material.name}|${material.type}|${material.customProgramCacheKey()}|${material.transparent}|${material.side}`;
+    };
+    this.model.updateMatrixWorld(true);
+    const inverseRoot = this.root.matrixWorld.clone().invert();
+    const box = new THREE.Box3();
+    const bounds = meshes.map((mesh) => {
+      mesh.geometry.computeBoundingBox();
+      box.copy(mesh.geometry.boundingBox ?? box.makeEmpty()).applyMatrix4(mesh.matrixWorld).applyMatrix4(inverseRoot);
+      return {
+        min: [box.min.x, box.min.y, box.min.z] as const,
+        max: [box.max.x, box.max.y, box.max.z] as const,
+      };
+    });
+    const copies = new Set<THREE.Mesh>();
+    coincidentShells(bounds, meshes.map(keyOf), SHELL_TOLERANCE).forEach((index) => {
+      meshes[index].castShadow = false;
+      copies.add(meshes[index]);
+    });
+    const copyNames = new Set([...copies].map((mesh) => mesh.name));
+    const result = batchStaticMeshes(
+      this.root,
+      meshes,
+      (mesh) => `${keyOf(mesh)}|${mesh.castShadow}|${mesh.receiveShadow}|${copies.has(mesh)}`,
+      "YachtBatch",
+    );
+    this.generatedGeometries.push(...result.geometries);
+    // The copies only resolve each other's z-fighting up close; a blurred
+    // reflection does not need them (about 90k triangles less in the mirror).
+    for (const batch of result.batches) {
+      const from = batch.userData.batchedFrom as string[] | undefined;
+      if (from?.length && from.every((name) => copyNames.has(name))) this.mirrorSkipped.push(batch);
+    }
+    for (const mesh of copies) if (mesh.parent) this.mirrorSkipped.push(mesh);
+  }
+
+  private measureHull(mesh: THREE.Mesh, inverseRoot: THREE.Matrix4, bounds: THREE.Box3): HullProfile {
+    const position = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const toRoot = new THREE.Matrix4().multiplyMatrices(inverseRoot, mesh.matrixWorld);
+    const vertex = new THREE.Vector3();
+    const bottom = new Map<number, number>();
+    for (let index = 0; index < position.count; index += 1) {
+      vertex.fromBufferAttribute(position, index).applyMatrix4(toRoot);
+      const station = Math.round(vertex.z / STATION);
+      const lowest = bottom.get(station);
+      if (lowest === undefined || vertex.y < lowest) bottom.set(station, vertex.y);
+    }
+    return {
+      centerX: (bounds.min.x + bounds.max.x) / 2,
+      minZ: bounds.min.z,
+      maxZ: bounds.max.z,
+      bottom,
+    };
+  }
+
+  private hullBottom(hull: HullProfile, z: number): number {
+    const station = Math.round(z / STATION);
+    for (let offset = 0; offset < 8; offset += 1) {
+      const value = hull.bottom.get(station + offset) ?? hull.bottom.get(station - offset);
+      if (value !== undefined) return value;
+    }
+    return -1;
+  }
+
+  private createAppendages(): void {
+    const propellerGeometry = createPropellerGeometry();
+    const rudderGeometry = createRudderGeometry();
+    this.generatedGeometries.push(propellerGeometry, rudderGeometry);
+    const bronze = new THREE.MeshStandardMaterial({ color: 0xb08a52, metalness: 1, roughness: 0.3 });
+    const antifouling = new THREE.MeshStandardMaterial({ color: 0x0b1424, metalness: 0, roughness: 0.62 });
+    const saildriveLeg = new THREE.MeshStandardMaterial({ color: 0x1a1d22, metalness: 0.2, roughness: 0.45 });
+    [bronze, antifouling, saildriveLeg].forEach((material) => this.underwater.apply(material));
+
+    const hulls: Array<Pick<HullProfile, "centerX" | "minZ" | "maxZ"> & { profile?: HullProfile }> =
+      this.hulls.length === 2
+        ? this.hulls.map((profile) => ({ ...profile, profile }))
+        : [
+            { centerX: -1.72, minZ: -4.02, maxZ: 4.7 },
+            { centerX: 1.7, minZ: -4.02, maxZ: 4.7 },
+          ];
+
+    hulls.forEach((hull) => {
+      const bottomAt = (z: number): number => (hull.profile ? this.hullBottom(hull.profile, z) : -1);
+      // Saildrive about a fifth of the way forward from the transom.
+      const driveZ = hull.minZ + 1.75;
+      const podY = bottomAt(driveZ) - 0.2;
+      const legHeight = Math.max(0.3, bottomAt(driveZ) + 0.12 - podY);
+      const legGeometry = createSaildriveGeometry(legHeight);
+      this.generatedGeometries.push(legGeometry);
+      const leg = new THREE.Mesh(legGeometry, saildriveLeg);
+      leg.position.set(hull.centerX, podY, driveZ);
+      // Underwater gear: its shadow could only fall on hull bottoms under the
+      // sea, where nothing shows it, so it stays out of the shadow pass.
+      leg.castShadow = false;
+      leg.name = "SaildriveLeg";
+      this.root.add(leg);
+      this.generatedMeshes.push(leg);
+
+      const propeller = new THREE.Mesh(propellerGeometry, bronze);
+      propeller.position.set(hull.centerX, podY, driveZ - 0.06);
+      propeller.castShadow = false;
+      propeller.name = "Propeller";
       this.root.add(propeller);
       this.propellers.push(propeller);
       this.generatedMeshes.push(propeller);
 
-      const rudder = new THREE.Mesh(
-        new THREE.BoxGeometry(0.08, 0.68, 0.5),
-        new THREE.MeshStandardMaterial({ color: 0x27383e, metalness: 0.22, roughness: 0.44 }),
-      );
-      rudder.position.set(x, -0.78, -4.18);
-      rudder.castShadow = true;
+      // Spade rudder hung just forward of the transom.
+      const rudderZ = hull.minZ + 0.42;
+      const rudder = new THREE.Mesh(rudderGeometry, antifouling);
+      const stockTop = bottomAt(rudderZ) + 0.12;
+      rudder.position.set(hull.centerX, stockTop, rudderZ);
+      rudder.scale.y = Math.max(0.6, (stockTop - (bottomAt(rudderZ) - 0.5)) / RUDDER_SPAN);
+      rudder.castShadow = false;
+      rudder.name = "SpadeRudder";
       this.root.add(rudder);
       this.rudders.push(rudder);
       this.generatedMeshes.push(rudder);
     });
-    propellerMaterial.dispose();
+  }
 
-    const red = new THREE.PointLight(0xff233d, 0.9, 13, 2);
-    red.position.set(-2.05, 1.75, 0.65);
-    const green = new THREE.PointLight(0x38ffb1, 0.9, 13, 2);
-    green.position.set(2.05, 1.75, 0.65);
-    const stern = new THREE.PointLight(0xd7ecff, 0.72, 10, 2);
+  private createNavigationLights(): void {
+    const red = new THREE.PointLight(0xff233d, 0, 22, 2);
+    // Red to port, green to starboard. As the view shows her, local +X is
+    // her port side (see the frame note in AGENTS.md), so red goes on +X.
+    red.position.set(2.05, 1.75, 0.65);
+    const green = new THREE.PointLight(0x38ffb1, 0, 22, 2);
+    green.position.set(-2.05, 1.75, 0.65);
+    const stern = new THREE.PointLight(0xd7ecff, 0, 18, 2);
     stern.position.set(0, 1.35, -4.5);
-    this.navigationLights.add(red, green, stern);
-    this.navigationLights.visible = false;
-    this.root.add(this.navigationLights);
+    // A warm lantern hung under the cockpit roof: it lights the deck, the
+    // skipper and the foot of the sail, and glows across the water.
+    const lantern = new THREE.PointLight(0xffb764, 0, 26, 2);
+    lantern.position.set(0.35, 2.12, -1.35);
+    // The all-round white light at the masthead, seen for miles.
+    const masthead = new THREE.PointLight(0xfff4e0, 0, 30, 2);
+    masthead.position.set(0, 8.3, 1.7);
+    this.navigationLights.push(red, green, stern, lantern, masthead);
+    this.root.add(red, green, stern, lantern, masthead);
+
+    // Visible lamp lenses. Their colours are far brighter than white so the
+    // bloom pass gives each one a coloured halo.
+    const lampGeometry = new THREE.SphereGeometry(0.075, 14, 10);
+    const lanternGeometry = new THREE.CylinderGeometry(0.075, 0.09, 0.2, 12);
+    const capGeometry = new THREE.ConeGeometry(0.12, 0.08, 12);
+    capGeometry.translate(0, 0.14, 0);
+    this.generatedGeometries.push(lampGeometry, lanternGeometry, capGeometry);
+    const lamps: Array<[THREE.PointLight, THREE.BufferGeometry, number, number, number]> = [
+      [red, lampGeometry, 9, 0.35, 0.5],
+      [green, lampGeometry, 0.45, 8, 2.6],
+      [stern, lampGeometry, 6, 6.6, 7.4],
+      [lantern, lanternGeometry, 9, 5.4, 2.1],
+      [masthead, lampGeometry, 8, 7.6, 6.6],
+    ];
+    lamps.forEach(([light, geometry, r, g, b]) => {
+      const material = new THREE.MeshBasicMaterial({ fog: false });
+      material.color.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
+      const lamp = new THREE.Mesh(geometry, material);
+      lamp.position.copy(light.position);
+      this.navigationLamps.add(lamp);
+      this.generatedMeshes.push(lamp);
+    });
+    // The lantern's brass cap stays by day too.
+    const cap = new THREE.Mesh(capGeometry, new THREE.MeshStandardMaterial({ color: 0x9a7a3c, metalness: 1, roughness: 0.35 }));
+    cap.position.copy(lantern.position);
+    this.root.add(cap);
+    this.generatedMeshes.push(cap);
+    this.navigationLamps.visible = false;
+    this.root.add(this.navigationLamps);
   }
 }

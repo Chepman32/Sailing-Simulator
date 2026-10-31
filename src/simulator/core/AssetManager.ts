@@ -5,7 +5,7 @@ import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import type { LoadingState } from "../types";
 
 export type AnimatedAssetKey = "dolphin" | "shark" | "whale" | "fishSchool" | "seagull";
-export type StaticAssetKey = "yacht" | "palms";
+export type StaticAssetKey = "yacht";
 export type AssetKey = StaticAssetKey | AnimatedAssetKey;
 
 export type AnimatedAssetInstance = {
@@ -21,7 +21,6 @@ type AssetDefinition = {
 
 const ASSETS = {
   yacht: { url: "/models/yacht-sailboat-pbr.glb", label: "Loading yacht", required: true },
-  palms: { url: "/models/palm-trees-quaternius.glb", label: "Planting islands", required: true },
   dolphin: { url: "/models/dolphin-animated.glb", label: "Loading dolphins", required: true },
   shark: { url: "/models/shark-animated.glb", label: "Loading sharks", required: false },
   whale: { url: "/models/blue-whale-rigged-pbr-v2.glb", label: "Loading whale", required: false },
@@ -32,6 +31,15 @@ const ASSETS = {
 const ASSET_ENTRIES = Object.entries(ASSETS) as Array<[AssetKey, AssetDefinition]>;
 
 export const ASSET_LOAD_TOTAL = ASSET_ENTRIES.length;
+/**
+ * Steps of the loading bar after the downloads: building the scene, compiling
+ * its shaders (most of the wait on a phone or tablet) and the first frame.
+ * The bar is only full, and the interface only shown, once that frame is on
+ * screen: before, a tablet showed the controls over a black canvas for many
+ * seconds while every shader compiled.
+ */
+export const SCENE_LOAD_STEPS = 10;
+export const LOAD_STEPS_TOTAL = ASSET_LOAD_TOTAL + SCENE_LOAD_STEPS;
 
 const REQUIRED_ANIMATED_ASSETS = new Set<AnimatedAssetKey>(["dolphin"]);
 
@@ -75,16 +83,13 @@ export class AssetManager {
       throw new Error(`Required 3D assets failed to load (${requiredFailures.join("; ")}).`);
     }
 
-    this.emitProgress("Scene ready", true);
+    this.emitProgress("Building the scene", false);
   }
 
   yacht(): THREE.Group {
     return this.cloneScene("yacht", false);
   }
 
-  palms(): THREE.Group {
-    return this.cloneScene("palms", false);
-  }
 
   dolphin(): AnimatedAssetInstance {
     const asset = this.animated("dolphin");
@@ -100,10 +105,9 @@ export class AssetManager {
       }
       return undefined;
     }
-    return {
-      scene: cloneSkinned(asset.scene) as THREE.Group,
-      animations: asset.animations,
-    };
+    const scene = cloneSkinned(asset.scene) as THREE.Group;
+    shareSkeletons(scene);
+    return { scene, animations: asset.animations };
   }
 
   has(key: AssetKey): boolean {
@@ -141,9 +145,44 @@ export class AssetManager {
   private emitProgress(label: string, ready: boolean): void {
     this.onProgress?.({
       loaded: this.completedLoads,
-      total: ASSET_LOAD_TOTAL,
+      total: LOAD_STEPS_TOTAL,
       label,
       ready,
     });
   }
+}
+
+/**
+ * GLTFLoader and SkeletonUtils.clone give every skinned mesh its own Skeleton,
+ * even when the meshes of one animal are bound to the very same bones. Each
+ * skeleton recomputes its bone matrices and re-uploads its bone texture every
+ * frame, so a gull modelled as fourteen meshes cost fourteen uploads. Meshes
+ * bound to the same bones with the same inverse bind matrices share one
+ * skeleton instead. Returns the number of skeletons made redundant.
+ */
+export function shareSkeletons(root: THREE.Object3D): number {
+  const kept: THREE.Skeleton[] = [];
+  let replaced = 0;
+  root.traverse((object) => {
+    if (!(object instanceof THREE.SkinnedMesh)) return;
+    const own = object.skeleton;
+    const match = kept.find((candidate) => sameBinding(candidate, own));
+    if (!match) {
+      kept.push(own);
+    } else if (match !== own) {
+      object.skeleton = match;
+      own.dispose();
+      replaced += 1;
+    }
+  });
+  return replaced;
+}
+
+function sameBinding(a: THREE.Skeleton, b: THREE.Skeleton): boolean {
+  if (a === b) return true;
+  if (a.bones.length !== b.bones.length) return false;
+  for (let index = 0; index < a.bones.length; index += 1) {
+    if (a.bones[index] !== b.bones[index] || !a.boneInverses[index].equals(b.boneInverses[index])) return false;
+  }
+  return true;
 }

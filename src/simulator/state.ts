@@ -4,16 +4,37 @@ import type {
   QualityPreset,
   SimulationSnapshot,
   SimulatorControls,
+  WeatherKind,
+  WeatherMode,
 } from "./types";
 
 export type SimulatorState = {
   controls: SimulatorControls;
   cameraMode: CameraMode;
   lightingMode: LightingMode;
+  /** The day cycle runs by itself (see `dayCycleState`). */
+  autoTime: boolean;
+  weatherMode: WeatherMode;
+  /** The weather the player picked; it applies in manual mode. */
+  weather: WeatherKind;
   quality: QualityPreset;
   soundEnabled: boolean;
   engineRunning: boolean;
   engineMuted: boolean;
+  /** The helm returns amidships by itself when let go. */
+  autoCenterHelm: boolean;
+  /** At the helm the view keeps the horizon steady instead of rolling with the boat. */
+  steadyHelmView: boolean;
+  /** Colour of the mainsail (see SAIL_COLORS). */
+  sailColor: string;
+  /** Sail colours found in bottles. */
+  unlockedSails: string[];
+  doubloons: number;
+  flamingos: number;
+  /** Places discovered. */
+  discoveredPlaces: string[];
+  /** Keys of the things already picked up (so they stay gone after a reload). */
+  collectedLoot: string[];
 };
 
 export const ENGINE_START_THROTTLE = 0.12;
@@ -23,10 +44,22 @@ export function createSimulatorState(): SimulatorState {
     controls: { throttle: 0, rudder: 0, sailTrim: 0.68 },
     cameraMode: "chase",
     lightingMode: "day",
+    autoTime: false,
+    weatherMode: "auto",
+    weather: "clear",
     quality: "high",
     soundEnabled: true,
     engineRunning: false,
     engineMuted: false,
+    // The helm stays where it is put (a wheel, not a spring); a setting can make it return.
+    autoCenterHelm: false,
+    steadyHelmView: true,
+    sailColor: "white",
+    unlockedSails: ["white"],
+    doubloons: 0,
+    flamingos: 0,
+    discoveredPlaces: [],
+    collectedLoot: [],
   };
 }
 
@@ -35,10 +68,9 @@ export function applyEnginePower(state: SimulatorState, running: boolean): void 
   if (!running) {
     state.controls.throttle = 0;
   } else {
-    // Starting the engine is an explicit request for an audible engine. A mute
-    // value saved by an earlier session must not silently survive this action;
-    // the user can mute the running engine again from the sound control.
-    state.engineMuted = false;
+    // Engine power and engine sound are independent controls: starting or
+    // stopping the engine never touches the mute preference, and the sound
+    // button never starts or stops the engine.
     if (Math.abs(state.controls.throttle) <= 0.08) {
       state.controls.throttle = ENGINE_START_THROTTLE;
     }
@@ -57,11 +89,44 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   sailTrim: 0.68,
   cameraMode: "chase",
   lightingMode: "day",
+  autoTime: false,
+  weatherMode: "auto",
+  weather: "clear",
+  weatherNow: "clear",
+  waveHeight: 0.9,
+  trueWindKnots: 15,
   quality: "high",
+  qualityChoice: "auto",
   soundEnabled: true,
   audioReady: false,
   engineRunning: false,
+  shoreGuardActive: false,
   engineMuted: false,
+  autoCenterHelm: false,
+  steadyHelmView: true,
+  sailColor: "white",
+  unlockedSails: ["white"],
+  doubloons: 0,
+  flamingos: 0,
+  discoveredPlaces: [],
+  nearestLoot: null,
+  gust: 0,
+  stuck: false,
+  radioStation: null,
+  radioBuffering: false,
+  positionX: 0,
+  positionZ: 0,
+  photoAutoTarget: true,
+  diver: { mode: "helm", wading: 0, depth: 0, air: 1, prompt: null, promptDetail: null, torch: false, underwater: false, pointerLocked: false },
+  economy: {
+    bagCount: 0,
+    bagValue: 0,
+    bag: [],
+    upgrades: { engine: 0, monitor: 0, sonar: 0, flare: 0, tank: 0, fins: 0, torch: 0 },
+    decor: [],
+    equipped: { flag: null, charm: null, bobble: null },
+    sonarContacts: 0,
+  },
   fps: 60,
   status: "loading",
 };

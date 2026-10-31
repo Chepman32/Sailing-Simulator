@@ -1,0 +1,61 @@
+{
+  "id": "/",
+  "name": "Enhanced Sailing Simulator Pro",
+  "short_name": "Sailing",
+  "description": "Sail a catamaran across an endless tropical archipelago: waves, wind, islands, wildlife and ships.",
+  "lang": "en",
+  "dir": "auto",
+  "start_url": "/",
+  "scope": "/",
+  "display": "fullscreen",
+  "display_override": [
+    "fullscreen",
+    "standalone"
+  ],
+  "orientation": "any",
+  "background_color": "#061923",
+  "theme_color": "#061923",
+  "categories": [
+    "games",
+    "sports",
+    "entertainment"
+  ],
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  },
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshots/island.webp",
+      "sizes": "1280x720",
+      "type": "image/webp",
+      "form_factor": "wide",
+      "label": "An island with a lighthouse seen from the water"
+    },
+    {
+      "src": "/screenshots/palms.webp",
+      "sizes": "1280x720",
+      "type": "image/webp",
+      "label": "Palms and grass on an island"
+    }
+  ]
+}

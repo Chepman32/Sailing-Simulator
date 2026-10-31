@@ -1,6 +1,11 @@
 @import "tailwindcss";
 
 :root {
+  /* iOS-like springs as easing curves: a damped spring (response 0.4 s,
+     damping 0.62) sampled into linear(); older browsers get an overshooting
+     cubic Bézier instead. */
+  --spring: cubic-bezier(0.34, 1.4, 0.5, 1);
+  --spring-soft: cubic-bezier(0.25, 1.12, 0.4, 1);
   color-scheme: dark;
   --glass: rgba(5, 31, 43, 0.78);
   --glass-strong: rgba(4, 25, 35, 0.91);
@@ -22,6 +27,11 @@ body {
   min-height: 100%;
   margin: 0;
   overflow: hidden;
+  /* No pull-to-refresh, rubber-banding, long-press menus or text-size jumps in the middle of a manoeuvre. */
+  overscroll-behavior: none;
+  -webkit-touch-callout: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   background: #061923;
 }
 
@@ -47,7 +57,21 @@ input:focus-visible {
   outline-offset: 2px;
 }
 
+/*
+ * Layout tokens. Every overlay is placed from the same screen edges (gap plus
+ * the device's safe area), so the breakpoints below only change the tokens and
+ * the arrangement, never a scatter of magic offsets.
+ */
 .simulator-shell {
+  --gap: 18px;
+  --top-bar: 70px;
+  --notice-side: 290px;
+  --throttle-width: 146px;
+  --throttle-length: 300px;
+  --edge-top: calc(env(safe-area-inset-top, 0px) + var(--gap));
+  --edge-right: calc(env(safe-area-inset-right, 0px) + var(--gap));
+  --edge-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--gap));
+  --edge-left: calc(env(safe-area-inset-left, 0px) + var(--gap));
   position: relative;
   width: 100%;
   height: 100dvh;
@@ -67,53 +91,31 @@ input:focus-visible {
   height: 100%;
 }
 
-.simulator-interface[hidden] { display: none; }
+/* Photo mode fades the interface out and back in; inert (set in the
+   component) keeps the faded controls out of reach and out of the
+   accessibility tree meanwhile. */
+.simulator-interface {
+  transition: opacity 260ms ease;
+}
+
+.simulator-interface.photo-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transition-duration: 200ms;
+}
 .simulator-canvas:focus { outline: none; }
 
-.scene-actions {
-  position: absolute;
-  z-index: 20;
-  top: max(136px, calc(env(safe-area-inset-top) + 118px));
-  left: max(18px, env(safe-area-inset-left));
-  width: 212px;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 15px;
-  background: var(--glass);
-}
-
-.scene-action {
-  display: grid;
-  justify-items: center;
-  align-content: center;
-  gap: 5px;
-  min-width: 0;
-  min-height: 64px;
-  padding: 7px 4px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  color: var(--text);
-  background: rgba(101, 226, 214, 0.08);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-  cursor: pointer;
-}
-
-.scene-action:disabled { opacity: 0.45; cursor: default; }
-.scene-action:not(:disabled):hover { background: rgba(101, 226, 214, 0.2); }
 .photo-mode-hint {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
-  text-align: center;
-  overflow-wrap: anywhere;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 .eyebrow {
@@ -194,15 +196,9 @@ input:focus-visible {
   font-weight: 800;
 }
 
-.instrument-cluster {
-  position: absolute;
-  z-index: 10;
-  top: max(18px, env(safe-area-inset-top));
-  left: max(18px, env(safe-area-inset-left));
-  display: flex;
-  gap: 8px;
-  pointer-events: none;
-}
+/* ------------------------------------------------------------------------ */
+/* Desktop and large tablet layout                                           */
+/* ------------------------------------------------------------------------ */
 
 .instrument,
 .heading-card,
@@ -215,11 +211,27 @@ input:focus-visible {
   backdrop-filter: blur(15px) saturate(1.15);
 }
 
+.instrument-cluster {
+  position: absolute;
+  z-index: 10;
+  top: var(--edge-top);
+  left: var(--edge-left);
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+
 .instrument {
-  position: relative;
   display: grid;
-  min-width: 88px;
-  min-height: 70px;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    "label label"
+    "value unit";
+  justify-content: start;
+  align-content: space-between;
+  gap: 6px 4px;
+  min-width: 92px;
+  min-height: var(--top-bar);
   padding: 10px 12px;
   border-radius: 14px;
 }
@@ -227,31 +239,36 @@ input:focus-visible {
 .instrument span,
 .instrument small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.12em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
+.instrument span { grid-area: label; letter-spacing: 0.12em; }
+.wind-label-short { display: none; }
+
 .instrument strong {
-  align-self: end;
+  grid-area: value;
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 24px;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
+/* The unit sits on the value's baseline instead of floating over it, so a
+   wider reading (125.0 m) can never run into it. */
 .instrument small {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
+  grid-area: unit;
+  align-self: end;
+  padding-bottom: 1px;
+  letter-spacing: 0.06em;
 }
-
-.wind-instrument { min-width: 126px; }
 
 .heading-card {
   position: absolute;
   z-index: 10;
-  top: max(18px, env(safe-area-inset-top));
+  top: var(--edge-top);
   left: 50%;
   display: flex;
   align-items: center;
@@ -266,57 +283,15 @@ input:focus-visible {
 .heading-card strong {
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 20px;
+  font-variant-numeric: tabular-nums;
 }
-
-.audio-unlock {
-  position: absolute;
-  z-index: 24;
-  top: max(78px, calc(env(safe-area-inset-top) + 68px));
-  left: 50%;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-height: 46px;
-  padding: 0 17px;
-  border: 1px solid rgba(130, 255, 240, 0.52);
-  border-radius: 999px;
-  color: #052d31;
-  background: linear-gradient(135deg, #82fff0, #57d7d0);
-  box-shadow: 0 12px 36px rgba(0, 21, 29, 0.28), 0 0 28px rgba(101, 226, 214, 0.18);
-  font-size: 12px;
-  font-weight: 850;
-  letter-spacing: 0.03em;
-  transform: translateX(-50%);
-  cursor: pointer;
-  pointer-events: auto;
-  touch-action: manipulation;
-}
-
-.audio-unlock span {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  color: var(--accent-strong);
-  background: rgba(4, 37, 43, 0.9);
-  font-size: 16px;
-}
-
-.audio-unlock > * { pointer-events: none; }
-
-.audio-unlock strong {
-  font: inherit;
-  white-space: nowrap;
-}
-
-.audio-unlock:active { transform: translateX(-50%) scale(0.975); }
 
 .heading-card > span:last-child {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .status-dot {
@@ -330,37 +305,305 @@ input:focus-visible {
 .status-dot.paused { background: var(--warning); box-shadow: 0 0 12px var(--warning); }
 .status-dot.error { background: #ff7b70; box-shadow: 0 0 12px #ff7b70; }
 
+/* Reset and photo mode: always one tap away, never a large card. */
+.scene-actions {
+  position: absolute;
+  z-index: 20;
+  top: calc(var(--edge-top) + var(--top-bar) + 10px);
+  left: var(--edge-left);
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.scene-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 14px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  color: var(--text);
+  background: var(--glass);
+  box-shadow: 0 10px 28px rgba(0, 12, 18, 0.22);
+  backdrop-filter: blur(15px) saturate(1.15);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.scene-action .control-icon { flex: none; width: 20px; height: 20px; }
+.scene-action:disabled { opacity: 0.45; cursor: default; }
+/* Pressed scene actions (the sound button) read as the accent colour at rest. */
+.scene-action[aria-pressed="true"] {
+  border-color: rgba(101, 226, 214, 0.62);
+  color: #052c31;
+  background: var(--accent);
+}
+@media (hover: hover) {
+  .scene-action:not(:disabled):not([aria-pressed="true"]):hover { background: rgba(14, 64, 78, 0.88); }
+  .scene-action[aria-pressed="true"]:not(:disabled):hover { background: var(--accent-strong); }
+}
+
+/* Transient prompts: one centred column below the heading, level with the
+   scene actions and clear of the instruments on either side. */
+.notice-stack {
+  position: absolute;
+  z-index: 24;
+  top: calc(var(--edge-top) + var(--top-bar) + 10px);
+  right: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: min(520px, calc(100vw - 2 * var(--notice-side)));
+  margin: 0 auto;
+  pointer-events: none;
+}
+
+.notice-stack > * {
+  max-width: 100%;
+  pointer-events: auto;
+}
+
+.audio-unlock {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 46px;
+  padding: 0 17px;
+  border: 1px solid rgba(130, 255, 240, 0.52);
+  border-radius: 999px;
+  color: #052d31;
+  background: linear-gradient(135deg, #82fff0, #57d7d0);
+  box-shadow: 0 12px 36px rgba(0, 21, 29, 0.28), 0 0 28px rgba(101, 226, 214, 0.18);
+  font-size: 13px;
+  font-weight: 850;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.audio-unlock span {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: var(--accent-strong);
+  background: rgba(4, 37, 43, 0.9);
+  font-size: 16px;
+}
+
+.audio-unlock > * { pointer-events: none; }
+
+/* The prompt crumbling into the corner sound button (see SoundPrompt). */
+.audio-unlock-dust {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+}
+
+/* The permanent mute/unmute button, first in the scene actions. */
+.sound-dock {
+  position: relative;
+  padding: 0;
+  width: 44px;
+}
+
+.sound-dock.is-locked::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 2px solid rgba(130, 255, 240, 0.7);
+  border-radius: 16px;
+  animation: sound-dock-pulse 1.6s ease-out infinite;
+  pointer-events: none;
+}
+
+.sound-dock.is-arriving {
+  animation: sound-dock-arrive 0.9s ease-out;
+}
+
+@keyframes sound-dock-pulse {
+  0% { opacity: 0.9; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.35); }
+}
+
+@keyframes sound-dock-arrive {
+  0% { transform: scale(1); box-shadow: 0 10px 28px rgba(0, 12, 18, 0.22); }
+  35% { transform: scale(1.22); box-shadow: 0 0 0 4px rgba(130, 255, 240, 0.55), 0 0 32px rgba(130, 255, 240, 0.65); }
+  100% { transform: scale(1); box-shadow: 0 10px 28px rgba(0, 12, 18, 0.22); }
+}
+
+/* A long translation wraps inside the pill rather than being cut off. */
+.audio-unlock strong {
+  font: inherit;
+  line-height: 1.2;
+  text-align: start;
+}
+
+.help-toast,
+.engine-notice {
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: rgba(5, 31, 43, 0.84);
+  box-shadow: 0 10px 28px rgba(0, 12, 18, 0.24);
+  backdrop-filter: blur(12px);
+  line-height: 1.35;
+  text-align: center;
+}
+
+/* What a control has just done: centred, 10 % below the middle of the screen. */
+.action-toast {
+  position: fixed;
+  z-index: 45;
+  top: 60%;
+  left: 50%;
+  max-width: min(420px, calc(100vw - 40px));
+  padding: 10px 18px;
+  border: 1px solid rgba(101, 226, 214, 0.36);
+  border-radius: 18px;
+  color: var(--text);
+  background: rgba(5, 31, 43, 0.86);
+  box-shadow: 0 14px 34px rgba(0, 12, 18, 0.32);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  text-align: center;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: action-toast-life 2400ms ease forwards;
+}
+
+@keyframes action-toast-life {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.94); }
+  8% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  86% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.98); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .action-toast { animation: none; }
+}
+
+.help-toast {
+  min-height: 44px;
+  padding: 9px 18px;
+  border-radius: 18px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.engine-notice {
+  padding: 9px 14px;
+  border-color: rgba(101, 226, 214, 0.32);
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  animation: notice-in 180ms ease-out;
+}
+
+
+@keyframes notice-in {
+  from { opacity: 0; transform: translateY(-5px); }
+}
+
+/* Shown for a moment after entering photo mode; the rest of the interface is
+   hidden, so this is the only way to learn how to bring it back. */
+.photo-toast {
+  position: absolute;
+  z-index: 24;
+  right: 0;
+  bottom: calc(var(--edge-bottom) + 6px);
+  left: 0;
+  width: fit-content;
+  max-width: calc(100vw - 32px);
+  margin: 0 auto;
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--text);
+  background: rgba(4, 27, 38, 0.82);
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+  animation: notice-in 220ms ease-out;
+}
+
+/* Settings panel */
 .control-panel {
   position: absolute;
   z-index: 20;
-  top: max(18px, env(safe-area-inset-top));
-  right: max(18px, env(safe-area-inset-right));
-  width: min(356px, calc(100vw - 36px));
-  overflow: hidden;
+  top: var(--edge-top);
+  right: var(--edge-right);
+  /* Never wider than the space right of the centred heading card. */
+  width: min(356px, calc(100vw - 2 * var(--gap)), max(280px, calc(50vw - 100px)));
+  max-height: calc(100dvh - var(--edge-top) - var(--edge-bottom));
+  overflow: hidden auto;
+  overscroll-behavior: contain;
   border-radius: 18px;
-  transition: width 180ms ease;
 }
 
-.control-panel.is-minimized { width: 188px; }
+.control-panel:not(.is-minimized) {
+  z-index: 30;
+  background: rgba(4, 25, 35, 0.97);
+}
+
+.control-panel.is-minimized {
+  width: auto;
+  max-width: calc(100vw - 2 * var(--gap));
+  overflow: hidden;
+}
 
 .control-panel header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   min-height: 52px;
-  padding: 9px 10px 9px 15px;
+  padding: 8px;
+  padding-inline-start: 15px;
+}
+
+.control-panel:not(.is-minimized) header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  background: rgba(4, 25, 35, 0.96);
 }
 
 .control-panel header > div {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 2px 12px;
+  min-width: 0;
 }
 
-.control-panel header span {
+.control-panel header .eyebrow { white-space: nowrap; }
+
+.control-panel header > div > span {
   color: var(--muted);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .mobile-control-title,
@@ -368,11 +611,14 @@ input:focus-visible {
 .mobile-center-label { display: none; }
 
 .model-credits {
+  display: inline-block;
+  padding: 4px 0;
   color: var(--accent);
   text-underline-offset: 2px;
 }
 
 .icon-button {
+  flex: none;
   width: 44px;
   height: 44px;
   border: 1px solid var(--border);
@@ -380,12 +626,28 @@ input:focus-visible {
   color: var(--text);
   background: rgba(134, 234, 230, 0.06);
   font-size: 22px;
+  cursor: pointer;
 }
 
 .panel-body {
   display: grid;
   gap: 10px;
   padding: 0 10px 10px;
+}
+
+/* Notices inside the control panel: the scene itself carries no overlays. */
+.panel-status {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+}
+
+.panel-status .engine-notice,
+.panel-status .help-toast {
+  box-shadow: none;
+  backdrop-filter: none;
+  background: rgba(4, 26, 36, 0.6);
+  text-align: start;
 }
 
 .compact-row,
@@ -398,7 +660,8 @@ input:focus-visible {
 
 .compact-row {
   display: grid;
-  grid-template-columns: minmax(92px, 1.35fr) repeat(3, minmax(44px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
+  align-content: center;
   gap: 5px;
   padding: 5px;
 }
@@ -407,6 +670,12 @@ input:focus-visible {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px;
+}
+
+/* Day, night and automatic: one group, three columns of the row. */
+.time-group {
+  grid-column: span 3;
+  grid-template-columns: repeat(3, 1fr);
 }
 
 .segmented button,
@@ -421,6 +690,7 @@ input:focus-visible {
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.04em;
+  cursor: pointer;
 }
 
 .icon-control {
@@ -449,6 +719,20 @@ button[aria-pressed="true"] {
   background: var(--accent);
 }
 
+/* Hover feedback for the panel's toggles, on devices that really hover (a tap
+   on a touch screen would otherwise leave the button stuck in its hover look). */
+@media (hover: hover) {
+  .segmented button:not([aria-pressed="true"]):not(:disabled):hover,
+  .quiet-button:not([aria-pressed="true"]):not(:disabled):hover,
+  .camera-grid button:not([aria-pressed="true"]):hover,
+  .weather-grid button:not([aria-pressed="true"]):hover {
+    border-color: rgba(151, 231, 238, 0.4);
+    color: var(--text);
+    background: rgba(120, 225, 220, 0.12);
+  }
+  button[aria-pressed="true"]:not(:disabled):not(.scene-action):hover { background: var(--accent-strong); }
+}
+
 .panel-section { padding: 7px; }
 
 .section-label,
@@ -457,10 +741,11 @@ button[aria-pressed="true"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.13em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
@@ -474,6 +759,56 @@ button[aria-pressed="true"] {
   letter-spacing: 0.04em;
 }
 
+.weather-mode { margin-bottom: 5px; }
+.weather-mode button { font-size: 11px; }
+
+.weather-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.weather-grid button {
+  min-height: 44px;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid rgba(151, 231, 238, 0.18);
+  border-radius: 9px;
+  color: var(--muted);
+  background: rgba(120, 225, 220, 0.035);
+  cursor: pointer;
+}
+
+.weather-grid .control-icon { width: 21px; height: 21px; }
+
+.weather-grid button[aria-pressed="true"] {
+  border-color: rgba(101, 226, 214, 0.62);
+  color: #052c31;
+  background: var(--accent);
+}
+
+/* In automatic mode the buttons only show the present weather. */
+.weather-grid button[data-auto="true"][aria-pressed="true"] {
+  border-color: rgba(101, 226, 214, 0.55);
+  color: var(--accent-strong);
+  background: rgba(101, 226, 214, 0.16);
+}
+
+.sea-readout {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sea-readout strong {
+  color: var(--text);
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
 .camera-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -482,6 +817,7 @@ button[aria-pressed="true"] {
 
 .trim-row {
   display: grid;
+  align-content: center;
   gap: 8px;
 }
 
@@ -494,8 +830,47 @@ input[type="range"] {
   touch-action: none;
 }
 
+.trim-row input[type="range"] { height: 36px; }
+
+.panel-footer {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  align-content: center;
+  gap: 8px;
+  padding: 7px;
+}
+
+.panel-footer label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.panel-footer label > span { padding-inline-start: 2px; }
+
+.panel-footer select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text);
+  background: #092c3b;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .panel-scrim { display: none; }
 
+/* Primary controls */
 .primary-controls { display: contents; }
 
 .primary-controls,
@@ -504,59 +879,34 @@ input[type="range"] {
   direction: ltr;
 }
 
-.panel-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 7px;
-}
-
-.panel-footer label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.panel-footer select {
-  min-height: 40px;
-  max-width: 148px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  color: var(--text);
-  background: #092c3b;
-}
-
 .rudder-control {
   position: absolute;
   z-index: 20;
-  bottom: max(18px, env(safe-area-inset-bottom));
-  left: max(18px, env(safe-area-inset-left));
+  bottom: var(--edge-bottom);
+  left: var(--edge-left);
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) 104px;
+  grid-template-columns: 76px minmax(0, 1fr) auto;
   grid-template-areas:
     "wheel heading center"
     "track track track";
   align-items: center;
-  gap: 7px 10px;
-  width: min(680px, calc(100vw - 184px));
-  padding: 11px;
+  gap: 6px 12px;
+  width: min(560px, calc(100vw - 3 * var(--gap) - var(--throttle-width) - 24px));
+  padding: 11px 12px;
   border-radius: 18px;
 }
 
-.rudder-control > .control-heading { grid-area: heading; }
+.rudder-control > .control-heading {
+  grid-area: heading;
+  flex-wrap: wrap;
+}
 
 .helm-wheel {
   grid-area: wheel;
   display: grid;
   place-items: center;
-  width: 86px;
-  height: 86px;
+  width: 72px;
+  height: 72px;
   border: 1px solid rgba(151, 231, 238, 0.18);
   border-radius: 50%;
   background: radial-gradient(circle, rgba(101, 226, 214, 0.12), rgba(2, 20, 29, 0.35) 68%);
@@ -564,14 +914,12 @@ input[type="range"] {
 }
 
 .helm-wheel svg {
-  width: 80px;
-  height: 80px;
+  width: 66px;
+  height: 66px;
   overflow: visible;
 }
 
-.helm-wheel g {
-  transition: transform 90ms linear;
-}
+.helm-wheel g { transition: transform 90ms linear; }
 
 .helm-wheel-rim,
 .helm-wheel line {
@@ -594,7 +942,7 @@ input[type="range"] {
   grid-area: track;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: 18px 60px;
+  grid-template-rows: 16px 56px;
   gap: 0;
   margin: 0;
 }
@@ -602,9 +950,9 @@ input[type="range"] {
 .rudder-track-wrap span,
 .throttle-layout span {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
 }
 
 .rudder-track-wrap span {
@@ -628,13 +976,12 @@ input[type="range"] {
 .rudder-track-wrap input {
   grid-row: 2;
   grid-column: 1 / -1;
-  height: 60px;
 }
 
 .rudder-slider {
   width: 100%;
   min-width: 0;
-  height: 60px !important;
+  height: 56px !important;
   -webkit-appearance: none;
   appearance: none;
   border-radius: 999px;
@@ -691,23 +1038,27 @@ input[type="range"] {
 .center-button {
   grid-area: center;
   align-self: stretch;
-  width: auto;
-  min-height: 76px;
+  min-width: 104px;
+  min-height: 52px;
   margin: 0;
+  padding: 0 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   color: var(--text);
   background: rgba(101, 226, 214, 0.08);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
+  cursor: pointer;
 }
+
+.center-button:hover { background: rgba(101, 226, 214, 0.18); }
 
 .throttle-control {
   position: absolute;
   z-index: 20;
-  right: max(18px, env(safe-area-inset-right));
-  bottom: max(18px, env(safe-area-inset-bottom));
-  width: 146px;
+  right: var(--edge-right);
+  bottom: var(--edge-bottom);
+  width: var(--throttle-width);
   padding: 10px;
   border-radius: 18px;
 }
@@ -726,6 +1077,7 @@ input[type="range"] {
   border-radius: 12px;
   color: var(--text);
   background: rgba(101, 226, 214, 0.12);
+  cursor: pointer;
 }
 
 .engine-toggle[aria-checked="false"] {
@@ -743,14 +1095,14 @@ input[type="range"] {
 
 .engine-toggle-copy small {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.12em;
 }
 
 .engine-toggle-copy strong {
   color: var(--accent-strong);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 900;
   letter-spacing: 0.08em;
 }
@@ -806,11 +1158,29 @@ input[type="range"]:disabled {
 
 .vertical-heading {
   display: grid;
+  justify-content: stretch;
   gap: 3px;
   text-align: center;
 }
 
-.vertical-heading strong { min-height: 22px; font-size: 9px; }
+/* Two lines are reserved for the order ("Half astern", "Полный вперёд") so
+   the slider below never jumps when the label wraps. */
+.vertical-heading strong {
+  display: grid;
+  place-items: center;
+  min-height: 2.3em;
+  font-size: 10px;
+  line-height: 1.15;
+}
+
+/* A collapsible wrapper (collapsed only on phones, while the engine is off):
+   a one-row grid whose row animates between 0fr and 1fr. */
+.throttle-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.throttle-reveal-inner { min-height: 0; }
 
 .throttle-layout {
   display: grid;
@@ -818,10 +1188,11 @@ input[type="range"]:disabled {
   gap: 2px;
 }
 
+/* The slider is rotated inside a fixed slot; its length follows the slot. */
 .throttle-slider-slot {
   position: relative;
   width: 64px;
-  height: 228px;
+  height: var(--throttle-length);
 }
 
 .throttle-slider {
@@ -829,7 +1200,7 @@ input[type="range"]:disabled {
   top: 50%;
   left: 50%;
   display: block;
-  width: 212px !important;
+  width: calc(var(--throttle-length) - 12px) !important;
   height: 64px !important;
   -webkit-appearance: none;
   appearance: none;
@@ -886,111 +1257,119 @@ input[type="range"]:disabled {
   box-shadow: 0 3px 10px rgba(0, 12, 18, 0.48), 0 0 0 5px rgba(101, 226, 214, 0.16);
 }
 
-.help-toast {
-  position: absolute;
-  z-index: 15;
-  bottom: max(22px, env(safe-area-inset-bottom));
-  left: 50%;
-  min-height: 44px;
-  max-width: min(520px, calc(100vw - 560px));
-  padding: 8px 18px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--text);
-  background: rgba(5, 31, 43, 0.76);
-  font-size: 12px;
-  transform: translateX(-50%);
-  backdrop-filter: blur(12px);
+/* Wide screens: the open settings fit in two short columns, so the panel stays
+   clear of the throttle below it even on a 720 px tall laptop. */
+@media (min-width: 1280px) and (min-height: 561px) {
+  .control-panel:not(.is-minimized) { width: min(548px, calc(50vw - 104px)); }
+
+  .panel-body {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "status status"
+      "tabs tabs"
+      "time camera"
+      "weather footer";
+    align-items: stretch;
+  }
+
+  .panel-body.is-yacht {
+    grid-template-areas:
+      "status status"
+      "tabs tabs"
+      "trim helm"
+      "sails service"
+      "keys keys";
+    align-items: start;
+  }
+
+  .panel-body > .panel-status { grid-area: status; }
+  .panel-body > .panel-tabs { grid-area: tabs; }
+  .panel-body > .helm-options { grid-area: helm; }
+  .panel-body > .sail-colours { grid-area: sails; }
+  .panel-body > .service-row { grid-area: service; }
+  .panel-body > .key-help { grid-area: keys; }
+  .key-help ul { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; }
+
+  .panel-body > .compact-row { grid-area: time; }
+  .panel-body > .panel-camera { grid-area: camera; }
+  .panel-body > .panel-weather { grid-area: weather; }
+  .panel-body > .trim-row { grid-area: trim; }
+  .panel-body > .panel-footer { grid-area: footer; }
 }
 
-.engine-notice {
-  position: absolute;
-  z-index: 24;
-  bottom: max(82px, calc(env(safe-area-inset-bottom) + 72px));
-  left: 50%;
-  max-width: min(360px, calc(100vw - 48px));
-  padding: 9px 14px;
-  border: 1px solid rgba(101, 226, 214, 0.32);
-  border-radius: 999px;
-  color: var(--text);
-  background: rgba(4, 27, 38, 0.88);
-  box-shadow: 0 10px 28px rgba(0, 12, 18, 0.24);
-  font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 0.02em;
-  text-align: center;
-  transform: translateX(-50%);
-  animation: engine-notice-in 180ms ease-out;
-  backdrop-filter: blur(10px);
+/* Short desktop windows with the one-column panel: shorten the throttle so the
+   open panel and the engine switch do not overlap. */
+@media (min-width: 901px) and (max-width: 1279px) and (min-height: 561px) and (max-height: 900px) {
+  .simulator-shell { --throttle-length: clamp(170px, calc(100dvh - 560px), 300px); }
 }
 
-@keyframes engine-notice-in {
-  from { opacity: 0; transform: translate(-50%, 5px); }
+@media (min-width: 1280px) and (min-height: 561px) and (max-height: 820px) {
+  .simulator-shell { --throttle-length: clamp(200px, calc(100dvh - 500px), 300px); }
 }
+
+/* ------------------------------------------------------------------------ */
+/* Tablets and narrow windows                                                */
+/* ------------------------------------------------------------------------ */
 
 @media (max-width: 900px) {
-  .instrument-cluster { top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); }
-  .instrument { min-width: 72px; min-height: 58px; padding: 8px; }
-  .instrument strong { font-size: 19px; }
-  .instrument small { right: 7px; bottom: 7px; font-size: 8px; }
-  .wind-instrument { display: none; }
-  .heading-card { top: max(10px, env(safe-area-inset-top)); min-height: 44px; }
-  .control-panel { top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); width: min(332px, calc(100vw - 20px)); }
-  .control-panel.is-minimized { width: 174px; }
-  .compact-row { grid-template-columns: minmax(92px, 1.35fr) repeat(3, minmax(44px, 1fr)); }
-  .rudder-control { bottom: max(10px, env(safe-area-inset-bottom)); left: max(10px, env(safe-area-inset-left)); width: min(440px, calc(100vw - 176px)); }
-  .throttle-control { right: max(10px, env(safe-area-inset-right)); bottom: max(10px, env(safe-area-inset-bottom)); }
-  .help-toast { display: none; }
+  .simulator-shell {
+    --gap: 10px;
+    --top-bar: 60px;
+    --notice-side: 212px;
+  }
+
+  .instrument { min-width: 78px; padding: 8px 10px; gap: 4px 3px; }
+  .instrument strong { font-size: 20px; }
+  .heading-card { min-height: 44px; }
+  .notice-stack { top: calc(var(--edge-top) + 54px); }
+
+  .rudder-control { width: min(440px, calc(100vw - 3 * var(--gap) - var(--throttle-width) - 16px)); }
 }
 
-@media (max-width: 680px), (max-height: 560px) and (max-width: 960px) {
-  .simulator-shell { min-height: 0; }
+/* Narrow or short screens: reset and photo mode become icon buttons; their
+   names stay available to assistive technology and as tooltips. */
+@media (max-width: 900px), (max-height: 560px) {
+  .scene-action { width: 44px; padding: 0; }
 
-  .scene-actions {
-    top: calc(env(safe-area-inset-top) + 132px);
-    left: calc(env(safe-area-inset-left) + 8px);
-    width: 142px;
-    grid-template-columns: minmax(0, 1fr);
-    padding: 7px;
-    background: rgba(4, 29, 40, 0.9);
+  .scene-action-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
+}
 
-  .scene-action {
-    grid-template-columns: 23px minmax(0, 1fr);
-    align-items: center;
-    min-height: 44px;
-    text-align: start;
+/* ------------------------------------------------------------------------ */
+/* Phones (portrait and landscape) and short windows                        */
+/* ------------------------------------------------------------------------ */
+
+@media (max-width: 680px), (max-height: 560px) {
+  .simulator-shell {
+    --gap: 8px;
+    --top-bar: 52px;
+    --throttle-width: 92px;
+    min-height: 0;
   }
-
-  .scene-action span { justify-self: start; }
 
   .heading-card { display: none; }
 
-  .audio-unlock {
-    top: calc(env(safe-area-inset-top) + 76px);
-    min-height: 44px;
-    max-width: calc(100vw - 32px);
-    padding: 0 14px;
-    white-space: nowrap;
-  }
-
   .instrument-cluster {
-    top: calc(env(safe-area-inset-top) + 8px);
-    left: calc(env(safe-area-inset-left) + 8px);
     gap: 0;
     padding: 4px;
     overflow: hidden;
     border: 1px solid var(--border);
     border-radius: 17px;
-    background: rgba(4, 27, 38, 0.78);
+    background: rgba(4, 27, 38, 0.8);
     box-shadow: 0 12px 32px rgba(0, 12, 18, 0.22);
     -webkit-backdrop-filter: blur(8px) saturate(1.12);
     backdrop-filter: blur(8px) saturate(1.12);
   }
 
   .instrument {
-    min-width: 68px;
-    min-height: 50px;
+    min-width: 62px;
     padding: 7px 8px;
     border: 0;
     border-radius: 12px;
@@ -999,51 +1378,52 @@ input[type="range"]:disabled {
     backdrop-filter: none;
   }
 
-  .instrument + .instrument { border-left: 1px solid rgba(151, 231, 238, 0.14); }
-  .instrument span { font-size: 9px; letter-spacing: 0.13em; }
-  .instrument strong { font-size: 20px; }
-  .instrument small { right: 7px; bottom: 7px; font-size: 8px; }
+  .instrument + .instrument { border-inline-start: 1px solid rgba(151, 231, 238, 0.14); }
 
-  .control-panel {
-    top: calc(env(safe-area-inset-top) + 8px);
-    right: calc(env(safe-area-inset-right) + 8px);
-    border-radius: 17px;
-    -webkit-backdrop-filter: blur(8px) saturate(1.12);
-    backdrop-filter: blur(8px) saturate(1.12);
+  /* Portrait: speed, depth and wind share one row with the controls pill, so the wind card sheds its angle
+     and tightens its caption instead of being cut off. */
+  .wind-instrument { min-width: 0; }
+  .wind-instrument .wind-angle { display: none; }
+  .wind-label-full { display: none; }
+  .wind-label-short { display: inline; }
+
+  /* Below the 62 px top bar (52 px instruments + padding and border). */
+  .scene-actions,
+  .notice-stack { top: calc(var(--edge-top) + var(--top-bar) + 18px); }
+
+  .scene-action {
+    border-radius: 14px;
+    background: rgba(4, 29, 40, 0.88);
   }
 
-  .control-panel.is-minimized { width: 142px; }
+  .control-panel { border-radius: 17px; }
 
   .control-panel.is-minimized header {
-    min-height: 58px;
+    min-height: 60px;
     padding: 7px;
+    padding-inline-start: 12px;
   }
 
   .control-panel.is-minimized header > div {
     display: grid;
     gap: 3px;
-    padding-left: 5px;
   }
 
   .full-control-title { display: none; }
   .mobile-control-title { display: inline; }
-  .panel-mini-status {
+
+  .control-panel header > div > .panel-mini-status {
     display: inline;
-    color: rgba(220, 249, 251, 0.72) !important;
-    font-size: 8px !important;
+    color: rgba(220, 249, 251, 0.78);
+    font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
   }
 
   .icon-button {
-    flex: 0 0 44px;
     border-radius: 13px;
     background: linear-gradient(145deg, rgba(101, 226, 214, 0.14), rgba(101, 226, 214, 0.035));
   }
-
-  .camera-grid { grid-template-columns: repeat(4, 1fr); }
-  .compact-row { grid-template-columns: minmax(92px, 1.35fr) repeat(3, minmax(44px, 1fr)); }
-  .segmented { grid-column: auto; }
 
   .panel-scrim {
     position: absolute;
@@ -1060,211 +1440,224 @@ input[type="range"]:disabled {
     backdrop-filter: blur(2px);
   }
 
+  .rudder-control,
+  .throttle-control {
+    border-radius: 19px;
+    background: linear-gradient(155deg, rgba(8, 40, 53, 0.92), rgba(3, 26, 36, 0.86));
+    box-shadow: 0 14px 36px rgba(0, 12, 18, 0.27);
+    -webkit-backdrop-filter: blur(8px) saturate(1.08);
+    backdrop-filter: blur(8px) saturate(1.08);
+    transition: opacity 160ms ease;
+  }
+
+  .settings-open .rudder-control,
+  .settings-open .throttle-control {
+    opacity: 0.16;
+    pointer-events: none;
+  }
+
+  .rudder-control {
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    gap: 6px 10px;
+    padding: 8px 10px 6px;
+  }
+
+  .helm-wheel { width: 48px; height: 48px; }
+  .helm-wheel svg { width: 44px; height: 44px; }
+
+  .rudder-track-wrap { grid-template-rows: 16px 52px; }
+  .rudder-slider { height: 52px !important; }
+
+  .center-button {
+    align-self: center;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 16px;
+    border-radius: 12px;
+  }
+
+  .full-center-label { display: none; }
+  .mobile-center-label { display: inline; }
+
+  .throttle-control { padding: 7px; }
+
+  .engine-toggle {
+    gap: 5px;
+    min-height: 0;
+    margin-bottom: 5px;
+    padding: 7px 4px 8px;
+  }
+
+  .engine-toggle-copy { gap: 1px; max-width: 100%; }
+
+  .engine-toggle-copy small,
+  .engine-toggle-copy strong {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .engine-toggle-copy small { letter-spacing: 0.03em; }
+  .engine-toggle-copy strong { font-size: 14px; letter-spacing: 0.04em; }
+
+  .engine-switch-track { width: 52px; height: 30px; }
+  .engine-switch-track span { top: 2px; left: 24px; width: 24px; height: 24px; }
+  .engine-toggle[aria-checked="false"] .engine-switch-track span { left: 2px; }
+
+  .vertical-heading { gap: 1px; }
+  .control-heading { font-size: 10px; letter-spacing: 0.1em; }
+  .throttle-layout { gap: 0; }
+}
+
+/* Phone portrait: a bottom dock. The rudder spans the full width; the throttle
+   stands above its right end, beside the yacht rather than over it. */
+@media (max-width: 680px) and (orientation: portrait) {
+  /* A floating browser toolbar overlaps the page bottom without reporting a safe area. */
+  .simulator-shell { --edge-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--gap) + 12px); }
+
+  .simulator-shell {
+    --notice-side: 60px;
+    --throttle-length: clamp(150px, calc(100dvh - 470px), 250px);
+  }
+
+  .scene-actions { flex-direction: column; }
+
+  /* The bearing alone is enough in the collapsed pill; the word frees room for the wind card. */
+  .panel-mini-status .mini-status-word { display: none; }
+
   .primary-controls {
     position: absolute;
     z-index: 20;
-    right: calc(env(safe-area-inset-right) + 8px);
-    bottom: calc(env(safe-area-inset-bottom) + 8px);
-    left: calc(env(safe-area-inset-left) + 8px);
+    right: var(--edge-right);
+    bottom: var(--edge-bottom);
+    left: var(--edge-left);
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 146px;
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
-    transition: opacity 160ms ease, transform 160ms ease;
-  }
-
-  .settings-open .primary-controls {
-    opacity: 0.16;
-    transform: translateY(6px);
+    /* The empty part of the dock beside the throttle belongs to the camera. */
     pointer-events: none;
   }
 
   .rudder-control,
   .throttle-control {
     position: static;
-    width: auto;
-    border-radius: 19px;
-    background: linear-gradient(155deg, rgba(8, 40, 53, 0.91), rgba(3, 26, 36, 0.82));
-    box-shadow: 0 14px 36px rgba(0, 12, 18, 0.27);
-    -webkit-backdrop-filter: blur(8px) saturate(1.08);
-    backdrop-filter: blur(8px) saturate(1.08);
+    pointer-events: auto;
   }
 
-  .rudder-control {
-    display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
-    grid-template-areas:
-      "wheel heading"
-      "track track"
-      "center center";
-    gap: 6px 8px;
-    align-content: center;
-    min-height: 204px;
-    padding: 10px;
-  }
-
-  .rudder-control > .control-heading { grid-area: heading; }
-
-  .helm-wheel {
-    width: 68px;
-    height: 68px;
-  }
-
-  .helm-wheel svg {
-    width: 64px;
-    height: 64px;
-  }
-
-  .rudder-track-wrap {
-    grid-area: track;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-rows: 18px 64px;
-    gap: 0;
-    margin: 0;
-  }
-
-  .rudder-track-wrap span,
-  .throttle-layout span {
-    font-size: 10px;
-    letter-spacing: 0.1em;
-  }
-
-  .rudder-track-wrap input {
-    grid-row: 2;
-    grid-column: 1 / -1;
-    height: 64px;
-  }
-
-  .center-button {
-    grid-area: center;
-    width: 100%;
-    min-height: 44px;
-    margin: 0;
-    padding: 0 10px;
-    border-radius: 12px;
-    font-size: 11px;
-  }
-
-  .full-center-label { display: none; }
-  .mobile-center-label { display: inline; }
-
-  .throttle-control {
-    display: grid;
-    align-content: center;
-    min-height: 318px;
-    padding: 8px;
-  }
-
-  .engine-toggle {
-    display: grid;
-    grid-template-columns: 1fr;
-    justify-items: center;
-    gap: 7px;
-    min-height: 90px;
-    margin-bottom: 7px;
-    padding: 8px 4px;
-  }
-
-  .engine-toggle-copy { justify-items: center; text-align: center; }
-  .engine-toggle-copy small { font-size: 9px; }
-  .engine-toggle-copy strong { font-size: 15px; }
-
-  .engine-notice {
-    bottom: calc(env(safe-area-inset-bottom) + 298px);
-    max-width: calc(100vw - 28px);
-    font-size: 10px;
-  }
-
-  .vertical-heading { gap: 1px; }
-  .vertical-heading strong {
-    min-height: 16px;
-    font-size: 9px;
-    line-height: 1.05;
-  }
-
-  .throttle-layout { gap: 0; }
-  .throttle-slider {
-    width: 156px !important;
-    height: 64px !important;
-  }
-
-  .throttle-slider-slot { width: 64px; height: 164px; }
-
-  .control-heading { font-size: 10px; letter-spacing: 0.1em; }
-}
-
-@media (max-width: 680px) and (orientation: portrait) {
-  .primary-controls {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .rudder-control {
-    order: 2;
-    width: 100%;
-  }
-
-  .throttle-control {
-    order: 1;
-    width: 146px;
-    justify-self: end;
-  }
+  .rudder-control { order: 2; width: auto; }
+  .throttle-control { order: 1; justify-self: end; }
 
   .control-panel:not(.is-minimized) {
-    z-index: 30;
     top: auto;
-    right: calc(env(safe-area-inset-right) + 8px);
-    bottom: calc(env(safe-area-inset-bottom) + 8px);
-    left: calc(env(safe-area-inset-left) + 8px);
+    right: var(--edge-right);
+    bottom: var(--edge-bottom);
+    left: var(--edge-left);
     width: auto;
-    max-height: min(72dvh, 560px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    background: var(--glass-strong);
+    /* Tall enough that every setting fits without scrolling on a phone: from
+       just under the speed / depth / wind row down to the bottom edge. The
+       smallest viewport (svh) keeps a sliding browser toolbar off the last row. */
+    max-height: calc(100svh - var(--edge-top) - var(--edge-bottom) - 62px);
+    padding-bottom: 4px;
+    scroll-padding-bottom: 24px;
   }
 
-  .control-panel:not(.is-minimized) header { position: sticky; top: 0; z-index: 2; background: rgba(4, 25, 35, 0.94); }
-  .panel-body { gap: 8px; }
+  .panel-body { gap: 6px; padding-bottom: 8px; }
+
+  /* A denser panel on a phone, so all of it fits on one screen: 40 px
+     targets (the toolbar's own size) instead of 44, slimmer header and rows. */
+  .control-panel:not(.is-minimized) header { min-height: 46px; padding-block: 4px; }
+  .control-panel:not(.is-minimized) .icon-button { width: 40px; height: 40px; }
+  .control-panel .segmented button,
+  .control-panel .quiet-button,
+  .control-panel .camera-grid button,
+  .control-panel .weather-grid button,
+  .panel-footer select { min-height: 40px; }
+  .panel-section { padding: 6px; }
+  .trim-row { gap: 2px; }
+  .trim-row input[type="range"] { height: 30px; }
+  .panel-footer { gap: 6px; padding: 6px; }
+  .panel-footer label { gap: 3px; }
+  .panel-status .help-toast,
+  .panel-status .engine-notice { min-height: 0; padding: 7px 12px; font-size: 11.5px; }
 }
 
+/* Phone landscape and short windows: rudder bottom-left, throttle bottom-right,
+   the middle of the screen left to the yacht. */
 @media (max-height: 560px) and (orientation: landscape) {
-  .scene-actions {
-    top: calc(env(safe-area-inset-top) + 78px);
-    left: auto;
-    right: calc(env(safe-area-inset-right) + 8px);
-    width: 142px;
+  .simulator-shell {
+    --notice-side: 116px;
+    --throttle-length: clamp(110px, calc(100dvh - 240px), 190px);
   }
+
+  .wind-instrument { display: grid; min-width: 0; }
+  .wind-instrument .wind-angle { display: inline; }
+  .wind-label-full { display: inline; }
+  .wind-label-short { display: none; }
+
+  .rudder-control { width: clamp(250px, 42vw, 380px); }
+
   .control-panel:not(.is-minimized) {
-    z-index: 30;
-    top: calc(env(safe-area-inset-top) + 8px);
-    right: calc(env(safe-area-inset-right) + 8px);
-    width: 316px;
-    max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    background: var(--glass-strong);
+    top: var(--edge-top);
+    bottom: var(--edge-bottom);
+    width: min(420px, calc(100vw - 2 * var(--gap)));
+    max-height: none;
   }
-  .panel-body { gap: 5px; }
-  .panel-section { padding: 5px; }
-  .section-label { display: none; }
-  .trim-row { display: none; }
-  .camera-grid button,
-  .segmented button,
-  .quiet-button { min-height: 44px; }
-  .primary-controls {
-    right: auto;
-    width: min(500px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 172px));
+
+  .panel-body { gap: 6px; }
+  .panel-section { padding: 6px; }
+}
+
+/* Touch devices: no backdrop blur (a full-screen blur per panel is expensive on
+   mobile GPUs); near-opaque glass keeps the text readable instead. */
+/* 320–359 px phones: a tighter top bar so the instruments and the settings
+   button share one row. */
+@media (max-width: 399px) and (orientation: portrait) {
+  .instrument { min-width: 0; padding: 7px 6px; }
+  .instrument strong { font-size: 19px; }
+  .instrument small { font-size: 9px; }
+}
+
+/* On the narrowest phones the wind card would push into the controls pill; the settings panel still shows it. */
+@media (max-width: 339px) and (orientation: portrait) {
+  .wind-instrument { display: none; }
+}
+
+@media (max-width: 359px) {
+  .instrument { min-width: 60px; padding: 7px 7px; }
+  .instrument span { letter-spacing: 0.06em; }
+  .instrument strong { font-size: 18px; }
+  .audio-unlock { padding: 6px 14px; font-size: 12px; }
+
+  /* The settings button keeps its 44 px target; a long title gives way. */
+  .control-panel.is-minimized { max-width: calc(100vw - 2 * var(--gap) - 168px); }
+  .control-panel.is-minimized header { gap: 8px; }
+  .control-panel.is-minimized header > div { overflow: hidden; }
+
+  .control-panel.is-minimized .eyebrow {
+    overflow: hidden;
+    letter-spacing: 0.06em;
+    text-overflow: ellipsis;
   }
-  .rudder-control {
-    width: auto;
-    min-height: 162px;
-    padding: 8px;
-  }
-  .rudder-track-wrap { grid-template-rows: 16px 54px; }
-  .rudder-track-wrap input { height: 54px; }
-  .rudder-slider { height: 54px !important; }
-  .center-button { min-height: 44px; }
-  .throttle-control { min-height: 228px; }
-  .throttle-slider { width: 112px !important; height: 60px !important; }
-  .throttle-slider-slot { width: 60px !important; height: 120px !important; }
+
+  .mini-status-word { display: none; }
+}
+
+/* Short phones: the first-run hint would land on the throttle or rudder, and
+   the gestures it describes are discoverable anyway. */
+@media (max-width: 680px) and (orientation: portrait) and (max-height: 640px),
+  (max-height: 340px) {
+  .help-toast { display: none; }
+}
+
+/* Very short landscape screens (568 x 320): the throttle needs the full
+   height, so the collapsed settings button steps left of it. */
+@media (max-height: 349px) and (orientation: landscape) {
+  .control-panel.is-minimized { right: calc(var(--edge-right) + var(--throttle-width) + 8px); }
+}
+
+@media (max-height: 349px) and (max-width: 639px) and (orientation: landscape) {
+  .wind-instrument { display: none !important; }
 }
 
 @media (pointer: coarse) {
@@ -1274,6 +1667,7 @@ input[type="range"]:disabled {
   .control-panel,
   .rudder-control,
   .throttle-control,
+  .scene-action,
   .panel-scrim,
   .help-toast,
   .engine-notice {
@@ -1281,9 +1675,17 @@ input[type="range"]:disabled {
     backdrop-filter: none;
   }
 
-  .instrument,
   .heading-card,
-  .control-panel,
+  .control-panel.is-minimized,
+  .scene-action {
+    background: rgba(4, 29, 40, 0.9);
+  }
+}
+
+/* Separate instrument cards only exist outside the phone layout, where the
+   cluster is one card with transparent cells. */
+@media (pointer: coarse) and (min-width: 681px) and (min-height: 561px) {
+  .instrument,
   .rudder-control,
   .throttle-control {
     background: rgba(4, 29, 40, 0.9);
@@ -1296,4 +1698,2307 @@ input[type="range"]:disabled {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* The rudder card's own note while the shore guard holds the helm. */
+.rudder-guard {
+  color: #ffe2b0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Voyage: signals, radio, finds, the first-run guide                       */
+/* ------------------------------------------------------------------------ */
+
+.scene-divider {
+  align-self: center;
+  width: 1px;
+  height: 26px;
+  background: rgba(151, 231, 238, 0.28);
+  pointer-events: none;
+}
+
+.scene-actions:has(.scene-pop) { z-index: 42; }
+
+.scene-pop-anchor {
+  position: relative;
+  display: inline-flex;
+  pointer-events: auto;
+}
+
+/* Pop-overs hang below a button in the row, beside it in the portrait column. */
+.scene-pop {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  left: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--glass-strong);
+  box-shadow: 0 16px 38px rgba(0, 12, 18, 0.38);
+  backdrop-filter: blur(15px) saturate(1.15);
+  -webkit-backdrop-filter: blur(15px) saturate(1.15);
+  animation: pop-in 160ms ease;
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+.flare-pop {
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+}
+
+.flare-choice {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+.flare-choice span {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 38%, #fff 0 18%, var(--flare) 46%, transparent 72%);
+  box-shadow: 0 0 16px var(--flare);
+}
+
+.flare-choice.is-red { --flare: #ff3b2f; }
+.flare-choice.pop-bell { display: none; color: var(--text); }
+.flare-choice.pop-bell .control-icon { width: 22px; height: 22px; }
+.flare-choice.is-green { --flare: #3cff72; }
+
+/* Radio */
+.radio-action.is-playing {
+  border-color: color-mix(in srgb, var(--station, var(--accent)) 70%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--station, var(--accent)) 35%, transparent), 0 10px 28px rgba(0, 12, 18, 0.22);
+}
+
+.eq-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 20px;
+  height: 18px;
+}
+
+.eq-bars i {
+  flex: 1;
+  height: 40%;
+  border-radius: 2px;
+  background: var(--station, var(--accent));
+  animation: eq 900ms ease-in-out infinite alternate;
+}
+
+.eq-bars i:nth-child(2) { animation-duration: 640ms; animation-delay: -200ms; }
+.eq-bars i:nth-child(3) { animation-duration: 760ms; animation-delay: -420ms; }
+
+@keyframes eq {
+  from { height: 20%; }
+  to { height: 100%; }
+}
+
+.radio-card {
+  width: min(300px, calc(100vw - 2 * var(--gap) - 64px));
+  padding: 10px;
+  color: var(--text);
+}
+
+.radio-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.radio-now {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+
+.radio-now strong {
+  overflow: hidden;
+  font-size: 13.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radio-now span { color: var(--muted); font-size: 11px; }
+
+.radio-round {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+}
+
+.radio-round .control-icon { width: 17px; height: 17px; }
+.radio-power[aria-pressed="true"] { color: #052c31; background: var(--accent); }
+
+.radio-stations {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.radio-stations button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  text-align: start;
+  cursor: pointer;
+}
+
+.radio-stations button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--station) 60%, transparent);
+  background: color-mix(in srgb, var(--station) 16%, transparent);
+}
+
+.station-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--station);
+  box-shadow: 0 0 10px var(--station);
+}
+
+.station-text { display: grid; flex: 1; min-width: 0; }
+.station-text strong { font-size: 12.5px; }
+.station-text small { overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+
+.station-badge {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.radio-volume {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.radio-volume input { width: 100%; accent-color: var(--accent); }
+
+.radio-credit {
+  margin: 8px 4px 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.radio-credit a { color: var(--accent); }
+
+/* GTA-style: the station sweeps in at the top for a moment. */
+.station-banner {
+  position: fixed;
+  z-index: 44;
+  top: 26%;
+  left: 50%;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 10px 26px;
+  border-radius: 14px;
+  color: #fff;
+  background: linear-gradient(90deg, transparent, rgba(3, 18, 26, 0.72) 18%, rgba(3, 18, 26, 0.72) 82%, transparent);
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: station-in 2800ms ease forwards;
+}
+
+.station-banner strong {
+  color: var(--station);
+  font-size: clamp(20px, 3.4vw, 30px);
+  font-style: italic;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.station-banner span {
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+@keyframes station-in {
+  0% { opacity: 0; transform: translateX(calc(-50% - 40px)); }
+  10% { opacity: 1; transform: translateX(-50%); }
+  82% { opacity: 1; transform: translateX(-50%); }
+  100% { opacity: 0; transform: translateX(calc(-50% + 30px)); }
+}
+
+/* Things afloat, finds, the guide and the tow: cards in the centred column. */
+.loot-chip,
+.stuck-chip,
+.quick-start,
+.discovery-card {
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--glass-strong);
+  box-shadow: 0 12px 30px rgba(0, 12, 18, 0.32);
+}
+
+.loot-chip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 8px;
+  padding: 6px 12px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 750;
+  pointer-events: none !important;
+}
+
+.loot-chip .control-icon { width: 16px; height: 16px; color: #ffd18a; }
+.loot-chip.is-flamingo .control-icon { color: #ff8fc7; }
+.loot-chip.is-crate .control-icon { color: #d9a46b; }
+.loot-arrow { display: inline-block; color: var(--accent); font-size: 14px; transition: transform 300ms ease; }
+.loot-chip small { flex-basis: 100%; color: var(--muted); font-size: 10.5px; font-weight: 650; text-align: center; }
+
+.stuck-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 16px;
+  border-color: rgba(255, 208, 135, 0.55);
+  border-radius: 99px;
+  color: #ffe2b0;
+  font-size: 12.5px;
+  font-weight: 800;
+  cursor: pointer;
+  animation: pop-in 200ms ease;
+}
+
+.stuck-chip .control-icon { width: 18px; height: 18px; }
+
+.quick-start {
+  width: min(360px, 100%);
+  padding: 10px 12px;
+  border-radius: 16px;
+  animation: pop-in 220ms ease;
+}
+
+.quick-start-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.quick-start-head button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.quick-start ol {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quick-start li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.quick-start li.is-current { color: var(--text); font-weight: 800; }
+.quick-start li.is-done { opacity: 0.6; text-decoration: line-through; }
+
+.step-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.quick-start li.is-current .step-mark { border-color: var(--accent); color: #052c31; background: var(--accent); }
+.quick-start li.is-done .step-mark { color: var(--accent); }
+
+/* The control the guide is talking about breathes. */
+.guide-target {
+  animation: guide-pulse 1600ms ease-in-out infinite;
+}
+
+@keyframes guide-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(101, 226, 214, 0.0), 0 10px 28px rgba(0, 12, 18, 0.22); }
+  50% { box-shadow: 0 0 0 5px rgba(101, 226, 214, 0.42), 0 10px 28px rgba(0, 12, 18, 0.22); }
+}
+
+.discovery-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 10px;
+  width: min(380px, 100%);
+  padding: 12px;
+  border-color: rgba(255, 209, 138, 0.42);
+  border-radius: 18px;
+  animation: discovery-in 320ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.discovery-card.is-poi { border-color: rgba(101, 226, 214, 0.55); }
+.discovery-card.is-flamingo { border-color: rgba(255, 143, 199, 0.6); }
+
+@keyframes discovery-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.94); }
+  to { opacity: 1; transform: none; }
+}
+
+.discovery-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: #ffd18a;
+  background: rgba(255, 209, 138, 0.12);
+}
+
+.discovery-card.is-flamingo .discovery-icon { color: #ff8fc7; background: rgba(255, 143, 199, 0.14); }
+.discovery-card.is-poi .discovery-icon { background: rgba(101, 226, 214, 0.12); }
+.discovery-icon .control-icon { width: 22px; height: 22px; }
+.place-icon { font-size: 22px; line-height: 1; }
+
+.discovery-text { min-width: 0; }
+.discovery-text strong { display: block; font-size: 13.5px; line-height: 1.3; }
+.discovery-text p { margin: 4px 0 0; color: #d5ecf0; font-size: 12.5px; line-height: 1.42; }
+
+.discovery-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  margin-top: 8px;
+  padding: 0 12px;
+  border: 1px solid rgba(101, 226, 214, 0.5);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(101, 226, 214, 0.14);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.discovery-answer { color: var(--accent) !important; font-weight: 750; }
+
+.discovery-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.discovery-close .control-icon { width: 16px; height: 16px; }
+
+.gust-flag {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-top: 2px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  color: #052c31;
+  background: var(--warning);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  animation: pop-in 200ms ease;
+}
+
+/* Panel: tabs, helm options, sail colours, logbook, service, keys. */
+.panel-tabs { display: grid !important; grid-template-columns: 1fr 1fr; align-self: start; }
+.panel-tabs button { min-height: 40px; font-size: 12.5px; font-weight: 800; }
+.panel-tabs button[aria-selected="true"],
+.panel-tabs button[aria-selected="true"]:hover { border-color: rgba(101, 226, 214, 0.62); color: #052c31; background: var(--accent); }
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 2px 4px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.swatch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px;
+}
+
+.swatch {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--swatch);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.swatch.is-locked {
+  background: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.06) 0 4px, transparent 4px 8px);
+  cursor: default;
+}
+
+.swatch[aria-pressed="true"],
+.swatch[aria-pressed="true"]:hover {
+  background: var(--swatch) !important;
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 2px rgba(101, 226, 214, 0.35);
+}
+
+.sail-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ccc;
+}
+
+.sail-swatch.is-sunset { background: #f06a3c; }
+.sail-swatch.is-lagoon { background: #2bb7b3; }
+.sail-swatch.is-royal { background: #4f46c8; }
+.sail-swatch.is-gold { background: #e8b23c; }
+.sail-swatch.is-flamingo { background: #f47fb8; }
+.sail-swatch.is-pirate { background: #232328; border: 1px solid #777; }
+
+.logbook {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+  padding: 0 4px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 750;
+}
+
+.service-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.service-grid button,
+.restart-confirm button {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: 6px 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+}
+
+.service-grid .control-icon { width: 18px; height: 18px; }
+.service-grid .quiet-danger { color: #ffcfc9; }
+
+.restart-confirm p { margin: 0 0 8px; font-size: 12.5px; line-height: 1.4; }
+.restart-confirm div { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.restart-confirm button { min-height: 40px; font-size: 12px; }
+.restart-confirm .danger { border-color: rgba(255, 123, 112, 0.6); color: #fff; background: rgba(255, 123, 112, 0.28); }
+
+.key-help ul {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+  list-style: none;
+}
+
+/* Phone portrait: the actions are a column; pop-overs open to its right. */
+@media (max-width: 680px) and (orientation: portrait) {
+  .scene-divider { width: 26px; height: 1px; }
+  .scene-pop { top: 0; left: calc(100% + 8px); }
+  .scene-actions { gap: 7px; }
+  .discovery-card,
+  .quick-start { width: 100%; }
+  .station-banner { top: 22%; }
+}
+
+/* Phone landscape: a single row; keep pop-overs inside the short screen. */
+@media (max-height: 560px) and (orientation: landscape) {
+  .scene-actions { gap: 6px; }
+  .radio-card { max-height: calc(100dvh - var(--edge-top) - var(--top-bar) - 80px); overflow-y: auto; }
+  .radio-stations button { min-height: 38px; padding: 4px 8px; }
+  .discovery-card,
+  .quick-start { width: min(330px, 100%); padding: 8px 10px; }
+  .quick-start ol { margin-top: 4px; gap: 2px; }
+  .station-banner { top: 20%; }
+}
+
+@media (pointer: coarse) {
+  .scene-pop,
+  .loot-chip,
+  .stuck-chip,
+  .quick-start,
+  .discovery-card {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .guide-target { animation: none; box-shadow: 0 0 0 3px rgba(101, 226, 214, 0.5); }
+}
+
+/* Desktop and landscape: the centred column sits below the row of scene
+   actions, so a prompt never covers a button. */
+@media (min-width: 681px), (orientation: landscape) {
+  .notice-stack { top: calc(var(--edge-top) + var(--top-bar) + 64px); }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  /* Centred in the room left of the throttle, which stands wide here when the engine runs. */
+  .notice-stack { top: calc(var(--edge-top) + var(--top-bar) + 72px); right: calc(var(--edge-right) + 190px); max-width: min(360px, calc(100vw - var(--edge-right) - 200px)); }
+  /* Only the step at hand on a short screen. */
+  .quick-start li:not(.is-current) { display: none; }
+}
+
+/* Phone portrait: the guide, a find and the tow offer sit above the rudder,
+   left of the throttle, clear of the yacht and of every control. */
+@media (max-width: 680px) and (orientation: portrait) {
+  .quick-start,
+  .discovery-card,
+  .stuck-chip {
+    position: fixed;
+    bottom: calc(var(--edge-bottom) + var(--rudder-dock, 150px));
+    left: var(--edge-left);
+    width: calc(100vw - var(--edge-left) - var(--edge-right) - var(--throttle-width) - 10px);
+  }
+
+  .stuck-chip { justify-content: center; }
+  .quick-start li:not(.is-current) { display: none; }
+  .guide-title { display: none; }
+  .guide-step-long { display: none; }
+  .guide-step-short { display: inline; }
+}
+
+.quick-start-head span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guide-step-short { display: none; }
+
+/* Phone landscape: the centred column keeps to the water between the rudder
+   card and the throttle, so it never lies over a control. */
+@media (max-height: 560px) and (orientation: landscape) {
+  .notice-stack {
+    left: calc(var(--edge-left) + clamp(250px, 42vw, 380px) + 10px);
+    right: calc(var(--edge-right) + var(--throttle-width) + 10px);
+    max-width: none;
+    width: auto;
+    align-items: stretch;
+  }
+
+  .notice-stack > * { align-self: center; }
+  .quick-start,
+  .discovery-card { width: 100%; }
+}
+
+/* Phone portrait: the bell joins the flares in their chooser, so the column of
+   actions stays short; if it is still too tall it wraps into a second column
+   rather than running under the rudder. Cards keep right of the column. */
+@media (max-width: 680px) and (orientation: portrait) {
+  .signal-bell { display: none; }
+  .flare-choice.pop-bell { display: grid; }
+  .flare-pop { flex-direction: column; }
+  .scene-actions {
+    flex-wrap: wrap;
+    align-content: flex-start;
+    max-height: calc(100dvh - var(--edge-top) - var(--top-bar) - 18px - var(--edge-bottom) - 160px);
+  }
+
+  .quick-start,
+  .discovery-card,
+  .stuck-chip {
+    left: calc(var(--edge-left) + 52px);
+    width: calc(100vw - var(--edge-left) - var(--edge-right) - var(--throttle-width) - 62px);
+  }
+
+  .discovery-card { grid-template-columns: 1fr auto; padding: 10px; }
+  .discovery-icon { display: none; }
+  .quick-start { padding: 8px 10px; }
+  .quick-start-head button { padding: 0 8px; }
+}
+
+/* Tablets in portrait: the short wind caption keeps the instruments clear of the heading card. */
+@media (min-width: 681px) and (max-width: 900px) {
+  .wind-label-full { display: none; }
+  .wind-label-short { display: inline; }
+}
+
+/* Very short landscape (568 × 320): the gap between the rudder and the
+   throttle is too narrow for a find's card, so it lies over the top bar for
+   its few seconds (it closes on a tap). */
+@media (max-height: 349px) and (orientation: landscape) {
+  .discovery-card {
+    position: fixed;
+    z-index: 46;
+    top: var(--edge-top);
+    left: var(--edge-left);
+    width: calc(100vw - var(--edge-left) - var(--edge-right) - var(--throttle-width) - 10px);
+    grid-template-columns: 1fr auto;
+  }
+
+  .discovery-icon { display: none; }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Phones: a compact dock (portrait and landscape)                          */
+/* ------------------------------------------------------------------------ */
+
+.rudder-swipe { display: none; }
+
+@media (max-width: 680px) and (orientation: portrait), (max-height: 560px) and (orientation: landscape) {
+  /* The rudder is one slim strip: wheel, a track you swipe anywhere along, centre. */
+  .rudder-control {
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-areas: "wheel track center";
+    gap: 8px;
+    padding: 7px 9px;
+  }
+
+  .helm-wheel { width: 44px; height: 44px; }
+  .helm-wheel svg { width: 40px; height: 40px; }
+
+  /* Its readout only while the shore guard holds the helm, as a tag above it. */
+  .rudder-control > .control-heading { display: none; }
+  .rudder-control > .control-heading:has(.rudder-guard) {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    display: flex;
+    padding: 4px 10px;
+    border-radius: 10px;
+    background: rgba(4, 29, 40, 0.92);
+    font-size: 11px;
+  }
+  .rudder-control > .control-heading:has(.rudder-guard) > span { display: none; }
+
+  .rudder-track-wrap {
+    position: relative;
+    grid-template-rows: 46px;
+  }
+
+  .rudder-track-wrap > span { display: none; }
+  .rudder-track-wrap input { grid-row: 1; }
+  .rudder-slider { height: 46px !important; }
+  .rudder-slider::-webkit-slider-runnable-track { height: 16px; }
+  .rudder-slider::-webkit-slider-thumb { width: 38px; height: 38px; margin-top: -13px; }
+  .rudder-slider::-moz-range-thumb { width: 34px; height: 34px; }
+
+  .rudder-swipe {
+    display: block;
+    grid-row: 1;
+    grid-column: 1 / -1;
+    z-index: 1;
+    touch-action: none;
+    cursor: grab;
+  }
+
+  .center-button { min-width: 0; min-height: 44px; padding: 0 12px; }
+  .full-center-label { display: none; }
+  .mobile-center-label { display: inline; }
+
+  /* Tilt steering: the strip only shows where the helm is. */
+  .rudder-control.is-tilt .rudder-swipe { display: none; }
+  .rudder-control.is-tilt .rudder-slider { pointer-events: none; opacity: 0.7; }
+
+  /* Engine off: only its switch; the throttle springs out of it when the
+     engine starts and tucks back in when it stops (see .throttle-reveal). */
+  .throttle-control { padding: 6px; transition: padding 380ms var(--spring); }
+  .throttle-control.is-off .engine-toggle { min-height: 64px; margin-bottom: 0; gap: 4px; padding: 6px; }
+  .throttle-reveal {
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 560ms var(--spring-soft);
+  }
+  .throttle-reveal-inner {
+    overflow: hidden;
+    transform-origin: 50% 100%;
+    transition:
+      transform 600ms var(--spring),
+      opacity 220ms ease-out,
+      visibility 0s linear 0s;
+  }
+  /* Spacing inside the clipped block (padding on it would survive the collapse). */
+  .throttle-reveal-inner > :first-child { margin-top: 6px; }
+  .throttle-control.is-off .throttle-reveal {
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 300ms cubic-bezier(0.3, 0, 0.2, 1);
+  }
+  .throttle-control.is-off .throttle-reveal-inner {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(18px) scale(0.86, 0.7);
+    transition:
+      transform 280ms cubic-bezier(0.4, 0, 0.7, 0.2),
+      opacity 200ms ease-in 60ms,
+      visibility 0s linear 300ms;
+  }
+  .throttle-control .engine-toggle { min-height: 64px; gap: 4px; padding: 6px; }
+  .throttle-control .engine-switch-track { width: 48px; height: 28px; }
+
+  /* The collapsed settings: just the button, so the instruments keep their room. */
+  .control-panel.is-minimized header > div { display: none; }
+  .control-panel.is-minimized header { min-height: 0; padding: 4px; }
+  .control-panel.is-minimized { width: auto; max-width: none; }
+}
+
+@media (max-width: 680px) and (orientation: portrait) {
+  /* Twice the old travel: a long, easy-to-hit throttle for the thumb. */
+  .simulator-shell { --throttle-length: clamp(240px, calc(100dvh - 420px), 380px); }
+  .quick-start,
+  .discovery-card,
+  .stuck-chip { bottom: calc(var(--edge-bottom) + 76px); }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  /* About twice the old travel. There is no height for that above the engine
+     switch, so in landscape the throttle stands beside it, as tall as the
+     screen allows below the settings button, and springs out sideways and
+     upward at once; the order is its only caption. */
+  .simulator-shell { --throttle-length: clamp(160px, calc(100dvh - 130px), 300px); }
+  .rudder-control { width: clamp(240px, 40vw, 360px); }
+
+  .throttle-control {
+    display: grid;
+    grid-template-columns: auto auto;
+    align-items: end;
+    width: auto;
+  }
+  .throttle-control .engine-toggle { grid-column: 1; grid-row: 1; }
+  .throttle-reveal {
+    grid-column: 2;
+    grid-row: 1;
+    grid-template-columns: 1fr;
+    transition:
+      grid-template-rows 560ms var(--spring-soft),
+      grid-template-columns 560ms var(--spring-soft);
+  }
+  .throttle-reveal-inner { min-width: 0; transform-origin: 0% 100%; }
+  .throttle-reveal-inner > * { margin-left: 6px; }
+  .throttle-reveal-inner > :first-child { margin-top: 0; }
+  .throttle-control.is-off .throttle-reveal {
+    grid-template-columns: 0fr;
+    transition:
+      grid-template-rows 300ms cubic-bezier(0.3, 0, 0.2, 1),
+      grid-template-columns 300ms cubic-bezier(0.3, 0, 0.2, 1);
+  }
+  .throttle-control.is-off .throttle-reveal-inner { transform: translateX(-14px) scale(0.7, 0.8); }
+  .throttle-reveal .vertical-heading { width: 76px; margin: 0 auto 4px; }
+  .throttle-reveal .vertical-heading > span,
+  .throttle-layout > span { display: none; }
+  .throttle-reveal .vertical-heading strong { font-size: 10px; line-height: 1.15; white-space: normal; }
+}
+
+.engine-switch-track span { transition: transform 160ms ease; }
+
+/* ---- The chart: minimap and full-screen chart ---------------------------- */
+
+.minimap {
+  position: absolute;
+  z-index: 12;
+  /* Bottom-left, just above the rudder (its height is measured: --minimap-bottom). */
+  bottom: var(--minimap-bottom, calc(var(--edge-bottom) + 150px));
+  left: var(--edge-left);
+  width: var(--minimap-size, clamp(118px, 22vh, 164px));
+  height: var(--minimap-size, clamp(118px, 22vh, 164px));
+  padding: 0;
+  border: 2px solid rgba(151, 231, 238, 0.42);
+  border-radius: 50%;
+  overflow: visible;
+  background: #0b344c;
+  box-shadow: 0 10px 30px rgba(0, 12, 20, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.minimap:hover { transform: scale(1.03); border-color: var(--accent); }
+.minimap:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+.minimap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+/* A glass rim over the picture, like a ship's scope. */
+.minimap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, transparent 62%, rgba(2, 16, 24, 0.5) 100%);
+  pointer-events: none;
+}
+
+.minimap-north {
+  position: absolute;
+  z-index: 1;
+  top: -9px;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  transform: translateX(-50%);
+  background: #ff6b5a;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+@media (max-width: 680px) and (orientation: portrait), (max-height: 560px) and (orientation: landscape) {
+  .minimap {
+    --minimap-size: clamp(72px, 22vw, 92px);
+    border-width: 1.5px;
+  }
+  .minimap-north { top: -6px; width: 15px; height: 15px; font-size: 9px; }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .minimap { --minimap-size: 80px; }
+}
+
+.chart-overlay {
+  position: fixed;
+  z-index: 70;
+  inset: 0;
+  background: #082231;
+  color: var(--text);
+  animation: chart-in 220ms ease-out;
+}
+
+@keyframes chart-in {
+  from { opacity: 0; transform: scale(1.02); }
+  to { opacity: 1; transform: none; }
+}
+
+.chart-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+.chart-canvas:active { cursor: grabbing; }
+
+.chart-header {
+  position: absolute;
+  top: var(--edge-top);
+  left: var(--edge-left);
+  right: var(--edge-right);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.chart-title {
+  display: grid;
+  gap: 2px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  pointer-events: auto;
+}
+
+.chart-title strong {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.chart-title span { font-size: 13px; color: rgba(239, 253, 255, 0.82); }
+
+.chart-close,
+.chart-tools button {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--glass-strong);
+  color: var(--text);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.chart-close:hover,
+.chart-tools button:hover { border-color: var(--accent); background: rgba(10, 52, 66, 0.95); }
+.chart-close:focus-visible,
+.chart-tools button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.chart-tools {
+  position: absolute;
+  top: 50%;
+  right: var(--edge-right);
+  display: grid;
+  gap: 8px;
+  transform: translateY(-50%);
+}
+
+.chart-tools svg { width: 22px; height: 22px; color: var(--accent); }
+
+.chart-compass {
+  position: absolute;
+  top: calc(var(--edge-top) + 58px);
+  right: var(--edge-right);
+  width: 58px;
+  height: 58px;
+  pointer-events: none;
+}
+
+.chart-footer {
+  position: absolute;
+  left: var(--edge-left);
+  right: var(--edge-right);
+  bottom: var(--edge-bottom);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  max-width: min(560px, 70vw);
+  margin: 0;
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  list-style: none;
+  font-size: 12px;
+  color: rgba(239, 253, 255, 0.85);
+}
+
+.chart-legend li { display: inline-flex; align-items: center; gap: 7px; }
+.chart-legend i { display: inline-block; flex: none; }
+.legend-yacht {
+  width: 10px;
+  height: 13px;
+  background: #fff;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  filter: drop-shadow(0 0 3px var(--accent));
+}
+.legend-track { width: 20px; border-top: 2px dashed rgba(255, 255, 255, 0.7); }
+.legend-find { width: 8px; height: 8px; border-radius: 50%; background: #ffd666; box-shadow: 0 0 6px #ffc14d; }
+.legend-fog { width: 16px; height: 12px; border-radius: 4px; background: linear-gradient(135deg, #2c4859, #6a8a9b); }
+
+.chart-scale {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--glass);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-scale span {
+  display: block;
+  height: 6px;
+  border: 2px solid rgba(239, 253, 255, 0.85);
+  border-top: 0;
+}
+
+.chart-hint {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--edge-bottom) + 64px);
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: rgba(4, 22, 31, 0.6);
+  color: rgba(239, 253, 255, 0.7);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: chart-hint-out 6s ease forwards;
+}
+
+@keyframes chart-hint-out {
+  0%, 75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (max-width: 680px), (max-height: 560px) {
+  .chart-title { padding: 8px 12px; }
+  .chart-title span { font-size: 12px; }
+  .chart-legend { display: none; }
+  .chart-hint { white-space: normal; width: max-content; max-width: calc(100vw - 32px); text-align: center; }
+  .chart-close, .chart-tools button { width: 42px; height: 42px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-overlay, .chart-hint { animation: none; }
+}
+
+/* Compact dock: "ДВИГАТЕЛЬ", "MOTEUR"… fit the narrow switch card without an ellipsis. */
+@media (max-width: 680px) and (orientation: portrait), (max-height: 560px) and (orientation: landscape) {
+  .throttle-control .engine-toggle-copy small { font-size: 8.5px; letter-spacing: 0.02em; }
+}
+
+/* Portrait phones: the minimap stays bottom left above the rudder strip, below the button column. */
+@media (max-width: 680px) and (orientation: portrait) {
+  .minimap {
+    --minimap-size: 84px;
+  }
+}
+
+/* Short screens: the chart's compass beside the close button, clear of the zoom tools. */
+@media (max-height: 560px) {
+  .chart-compass { top: var(--edge-top); right: calc(var(--edge-right) + 54px); width: 46px; height: 46px; }
+}
+
+/* Cinematic mode: letterbox bars. About the height of a 2.39 : 1 frame on a
+   landscape screen, kept to a slim band on a portrait phone. */
+.cinema-bars {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  pointer-events: none;
+  --cinema-bar: clamp(5vh, calc((100vh - 100vw / 2.39) / 2), 12.5vh);
+}
+
+@supports (height: 100dvh) {
+  .cinema-bars { --cinema-bar: clamp(5dvh, calc((100dvh - 100vw / 2.39) / 2), 12.5dvh); }
+}
+
+.cinema-bar {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: var(--cinema-bar);
+  background: #000000;
+  transition: transform 650ms cubic-bezier(0.22, 0.8, 0.24, 1);
+  will-change: transform;
+}
+
+.cinema-bar-top { top: 0; transform: translateY(-101%); }
+.cinema-bar-bottom { bottom: 0; transform: translateY(101%); }
+.cinema-bars.is-on .cinema-bar { transform: translateY(0); }
+.cinema-bars:not(.is-on) .cinema-bar { transition-duration: 360ms; transition-timing-function: ease-in; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cinema-bar { transition-duration: 1ms; }
+}
+
+/* Cinematic mode toolbar, in the upper bar */
+.photo-toolbar {
+  position: absolute;
+  z-index: 30;
+  top: max(14px, env(safe-area-inset-top));
+  left: max(14px, env(safe-area-inset-left));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.photo-tool {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 50%;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.26);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+}
+
+.photo-tool .control-icon { width: 24px; height: 24px; }
+.photo-tool:hover { background: rgba(0, 0, 0, 0.4); }
+.photo-tool[aria-pressed="true"] {
+  border-color: rgba(130, 255, 240, 0.85);
+  color: var(--accent-strong);
+  background: rgba(4, 40, 46, 0.42);
+}
+
+.photo-tool[aria-pressed="false"] { opacity: 0.78; }
+.photo-shutter { width: 60px; height: 60px; border-width: 2px; }
+
+.photo-saved {
+  padding: 7px 12px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.42);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.photo-flash {
+  position: absolute;
+  z-index: 29;
+  inset: 0;
+  background: #ffffff;
+  pointer-events: none;
+  animation: photo-flash 380ms ease-out forwards;
+}
+
+@keyframes photo-flash {
+  from { opacity: 0.75; }
+  to { opacity: 0; }
+}
+
+
+/* Steering helpers */
+.rudder-buttons {
+  grid-area: center;
+  display: flex;
+  align-self: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rudder-buttons .center-button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tilt-button {
+  flex: 0 0 48px;
+  display: grid;
+  place-items: center;
+  min-width: 48px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(101, 226, 214, 0.08);
+}
+
+@media (pointer: fine) {
+  /* Device tilt only exists on handheld devices. */
+  .tilt-button { display: none; }
+}
+
+.helm-wheel {
+  cursor: grab;
+  touch-action: none;
+}
+
+.helm-wheel:active { cursor: grabbing; }
+.rudder-control.is-tilt .rudder-track-wrap { opacity: 0.62; }
+.rudder-control.is-tilt .helm-wheel { cursor: default; }
+
+
+.rotate-hint {
+  position: absolute;
+  z-index: 27;
+  top: 38%;
+  left: 50%;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 10px;
+  width: min(330px, calc(100vw - 32px));
+  padding: 10px 10px 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--glass-strong);
+  box-shadow: 0 16px 40px rgba(0, 12, 18, 0.35);
+  transform: translateX(-50%);
+}
+
+.rotate-hint p { margin: 0; font-size: 13px; line-height: 1.35; }
+
+.rotate-hint-icon {
+  width: 22px;
+  height: 36px;
+  margin: auto;
+  border: 2px solid var(--accent-strong);
+  border-radius: 5px;
+  animation: rotate-phone 2.4s ease-in-out infinite;
+}
+
+@keyframes rotate-phone {
+  0%, 25% { transform: rotate(0deg); }
+  55%, 100% { transform: rotate(-90deg); }
+}
+
+/* Offered only while the browser has an install prompt ready. */
+.service-grid .install-app {
+  grid-column: 1 / -1;
+  grid-auto-flow: column;
+  gap: 8px;
+  min-height: 40px;
+  color: #d6f6ff;
+  border-color: rgba(126, 220, 255, 0.45);
+  background: rgba(126, 220, 255, 0.12);
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    --spring: linear(0, 0.043, 0.15, 0.291, 0.444, 0.593, 0.727, 0.84, 0.929, 0.995, 1.041, 1.068, 1.081, 1.083, 1.078, 1.068, 1.056, 1.043, 1.031, 1.02, 1.011, 1.004, 0.999, 0.996, 0.994, 0.993, 0.993, 0.994, 0.995, 0.996, 1);
+    --spring-soft: linear(0, 0.047, 0.158, 0.3, 0.449, 0.589, 0.711, 0.812, 0.891, 0.949, 0.99, 1.016, 1.031, 1.037, 1.038, 1.035, 1.031, 1.025, 1.019, 1.014, 1.01, 1.006, 1.003, 1.001, 1, 0.999, 0.999, 0.999, 1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .throttle-reveal,
+  .throttle-reveal-inner,
+  .throttle-control { transition-duration: 0s !important; }
+}
+
+/* Until the first frame of the scene is on screen only the loading card shows
+   (the controls over a black canvas looked like a broken page); then the
+   interface fades in with the scene. */
+.simulator-interface.is-loading > :not(.loading-screen):not(.error-card) { visibility: hidden; }
+.simulator-interface.is-ready { animation: interface-in 520ms ease-out backwards; }
+@keyframes interface-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .simulator-interface.is-ready { animation: none; }
+}
+
+/* --- The skipper on foot and in the water: his own HUD --------------------- */
+.diver-hud {
+  position: absolute;
+  z-index: 26;
+  inset: 0;
+  pointer-events: none;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.diver-hud button { pointer-events: auto; }
+
+.diver-status {
+  position: absolute;
+  top: var(--edge-top);
+  left: var(--edge-left);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  max-width: calc(100vw - 2 * var(--gap) - 210px);
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  font-size: 13px;
+}
+
+.diver-mode {
+  color: var(--accent-strong);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.diver-gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.diver-gauge-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.diver-gauge-value { font-weight: 700; }
+
+.diver-air {
+  position: relative;
+  display: inline-block;
+  width: 64px;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.diver-air-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  transform-origin: left center;
+  transition: transform 300ms linear;
+}
+
+.diver-gauge.is-low .diver-air-fill { background: #ff7a5c; }
+.diver-gauge.is-low .diver-gauge-value { color: #ff9a80; animation: diver-pulse 1s ease-in-out infinite; }
+
+.diver-torch-on {
+  color: #ffe9b0;
+  text-shadow: 0 0 10px rgba(255, 220, 140, 0.9);
+}
+
+.diver-helm {
+  position: absolute;
+  top: var(--edge-top);
+  right: var(--edge-right);
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 0 16px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.diver-helm:hover { border-color: var(--accent); }
+
+.diver-helm-wheel {
+  width: 18px;
+  height: 18px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  background:
+    linear-gradient(currentColor, currentColor) center / 2px 100% no-repeat,
+    linear-gradient(currentColor, currentColor) center / 100% 2px no-repeat;
+}
+
+.diver-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.diver-prompt {
+  position: absolute;
+  /* Well below the crosshair: never over the thing being looked at. */
+  top: calc(50% + clamp(80px, 24vh, 210px));
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 16px;
+  border: 1px solid rgba(130, 255, 240, 0.5);
+  border-radius: 99px;
+  color: var(--text);
+  background: rgba(4, 25, 35, 0.72);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  transform: translateX(-50%);
+  cursor: pointer;
+  animation: diver-rise 220ms var(--spring-soft) both;
+}
+
+.diver-prompt kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.diver-warning {
+  position: absolute;
+  top: calc(var(--edge-top) + 64px);
+  left: 50%;
+  margin: 0;
+  padding: 8px 16px;
+  border-radius: 99px;
+  color: #fff;
+  background: rgba(150, 40, 20, 0.78);
+  font-size: 13px;
+  font-weight: 700;
+  transform: translateX(-50%);
+  animation: diver-pulse 1s ease-in-out infinite;
+}
+
+.diver-hint {
+  position: absolute;
+  right: 0;
+  bottom: var(--edge-bottom);
+  left: 0;
+  width: fit-content;
+  max-width: calc(100vw - 32px);
+  margin: 0 auto;
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(4, 25, 35, 0.78);
+  font-size: 12px;
+  text-align: center;
+  animation: diver-fade 400ms ease-out both;
+}
+
+.diver-stick {
+  position: absolute;
+  bottom: calc(var(--edge-bottom) + 10px);
+  left: calc(var(--edge-left) + 10px);
+  display: grid;
+  place-items: center;
+  width: 120px;
+  height: 120px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.18));
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.diver-stick-knob {
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.diver-buttons {
+  position: absolute;
+  right: calc(var(--edge-right) + 6px);
+  bottom: calc(var(--edge-bottom) + 10px);
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.diver-button {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.26);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  font-size: 20px;
+  touch-action: none;
+}
+
+.diver-button.is-large { width: 66px; height: 66px; font-size: 24px; }
+.diver-button[aria-pressed="true"] { border-color: #ffe0a0; color: #ffe9b0; }
+
+.diver-hud.is-underwater .diver-status,
+.diver-hud.is-underwater .diver-helm { background: rgba(2, 18, 28, 0.62); }
+
+@keyframes diver-rise {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+}
+
+@keyframes diver-fade {
+  from { opacity: 0; }
+}
+
+@keyframes diver-pulse {
+  50% { opacity: 0.55; }
+}
+
+@media (max-width: 680px) {
+  .diver-status { font-size: 12px; padding: 8px 11px; max-width: calc(100vw - 2 * var(--gap) - 64px); }
+  .diver-helm span:last-child { display: none; }
+  .diver-helm { width: 44px; padding: 0; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diver-prompt, .diver-hint, .diver-warning, .diver-gauge.is-low .diver-gauge-value { animation: none; }
+}
+
+/* --- Action notices ---------------------------------------------------------
+   What a control has just done: the same bright pill as the first "tap for
+   sound" prompt, a little below the middle of the screen, over everything
+   (the skipper's own view included). After a moment it crumbles into dust
+   (DustNotice, the sound prompt's dissolve) blown up and away. */
+.audio-unlock.dust-notice {
+  position: fixed;
+  z-index: 46;
+  top: 60%;
+  left: 50%;
+  max-width: min(460px, calc(100vw - 32px));
+  white-space: nowrap;
+  cursor: default;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: dust-notice-in 260ms var(--spring-soft) both;
+}
+
+.audio-unlock.dust-notice strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes dust-notice-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .audio-unlock.dust-notice { animation: none; }
+}
+
+/* --- Controls card -----------------------------------------------------------
+   Every control on one card, the first visit's welcome and H at any time. */
+.controls-backdrop {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  background: radial-gradient(ellipse at center, rgba(2, 16, 24, 0.42), rgba(2, 12, 18, 0.7));
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: controls-fade 220ms ease both;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.controls-card {
+  display: flex;
+  flex-direction: column;
+  width: min(980px, 100%);
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(130, 255, 240, 0.28);
+  border-radius: 26px;
+  color: var(--text);
+  background: linear-gradient(160deg, rgba(8, 44, 58, 0.95), rgba(3, 22, 31, 0.97));
+  box-shadow: 0 30px 80px rgba(0, 8, 14, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  animation: controls-rise 360ms var(--spring-soft) both;
+}
+
+.controls-head {
+  padding: 22px 26px 6px;
+}
+
+.controls-head h2 {
+  margin: 4px 0 6px;
+  font-size: clamp(22px, 3vw, 30px);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.controls-lead {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* Sections flow down three balanced columns (two, one on narrow screens). */
+.controls-grid {
+  columns: 280px 3;
+  column-gap: 22px;
+  padding: 14px 26px 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.controls-section {
+  break-inside: avoid;
+  margin-bottom: 14px;
+}
+
+.controls-section h3 {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 850;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.controls-section ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.controls-section li {
+  display: grid;
+  grid-template-columns: minmax(96px, auto) 1fr;
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.controls-section li.is-plain {
+  grid-template-columns: 1fr;
+  padding: 8px 10px;
+}
+
+.controls-keys {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.controls-key-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.controls-or {
+  margin: 0 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.controls-keys kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid rgba(130, 255, 240, 0.35);
+  border-bottom-width: 2px;
+  border-radius: 7px;
+  color: var(--accent-strong);
+  background: rgba(4, 37, 43, 0.92);
+  font: 750 11.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.controls-text {
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.controls-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 26px 22px;
+}
+
+.controls-close {
+  min-height: 46px;
+  padding: 0 26px;
+  border: 1px solid rgba(130, 255, 240, 0.52);
+  border-radius: 999px;
+  color: #052d31;
+  background: linear-gradient(135deg, #82fff0, #57d7d0);
+  box-shadow: 0 12px 30px rgba(0, 21, 29, 0.3), 0 0 26px rgba(101, 226, 214, 0.2);
+  font-size: 14px;
+  font-weight: 850;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+
+@keyframes controls-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes controls-rise {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (max-width: 640px), (max-height: 520px) {
+  .controls-head { padding: 16px 18px 4px; }
+  .controls-grid { padding: 10px 18px 4px; columns: 240px 3; }
+  .controls-foot { padding: 10px 18px 16px; }
+  .controls-close { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .controls-backdrop, .controls-card { animation: none; }
+}
+
+/* The "?" scene action. */
+.controls-glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.key-help-open {
+  margin-top: 8px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(130, 255, 240, 0.4);
+  border-radius: 999px;
+  color: var(--accent-strong);
+  background: rgba(4, 37, 43, 0.6);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------------ */
+/* The skipper's purse, and a chest within reach                            */
+/* ------------------------------------------------------------------------ */
+
+.diver-wallet {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #ffe6a3;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.diver-wallet-coin,
+.shop-coin {
+  display: inline-block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff6c8, #f2c14e 45%, #b07a12 100%);
+  box-shadow: 0 0 0 1px rgba(122, 78, 6, 0.6) inset, 0 0 10px rgba(255, 199, 84, 0.35);
+}
+
+.diver-wallet-bag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 4px;
+  color: var(--text);
+  font-weight: 650;
+}
+
+.diver-prompt.is-treasure {
+  border-color: rgba(255, 210, 120, 0.75);
+  color: #fff4d6;
+  background: linear-gradient(135deg, rgba(74, 46, 6, 0.82), rgba(28, 18, 4, 0.82));
+  box-shadow: 0 0 26px rgba(255, 196, 80, 0.35);
+}
+
+.diver-prompt.is-treasure kbd {
+  border-color: #ffd27a;
+  color: #ffe6a3;
+}
+
+/* ------------------------------------------------------------------------ */
+/* The island trader's shop                                                 */
+/* ------------------------------------------------------------------------ */
+
+.shop-card {
+  width: min(900px, 100%);
+  height: min(680px, 100%);
+}
+
+.shop-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 24px 10px;
+}
+
+.shop-head h2 {
+  margin: 2px 0 4px;
+  font-size: clamp(22px, 3vw, 28px);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.shop-trader {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border: 1px solid rgba(255, 210, 120, 0.45);
+  border-radius: 18px;
+  background: radial-gradient(circle at 30% 25%, rgba(255, 214, 140, 0.35), rgba(120, 72, 20, 0.35));
+  font-size: 26px;
+}
+
+.shop-gold {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 15px;
+  border: 1px solid rgba(255, 210, 120, 0.45);
+  border-radius: 999px;
+  background: rgba(46, 30, 4, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+
+.shop-gold.is-pulse { animation: shop-pulse 520ms var(--spring) both; }
+.shop-gold .shop-coin { width: 18px; height: 18px; }
+.shop-gold-value { color: #ffe6a3; font-size: 20px; font-weight: 850; }
+.shop-gold-label { color: var(--muted); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+
+.shop-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px 24px 0;
+  overflow-x: auto;
+  border-bottom: 1px solid rgba(130, 255, 240, 0.14);
+  scrollbar-width: none;
+}
+
+.shop-tab {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 12px 12px 0 0;
+  color: var(--muted);
+  background: transparent;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 750;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.shop-tab kbd {
+  display: inline-grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border: 1px solid rgba(130, 255, 240, 0.3);
+  border-radius: 5px;
+  font: 750 10.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.shop-tab:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+
+.shop-tab[aria-selected="true"] {
+  color: var(--accent-strong);
+  border-bottom-color: var(--accent);
+  background: rgba(101, 226, 214, 0.08);
+}
+
+.shop-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: #3a2500;
+  background: #ffd27a;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.shop-body {
+  flex: 1;
+  min-height: 0;
+  padding: 16px 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.shop-empty {
+  max-width: 520px;
+  margin: 40px auto;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+  text-align: center;
+}
+
+.shop-list,
+.shop-slot ul,
+.shop-cards {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shop-row,
+.shop-decor-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px 9px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.shop-row.tier-2 { border-color: rgba(120, 255, 220, 0.2); }
+.shop-row.tier-3 { border-color: rgba(255, 210, 120, 0.35); }
+
+.shop-glyph {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: rgba(4, 37, 43, 0.8);
+  font-size: 20px;
+}
+
+.shop-row-main { display: grid; gap: 3px; min-width: 0; }
+.shop-row-name { overflow: hidden; color: var(--text); font-size: 14px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+
+.shop-row-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shop-tier {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.shop-tier.tier-1 { color: #bcd2d8; background: rgba(188, 210, 216, 0.12); }
+.shop-tier.tier-2 { color: #8ff5dc; background: rgba(101, 226, 214, 0.14); }
+.shop-tier.tier-3 { color: #ffd27a; background: rgba(255, 196, 80, 0.16); }
+
+.shop-action,
+.shop-buy,
+.shop-sell-all {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(130, 255, 240, 0.4);
+  border-radius: 999px;
+  color: var(--accent-strong);
+  background: rgba(4, 37, 43, 0.75);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 140ms var(--spring), background 160ms ease, opacity 160ms ease;
+}
+
+.shop-action:hover:not(:disabled),
+.shop-buy:hover:not(:disabled),
+.shop-sell-all:hover:not(:disabled) { background: rgba(101, 226, 214, 0.18); }
+
+.shop-action:active:not(:disabled),
+.shop-buy:active:not(:disabled),
+.shop-sell-all:active:not(:disabled) { transform: scale(0.96); }
+
+.shop-action:disabled,
+.shop-buy:disabled {
+  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: not-allowed;
+}
+
+.shop-action[aria-pressed="true"] { color: var(--muted); border-color: rgba(255, 255, 255, 0.18); }
+
+.shop-sell-all {
+  min-height: 46px;
+  padding: 0 20px;
+  border-color: rgba(255, 210, 120, 0.6);
+  color: #3a2500;
+  background: linear-gradient(135deg, #ffe39a, #f2b53c);
+  font-size: 14.5px;
+}
+
+.shop-sell-all:hover:not(:disabled) { background: linear-gradient(135deg, #fff0c2, #f7c35a); }
+
+.shop-cards { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+
+.shop-upgrade {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(130, 255, 240, 0.14);
+  border-radius: 18px;
+  background: linear-gradient(170deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
+}
+
+.shop-upgrade.is-max { border-color: rgba(255, 210, 120, 0.35); }
+
+.shop-upgrade-head { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start; }
+.shop-upgrade-head h3 { margin: 0 0 3px; font-size: 15.5px; font-weight: 800; }
+.shop-upgrade-head p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+
+.shop-upgrade-glyph {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(130, 255, 240, 0.3);
+  border-radius: 12px;
+  color: var(--accent-strong);
+  background: rgba(4, 37, 43, 0.85);
+  font-size: 20px;
+}
+
+.shop-pips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+
+.shop-pips > span:not(.shop-pips-label) {
+  width: 16px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.shop-pips > span.is-on { background: linear-gradient(90deg, var(--accent), var(--accent-strong)); box-shadow: 0 0 8px rgba(101, 226, 214, 0.4); }
+.shop-upgrade.is-max .shop-pips > span.is-on { background: linear-gradient(90deg, #f2b53c, #ffe39a); box-shadow: 0 0 8px rgba(255, 196, 80, 0.4); }
+.shop-pips-label { margin-left: 6px; color: var(--muted); font-size: 11.5px; font-weight: 700; }
+
+.shop-effects { display: grid; gap: 6px; margin: 0; flex: 1; }
+.shop-effects div { display: grid; grid-template-columns: auto 1fr; gap: 8px; font-size: 12.5px; line-height: 1.4; }
+.shop-effects dt { color: var(--muted); font-weight: 700; }
+.shop-effects dd { margin: 0; color: var(--text); }
+.shop-effects .is-next dd { color: var(--accent-strong); }
+
+.shop-buy { align-self: stretch; min-height: 42px; }
+.shop-buy:not(:disabled) { border-color: rgba(255, 210, 120, 0.6); color: #3a2500; background: linear-gradient(135deg, #ffe39a, #f2b53c); }
+.shop-buy:hover:not(:disabled) { background: linear-gradient(135deg, #fff0c2, #f7c35a); }
+.shop-coin.is-small { width: 13px; height: 13px; }
+
+.shop-decor { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 18px; }
+.shop-slot h3 { margin: 0 0 8px; color: var(--accent); font-size: 10.5px; font-weight: 850; letter-spacing: 0.16em; text-transform: uppercase; }
+.shop-decor-item.is-on { border-color: rgba(130, 255, 240, 0.45); background: rgba(101, 226, 214, 0.08); }
+.shop-decor-item .shop-action { min-height: 32px; padding: 0 11px; font-size: 12px; }
+
+.shop-swatch {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: var(--swatch);
+}
+
+.shop-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  padding: 12px 24px 20px;
+  border-top: 1px solid rgba(130, 255, 240, 0.1);
+}
+
+.shop-flash {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: #ffe6a3;
+  font-size: 13.5px;
+  font-weight: 750;
+  animation: shop-flash 2.6s ease both;
+}
+
+@keyframes shop-pulse {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.08); box-shadow: 0 0 24px rgba(255, 196, 80, 0.45); }
+  100% { transform: scale(1); }
+}
+
+@keyframes shop-flash {
+  0% { opacity: 0; transform: translateY(6px); }
+  10%, 75% { opacity: 1; transform: none; }
+  100% { opacity: 0; }
+}
+
+@media (max-height: 600px) {
+  .shop-card { height: 100%; }
+  .shop-head { padding: 12px 20px 4px; }
+  .shop-head .controls-lead { display: none; }
+  .shop-head h2 { font-size: 21px; }
+  .shop-trader { width: 40px; height: 40px; border-radius: 13px; font-size: 19px; }
+  .shop-body { padding: 12px 20px; }
+  .shop-foot { padding: 10px 20px 12px; }
+  .shop-foot .controls-close, .shop-sell-all { min-height: 40px; }
+  .shop-foot .controls-close { width: auto; }
+}
+
+@media (max-width: 640px) {
+  .shop-card { height: 100%; border-radius: 20px; }
+  .shop-head { grid-template-columns: auto 1fr; gap: 12px; padding: 14px 16px 6px; }
+  .shop-head .controls-lead { display: none; }
+  .shop-gold { grid-column: 1 / -1; justify-self: start; padding: 6px 12px; }
+  .shop-trader { width: 42px; height: 42px; font-size: 20px; }
+  .shop-tabs { padding: 2px 12px 0; }
+  .shop-tab { padding: 0 10px; font-size: 12.5px; }
+  .shop-tab kbd { display: none; }
+  .shop-body { padding: 12px 14px; }
+  .shop-foot { padding: 10px 14px 14px; }
+  .shop-foot { flex-wrap: wrap; }
+  .shop-flash { flex-basis: 100%; }
+  .shop-sell-all { flex: 1; padding: 0 12px; }
+  .shop-foot .controls-close { width: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shop-gold.is-pulse, .shop-flash { animation: none; }
 }

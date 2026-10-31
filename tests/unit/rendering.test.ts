@@ -1,0 +1,640 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import * as THREE from "three";
+import { shareSkeletons } from "../../src/simulator/core/AssetManager";
+import { bindToNearestBone, mergeSkinnedParts } from "../../src/simulator/core/SkinnedMerge";
+import { batchStaticMeshes, coincidentShells, type ShellBounds } from "../../src/simulator/core/StaticBatching";
+import { simplifiedFish } from "../../src/simulator/wildlife/ReefFishController";
+
+const box = (min: [number, number, number], max: [number, number, number]): ShellBounds => ({ min, max });
+
+test("stacked copies of one shell are found, distinct parts are not", () => {
+  const bounds = [
+    box([-1.76, -0.8, -2.79], [1.76, 0.8, 2.79]), // coachroof
+    box([-1.81, -0.79, -2.78], [1.81, 0.8, 2.78]), // a copy 5 cm wider
+    box([-1.8, -0.8, -2.8], [1.8, 0.8, 2.8]), // another copy
+    box([-1.76, -0.8, -2.79], [1.76, 0.8, 2.79]), // same box, other material
+    box([-0.3, 0, -0.3], [0.3, 0.2, 0.3]), // small fitting
+    box([-0.3, 0, -0.3], [0.3, 0.2, 0.3]), // its twin: too small to matter
+    box([2, -1, -4], [3.5, 0.6, 4]), // a hull
+  ];
+  const keys = ["fiberglass", "fiberglass", "fiberglass", "glass", "steel", "steel", "fiberglass"];
+  assert.deepEqual(coincidentShells(bounds, keys, 0.06), [1, 2]);
+  assert.deepEqual(coincidentShells(bounds, keys, 0.01), [], "a tight tolerance keeps every shell");
+});
+
+test("static batching merges by key in the parent's space and keeps every triangle facing out", () => {
+  const parent = new THREE.Group();
+  parent.position.set(4, 1, -2);
+  parent.rotation.y = 0.7;
+  const shared = new THREE.MeshStandardMaterial({ name: "steel" });
+  const disposed: string[] = [];
+  const steel = (name: string): THREE.MeshStandardMaterial => {
+    const material = shared.clone();
+    material.addEventListener("dispose", () => disposed.push(name));
+    return material;
+  };
+  const a = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), steel("a"));
+  a.name = "a";
+  a.position.set(1, 0, 0);
+  const b = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2, 0.5), steel("b"));
+  b.name = "b";
+  b.position.set(-2, 1, 0);
+  b.scale.set(-1, 1, 1); // mirrored, as some exporters leave port-side parts
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ name: "glass" }));
+  const nested = new THREE.Group();
+  nested.rotation.x = 0.4;
+  nested.add(b);
+  parent.add(a, nested, glass);
+  parent.updateMatrixWorld(true);
+
+  const before = new THREE.Box3().setFromObject(a, true).union(new THREE.Box3().setFromObject(b, true));
+  const result = batchStaticMeshes(parent, [a, b, glass], (mesh) => (mesh.material as THREE.Material).name, "Test");
+
+  assert.equal(result.batches.length, 1, "the lone glass pane is left alone");
+  assert.equal(result.merged, 2);
+  assert.equal(a.parent, null);
+  assert.equal(b.parent, null);
+  assert.equal(glass.parent, parent);
+  assert.deepEqual(disposed, ["b"], "only the redundant material is released");
+
+  const batch = result.batches[0];
+  assert.equal(batch.parent, parent);
+  assert.equal(batch.geometry.index!.count / 3, 24, "both boxes keep all twelve triangles");
+  parent.updateMatrixWorld(true);
+  const after = new THREE.Box3().setFromObject(batch, true);
+  assert.ok(after.min.distanceTo(before.min) < 1e-5 && after.max.distanceTo(before.max) < 1e-5, "world placement is unchanged");
+
+  // Winding must agree with the stored normals, including the mirrored box.
+  const position = batch.geometry.getAttribute("position");
+  const normal = batch.geometry.getAttribute("normal");
+  const index = batch.geometry.index!;
+  const [p0, p1, p2, n, face] = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  for (let triangle = 0; triangle < index.count; triangle += 3) {
+    p0.fromBufferAttribute(position, index.getX(triangle));
+    p1.fromBufferAttribute(position, index.getX(triangle + 1));
+    p2.fromBufferAttribute(position, index.getX(triangle + 2));
+    face.subVectors(p2, p1).cross(p0.clone().sub(p1)).normalize();
+    n.fromBufferAttribute(normal, index.getX(triangle));
+    assert.ok(face.dot(n) > 0.99, `triangle ${triangle / 3} is inside out`);
+  }
+});
+
+test("distant reef fish keep their shape with a fraction of the triangles", () => {
+  // A fish-like spindle: unit length along Z, flattened sideways, textured.
+  const body = new THREE.SphereGeometry(0.5, 32, 24);
+  body.scale(0.18, 0.42, 1);
+  const detail = body;
+  const simplified = simplifiedFish(detail);
+  assert.ok(simplified, "the spindle simplifies");
+  const sourceTriangles = detail.index!.count / 3;
+  const triangles = simplified.getAttribute("position").count / 3;
+  assert.ok(triangles < sourceTriangles * 0.4, `expected a large reduction, got ${triangles} of ${sourceTriangles}`);
+  assert.ok(simplified.getAttribute("uv") && simplified.getAttribute("normal"), "texture and lighting attributes survive");
+  detail.computeBoundingBox();
+  simplified.computeBoundingBox();
+  const source = detail.boundingBox!;
+  const reduced = simplified.boundingBox!;
+  assert.ok(Math.abs(reduced.max.z - source.max.z) < 0.03 && Math.abs(reduced.min.z - source.min.z) < 0.03, "length is kept");
+  assert.ok(reduced.max.y > source.max.y * 0.85, "the back keeps its height");
+});
+
+test("meshes of one animal share a skeleton, so its bones upload once per frame", () => {
+  const root = new THREE.Group();
+  const bones = [new THREE.Bone(), new THREE.Bone()];
+  bones[0].add(bones[1]);
+  bones[1].position.y = 1;
+  root.add(bones[0]);
+  root.updateMatrixWorld(true);
+  const skinned = (skeleton: THREE.Skeleton): THREE.SkinnedMesh => {
+    const mesh = new THREE.SkinnedMesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial());
+    mesh.bind(skeleton, new THREE.Matrix4()); // an explicit bind matrix keeps the given inverses
+    root.add(mesh);
+    return mesh;
+  };
+  // Separate Skeleton objects over the same bones, as GLTFLoader creates them.
+  const body = skinned(new THREE.Skeleton(bones));
+  const eye = skinned(new THREE.Skeleton(bones));
+  const fin = skinned(new THREE.Skeleton(bones));
+  // Same bones, different bind pose: must stay separate.
+  const rebound = new THREE.Skeleton(bones, [new THREE.Matrix4().makeTranslation(0, 2, 0), new THREE.Matrix4()]);
+  const odd = skinned(rebound);
+  // Other bones entirely.
+  const other = skinned(new THREE.Skeleton([new THREE.Bone()]));
+
+  assert.equal(shareSkeletons(root), 2);
+  assert.equal(eye.skeleton, body.skeleton);
+  assert.equal(fin.skeleton, body.skeleton);
+  assert.notEqual(odd.skeleton, body.skeleton);
+  assert.notEqual(other.skeleton, body.skeleton);
+  assert.equal(shareSkeletons(root), 0, "sharing is idempotent");
+});
+
+function riggedModel(): { model: THREE.Group; bones: THREE.Bone[]; parts: THREE.SkinnedMesh[] } {
+  const model = new THREE.Group();
+  const bones = [new THREE.Bone(), new THREE.Bone(), new THREE.Bone()];
+  bones[0].add(bones[1]);
+  bones[1].add(bones[2]);
+  bones[1].position.set(0, 0.6, 0);
+  bones[2].position.set(0.4, 0.5, 0);
+  model.add(bones[0]);
+  const colours = [0xffffff, 0x222222, 0xffcc00];
+  const parts = colours.map((colour, index) => {
+    const geometry = new THREE.BoxGeometry(0.3, 1.4, 0.3, 1, 6, 1);
+    const position = geometry.getAttribute("position");
+    const skinIndex: number[] = [];
+    const skinWeight: number[] = [];
+    for (let vertex = 0; vertex < position.count; vertex += 1) {
+      const t = THREE.MathUtils.clamp((position.getY(vertex) + 0.7) / 1.4, 0, 1);
+      skinIndex.push(index === 2 ? 1 : 0, index === 2 ? 2 : 1, 0, 0);
+      skinWeight.push(1 - t, t, 0, 0);
+    }
+    geometry.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(skinIndex, 4));
+    geometry.setAttribute("skinWeight", new THREE.Float32BufferAttribute(skinWeight, 4));
+    const mesh = new THREE.SkinnedMesh(geometry, new THREE.MeshStandardMaterial({ color: colour, roughness: 0.4 + index * 0.2 }));
+    // Each part sits somewhere else in the file, as the gull's fourteen do.
+    mesh.position.set(index * 0.7 - 0.5, index * 0.2, -index * 0.3);
+    mesh.rotation.set(0.1 * index, 0.5 * index, 0);
+    mesh.scale.setScalar(1 + index * 0.1);
+    model.add(mesh);
+    return mesh;
+  });
+  model.rotation.set(-Math.PI / 2, 0.3, 0);
+  model.scale.setScalar(2);
+  model.updateMatrixWorld(true);
+  // glTF-style binding: one skin per part, bound where the part sits.
+  parts.forEach((part) => part.bind(new THREE.Skeleton(bones), part.matrixWorld));
+  return { model, bones, parts };
+}
+
+function posedWorldVertices(meshes: THREE.SkinnedMesh[]): THREE.Vector3[] {
+  const out: THREE.Vector3[] = [];
+  for (const mesh of meshes) {
+    const index = mesh.geometry.getIndex();
+    const count = index ? index.count : mesh.geometry.getAttribute("position").count;
+    for (let corner = 0; corner < count; corner += 1) {
+      const vertex = index ? index.getX(corner) : corner;
+      out.push(mesh.getVertexPosition(vertex, new THREE.Vector3()).applyMatrix4(mesh.matrixWorld));
+    }
+  }
+  return out;
+}
+
+test("a flat-coloured rig merges into one skinned mesh that deforms exactly as its parts did", () => {
+  const { model, bones, parts } = riggedModel();
+  const pose = (): void => {
+    bones[1].rotation.set(0.5, 0.2, -0.7);
+    bones[2].rotation.set(-0.4, 0, 0.9);
+    model.position.set(3, 12, -4);
+    model.rotation.y += 0.8;
+    model.updateMatrixWorld(true);
+  };
+  pose();
+  const expected = posedWorldVertices(parts);
+  const colours = parts.map((part) => (part.material as THREE.MeshStandardMaterial).color.clone());
+  model.rotation.y -= 0.8;
+  model.position.set(0, 0, 0);
+  model.updateMatrixWorld(true);
+
+  const merged = mergeSkinnedParts(model);
+  assert.ok(merged, "the parts merge");
+  let skinned = 0;
+  model.traverse((object) => {
+    if (object instanceof THREE.SkinnedMesh) skinned += 1;
+  });
+  assert.equal(skinned, 1, "one skinned mesh remains");
+  assert.ok((merged.material as THREE.MeshStandardMaterial).vertexColors);
+
+  pose();
+  const actual = posedWorldVertices([merged]);
+  assert.equal(actual.length, expected.length);
+  const worst = actual.reduce((max, vertex, index) => Math.max(max, vertex.distanceTo(expected[index])), 0);
+  assert.ok(worst < 1e-5, `merged rig moved a vertex by ${worst}`);
+
+  const colour = merged.geometry.getAttribute("color");
+  const perPart = expected.length / parts.length;
+  parts.forEach((_, index) => {
+    const corner = merged.geometry.getIndex()!.getX(index * perPart);
+    const r = colour.getX(corner);
+    assert.ok(Math.abs(r - colours[index].r) < 1e-6, "each part keeps its colour");
+  });
+});
+
+test("a loose part bound to its nearest bone stays put, then follows that bone and merges with the body", () => {
+  const { model, bones, parts } = riggedModel();
+  // An eye beside the tip of the third part, outside the armature.
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 4), new THREE.MeshStandardMaterial({ color: 0x000000 }));
+  const tip = parts[2].getVertexPosition(0, new THREE.Vector3()).applyMatrix4(parts[2].matrixWorld);
+  model.add(eye);
+  eye.position.copy(model.worldToLocal(tip.clone()));
+  model.updateMatrixWorld(true);
+  const before = posedWorldVertices([eye as unknown as THREE.SkinnedMesh]);
+  const bound = bindToNearestBone(eye, parts[2]);
+  assert.ok(bound);
+  assert.equal(eye.parent, null, "the plain mesh is replaced");
+  model.updateMatrixWorld(true);
+  const after = posedWorldVertices([bound]);
+  const moved = after.reduce((max, vertex, index) => Math.max(max, vertex.distanceTo(before[index])), 0);
+  assert.ok(moved < 1e-5, `binding moved the part by ${moved}`);
+
+  // Bent, the eye keeps its place relative to the bone it was bound to.
+  const boneIndex = bound.geometry.getAttribute("skinIndex").getX(0);
+  const bone = bones[boneIndex];
+  const local = bone.worldToLocal(after[0].clone());
+  bones[1].rotation.set(0.5, 0.2, -0.7);
+  bones[2].rotation.set(-0.4, 0, 0.9);
+  model.updateMatrixWorld(true);
+  const posed = bound.getVertexPosition(bound.geometry.getIndex()!.getX(0), new THREE.Vector3()).applyMatrix4(bound.matrixWorld);
+  assert.ok(posed.distanceTo(bone.localToWorld(local.clone())) < 1e-5, "it rides its bone");
+
+  assert.ok(mergeSkinnedParts(model), "the bound part merges with the rig");
+  let skinned = 0;
+  model.traverse((object) => {
+    if (object instanceof THREE.SkinnedMesh) skinned += 1;
+  });
+  assert.equal(skinned, 1);
+});
+
+test("rigs that cannot merge exactly are left alone", () => {
+  const textured = riggedModel();
+  (textured.parts[1].material as THREE.MeshStandardMaterial).map = new THREE.Texture();
+  assert.equal(mergeSkinnedParts(textured.model), null, "a textured part needs its UVs and map");
+
+  const bent = riggedModel();
+  // One part bound in a different pose: no single offset reconciles it.
+  const inverses = bent.parts[2].skeleton.boneInverses.map((matrix) => matrix.clone());
+  inverses[2].multiply(new THREE.Matrix4().makeRotationZ(0.3));
+  bent.parts[2].bind(new THREE.Skeleton(bent.bones, inverses), bent.parts[2].bindMatrix);
+  assert.equal(mergeSkinnedParts(bent.model), null);
+  let skinned = 0;
+  bent.model.traverse((object) => {
+    if (object instanceof THREE.SkinnedMesh) skinned += 1;
+  });
+  assert.equal(skinned, 3, "the model is untouched");
+});
+
+test("render budget: the pixel budget caps large Retina canvases, small ones keep their ratio", async () => {
+  const R = await import("../../src/simulator/core/RenderBudget");
+  const { QUALITY_SETTINGS } = await import("../../src/simulator/core/QualityManager");
+  const high = QUALITY_SETTINGS.high;
+  // A 1728×1117 laptop window at DPR 2.
+  const ratio = R.budgetPixelRatio(2, high.maxDpr, high.pixelBudget, 1728, 1117);
+  assert.ok(ratio < high.maxDpr);
+  assert.ok(1728 * 1117 * ratio * ratio <= high.pixelBudget * 1.0001);
+  // A phone-sized canvas is under budget: the preset's own ratio applies.
+  assert.equal(R.budgetPixelRatio(3, 1.25, QUALITY_SETTINGS.medium.pixelBudget, 390, 844), 1.25);
+  // The governor's scale multiplies, but never below its floor nor half a pixel.
+  assert.ok(R.budgetPixelRatio(1, 1, 2_000_000, 800, 600, 0.1) >= 0.5);
+  assert.ok(Math.abs(R.budgetPixelRatio(1, 1, 2_000_000, 800, 600, 0.8) - 0.8) < 1e-9);
+  for (const preset of ["low", "medium", "high"] as const) assert.ok(QUALITY_SETTINGS[preset].pixelBudget > 0);
+  assert.ok(QUALITY_SETTINGS.low.pixelBudget < QUALITY_SETTINGS.medium.pixelBudget);
+  assert.ok(QUALITY_SETTINGS.medium.pixelBudget < QUALITY_SETTINGS.high.pixelBudget);
+});
+
+test("render budget: the GPU governor lowers the scale under load, restores it with room, and calls for a preset change only at the limits", async () => {
+  const R = await import("../../src/simulator/core/RenderBudget");
+  const governor = new R.GpuGovernor(6.5);
+  let time = 0;
+  // A GPU at 13 ms a frame: the scale comes down, step by step, to the floor.
+  let verdicts = new Set<string>();
+  for (let frame = 0; frame < 60 * 30; frame += 1) {
+    time += 1 / 60;
+    verdicts.add(governor.observe(13, time, 1 / 60));
+  }
+  assert.ok(governor.scale <= R.MIN_RENDER_SCALE + 1e-9);
+  assert.ok(verdicts.has("scaled") && verdicts.has("overloaded"), "a GPU still overloaded at the floor asks for a lower preset");
+  // Changes are spaced out: never two inside the interval.
+  const changes: number[] = [];
+  governor.reset();
+  for (let frame = 0; frame < 60 * 20; frame += 1) {
+    time += 1 / 60;
+    if (governor.observe(9, time, 1 / 60) === "scaled") changes.push(time);
+  }
+  for (let index = 1; index < changes.length; index += 1) {
+    assert.ok(changes[index]! - changes[index - 1]! >= R.SCALE_CHANGE_INTERVAL - 1e-9);
+  }
+  // Plenty of room: back to full scale, and after a long while a hint that more would fit.
+  verdicts = new Set();
+  for (let frame = 0; frame < 60 * 60; frame += 1) {
+    time += 1 / 60;
+    verdicts.add(governor.observe(2, time, 1 / 60));
+  }
+  assert.equal(governor.scale, 1);
+  assert.ok(verdicts.has("idle"));
+  // Nonsense measurements change nothing.
+  assert.equal(governor.observe(Number.NaN, time, 1 / 60), "steady");
+  assert.equal(governor.observe(-1, time, 1 / 60), "steady");
+});
+
+test("render budget: without GPU timing the frame rate drives the scale, and a step that buys nothing is undone", async () => {
+  const R = await import("../../src/simulator/core/RenderBudget");
+  // GPU-bound: 30 fps at full scale, 60 once the pixels are cut far enough.
+  const gpuBound = new R.FrameRateGovernor();
+  let now = 0;
+  const fpsAt = (scale: number) => Math.min(60, 30 / (scale * scale));
+  for (let window = 0; window < 40; window += 1) {
+    now += 0.75;
+    gpuBound.observe(fpsAt(gpuBound.scale), 60, now);
+  }
+  assert.ok(gpuBound.scale < 0.8 && gpuBound.scale >= R.MIN_RENDER_SCALE, `scale ${gpuBound.scale}`);
+  assert.ok(fpsAt(gpuBound.scale) >= 54, "the frame rate is restored");
+  // Paced to 30 fps on purpose (another window has the focus): nothing changes.
+  const before = gpuBound.scale;
+  for (let window = 0; window < 10; window += 1) gpuBound.observe(30, 30, (now += 0.75));
+  assert.equal(gpuBound.scale, before);
+  // CPU-bound: 40 fps whatever the scale. The step down is taken back.
+  const cpuBound = new R.FrameRateGovernor();
+  now = 0;
+  for (let window = 0; window < 12; window += 1) cpuBound.observe(40, 60, (now += 0.75));
+  assert.equal(cpuBound.scale, 1, "no blur for nothing");
+  assert.ok(cpuBound.atFloorAt(now), "and the presets are told resolution cannot help");
+  // A heavy moment, then a light scene: back to full resolution after a while at 60 fps.
+  const light = new R.FrameRateGovernor();
+  now = 0;
+  for (let window = 0; window < 8; window += 1) light.observe(Math.min(60, 25 / light.scale ** 2), 60, (now += 0.75));
+  assert.ok(light.scale < 1);
+  for (let window = 0; window < 200; window += 1) light.observe(60, 60, (now += 0.75));
+  assert.equal(light.scale, 1);
+});
+
+test("render budget: the frame-rate fallback ignores start-up stalls and a page paced down while unfocused", async () => {
+  const R = await import("../../src/simulator/core/RenderBudget");
+  const judge = new R.FpsJudge(36);
+  // Shader compilation at start-up: very slow windows that must not count.
+  for (let window = 0; window < R.FPS_WARMUP_WINDOWS; window += 1) assert.equal(judge.observe(8, 60), "ignored");
+  // Another app has the focus: the pacer holds 30 fps on purpose.
+  for (let window = 0; window < 20; window += 1) assert.equal(judge.observe(30, 30), "ignored");
+  assert.equal(judge.observe(24, 60), "slow", "a genuinely slow GPU still counts");
+  assert.equal(judge.observe(60, 60), "fast");
+  assert.equal(judge.observe(45, 60), "neutral");
+  judge.reset();
+  assert.equal(judge.observe(5, 60), "ignored", "a preset change starts a new warm-up");
+});
+
+import { contextRecovery, FlatFrameWatch, isFlatFrame, isUsablePose } from "../../src/simulator/core/RenderHealth";
+
+test("a frame of one flat colour is told from a real one", () => {
+  const flat: [number, number, number][] = [[12, 30, 60], [12, 30, 61], [13, 30, 60], [12, 31, 60]];
+  assert.equal(isFlatFrame(flat), true);
+  assert.equal(isFlatFrame([...flat, [90, 140, 200]]), false);
+  assert.equal(isFlatFrame([[0, 0, 0]]), false);
+});
+
+test("the view is rebuilt only after several flat readings in a row", () => {
+  const watch = new FlatFrameWatch();
+  const flat: [number, number, number][] = [[10, 20, 40], [10, 20, 40], [10, 20, 40]];
+  const real: [number, number, number][] = [[10, 20, 40], [120, 160, 220], [10, 20, 40]];
+  assert.equal(watch.observe(flat), false);
+  assert.equal(watch.observe(flat), false);
+  assert.equal(watch.observe(real), false);
+  assert.equal(watch.observe(flat), false);
+  assert.equal(watch.observe(flat), false);
+  assert.equal(watch.observe(flat), true);
+});
+
+test("a lost context is asked to restore, then the page to reload", () => {
+  assert.equal(contextRecovery(0.5, false), "none");
+  assert.equal(contextRecovery(2, false), "restore");
+  assert.equal(contextRecovery(2, true), "none");
+  assert.equal(contextRecovery(9, true), "reload");
+});
+
+test("a camera pose with NaN or runaway numbers is not usable", () => {
+  assert.equal(isUsablePose([0, 7, -16, 50]), true);
+  assert.equal(isUsablePose([0, Number.NaN, 1]), false);
+  assert.equal(isUsablePose([Infinity, 0, 0]), false);
+  assert.equal(isUsablePose([1e9, 0, 0]), false);
+});
+
+import { MAX_DRAFT, sailShape, tessellate } from "../../src/simulator/vessel/SailMath";
+
+test("the sail's belly deepens with wind and trim and vanishes when it luffs", () => {
+  const flat = sailShape(2, 0, 0.2);
+  const full = sailShape(9, 0, 1);
+  const luffing = sailShape(9, 1, 1);
+  assert.ok(Math.abs(full.draft) > Math.abs(flat.draft) * 2);
+  assert.ok(Math.abs(full.draft) <= MAX_DRAFT + 1e-9);
+  assert.equal(Math.abs(luffing.draft), 0);
+  assert.ok(luffing.flutter > full.flutter * 3);
+  assert.ok(luffing.wrinkle > full.wrinkle);
+  assert.ok(sailShape(Number.NaN, 0, 1).draft <= 0);
+});
+
+test("a sail of one triangle is cut into cloth-sized triangles with the same area", () => {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 4, 0, 0, 0, 8, 0], 3));
+  const fine = tessellate(geometry, 1);
+  const position = fine.getAttribute("position");
+  assert.ok(position.count / 3 >= 64);
+  let area = 0;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let t = 0; t < position.count; t += 3) {
+    a.fromBufferAttribute(position, t); b.fromBufferAttribute(position, t + 1); c.fromBufferAttribute(position, t + 2);
+    area += b.sub(a).cross(c.sub(a)).length() / 2;
+  }
+  assert.ok(Math.abs(area - 16) < 1e-4, `area ${area}`);
+});
+
+import { pickShadowShips, SHIP_SHADOW_RANGE, SHIP_SHADOW_SLOTS, shadowAtlasMatrix, shadowSlotOrigin } from "../../src/simulator/ships/ShipShadowMath";
+
+test("the nearest ships in range get the shadow slots, nearest first", () => {
+  const ships = [
+    { active: true, x: 900, z: 0, halfLength: 150 },
+    { active: false, x: 10, z: 0, halfLength: 150 },
+    { active: true, x: 0, z: 300, halfLength: 100 },
+    { active: true, x: SHIP_SHADOW_RANGE + 800, z: 0, halfLength: 150 },
+    { active: true, x: -400, z: -400, halfLength: 160 },
+    { active: true, x: 0, z: -1500, halfLength: 160 },
+    { active: true, x: 1600, z: 0, halfLength: 160 },
+  ];
+  const picked = pickShadowShips(ships, 0, 0);
+  assert.equal(picked.length, SHIP_SHADOW_SLOTS);
+  assert.deepEqual(picked, [2, 4, 0, 5]);
+  assert.ok(!picked.includes(1) && !picked.includes(3));
+});
+
+test("each shadow slot maps its camera's view onto its own quarter of the atlas", () => {
+  for (let slot = 0; slot < SHIP_SHADOW_SLOTS; slot += 1) {
+    const [u, v] = shadowSlotOrigin(slot);
+    const matrix = shadowAtlasMatrix(slot);
+    const low = new THREE.Vector3(-1, -1, -1).applyMatrix4(matrix);
+    const high = new THREE.Vector3(1, 1, 1).applyMatrix4(matrix);
+    assert.ok(Math.abs(low.x - u) < 1e-9 && Math.abs(low.y - v) < 1e-9 && Math.abs(low.z) < 1e-9);
+    assert.ok(Math.abs(high.x - (u + 0.5)) < 1e-9 && Math.abs(high.y - (v + 0.5)) < 1e-9 && Math.abs(high.z - 1) < 1e-9);
+  }
+  const origins = new Set(Array.from({ length: SHIP_SHADOW_SLOTS }, (_, slot) => shadowSlotOrigin(slot).join(",")));
+  assert.equal(origins.size, SHIP_SHADOW_SLOTS, "slots must not overlap");
+});
+
+import { strikeProximity, strikeSceneLight } from "../../src/simulator/environment/LightningMath";
+import { LIGHTNING_COLOR, litByLightning } from "../../src/simulator/environment/EnvironmentPalette";
+
+test("lightning a few kilometres off still floods the scene; on the horizon it only flickers", () => {
+  assert.ok(strikeSceneLight(800) > 0.6);
+  assert.ok(strikeSceneLight(2500) > 0.5, "the lit cloud deck lights the sea for kilometres");
+  assert.ok(strikeSceneLight(2500) > strikeProximity(2500) * 2);
+  assert.ok(strikeSceneLight(12000) < 0.1);
+  for (let d = 0; d < 15000; d += 500) assert.ok(strikeSceneLight(d + 500) <= strikeSceneLight(d) + 1e-12);
+});
+
+test("a flash lights the ambient, the haze and the rain, and nothing without one", async () => {
+  const { deriveEnvironmentPalette } = await import("../../src/simulator/environment/EnvironmentPalette");
+  const { deriveTimeOfDay } = await import("../../src/simulator/environment/EnvironmentMath");
+  const { createWeather } = await import("../../src/simulator/environment/WeatherMath");
+  const palette = deriveEnvironmentPalette(deriveTimeOfDay(1, 0.5), createWeather("storm"));
+  assert.equal(litByLightning(palette, 0), palette);
+  const lit = litByLightning(palette, 1);
+  for (let channel = 0; channel < 3; channel += 1) {
+    assert.ok(lit.ambientColor[channel]! > palette.ambientColor[channel]! + LIGHTNING_COLOR[channel]! * 0.9);
+    assert.ok(lit.horizon[channel]! > palette.horizon[channel]!);
+    assert.ok(lit.rainLight[channel]! > palette.rainLight[channel]!);
+  }
+  // The water's own colours are untouched; the light on them changes.
+  assert.deepEqual(lit.deepWater, palette.deepWater);
+});
+
+test("a ship's horn is louder than it was, and still fades with distance", async () => {
+  const { shipHornLevel } = await import("../../src/simulator/audio/AudioSystem");
+  const before = (distance: number) => 0.42 * (600 / (600 + distance));
+  for (const distance of [100, 500, 1500]) assert.ok(shipHornLevel(distance) > before(distance) * 1.3);
+  for (let distance = 0; distance < 4000; distance += 250) assert.ok(shipHornLevel(distance + 250) < shipHornLevel(distance));
+  assert.ok(shipHornLevel(3000) < shipHornLevel(200) * 0.4, "a far ship is clearly farther");
+});
+
+import { PHOTO_HOLD, PhotoDirector, photoShot, type PhotoShot } from "../../src/simulator/camera/PhotoDirector";
+
+const subjectKind = (director: PhotoDirector): string | undefined => director.subject?.kind;
+
+test("photo mode turns to an event, prefers the rarer one, lets go, and yields to the player", () => {
+  const director = new PhotoDirector();
+  director.offer({ kind: "dolphins", x: 10, y: 1, z: 10, size: 10 }, 0, 0);
+  assert.equal(director.subject, null, "nothing happens outside photo mode");
+  director.setEnabled(true);
+  director.offer({ kind: "dolphins", x: 10, y: 1, z: 10, size: 10 }, 0, 0);
+  director.update(0.5);
+  assert.equal(subjectKind(director), "dolphins");
+  // A breach outranks the dolphins.
+  director.offer({ kind: "breach", x: 400, y: 5, z: 300, size: 34 }, 0, 0);
+  director.update(0.5);
+  assert.equal(subjectKind(director), "breach");
+  // Too far away: ignored.
+  const far = new PhotoDirector();
+  far.setEnabled(true);
+  far.offer({ kind: "whale", x: 5000, y: 0, z: 0, size: 26 }, 0, 0);
+  assert.equal(far.subject, null);
+  // Held for its time, then back to the yacht.
+  for (let t = 0; t < PHOTO_HOLD.breach + 1; t += 0.1) {
+    director.offer({ kind: "breach", x: 400, y: 5, z: 300, size: 34 }, 0, 0);
+    director.update(0.1);
+  }
+  assert.equal(director.subject, null);
+  for (let t = 0; t < 2; t += 0.1) director.update(0.1);
+  assert.equal(director.weight, 0);
+  // The player looks around: the director keeps quiet.
+  director.userLooked();
+  director.offer({ kind: "whale", x: 100, y: 0, z: 100, size: 26 }, 0, 0);
+  assert.equal(director.subject, null);
+});
+
+test("an event that is over is let go; a horn is held for its full time", () => {
+  const director = new PhotoDirector();
+  director.setEnabled(true);
+  director.offer({ kind: "shark", x: 20, y: 0, z: 0, size: 9 }, 0, 0);
+  for (let t = 0; t < 2; t += 0.1) director.update(0.1);
+  assert.equal(director.subject, null, "the fin went down; the camera should come back");
+  director.offer({ kind: "horn", x: 600, y: 8, z: 0, size: 200 }, 0, 0);
+  for (let t = 0; t < PHOTO_HOLD.horn - 1; t += 0.1) director.update(0.1);
+  assert.equal(subjectKind(director), "horn");
+});
+
+test("a photo shot keeps the camera's own lens: no zoom on a far subject or a near one", () => {
+  const shot: PhotoShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 0 };
+  photoShot({ kind: "breach", x: 0, y: 4, z: 800, size: 34 }, 0, 0.5, 0, shot, 0);
+  assert.ok(Number.isNaN(shot.fov), "a far breach is not zoomed in");
+  assert.ok(shot.position.y > 4, "above the yacht");
+  photoShot({ kind: "dolphins", x: 6, y: 0.5, z: 8, size: 10 }, 0, 0.5, 0, shot, 0);
+  assert.ok(Number.isNaN(shot.fov), "nor dolphins at the bow");
+});
+
+test("palms placed and merged in one pass match clone, applyMatrix4 and mergeGeometries value for value", async () => {
+  const { mergeTransformed } = await import("../../src/simulator/core/FastGeometry");
+  const { createPalmVariants } = await import("../../src/simulator/environment/PalmModels");
+  const { mergeGeometries } = await import("three/addons/utils/BufferGeometryUtils.js");
+  const { near, far } = createPalmVariants(3);
+  // Leaning, turned, scaled palms (one squashed: the normals must renormalise).
+  const matrices = Array.from({ length: 7 }, (_, index) =>
+    new THREE.Matrix4().compose(
+      new THREE.Vector3(index * 9.5 - 30, 0.4 * index, 12 - index * 3.1),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(0.08 * index, index * 1.7, -0.05 * index)),
+      index === 3 ? new THREE.Vector3(1.3, 0.8, 1.1) : new THREE.Vector3().setScalar(0.7 + index * 0.1),
+    ),
+  );
+  for (const variants of [near, far]) {
+    for (const part of ["trunk", "fronds", "nuts"] as const) {
+      const sources = matrices.map((_, index) => variants[index % variants.length]!.parts[part]);
+      const fast = mergeTransformed(sources, matrices)!;
+      const slow = mergeGeometries(sources.map((source, index) => source.clone().applyMatrix4(matrices[index]!)), false)!;
+      assert.ok(fast, `${part} merges`);
+      assert.deepEqual(Object.keys(fast.attributes).sort(), Object.keys(slow.attributes).sort(), part);
+      for (const name of Object.keys(slow.attributes)) {
+        assert.deepEqual(Array.from(fast.getAttribute(name).array), Array.from(slow.getAttribute(name).array), `${part} ${name}`);
+      }
+      assert.equal(fast.index === null, slow.index === null, `${part} indexed alike`);
+      if (slow.index) assert.deepEqual(Array.from(fast.index!.array), Array.from(slow.index.array), `${part} index`);
+    }
+  }
+  // Unlike sources are left to the slow path.
+  const plain = new THREE.BoxGeometry(1, 1, 1);
+  const bare = new THREE.BoxGeometry(1, 1, 1).deleteAttribute("uv");
+  assert.equal(mergeTransformed([plain, bare], [new THREE.Matrix4(), new THREE.Matrix4()]), null);
+  assert.equal(mergeTransformed([plain, plain.toNonIndexed()], [new THREE.Matrix4(), new THREE.Matrix4()]), null);
+  assert.equal(mergeTransformed([], []), null);
+});
+
+test("fast normals and bounding spheres are three.js's own, value for value", async () => {
+  const { computeBoundingSphereFast, computeVertexNormalsFast } = await import("../../src/simulator/core/FastGeometry");
+  let seed = 7;
+  const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+  const noisy = (geometry: THREE.BufferGeometry) => {
+    const position = geometry.getAttribute("position");
+    for (let i = 0; i < position.count; i += 1) {
+      position.setXYZ(i, position.getX(i) * (1 + random() * 0.3) + 4, position.getY(i) * (0.5 + random()), position.getZ(i) - 2 + random());
+    }
+    return geometry;
+  };
+  const cases: THREE.BufferGeometry[] = [
+    noisy(new THREE.IcosahedronGeometry(2.5, 2)),
+    noisy(new THREE.BoxGeometry(3, 1, 2, 4, 2, 3)).toNonIndexed(),
+    noisy(new THREE.CylinderGeometry(0.4, 0.6, 3, 9, 4)),
+  ];
+  // A face that repeats a vertex, and positions in a view of a larger buffer.
+  const degenerate = new THREE.BufferGeometry();
+  degenerate.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 9, 9, 9]).subarray(0, 9), 3));
+  degenerate.setIndex([0, 0, 1, 0, 1, 2]);
+  cases.push(degenerate);
+  for (const [index, geometry] of cases.entries()) {
+    const reference = geometry.clone();
+    reference.deleteAttribute("normal");
+    reference.computeVertexNormals();
+    reference.computeBoundingSphere();
+    const fast = geometry.clone();
+    fast.deleteAttribute("normal");
+    computeVertexNormalsFast(fast);
+    computeBoundingSphereFast(fast);
+    assert.deepEqual(Array.from(fast.getAttribute("normal").array), Array.from(reference.getAttribute("normal").array), `normals ${index}`);
+    assert.deepEqual(fast.boundingSphere!.center.toArray(), reference.boundingSphere!.center.toArray(), `centre ${index}`);
+    assert.equal(fast.boundingSphere!.radius, reference.boundingSphere!.radius, `radius ${index}`);
+    // Again over existing normals (they are reset, not added to).
+    computeVertexNormalsFast(fast);
+    assert.deepEqual(Array.from(fast.getAttribute("normal").array), Array.from(reference.getAttribute("normal").array), `recomputed ${index}`);
+  }
+  // Interleaved positions are left to three.js, with the same result.
+  const interleaved = new THREE.BufferGeometry();
+  const buffer = new THREE.InterleavedBuffer(new Float32Array([0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0]), 4);
+  interleaved.setAttribute("position", new THREE.InterleavedBufferAttribute(buffer, 3, 0));
+  const expected = interleaved.clone();
+  expected.computeBoundingSphere();
+  computeBoundingSphereFast(interleaved);
+  assert.equal(interleaved.boundingSphere!.radius, expected.boundingSphere!.radius);
+  assert.ok(interleaved.boundingSphere!.radius > 0.4);
+});
