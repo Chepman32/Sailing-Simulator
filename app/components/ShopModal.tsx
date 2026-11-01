@@ -51,7 +51,7 @@ const UPGRADE_ICON: Record<UpgradeId, string> = {
   torch: "M3 10.5h7v3H3zM10 9.5l3-2v9l-3-2M15 8.5l6-3M15 12h6.5M15 15.5l6 3",
 };
 
-const FIND_GLYPH: Record<FindKind, string> = {
+export const FIND_GLYPH: Record<FindKind, string> = {
   shell: "🐚",
   fishbones: "🐟",
   anchor: "⚓",

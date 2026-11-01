@@ -234,7 +234,7 @@ export class WildlifeSystem {
     if (breach) out.push({ kind: "breach", x: breach.x, y: Math.max(0, breach.y), z: breach.z, size: 34 });
     const whale = this.whales.obstacle();
     const phase = this.whales.phase;
-    if (whale && (phase === "surface" || phase === "prepare_tail_slap" || phase === "tail_slap")) {
+    if (whale && (phase === "surface" || phase === "prepare_tail_slap" || phase === "tail_slap" || phase === "pass_under")) {
       out.push({ kind: "whale", x: whale.position.x, y: 0, z: whale.position.z, size: 26 });
     }
     for (const controller of this.sharks) {
@@ -257,6 +257,51 @@ export class WildlifeSystem {
     }
     if (leaping > 0) out.push({ kind: "dolphins", x: x / leaping, y: Math.max(0, y / leaping), z: z / leaping, size: 9 + leaping * 1.5 });
     return out;
+  }
+
+  /**
+   * Distance from (x, y, z) to the nearest large animal's body (negative
+   * inside) and the direction out of it in `normal`: a whale, a shark or a
+   * dolphin, each a capsule along its spine. A swimmer is pushed off them.
+   */
+  bodyClearance(x: number, y: number, z: number, normal: { x: number; y: number; z: number }): number {
+    let best = Number.POSITIVE_INFINITY;
+    const consider = (cx: number, cy: number, cz: number, fx: number, fy: number, fz: number, half: number, radius: number) => {
+      // Quick reject before the segment test.
+      if (Math.abs(x - cx) > half + radius + 2 || Math.abs(z - cz) > half + radius + 2 || Math.abs(y - cy) > half + radius + 2) return;
+      const t = Math.max(-half, Math.min(half, (x - cx) * fx + (y - cy) * fy + (z - cz) * fz));
+      const px = x - (cx + fx * t);
+      const py = y - (cy + fy * t);
+      const pz = z - (cz + fz * t);
+      const length = Math.hypot(px, py, pz);
+      const distance = length - radius;
+      if (distance >= best) return;
+      best = distance;
+      if (length > 1e-6) {
+        normal.x = px / length;
+        normal.y = py / length;
+        normal.z = pz / length;
+      } else {
+        normal.x = 0;
+        normal.y = 1;
+        normal.z = 0;
+      }
+    };
+    const fromRoot = (root: THREE.Object3D | undefined, half: number, radius: number) => {
+      if (!root || !root.visible) return;
+      const e = root.matrixWorld.elements;
+      const length = Math.hypot(e[8]!, e[9]!, e[10]!) || 1;
+      consider(e[12]!, e[13]!, e[14]!, e[8]! / length, e[9]! / length, e[10]! / length, half, radius);
+    };
+    // Lengths as the models are sized (`WHALE_LENGTH`, `SHARK_LENGTH`, `DOLPHIN_LENGTH`), the girth tapered in.
+    fromRoot(this.whales.body, 7.6, 2.1);
+    for (const shark of this.sharks) fromRoot(shark.body, 2.2, 0.5);
+    for (const agent of this.dolphins.agents) {
+      const m = agent.motion;
+      const c = Math.cos(m.pitch);
+      consider(m.x, m.y, m.z, Math.sin(m.heading) * c, Math.sin(m.pitch), Math.cos(m.heading) * c, 1.05, 0.32);
+    }
+    return best;
   }
 
   /** Current whale phase, for diagnostics. */

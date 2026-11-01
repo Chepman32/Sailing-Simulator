@@ -290,7 +290,8 @@ export function applyIslandSurface(
         // where it can be resolved, pale ash lying in the hollows and in
         // streaks down the fall line.
         vec3 rockColor = diffuseColor.rgb;
-        float cinder = mix(0.5, skyHash(floor(rockPosition * 6.0)), rockResolved);
+        // Cinder grain as a smooth noise (a hashed grid read as a chequerboard of tiles up close).
+        float cinder = mix(0.5, skyNoise(rockPosition * 6.0) * 0.6 + skyNoise(rockPosition * 17.0 + 3.1) * 0.4, rockResolved);
         rockColor *= 0.7 + (rockBroad - 0.5) * 0.55 + (rockMid - 0.5) * 0.35 + (cinder - 0.5) * 0.22;
         rockColor = mix(rockColor, rockColor * vec3(1.35, 0.92, 0.7), smoothstep(0.62, 0.8, rockMid) * 0.45);
         float fall = skyFbm3(vec2(atan(vSandWorld.z, vSandWorld.x) * 30.0, length(rockPosition) * 0.03));

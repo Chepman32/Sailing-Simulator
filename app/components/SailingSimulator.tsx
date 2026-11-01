@@ -12,6 +12,7 @@ import { featureText, fill, getFeatureMessages } from "./featureMessages";
 import { DiverHud } from "./DiverHud";
 import { ControlsCard } from "./ControlsCard";
 import { ShopModal } from "./ShopModal";
+import { InventoryModal } from "./InventoryModal";
 import { findName, getShopMessages } from "./shopMessages";
 import { DustNotices, type NoticeItem } from "./DustNotice";
 import { getDiverMessages } from "./diverMessages";
@@ -361,6 +362,7 @@ export function SailingSimulator() {
   // The controls card: open by itself on the first visit, and on H or the "?" button.
   const [controlsOpen, setControlsOpen] = useState(false);
   const [shopOpen, setShopOpen] = useState(false);
+  const [inventoryOpen, setInventoryOpen] = useState(false);
   const [controlsFirst, setControlsFirst] = useState(false);
   const [coarsePointer, setCoarsePointer] = useState(false);
   const closeControls = useCallback(() => {
@@ -375,6 +377,18 @@ export function SailingSimulator() {
     simulatorRef.current?.setDiverFrozen(false);
     simulatorRef.current?.requestDiverPointer();
   }, []);
+  const closeInventory = useCallback(() => {
+    setInventoryOpen(false);
+    simulatorRef.current?.setDiverFrozen(false);
+    simulatorRef.current?.requestDiverPointer();
+  }, []);
+  const openInventory = () => {
+    if (photoMode) exitPhotoMode();
+    setChartOpen(false);
+    setPanelMinimized(true);
+    simulatorRef.current?.setDiverFrozen(true);
+    setInventoryOpen(true);
+  };
   const closeShop = useCallback(() => {
     setShopOpen(false);
     simulatorRef.current?.setDiverFrozen(false);
@@ -763,17 +777,9 @@ export function SailingSimulator() {
     // A short tick under the thumb confirms the switch on phones without sound; ignored where unsupported.
     try { navigator.vibrate?.(running ? 18 : 10); } catch { /* not available */ }
     setEngineInput(running);
-    if (!running) {
-      throttleDragging.current = false;
-      setThrottleInput(0);
-    }
     simulator.setEngineRunning(running);
     const activeThrottle = running && Math.abs(displayedThrottle) <= 0.08 ? 0.12 : displayedThrottle;
-    showNotice(
-      running
-        ? `${messages.engine}: ${messages.on} · ${throttleLabel(activeThrottle, messages)}`
-        : `${messages.engine}: ${messages.off} · ${messages.throttle}: ${messages.neutral}`,
-    );
+    showNotice(running ? `${messages.engine}: ${messages.on} · ${throttleLabel(activeThrottle, messages)}` : `${messages.engine}: ${messages.off}`);
     navigator.vibrate?.(running ? 24 : 14);
   };
 
@@ -831,6 +837,8 @@ export function SailingSimulator() {
       if (action === "engine-on") showNotice(voyage.engineOnKey);
       else if (action === "engine-on-space") showNotice(voyage.engineOnSpace);
       else if (action === "engine-off-space") showNotice(voyage.engineOffSpace);
+      else if (action === "trader-charted") showNotice(voyage.traderCharted);
+      else if (action === "bag-full") showNotice(shopWords.bagFull);
     },
     discovery: (discovery) => {
       discoveryId.current += 1;
@@ -969,8 +977,14 @@ export function SailingSimulator() {
     if (!ready || event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     if (isTypingTarget(event.target)) return;
     // The controls card: H opens and closes it, Esc closes it; it holds the keys while open.
-    // The shop holds the keys while it is open (it closes itself on Esc and E).
-    if (shopOpen) return;
+    // The shop and the backpack hold the keys while open (they close themselves).
+    if (shopOpen || inventoryOpen) return;
+    // The backpack, on foot and at the helm.
+    if (event.code === "Tab") {
+      if (!controlsOpen) openInventory();
+      event.preventDefault();
+      return;
+    }
     if (event.code === "KeyH") {
       if (controlsOpen) closeControls();
       else {
@@ -1005,16 +1019,34 @@ export function SailingSimulator() {
       event.preventDefault();
       return;
     }
+    // The chart (Q or N), on foot too.
+    if (event.code === "KeyQ" || event.code === "KeyN") {
+      if (photoMode) exitPhotoMode();
+      setChartOpen((value) => !value);
+      event.preventDefault();
+      return;
+    }
+    // V changes the view of the yacht (from the cinematic view too).
+    if (event.code === "KeyV") {
+      if (away) {
+        showNotice(voyage.viewAtHelm);
+      } else {
+        if (photoMode) exitPhotoMode();
+        const modes = Object.keys(cameraLabels) as CameraMode[];
+        const next = modes[(modes.indexOf(snapshot.cameraMode) + 1) % modes.length]!;
+        setCamera(next);
+        showNotice(`${messages.camera}: ${cameraLabels[next]}`);
+      }
+      event.preventDefault();
+      return;
+    }
     if (photoMode) return;
     // On deck and in the water the signals, flares and camera keys are not his.
-    if (away && ["KeyF", "KeyG", "KeyJ", "KeyB", "KeyV", "KeyR", "KeyO"].includes(event.code)) return;
+    if (away && ["KeyF", "KeyG", "KeyJ", "KeyB", "KeyR", "KeyO"].includes(event.code)) return;
     switch (event.code) {
       case "KeyP":
         setChartOpen(false);
         enterPhotoMode();
-        break;
-      case "KeyN":
-        setChartOpen((value) => !value);
         break;
       case "KeyJ":
         playSignal("horn");
@@ -1033,13 +1065,6 @@ export function SailingSimulator() {
         else if (snapshot.radioStation && snapshot.radioStation === stations[stations.length - 1]!.id) tuneRadio(null);
         else stepRadio(1);
         break;
-      case "KeyV": {
-        const modes = Object.keys(cameraLabels) as CameraMode[];
-        const next = modes[(modes.indexOf(snapshot.cameraMode) + 1) % modes.length]!;
-        setCamera(next);
-        showNotice(`${messages.camera}: ${cameraLabels[next]}`);
-        break;
-      }
       case "KeyR":
         recenterCamera();
         break;
@@ -1178,6 +1203,16 @@ export function SailingSimulator() {
         <ControlsCard messages={voyage} touch={coarsePointer} firstVisit={controlsFirst} onClose={closeControls} />
       )}
 
+      {ready && inventoryOpen && !controlsOpen && !shopOpen && (
+        <InventoryModal
+          economy={snapshot.economy}
+          gold={snapshot.doubloons}
+          messages={shopWords}
+          onDiscard={(index) => simulatorRef.current?.discardStack(index)}
+          onClose={closeInventory}
+        />
+      )}
+
       {ready && shopOpen && !controlsOpen && (
         <ShopModal
           economy={snapshot.economy}
@@ -1207,6 +1242,7 @@ export function SailingSimulator() {
             interact: () => simulatorRef.current?.diverInteract(),
             jump: () => simulatorRef.current?.diverJump(),
             toggleTorch: () => simulatorRef.current?.toggleTorch(),
+            inventory: openInventory,
             stick: (x, y) => simulatorRef.current?.setDiverStick(x, y),
             hold: (up, down) => simulatorRef.current?.setDiverHold(up, down),
           }}
@@ -1351,7 +1387,7 @@ export function SailingSimulator() {
             className="scene-action"
             disabled={!ready}
             aria-expanded={chartOpen}
-            title={`${messages.openMap} (N)`}
+            title={`${messages.openMap} (Q)`}
             onClick={() => {
               setPanelMinimized(true);
               setChartOpen(true);
@@ -1359,6 +1395,18 @@ export function SailingSimulator() {
           >
             <ControlIcon name="map" />
             <span className="scene-action-label">{messages.map}</span>
+          </button>
+          <button
+            type="button"
+            className="scene-action"
+            disabled={!ready}
+            aria-haspopup="dialog"
+            aria-label={shopWords.invTitle}
+            title={`${shopWords.invTitle} (Tab)`}
+            onClick={openInventory}
+          >
+            <span className="backpack-glyph" aria-hidden="true">🎒</span>
+            <span className="scene-action-label">{shopWords.invTitle}</span>
           </button>
           <button
             type="button"

@@ -156,6 +156,8 @@ export class GrassField {
   private assembledZ = Number.NaN;
   private assembledTiles = -1;
   private frame = 0;
+  /** Frames since the instances were last written. */
+  private sinceAssembly = 0;
   private readonly uniforms = {
     uGrassTime: { value: 0 },
     uGrassWind: { value: new THREE.Vector2(0.851, 0.526) },
@@ -323,8 +325,16 @@ export class GrassField {
       }
       this.trimCache();
     }
+    // The instances are written again when the eyes have moved half a tile,
+    // or (while tiles are still being worked out) a few times a second, not
+    // every frame: each assembly uploads every clump's matrix.
     const moved = Math.hypot(eye.x - this.assembledX, eye.z - this.assembledZ);
-    if (present !== this.assembledTiles || !(moved < TILE * 0.5)) this.assemble(eye);
+    this.sinceAssembly += 1;
+    const grown = present !== this.assembledTiles && (missing.length === 0 || this.sinceAssembly >= 12);
+    if (grown || !(moved < TILE * 0.5)) {
+      this.assemble(eye);
+      this.sinceAssembly = 0;
+    }
   }
 
   private tileDistance(tx: number, tz: number, eye: THREE.Vector3): number {

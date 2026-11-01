@@ -759,3 +759,30 @@ test("a whale never breaches close to an island, even with the yacht sailing alo
   }
   assert.ok(starts >= 3, `only ${starts} breaches in 25 minutes along the coast`);
 });
+
+test("now and then the whale passes slowly right under a stopped yacht, deep enough to clear her keels", () => {
+  let passes = 0;
+  let closest = Infinity;
+  let shallowestUnder = Infinity;
+  for (let seed = 1; seed <= 6; seed += 1) {
+    const random = seeded(seed * 77);
+    const { world, clock } = liveWorld();
+    const vessel: VesselState = { x: 0, z: 0, heading: 0.4, speed: 0 };
+    const agent = createWhaleAgent(30, 60, 2.6, random);
+    let previous = agent.phase;
+    for (let step = 0; step < (25 * 60) / (1 / 20); step += 1) {
+      clock.time += 1 / 20;
+      stepWhale(agent, world, vessel, 1 / 20, random);
+      if (agent.phase === "pass_under" && previous !== "pass_under") passes += 1;
+      if (agent.phase === "pass_under") {
+        const distance = Math.hypot(agent.motion.x - vessel.x, agent.motion.z - vessel.z);
+        closest = Math.min(closest, distance);
+        if (distance < 12) shallowestUnder = Math.min(shallowestUnder, -agent.motion.y);
+      }
+      previous = agent.phase;
+    }
+  }
+  assert.ok(passes >= 1, "some dives are a pass under the yacht");
+  assert.ok(closest < 8, `it comes right under her (${closest.toFixed(1)} m)`);
+  assert.ok(shallowestUnder >= 4.5, `and clears her keels (${shallowestUnder.toFixed(1)} m down)`);
+});

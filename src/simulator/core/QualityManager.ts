@@ -125,16 +125,17 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
   },
   /**
    * Everything at its best, for a desktop GPU with room to spare: never
-   * chosen by the automatic mode, only by the player. Full-resolution
-   * reflections, 4096 soft shadows, 8× MSAA, ambient occlusion, sun shafts,
-   * 16× anisotropic filtering, the densest grass and meshes at full detail.
+   * chosen by the automatic mode, only by the player. Sharper reflections,
+   * 4096 soft shadows, 4× MSAA, ambient occlusion and sun shafts (both at
+   * half resolution), 16× anisotropic filtering, the densest grass and
+   * meshes kept detailed much further out.
    */
   ultra: {
-    maxDpr: 2,
-    pixelBudget: 4_200_000,
-    oceanSegments: 320,
+    maxDpr: 1.75,
+    pixelBudget: 3_400_000,
+    oceanSegments: 288,
     shadowMapSize: 4096,
-    reflectionScale: 0.75,
+    reflectionScale: 0.6,
     foamDensity: 1,
     wildlifeCount: 3,
     dolphinCount: 14,
@@ -145,12 +146,12 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     skyDetail: 1,
     postProcessing: true,
     bloomStrength: 0.3,
-    msaaSamples: 8,
+    msaaSamples: 4,
     anisotropy: 16,
     ambientOcclusion: true,
     godRays: true,
     oceanMicro: true,
-    grassRadius: 46,
+    grassRadius: 40,
     grassDensity: 1,
     fullDetail: true,
   },

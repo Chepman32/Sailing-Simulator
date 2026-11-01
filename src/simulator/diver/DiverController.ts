@@ -41,7 +41,7 @@ export type DiverPrompt = "helm" | "board" | "pickup" | "trade" | null;
 /** Keys the diver listens to (the sailing keys are off while he is out of the helm). */
 const KEYS = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-  "Space", "ShiftLeft", "ShiftRight", "KeyC", "ControlLeft", "ControlRight", "KeyQ", "KeyE", "KeyF",
+  "Space", "ShiftLeft", "ShiftRight", "KeyC", "ControlLeft", "ControlRight", "KeyE", "KeyF",
 ]);
 
 /** The yacht's hulls seen from the side, for the swimmer to keep off (vessel space, m). */
@@ -655,8 +655,8 @@ export class DiverController {
       if (phase < 0.42) this.exhaled = false;
       this.lastBreath = phase;
     } else if (Math.hypot(swim.vx, swim.vz) > 0.4) {
-      // The crawl at the surface: a stroke every second or so.
-      this.stepClock += dt * 1.1;
+      // The crawl at the surface: a stroke every second or so, quicker when sprinting.
+      this.stepClock += dt * (this.swimInput.sprint ? 1.9 : 1.1);
       if (this.stepClock >= 1) {
         this.stepClock -= 1;
         this.hooks.stroke(this.scratch.set(swim.x, this.world.surface(swim.x, swim.z), swim.z));

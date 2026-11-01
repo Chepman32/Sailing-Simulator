@@ -638,3 +638,36 @@ test("fast normals and bounding spheres are three.js's own, value for value", as
   assert.equal(interleaved.boundingSphere!.radius, expected.boundingSphere!.radius);
   assert.ok(interleaved.boundingSphere!.radius > 0.4);
 });
+
+test("the photographer films a long event once, and a kind of subject at most once a minute", async () => {
+  const { PhotoDirector, PHOTO_KIND_REST } = await import("../../src/simulator/camera/PhotoDirector");
+  const director = new PhotoDirector();
+  director.setEnabled(true);
+  const eruption = { kind: "eruption" as const, x: 400, y: 80, z: 0, size: 260 };
+  let shots = 0;
+  let filming = false;
+  // A two-minute eruption, offered every frame.
+  for (let frame = 0; frame < 120 * 30; frame += 1) {
+    director.offer(eruption, 0, 0);
+    director.update(1 / 30);
+    if (director.subject && !filming) shots += 1;
+    filming = director.subject !== null;
+  }
+  assert.equal(shots, 1, "one shot for the whole eruption");
+  // Quiet for a while, then a new eruption: filmed again.
+  for (let frame = 0; frame < 40 * 30; frame += 1) director.update(1 / 30);
+  director.offer(eruption, 0, 0);
+  assert.equal(director.subject?.kind, "eruption");
+  // Two short events of a kind 30 s apart: the second waits for the minute.
+  const quick = new PhotoDirector();
+  quick.setEnabled(true);
+  const horn = { kind: "horn" as const, x: 300, y: 8, z: 0, size: 100 };
+  quick.offer(horn, 0, 0);
+  for (let frame = 0; frame < 60 * 30 && quick.subject; frame += 1) quick.update(1 / 30);
+  for (let frame = 0; frame < 25 * 30; frame += 1) quick.update(1 / 30);
+  quick.offer(horn, 0, 0);
+  assert.equal(quick.subject, null, "too soon after the last horn");
+  for (let frame = 0; frame < PHOTO_KIND_REST * 30; frame += 1) quick.update(1 / 30);
+  quick.offer(horn, 0, 0);
+  assert.equal((quick.subject as { kind: string } | null)?.kind, "horn");
+});

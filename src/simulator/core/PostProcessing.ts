@@ -162,6 +162,8 @@ export class PostProcessing {
   private readonly shafts: SunShaftsPass;
   /** Whether the scene targets carry depth textures (ambient occlusion or sun shafts on). */
   private depthTextures = false;
+  /** Sun shafts are on in this preset (the pass itself is off while the sun is hidden). */
+  private godRays = false;
   /** False on the rare GPU that cannot render to a half-float target. */
   private readonly supported: boolean;
   private active: boolean;
@@ -225,6 +227,7 @@ export class PostProcessing {
    */
   private applyDepthPasses(quality: QualitySettings): void {
     this.occlusion.enabled = quality.ambientOcclusion;
+    this.godRays = quality.godRays;
     this.shafts.enabled = quality.godRays;
     const wanted = quality.ambientOcclusion || quality.godRays;
     if (wanted === this.depthTextures) return;
@@ -250,6 +253,8 @@ export class PostProcessing {
   setSun(x: number, y: number, visibility: number, color: THREE.Color): void {
     this.shafts.sun.set(x, y);
     this.shafts.visibility = visibility;
+    // No sun to stream: the pass (and its full-screen copy) is skipped altogether.
+    this.shafts.enabled = this.godRays && visibility > 0.002;
     this.shafts.tint.copy(color);
   }
 

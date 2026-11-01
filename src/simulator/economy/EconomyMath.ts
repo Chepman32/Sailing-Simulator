@@ -364,6 +364,49 @@ export function bagByKind(bag: readonly CarriedFind[]): { kind: FindKind; count:
   return FIND_KINDS.filter((kind) => groups.has(kind)).map((kind) => groups.get(kind)!);
 }
 
+/** The backpack: a grid of `BAG_COLUMNS × BAG_ROWS` slots, each a stack of one kind. */
+export const BAG_COLUMNS = 10;
+export const BAG_ROWS = 10;
+export const BAG_SLOTS = BAG_COLUMNS * BAG_ROWS;
+/** Most finds of one kind a slot holds. */
+export const STACK_SIZE = 100;
+
+export type BagStack = { kind: FindKind; count: number; total: number };
+
+/**
+ * The backpack's slots in order: each kind fills stacks of `STACK_SIZE` in
+ * the order it was first picked up (a new stack starts when one is full).
+ */
+export function bagStacks(bag: readonly CarriedFind[]): BagStack[] {
+  const order: FindKind[] = [];
+  const byKind = new Map<FindKind, CarriedFind[]>();
+  for (const item of bag) {
+    let list = byKind.get(item.kind);
+    if (!list) {
+      list = [];
+      byKind.set(item.kind, list);
+      order.push(item.kind);
+    }
+    list.push(item);
+  }
+  const stacks: BagStack[] = [];
+  for (const kind of order) {
+    const list = byKind.get(kind)!;
+    for (let start = 0; start < list.length; start += STACK_SIZE) {
+      const part = list.slice(start, start + STACK_SIZE);
+      stacks.push({ kind, count: part.length, total: part.reduce((sum, item) => sum + item.value, 0) });
+    }
+  }
+  return stacks;
+}
+
+/** Whether one more find of `kind` fits: a stack of it with room, or a free slot. */
+export function bagHasRoom(bag: readonly CarriedFind[], kind: FindKind): boolean {
+  const stacks = bagStacks(bag);
+  if (stacks.some((stack) => stack.kind === kind && stack.count < STACK_SIZE)) return true;
+  return stacks.length < BAG_SLOTS;
+}
+
 // --- Persistence -------------------------------------------------------------------------
 
 /** The economy's saved state. */
@@ -376,12 +419,14 @@ export type EconomyState = {
   equipped: Record<DecorSlot, string | null>;
   /** Keys of the sea-floor finds already taken (most recent last). */
   taken: string[];
+  /** Islands whose trader the yacht has sailed past: on the chart from then on. */
+  knownTraders: number[];
 };
 
 export const MAX_TAKEN_FINDS = 6000;
 
 export function createEconomyState(): EconomyState {
-  return { upgrades: createUpgradeLevels(), bag: [], decor: [], equipped: { flag: null, charm: null, bobble: null }, taken: [] };
+  return { upgrades: createUpgradeLevels(), bag: [], decor: [], equipped: { flag: null, charm: null, bobble: null }, taken: [], knownTraders: [] };
 }
 
 /** A saved economy, checked field by field (anything malformed falls back to a fresh start). */
@@ -396,7 +441,7 @@ export function restoreEconomy(saved: unknown): EconomyState {
     }
   }
   if (Array.isArray(source.bag)) {
-    for (const item of source.bag.slice(-500)) {
+    for (const item of source.bag.slice(-BAG_SLOTS * STACK_SIZE)) {
       if (item && typeof item === "object" && FIND_KINDS.includes((item as CarriedFind).kind) && Number.isFinite((item as CarriedFind).value)) {
         state.bag.push({ kind: (item as CarriedFind).kind, value: Math.max(0, Math.round((item as CarriedFind).value)) });
       }
@@ -408,6 +453,9 @@ export function restoreEconomy(saved: unknown): EconomyState {
       const id = (source.equipped as Record<string, unknown>)[slot];
       if (typeof id === "string" && state.decor.includes(id) && decorDefinition(id)?.slot === slot) state.equipped[slot] = id;
     }
+  }
+  if (Array.isArray(source.knownTraders)) {
+    state.knownTraders = Array.from(new Set(source.knownTraders.filter((id): id is number => typeof id === "number" && Number.isFinite(id)))).slice(-2000);
   }
   if (Array.isArray(source.taken)) state.taken = source.taken.filter((key): key is string => typeof key === "string").slice(-MAX_TAKEN_FINDS);
   return state;

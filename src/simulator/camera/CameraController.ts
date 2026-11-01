@@ -20,6 +20,8 @@ const HEAD_PITCH_SHARE = 0.45;
  * so a ship or an island kilometres off does not shimmer where surfaces meet.
  */
 const NEAR_PLANE_CLOSE = 0.08;
+/** Most the steady helm view's eyes may lag behind the yacht's heave, m. */
+const STEADY_EYE_LAG = 0.045;
 const NEAR_PLANE_OUTSIDE = 0.35;
 
 export class CameraController {
@@ -171,6 +173,10 @@ export class CameraController {
       if (steady) {
         const y = this.camera.position.y;
         this.steadyEyeY = Number.isFinite(this.steadyEyeY) && !this.snapNext ? this.steadyEyeY + (y - this.steadyEyeY) * this.follow(2.2, delta) : y;
+        // The head soaks up only a few centimetres of the heave: any more and
+        // the eyes, lagging behind a yacht that rises or drops, end up in the
+        // hardtop or the instrument pod a hand's breadth away.
+        this.steadyEyeY = clamp(this.steadyEyeY, y - STEADY_EYE_LAG, y + STEADY_EYE_LAG);
         this.camera.position.y = this.steadyEyeY;
       }
       this.camera.rotation.set(

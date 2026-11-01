@@ -54,7 +54,8 @@ export type WeatherSample = {
   sunshine: number;
 };
 
-export const FAIR_CLOUD_COVER = 0.23;
+/** A sunny sky: a few small cumulus (a third of the sky area the old 0.23 gave). */
+export const FAIR_CLOUD_COVER = 0.19;
 export const OVERCAST_CLOUD_COVER = 0.68;
 
 export const WEATHER_PRESETS: Readonly<Record<WeatherKind, Readonly<WeatherSample>>> = {

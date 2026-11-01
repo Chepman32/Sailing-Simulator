@@ -103,6 +103,19 @@ const EN = {
   bag: "Bag",
   sonarContacts: "Sonar: {count}",
   c_pickup: "Pick up a find · talk to a trader",
+  invTitle: "Backpack",
+  invLead: "Finds you carry, up to 100 of a kind in each slot. Sell them to an island trader.",
+  invSlots: "{used} / {max} slots",
+  invEmpty: "Empty slot",
+  invPick: "Select a slot to see what is in it.",
+  invCount: "{count} of {max}",
+  invWorth: "worth ~{gold} gold",
+  invDiscard: "Throw out",
+  invGear: "Gear",
+  invTank: "Tank",
+  invFins: "Fins",
+  invTorch: "Torch",
+  bagFull: "Backpack full: sell to a trader or throw something out (Tab)",
 };
 
 export type ShopMessages = typeof EN;
@@ -201,6 +214,19 @@ const RU: ShopMessages = {
   bag: "Сумка",
   sonarContacts: "Сонар: {count}",
   c_pickup: "Поднять находку · поговорить с торговцем",
+  invTitle: "Рюкзак",
+  invLead: "Находки, которые вы несёте: до 100 одного вида в ячейке. Продайте их островному торговцу.",
+  invSlots: "{used} / {max} ячеек",
+  invEmpty: "Пустая ячейка",
+  invPick: "Выберите ячейку, чтобы посмотреть, что в ней.",
+  invCount: "{count} из {max}",
+  invWorth: "примерно {gold} золотых",
+  invDiscard: "Выбросить",
+  invGear: "Снаряжение",
+  invTank: "Баллон",
+  invFins: "Ласты",
+  invTorch: "Фонарь",
+  bagFull: "Рюкзак полон: продайте находки торговцу или выбросьте лишнее (Tab)",
 };
 
 export function getShopMessages(language: LanguageCode): ShopMessages {

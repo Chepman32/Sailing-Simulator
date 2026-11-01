@@ -470,9 +470,13 @@ export function traderSpot(island: IslandDefinition, profile: IslandProfile): { 
   const angle = profile.pierAngle + 0.2;
   const spot = islandPoint(island, 0.74, angle);
   const dir = outward(island, angle);
+  // On a small island the porch is near the water: he stands on dry sand
+  // (inside 0.88 of the beach radius), never out in the swash.
+  const room = island.beachRadius * islandEdgeNoise(angle, island) * (0.88 - 0.74);
+  const out = Math.max(2.6, Math.min(4.4, room));
   return {
-    x: island.centerX + spot.x + dir.x * 4.4,
-    z: island.centerZ + spot.z + dir.z * 4.4,
+    x: island.centerX + spot.x + dir.x * out,
+    z: island.centerZ + spot.z + dir.z * out,
     facing: Math.atan2(dir.x, dir.z),
   };
 }

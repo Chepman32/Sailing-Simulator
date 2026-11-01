@@ -68,6 +68,8 @@ import { DIVE_DEPTH, type DiverMode } from "./diver/DiverMath";
 import { reefDensity, seabedHeight, UnderwaterWorld } from "./diver/UnderwaterWorld";
 import {
   bagByKind,
+  bagHasRoom,
+  bagStacks,
   bagValue,
   createEconomyState,
   decorDefinition,
@@ -88,6 +90,7 @@ import {
 } from "./economy/EconomyMath";
 import { SeabedLoot, type SonarContact } from "./economy/SeabedLoot";
 import { Traders, type TraderSpot } from "./economy/Traders";
+import { SeabedCrabs } from "./diver/SeabedCrabs";
 import { DiveFish } from "./diver/DiveFish";
 import { HelmStation, HULL_TRANSOM_Z } from "./vessel/HelmStation";
 import { HULL_CENTER_Z, HULL_HALF_BEAM, HULL_HALF_LENGTH, HULL_OFFSET_X } from "./environment/shaders/oceanShader";
@@ -135,8 +138,10 @@ export type ChartFeatures = {
   islands: ChartIsland[];
   /** What the sonar sees on the sea floor, by tier. */
   sonar: { x: number; z: number; tier: 1 | 2 | 3 }[];
-  /** The island traders (on every island with a pier). */
+  /** The island traders the yacht has sailed past. */
   traders: { x: number; z: number }[];
+  /** The player's own pins (slot 0…2, each its colour). */
+  pins: { slot: number; x: number; z: number }[];
   places: ChartPlace[];
   loot: { kind: LootKind; x: number; z: number }[];
   explored: ExploredSea;
@@ -145,6 +150,12 @@ export type ChartFeatures = {
 };
 /** Where the economy (gold aside: the bag, upgrades, decor, finds taken) is kept. */
 const ECONOMY_KEY = "sailing-simulator-economy-v1";
+/** Where the player's chart pins are kept. */
+const PINS_KEY = "sailing-simulator-pins-v1";
+/** How many pins the player may put on the chart. */
+export const MAX_CHART_PINS = 3;
+/** A trader comes onto the chart once the yacht (or the skipper) passes this near, m. */
+const TRADER_CHART_RANGE = 280;
 /** Seconds between two sweeps of the sonar. */
 const SONAR_INTERVAL = 1.2;
 /** Picked-up things remembered across visits (the oldest are forgotten and float again). */
@@ -209,9 +220,13 @@ export class Simulator {
   private deckField: DeckField | null = null;
   private underwaterWorld?: UnderwaterWorld;
   private diveFish?: DiveFish;
+  private crabs?: SeabedCrabs;
   /** The economy: bag, upgrades, decor, finds taken (gold is `state.doubloons`). */
   private economy: EconomyState = createEconomyState();
   private readonly takenFinds = new Set<string>();
+  private readonly knownTraders = new Set<number>();
+  /** The player's chart pins, by slot (each slot its own colour). */
+  private readonly chartPins: ({ x: number; z: number } | null)[] = this.loadPins();
   private takenVersion = 0;
   private seabedLoot?: SeabedLoot;
   private traders?: Traders;
@@ -354,6 +369,7 @@ export class Simulator {
     this.state = this.loadState();
     this.economy = this.loadEconomy();
     for (const key of this.economy.taken) this.takenFinds.add(key);
+    for (const id of this.economy.knownTraders) this.knownTraders.add(id);
     this.loadChart();
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -581,6 +597,7 @@ export class Simulator {
       });
       this.underwaterWorld = new UnderwaterWorld(this.scene, this.underwater, this.quality.settings.oceanDetail);
       this.diveFish = new DiveFish(this.scene, this.underwater);
+      this.crabs = new SeabedCrabs(this.scene, this.underwater);
       this.seabedLoot = new SeabedLoot(
         this.scene,
         this.underwater,
@@ -601,6 +618,8 @@ export class Simulator {
           floatLine: this.swimFloatLine,
           // A passing ship's side is a wall to a swimmer as much as to the yacht.
           obstacle: (x, z, normal) => nearestHullClearance(this.ships.ships, x, z, normal),
+          // A whale, a shark or a dolphin is a body to bump into, not a ghost.
+          bodies: (x, y, z, normal) => this.wildlife.bodyClearance(x, y, z, normal),
         },
         { offsetX: HULL_OFFSET_X, centreZ: HULL_CENTER_Z, halfLength: HULL_HALF_LENGTH, halfBeam: HULL_HALF_BEAM + 0.2, draught: 1.25, freeboard: 1.4 },
         {
@@ -638,6 +657,7 @@ export class Simulator {
           ground: this.groundWalk,
           surface: this.swimSurface,
           obstacle: (x, z, normal) => this.landObstacle(x, z, normal),
+          blocked: (x, z, feetY) => this.islands.wallBlocked(x, z, feetY),
         },
       );
       this.applyEconomy();
@@ -1189,7 +1209,8 @@ export class Simulator {
             height: island.height,
             volcano: Boolean(island.volcano),
           });
-          const trader = traderSpot(island, this.islands.profile(island));
+          // Only the traders the yacht has sailed past are on the chart.
+          const trader = this.knownTraders.has(island.id) ? traderSpot(island, this.islands.profile(island)) : null;
           if (trader) traders.push({ x: trader.x, z: trader.z });
           if (island.volcano) {
             const key = `volcano:${island.id}`;
@@ -1230,6 +1251,7 @@ export class Simulator {
       islands,
       sonar: this.sonarContacts.map((contact) => ({ x: contact.x, z: contact.z, tier: contact.tier })),
       traders,
+      pins: this.chartPins.flatMap((pin, slot) => (pin ? [{ slot, x: pin.x, z: pin.z }] : [])),
       places,
       loot: this.loot.items.map((item) => ({ kind: item.kind, x: item.x, z: item.z })),
       explored: this.explored,
@@ -1239,6 +1261,65 @@ export class Simulator {
   }
 
   // --- Economy: finds, traders, upgrades, decor ------------------------------------------
+
+  private loadPins(): ({ x: number; z: number } | null)[] {
+    const pins: ({ x: number; z: number } | null)[] = Array.from({ length: MAX_CHART_PINS }, () => null);
+    try {
+      const saved = JSON.parse(localStorage.getItem(PINS_KEY) ?? "[]") as unknown;
+      if (Array.isArray(saved)) {
+        saved.slice(0, MAX_CHART_PINS).forEach((pin, slot) => {
+          if (pin && typeof pin === "object" && Number.isFinite((pin as { x: number }).x) && Number.isFinite((pin as { z: number }).z)) {
+            pins[slot] = { x: (pin as { x: number }).x, z: (pin as { z: number }).z };
+          }
+        });
+      }
+    } catch {
+      // A broken entry: no pins.
+    }
+    return pins;
+  }
+
+  /** Puts the pin of `slot` (0…2) at (x, z) on the chart, moving it if it was elsewhere. */
+  setChartPin(slot: number, x: number, z: number): void {
+    if (slot < 0 || slot >= MAX_CHART_PINS || !Number.isFinite(x) || !Number.isFinite(z)) return;
+    this.chartPins[slot] = { x, z };
+    this.savePins();
+  }
+
+  /** Takes the pin of `slot` off the chart. */
+  clearChartPin(slot: number): void {
+    if (slot < 0 || slot >= MAX_CHART_PINS) return;
+    this.chartPins[slot] = null;
+    this.savePins();
+  }
+
+  /** The slot of the pin within `radius` metres of (x, z), nearest first, or −1. */
+  chartPinAt(x: number, z: number, radius: number): number {
+    let best = -1;
+    let bestDistance = radius;
+    this.chartPins.forEach((pin, slot) => {
+      if (!pin) return;
+      const distance = Math.hypot(pin.x - x, pin.z - z);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = slot;
+      }
+    });
+    return best;
+  }
+
+  /** Which pin slots are in use. */
+  get chartPinSlots(): boolean[] {
+    return this.chartPins.map((pin) => pin !== null);
+  }
+
+  private savePins(): void {
+    try {
+      localStorage.setItem(PINS_KEY, JSON.stringify(this.chartPins));
+    } catch {
+      // The pins last for this visit.
+    }
+  }
 
   private loadEconomy(): EconomyState {
     try {
@@ -1293,6 +1374,15 @@ export class Simulator {
     this.sonarClock -= delta;
     if (this.sonarClock > 0 || !this.seabedLoot) return;
     this.sonarClock = SONAR_INTERVAL;
+    // A trader seen in passing (from the yacht or on foot) goes on the chart.
+    const seenFrom = diver?.active ? eye : this.physics.position;
+    for (const spot of this.traderSpotList) {
+      if (this.knownTraders.has(spot.id) || Math.hypot(spot.x - seenFrom.x, spot.z - seenFrom.z) > TRADER_CHART_RANGE) continue;
+      this.knownTraders.add(spot.id);
+      this.economy.knownTraders.push(spot.id);
+      this.persistEconomy();
+      this.options.onKeyAction?.("trader-charted");
+    }
     const level = this.economy.upgrades.sonar;
     const yacht = this.physics.position;
     if (level > 0) this.seabedLoot.scan(yacht.x, yacht.z, sonarRange(level), sonarDepth(level), level, this.sonarContacts);
@@ -1320,6 +1410,11 @@ export class Simulator {
   /** The diver's hand closes on a find: a chest is opened on the spot, the rest go in the bag. */
   private takeFind(find: SeabedFind): void {
     if (this.takenFinds.has(find.key)) return;
+    // A full backpack takes nothing more (a chest's gold goes in the purse).
+    if (find.kind !== "chest" && !bagHasRoom(this.economy.bag, find.kind)) {
+      this.options.onKeyAction?.("bag-full");
+      return;
+    }
     this.takenFinds.add(find.key);
     if (this.takenFinds.size > MAX_TAKEN_FINDS) {
       const oldest = this.takenFinds.values().next().value;
@@ -1335,6 +1430,20 @@ export class Simulator {
     this.persistEconomy();
     if (chest) this.persistState();
     this.options.onFind?.({ kind: find.kind, tier: find.tier, value: find.value, chest });
+    this.hud.emit(this.snapshot());
+  }
+
+  /** Throws a stack out of the backpack (its `index` in `bagStacks`); the finds are lost. */
+  discardStack(index: number): void {
+    const stack = bagStacks(this.economy.bag)[index];
+    if (!stack) return;
+    let remove = stack.count;
+    for (let at = this.economy.bag.length - 1; at >= 0 && remove > 0; at -= 1) {
+      if (this.economy.bag[at]!.kind !== stack.kind) continue;
+      this.economy.bag.splice(at, 1);
+      remove -= 1;
+    }
+    this.persistEconomy();
     this.hud.emit(this.snapshot());
   }
 
@@ -1515,6 +1624,7 @@ export class Simulator {
     this.traders?.dispose();
     this.underwaterWorld?.dispose();
     this.diveFish?.dispose();
+    this.crabs?.dispose();
     this.radio?.dispose();
     this.audio?.dispose();
     this.wildlife?.dispose();
@@ -1545,13 +1655,22 @@ export class Simulator {
     this.initialized = false;
   }
 
+  /** What the physics is driven with: the controls, with no throttle while the engine is stopped. */
+  private readonly drivenControls = { throttle: 0, rudder: 0, sailTrim: 0.68 };
+
   private readonly fixedUpdate = (fixedDelta: number): void => {
     this.elapsed += fixedDelta;
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed, this.worldFocus);
     this.input.update(fixedDelta);
-    if (!this.state.engineRunning) this.state.controls.throttle = 0;
+    // The throttle lever stays where it was put when the engine is stopped
+    // (and is found there when it is started again); a stopped engine just
+    // drives nothing.
+    const controls = this.state.controls;
+    this.drivenControls.rudder = controls.rudder;
+    this.drivenControls.sailTrim = controls.sailTrim;
+    this.drivenControls.throttle = this.state.engineRunning ? controls.throttle : 0;
     this.ships.fixedUpdate(fixedDelta, this.elapsed, this.physics.position, this.physics.heading, this.physics.wind);
-    this.physics.fixedUpdate(fixedDelta, this.state.controls, this.state.engineRunning);
+    this.physics.fixedUpdate(fixedDelta, this.drivenControls, this.state.engineRunning);
     // A ship's side is a wall: the yacht rebounds from it.
     const shipHit = this.ships.resolveContact(this.physics, this.shipImpact);
     if (shipHit > 0.35) {
@@ -1615,7 +1734,7 @@ export class Simulator {
     if (diving) this.updateDiver(delta);
     const slam = this.vessel.consumeBoomSlam();
     if (slam > 0) this.audio.boomSlam(slam);
-    this.ships.update(delta, this.sampleSurface);
+    this.ships.update(delta, this.sampleSurface, this.camera.camera.position);
     this.wildlife.update(delta, this.physics, this.camera.camera);
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics, { root: this.vessel.root, eye: this.vessel.helmEye });
@@ -1846,6 +1965,9 @@ export class Simulator {
         view.pitch = pose.lookPitch;
       }
     }
+    // Buildings' walls and rails are made solid for a walker once he is near their island.
+    if (diver.mode === "swim") this.islands.prepareWalls(diver.swim.x, diver.swim.z);
+    else if (diver.mode === "land") this.islands.prepareWalls(diver.walk.x, diver.walk.z);
     diver.update(delta, this.vessel.root, this.physics.velocity, this.physics.heading, this.deckField, HelmStation.STAND_FEET);
     // A find within reach under the water; a trader on the beach.
     this.promptDetail = null;
@@ -1990,6 +2112,7 @@ export class Simulator {
       diver?.torch ?? false,
     );
     this.diveFish?.update(delta, swimming, camera.position, seabedHeight, this.swimSurface, this.wildlife.presence);
+    this.crabs?.update(delta, swimming, camera.position, diver?.yaw ?? 0, this.groundBase, (x, z) => -this.groundBase(x, z));
   }
 
   private lootIsOpen(x: number, z: number): boolean {
@@ -2239,6 +2362,8 @@ export class Simulator {
     if (this.post.enabled && this.quality.settings.reflectionScale > 0 && calmSea > 0.02) {
       this.mirrorList.length = 0;
       this.mirrorList.push(...this.mirrorHidden, ...this.islands.farFromMirror);
+      const grass = this.islands.grassObject;
+      if (grass) this.mirrorList.push(grass);
       // The mirror is redrawn every other frame: rippled and blurred, a
       // reflection a frame old cannot be told from a fresh one, and it is
       // projected with the matrix it was drawn with, so it stays put on the
@@ -2413,6 +2538,7 @@ export class Simulator {
         bagCount: this.economy.bag.length,
         bagValue: bagValue(this.economy.bag),
         bag: bagByKind(this.economy.bag),
+        stacks: bagStacks(this.economy.bag),
         upgrades: { ...this.economy.upgrades },
         decor: [...this.economy.decor],
         equipped: { ...this.economy.equipped },

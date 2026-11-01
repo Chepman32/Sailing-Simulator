@@ -81,8 +81,11 @@ export class AmbientOcclusionPass extends Pass {
     this.gtao.output = GTAOPass.OUTPUT.Off;
     // Contact shadows a hand's breadth to an arm's length: under the boom,
     // round the cockpit, in the angles of the hut, where the sand meets a rock.
-    this.gtao.updateGtaoMaterial({ radius: 0.9, distanceExponent: 1.4, thickness: 1.2, scale: 1, samples: 16, distanceFallOff: 0.6, screenSpaceRadius: false });
-    this.gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, radiusExponent: 1, rings: 2, samples: 16 });
+    // Worked out at half resolution (occlusion is soft by nature; at full
+    // resolution on a 4-megapixel frame it cost more than the scene itself).
+    this.gtao.updateGtaoMaterial({ radius: 0.9, distanceExponent: 1.4, thickness: 1.2, scale: 1, samples: 12, distanceFallOff: 0.6, screenSpaceRadius: false });
+    this.gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, radiusExponent: 1, rings: 2, samples: 8 });
+    this.gtao.setSize(Math.max(1, Math.round(width / 2)), Math.max(1, Math.round(height / 2)));
   }
 
   setCamera(camera: THREE.Camera): void {
@@ -91,7 +94,7 @@ export class AmbientOcclusionPass extends Pass {
   }
 
   override setSize(width: number, height: number): void {
-    this.gtao.setSize(width, height);
+    this.gtao.setSize(Math.max(1, Math.round(width / 2)), Math.max(1, Math.round(height / 2)));
   }
 
   override render(renderer: THREE.WebGLRenderer, writeBuffer: THREE.WebGLRenderTarget, readBuffer: THREE.WebGLRenderTarget): void {

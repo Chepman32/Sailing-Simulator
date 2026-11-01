@@ -43,6 +43,9 @@ const SKY_RADIUS = 3000;
 const AIRLINERS = 1;
 /** Seconds between one contrail being gone and the next airliner appearing. */
 const AIRLINER_GAP = [15, 60] as const;
+/** The order of the low passes by day. */
+const DAY_PASSES: readonly LowPassKind[] = ["banner", "stunt", "banner", "tour"];
+
 /** The stunt plane's display smoke: puffs per second, how long each lasts, s. */
 const SMOKE_RATE = 22;
 const SMOKE_LIFE = 11;
@@ -358,11 +361,11 @@ export class AircraftSystem {
 
   private updateLowPass(time: number, delta: number, yachtX: number, yachtZ: number, night: number): void {
     if (!this.pass && time >= this.nextPass) {
-      // By day every other pass is the aerobatic display, between them a
-      // banner tow or a sightseeing flight; at night only the sightseeing
-      // plane, lights on.
+      // By day the advertising banner tow comes first and every other pass,
+      // the aerobatic display and a sightseeing flight in turn between them;
+      // at night only the sightseeing plane, lights on.
       const day = night < 0.5;
-      const kind: LowPassKind = !day ? "tour" : this.passes % 2 === 0 ? "stunt" : this.passes % 4 === 1 ? "banner" : "tour";
+      const kind: LowPassKind = !day ? "tour" : DAY_PASSES[this.passes % DAY_PASSES.length]!;
       this.pass = planLowPass(yachtX, yachtZ, this.random, kind);
       this.passStart = time;
       this.passes += 1;

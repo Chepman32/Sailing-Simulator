@@ -233,3 +233,41 @@ test("a jump in carries him about a metre down, then the water floats him up or 
   assert.ok(WALK_SPEED >= 2.8 && WALK_SPEED <= 3);
   assert.ok(RUN_SPEED / WALK_SPEED >= 1.5 && RUN_SPEED / WALK_SPEED <= 1.6);
 });
+
+test("a rail, a wall and a post stop a walker; a low wall can be jumped; animals are solid to a swimmer", async () => {
+  const { UprightGrid } = await import("../../src/simulator/diver/UprightGrid");
+  const { createWalkState, stepWalk } = await import("../../src/simulator/diver/DiverMath");
+  const grid = new UprightGrid(0.1);
+  // A rail 0.07 m thick, a metre high, across the path at z = 3.
+  const rail = new THREE.BoxGeometry(6, 1, 0.07);
+  rail.translate(0, 0.5, 3);
+  grid.addGeometry(rail, new THREE.Matrix4());
+  assert.ok(grid.blocked(0, 3, 0, 0.38));
+  assert.ok(!grid.blocked(0, 2, 0, 0.38));
+  // Walking straight at it, fast, for two seconds: he stops short of it.
+  const flat = { ground: () => 0.5, surface: () => -1, blocked: (x: number, z: number, y: number) => grid.blocked(x, z, y - 0.5, 0.38) };
+  const walker = createWalkState(0, 0.5, 0);
+  for (let t = 0; t < 2; t += 1 / 60) stepWalk(walker, { moveX: 0, moveY: 1, sprint: true, yaw: 0, jump: false }, flat, 1 / 60);
+  assert.ok(walker.z < 3 - 0.1, `stopped at ${walker.z.toFixed(2)}`);
+  // A garden wall 0.6 m high: blocked on foot, cleared at the top of a jump.
+  const low = new UprightGrid(0.1);
+  const wall = new THREE.BoxGeometry(6, 0.6, 0.3);
+  wall.translate(0, 0.3, 3);
+  low.addGeometry(wall, new THREE.Matrix4());
+  assert.ok(low.blocked(0, 3, 0, 0.38));
+  assert.ok(!low.blocked(0, 3, 0.4, 0.38));
+  // A whale's body pushes a swimmer out of it.
+  const swimmer = createSwimState(0, -4, 0);
+  const whaleWorld: SwimWorld = {
+    ...calm,
+    bodies: (x, y, z, normal) => {
+      const length = Math.hypot(x, y + 4.5, z);
+      normal.x = x / (length || 1);
+      normal.y = (y + 4.5) / (length || 1);
+      normal.z = z / (length || 1);
+      return length - 2;
+    },
+  };
+  for (let t = 0; t < 1; t += 1 / 60) stepSwim(swimmer, still(), whaleWorld, 1 / 60);
+  assert.ok(Math.hypot(swimmer.x, swimmer.y + 4.5, swimmer.z) >= 2, "outside the whale");
+});

@@ -118,11 +118,16 @@ export class Traders {
           phase: (Math.abs(spot.id) % 97) * 0.37,
           ground: ground(spot.x, spot.z),
         };
+        // Stood at his place at once: a trader only posed when near would
+        // otherwise wait at the world's origin, out at sea.
+        figure.mesh.position.set(spot.x, trader.ground - 0.02, spot.z);
+        figure.mesh.rotation.y = spot.facing;
         this.traders.set(spot.id, trader);
       }
       trader.spot = spot;
       const distanceToEye = Math.hypot(spot.x - eye.x, spot.z - eye.z);
-      trader.figure.mesh.visible = distanceToEye < 600;
+      // Never one standing in the water (an island whose beach is all swash there).
+      trader.figure.mesh.visible = distanceToEye < 600 && trader.ground > 0.2;
       if (distanceToEye > 160) continue;
       this.pose(trader, step, visitor);
     }

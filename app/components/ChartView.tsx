@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import type { Simulator } from "@/src/simulator/Simulator";
 import { FOG_CELL } from "@/src/simulator/map/ChartMath";
-import { drawChart, scaleBar, type ChartCamera, type ChartLabels } from "./chartDraw";
+import { drawChart, PIN_COLORS, scaleBar, type ChartCamera, type ChartLabels } from "./chartDraw";
 import { fill, type FeatureMessages } from "./featureMessages";
 
 /**
@@ -53,6 +53,14 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
   const view = useRef({ x: 0, z: 0, mpp: 7, follow: true });
   const [stats, setStats] = useState({ area: 0, found: 0 });
   const [scale, setScale] = useState(scaleBar(7));
+  /** The pin colour a click drops, and which pins are out. */
+  const [pinSlot, setPinSlot] = useState(0);
+  const [pinsOut, setPinsOut] = useState<boolean[]>([false, false, false]);
+  const [pinNote, setPinNote] = useState(0);
+  const pinSlotRef = useRef(0);
+  useEffect(() => {
+    pinSlotRef.current = pinSlot;
+  }, [pinSlot]);
   const labels = useMemo<ChartLabels>(
     () => ({
       volcano: messages.volcano,
@@ -152,8 +160,14 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
     if (open) {
       view.current.follow = true;
       setScale(scaleBar(view.current.mpp));
+      const slots = simulatorRef.current?.chartPinSlots;
+      if (slots) {
+        setPinsOut(slots);
+        const free = slots.indexOf(false);
+        if (free >= 0) setPinSlot(free);
+      }
     }
-  }, [open]);
+  }, [open, simulatorRef]);
 
   // Pan, wheel and pinch on the full chart.
   useEffect(() => {
@@ -161,6 +175,37 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
     if (!open || !canvas) return;
     const pointers = new Map<number, { x: number; y: number }>();
     let pinch = 0;
+    /** Where a press began, to tell a click (a pin) from a drag (a pan). */
+    let press: { x: number; y: number; moved: number; id: number } | null = null;
+    const click = (sx: number, sy: number) => {
+      const simulator = simulatorRef.current;
+      if (!simulator) return;
+      const state = view.current;
+      const rect = canvas.getBoundingClientRect();
+      // The inverse of the chart's projection (screen x toward −X, y toward −Z).
+      const x = state.x - (sx - rect.left - rect.width / 2) * state.mpp;
+      const z = state.z - (sy - rect.top - rect.height / 2) * state.mpp;
+      // A click on a pin (its head stands above the spot) lifts it.
+      const hit = simulator.chartPinAt(x, z - 12 * state.mpp, 16 * state.mpp);
+      if (hit >= 0) {
+        simulator.clearChartPin(hit);
+        setPinSlot(hit);
+      } else {
+        const slots = simulator.chartPinSlots;
+        const slot = pinSlotRef.current;
+        if (slots[slot] && !slots.includes(false)) {
+          // All three out: the chosen colour moves to the new spot.
+          simulator.setChartPin(slot, x, z);
+        } else {
+          simulator.setChartPin(slots[slot] ? slots.indexOf(false) : slot, x, z);
+        }
+        const next = simulator.chartPinSlots;
+        const free = next.indexOf(false);
+        if (free >= 0) setPinSlot(free);
+        else setPinNote((value) => value + 1);
+      }
+      setPinsOut(simulator.chartPinSlots);
+    };
     const zoomAt = (factor: number, sx: number, sy: number) => {
       const state = view.current;
       const rect = canvas.getBoundingClientRect();
@@ -181,6 +226,7 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
     const onDown = (event: PointerEvent) => {
       canvas.setPointerCapture(event.pointerId);
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      press = pointers.size === 1 ? { x: event.clientX, y: event.clientY, moved: 0, id: event.pointerId } : null;
       if (pointers.size === 2) {
         const [a, b] = [...pointers.values()];
         pinch = Math.hypot(a!.x - b!.x, a!.y - b!.y);
@@ -190,6 +236,7 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
       const previous = pointers.get(event.pointerId);
       if (!previous) return;
       const state = view.current;
+      if (press && press.id === event.pointerId) press.moved = Math.max(press.moved, Math.hypot(event.clientX - press.x, event.clientY - press.y));
       if (pointers.size === 1) {
         const dx = event.clientX - previous.x;
         const dy = event.clientY - previous.y;
@@ -210,8 +257,11 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
       }
     };
     const onUp = (event: PointerEvent) => {
+      const wasPress = press && press.id === event.pointerId && press.moved < 6 && pointers.size === 1;
       pointers.delete(event.pointerId);
       if (pointers.size < 2) pinch = 0;
+      if (wasPress && event.type === "pointerup") click(event.clientX, event.clientY);
+      press = null;
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("pointerdown", onDown);
@@ -225,7 +275,7 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
       canvas.removeEventListener("pointerup", onUp);
       canvas.removeEventListener("pointercancel", onUp);
     };
-  }, [open]);
+  }, [open, simulatorRef]);
 
   // Escape closes the chart (N is handled with the other keys).
   useEffect(() => {
@@ -275,6 +325,30 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
               ×
             </button>
           </header>
+          <div className="chart-pins" role="radiogroup" aria-label={messages.chartPin}>
+            {PIN_COLORS.map((color, slot) => (
+              <button
+                key={color}
+                type="button"
+                role="radio"
+                aria-checked={pinSlot === slot}
+                aria-label={`${messages.chartPin} ${slot + 1}`}
+                className={`chart-pin-chip${pinsOut[slot] ? " is-out" : ""}`}
+                style={{ "--pin": color } as CSSProperties}
+                onClick={() => setPinSlot(slot)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 22c-1-3-6-7.5-6-12a6 6 0 0 1 12 0c0 4.5-5 9-6 12z" fill="currentColor" />
+                  <circle cx="12" cy="10" r="2.3" fill="#fff" />
+                </svg>
+              </button>
+            ))}
+          </div>
+          {pinNote > 0 && (
+            <p key={pinNote} className="chart-pin-note" role="status">
+              {messages.chartPinsFull}
+            </p>
+          )}
           <div className="chart-tools">
             <button type="button" onClick={() => zoom(1 / 1.6)} aria-label={messages.chartZoomIn}>
               +

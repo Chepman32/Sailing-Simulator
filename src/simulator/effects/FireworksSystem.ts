@@ -3,6 +3,8 @@ import {
   burst,
   burstLight,
   between,
+  DAY_GAP,
+  NIGHT_GAP,
   FINALE_LENGTH,
   launchRocket,
   nextCue,
@@ -179,8 +181,11 @@ export class FireworksSystem {
     return this.stars.length;
   }
 
+  private scheduled = false;
+
   /** Starts a show at once (tests, diagnostics). */
   startShow(): void {
+    this.scheduled = true;
     this.untilShow = 0;
   }
 
@@ -204,6 +209,14 @@ export class FireworksSystem {
     const random = this.random;
     const inRange = source !== null && Math.hypot(source.x - viewer.x, source.z - viewer.z) < SHOW_RANGE;
     if (this.showLeft <= 0) {
+      const dark = night > 0.45;
+      if (!this.scheduled) {
+        // The first show: soon after dark, or a long while into a day.
+        this.scheduled = true;
+        if (!dark) this.untilShow = between(random, DAY_GAP.min * 0.25, DAY_GAP.max);
+      }
+      // Night falls during a long daytime wait: the next show comes after dark as usual.
+      if (dark && this.untilShow > NIGHT_GAP.max) this.untilShow = between(random, NIGHT_GAP.min * 0.3, NIGHT_GAP.max);
       this.untilShow -= dt;
       if (this.untilShow <= 0) {
         if (inRange) {

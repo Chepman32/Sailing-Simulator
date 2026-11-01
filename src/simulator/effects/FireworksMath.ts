@@ -135,7 +135,8 @@ export const SHOW_LENGTH = { min: 36, max: 48 } as const;
 export const FINALE_LENGTH = 6;
 /** Seconds between shows after dark, and by day. */
 export const NIGHT_GAP = { min: 55, max: 95 } as const;
-export const DAY_GAP = { min: 150, max: 240 } as const;
+// By day a show is a rare treat: ten times rarer than it used to be.
+export const DAY_GAP = { min: 1500, max: 2400 } as const;
 /** Seconds the white flash of a burst lasts. */
 export const BURST_FLASH = 0.16;
 

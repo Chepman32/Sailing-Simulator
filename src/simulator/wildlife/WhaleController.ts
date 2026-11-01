@@ -188,6 +188,11 @@ export class WhaleController {
     };
   }
 
+  /** The whale's body (for a swimmer to bump into), or undefined. */
+  get body(): THREE.Object3D | undefined {
+    return this.whale?.root;
+  }
+
   /** Centre and clearance radius of the whale, for other animals to avoid. */
   obstacle(): { position: THREE.Vector3; radius: number } | undefined {
     if (!this.whale) return undefined;

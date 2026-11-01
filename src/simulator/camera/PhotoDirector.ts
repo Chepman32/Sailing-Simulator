@@ -51,6 +51,14 @@ export const PHOTO_HOLD: Record<PhotoSubjectKind, number> = {
 export const PHOTO_EASE = 1.1;
 /** Quiet time after a shot before the next subject of the same or lower rank. */
 export const PHOTO_COOLDOWN = 3;
+/** Least time between two shots of the same kind of subject, seconds. */
+export const PHOTO_KIND_REST = 60;
+/**
+ * A subject still being offered this long after its shot is the same event
+ * going on (an eruption, a whale lingering at the surface): it is not filmed
+ * again until it has been quiet for this long, seconds.
+ */
+export const PHOTO_EVENT_GAP = 20;
 /** Quiet time after the player looks around by hand. */
 export const PHOTO_USER_PAUSE = 8;
 /** Beyond this the subject is too far to be worth a shot, metres. */
@@ -77,6 +85,9 @@ export class PhotoDirector {
   private seenThisFrame = false;
   /** Seconds since the current subject was last offered. */
   private unseen = 0;
+  private clock = 0;
+  /** Each kind filmed lately: when its shot ended and when it was last offered since. */
+  private readonly rest = new Map<PhotoSubjectKind, { ended: number; offered: number }>();
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
@@ -85,11 +96,18 @@ export class PhotoDirector {
       this.held = 0;
       this.cooldown = 0;
       this.pause = 0;
+      this.rest.clear();
     }
+  }
+
+  /** A shot of `kind` is over: that kind rests (see `PHOTO_KIND_REST`, `PHOTO_EVENT_GAP`). */
+  private rested(kind: PhotoSubjectKind): void {
+    this.rest.set(kind, { ended: this.clock, offered: this.clock });
   }
 
   /** The player looked around or zoomed by hand: let go, and stay quiet a while. */
   userLooked(): void {
+    if (this.subject) this.rested(this.subject.kind);
     this.subject = null;
     this.pause = PHOTO_USER_PAUSE;
   }
@@ -113,6 +131,15 @@ export class PhotoDirector {
       this.seenThisFrame = true;
       return;
     }
+    // Filmed lately: once per event (a long one is not filmed over and over),
+    // and a minute at least between two shots of a kind.
+    const rest = this.rest.get(subject.kind);
+    if (rest) {
+      const eventOver = this.clock - rest.offered > PHOTO_EVENT_GAP;
+      rest.offered = this.clock;
+      if (!eventOver || this.clock - rest.ended < PHOTO_KIND_REST) return;
+      this.rest.delete(subject.kind);
+    }
     if (current && rank <= PHOTO_PRIORITY[current.kind]) return;
     if (!current && this.cooldown > 0 && rank <= this.lastRank) return;
     this.subject = { ...subject };
@@ -125,6 +152,7 @@ export class PhotoDirector {
   /** Advances the timers; call once a frame after the offers. */
   update(delta: number): void {
     const dt = Math.max(0, Math.min(delta, 0.1));
+    this.clock += dt;
     this.pause = Math.max(0, this.pause - dt);
     this.cooldown = Math.max(0, this.cooldown - dt);
     const subject = this.subject;
@@ -135,6 +163,7 @@ export class PhotoDirector {
       // (A horn is a single event: its shot is held for its full time.)
       const over = subject.kind !== "horn" && subject.kind !== "eruption" && this.unseen > 1.4;
       if (this.held >= PHOTO_HOLD[subject.kind] || over || !this.enabled) {
+        this.rested(subject.kind);
         this.subject = null;
         this.cooldown = PHOTO_COOLDOWN;
       }

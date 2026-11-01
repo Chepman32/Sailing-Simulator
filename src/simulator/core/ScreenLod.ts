@@ -123,7 +123,10 @@ export class ScreenLod {
       const distance = Math.max(0.1, this.centre.distanceTo(camera.position));
       // Size relative to the half-height of the view.
       const size = (radius / distance) * focal * 0.5;
-      const level = this.fullDetail ? 0 : chooseLodLevel(size, entry.current, entry.steps);
+      // Full detail (ultra): a mesh is treated as three times its size on
+      // screen, so it keeps its full mesh much further out, while a ship a
+      // few pixels tall on the horizon still drops to a simple one.
+      const level = chooseLodLevel(this.fullDetail ? size * 3 : size, entry.current, entry.steps);
       if (level !== entry.current) {
         entry.current = level;
         mesh.geometry = level === 0 ? entry.full : entry.levels[level - 1]!;

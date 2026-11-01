@@ -69,6 +69,8 @@ type Visual = {
   /** The lava fountain's glare over the vent while it plays. */
   jet: THREE.Sprite;
   flows: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial> | null;
+  /** The lava lake in the crater. */
+  lake: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial> | null;
   /** The slot of the last eruption reported (so each booms once). */
   lastSlot: number;
   /** Flight time at which each bomb (then each spark) lands on the cone, for the current slot. */
@@ -127,6 +129,82 @@ const lavaFragment = /* glsl */ `
     vec3 color = mix(cold, glow * uHeat, clamp(cracks * (0.35 + 0.65 * hot) + hot * 0.25, 0.0, 1.0) * edge);
     float alpha = edge * (1.0 - smoothstep(0.85, 1.0, vAlong / 140.0));
     gl_FragColor = vec4(color, alpha);
+    #include <fog_fragment>
+  }
+`;
+
+/** The lava lake fills the crater out to this fraction of the rim's radius. */
+const LAKE_RADIAL = 0.62;
+
+const lakeVertex = /* glsl */ `
+  varying vec2 vWorld;
+  #include <fog_pars_vertex>
+  void main() {
+    vec4 world = modelMatrix * vec4(position, 1.0);
+    vWorld = world.xz;
+    vec4 mvPosition = viewMatrix * world;
+    gl_Position = projectionMatrix * mvPosition;
+    #include <fog_vertex>
+  }
+`;
+
+const lakeFragment = /* glsl */ `
+  uniform float uTime;
+  uniform float uHeat;
+  uniform vec2 uCentre;
+  varying vec2 vWorld;
+  #include <fog_pars_fragment>
+  vec2 lakeHash2(vec2 p) {
+    p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+    return fract(sin(p) * 43758.5453);
+  }
+  float lakeNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = lakeHash2(i).x, b = lakeHash2(i + vec2(1.0, 0.0)).x, c = lakeHash2(i + vec2(0.0, 1.0)).x, d = lakeHash2(i + vec2(1.0, 1.0)).x;
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+  // Crust plates: cells of a Voronoi pattern, their seams the cracks.
+  vec2 plates(vec2 p, float t) {
+    vec2 cell = floor(p);
+    vec2 f = fract(p);
+    float first = 8.0;
+    float second = 8.0;
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+      vec2 o = vec2(float(i), float(j));
+      vec2 h = lakeHash2(cell + o);
+      vec2 point = o + 0.5 + 0.4 * sin(t * 0.25 + 6.2831 * h);
+      float d = length(point - f);
+      if (d < first) { second = first; first = d; } else if (d < second) second = d;
+    }
+    return vec2(first, second - first);
+  }
+  void main() {
+    vec2 p = vWorld - uCentre;
+    // The crust drifts outward from the middle, where the lava wells up.
+    float r = length(p);
+    vec2 drift = p / max(r, 1.0) * uTime * 0.35;
+    vec2 q = (p - drift) * 0.16 + vec2(lakeNoise(p * 0.05 + uTime * 0.02), lakeNoise(p * 0.05 - 3.1)) * 1.5;
+    vec2 cell = plates(q, uTime);
+    float seam = 1.0 - smoothstep(0.02, 0.14, cell.y);
+    float fine = lakeNoise(p * 0.9 + uTime * 0.3) * 0.5 + lakeNoise(p * 2.3 - uTime * 0.2) * 0.5;
+    // Hotter where it wells up, and in a pulse that breathes through the lake.
+    float welling = exp(-r * r * 0.02) * (0.7 + 0.3 * sin(uTime * 0.8));
+    float heat = clamp(seam * 0.95 + welling * 0.45 + smoothstep(0.72, 0.95, fine) * 0.25, 0.0, 1.0);
+    // Bubbles bursting through the crust: brief bright rings.
+    vec2 bubbleCell = floor(p * 0.12 + 0.5);
+    vec2 bubbleSeed = lakeHash2(bubbleCell + 17.0);
+    float phase = fract(uTime * (0.08 + bubbleSeed.x * 0.08) + bubbleSeed.y);
+    vec2 bubbleCentre = (bubbleCell + (lakeHash2(bubbleCell) - 0.5) * 0.6) / 0.12;
+    float bubble = smoothstep(0.85, 1.0, phase) * (1.0 - smoothstep(0.0, 2.6 * phase + 0.4, length(p - bubbleCentre)));
+    heat = max(heat, bubble);
+    // Dark, cooling crust plates; the cracks between them and the welling
+    // middle glow red to yellow-white.
+    vec3 crust = mix(vec3(0.03, 0.02, 0.018), vec3(0.09, 0.04, 0.025), fine) + vec3(0.25, 0.04, 0.0) * smoothstep(0.0, 0.35, heat) * 0.4;
+    vec3 molten = mix(vec3(2.2, 0.35, 0.04), vec3(5.5, 2.2, 0.45), heat * heat);
+    vec3 color = mix(crust, molten * uHeat, smoothstep(0.35, 0.8, heat));
+    gl_FragColor = vec4(color, 1.0);
     #include <fog_fragment>
   }
 `;
@@ -203,6 +281,7 @@ export class VolcanoSystem {
         glow,
         jet,
         flows: null,
+        lake: null,
         lastSlot: Number.NaN,
         landing: new Float32Array(BOMBS + SPARKS),
         landingSlot: Number.NaN,
@@ -529,6 +608,10 @@ export class VolcanoSystem {
         visual.flows.geometry.dispose();
         visual.flows.material.dispose();
       }
+      if (visual.lake) {
+        visual.lake.geometry.dispose();
+        visual.lake.material.dispose();
+      }
     }
     this.glowMap.dispose();
     this.group.removeFromParent();
@@ -565,6 +648,12 @@ export class VolcanoSystem {
       visual.flows.removeFromParent();
       visual.flows = null;
     }
+    if (visual.lake) {
+      visual.lake.geometry.dispose();
+      visual.lake.material.dispose();
+      visual.lake.removeFromParent();
+      visual.lake = null;
+    }
   }
 
   private attach(visual: Visual, island: IslandDefinition): void {
@@ -574,6 +663,58 @@ export class VolcanoSystem {
     visual.crater.set(island.centerX, rimHeight, island.centerZ);
     visual.flows = this.buildFlows(island);
     this.group.add(visual.flows);
+    visual.lake = this.buildLake(island);
+    this.group.add(visual.lake);
+  }
+
+  /**
+   * The lava lake filling the bottom of the crater: a disc following the
+   * crater's own outline at the level where the bowl is a little over half
+   * its width, with a crust of dark plates drifting on convection cells,
+   * glowing seams between them and now and then a bursting bubble.
+   */
+  private buildLake(island: IslandDefinition): THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial> {
+    const radial = VOLCANO_RIM * LAKE_RADIAL;
+    const level = volcanoHeight(radial, 0, island.height, island.seed) + 0.25;
+    const segments = 72;
+    const rings = 6;
+    const positions: number[] = [island.centerX, level, island.centerZ];
+    for (let ring = 1; ring <= rings; ring += 1) {
+      const fraction = ring / rings;
+      for (let segment = 0; segment < segments; segment += 1) {
+        const angle = (segment / segments) * Math.PI * 2;
+        // A hand's breadth beyond the shoreline, under the crater wall, so no gap shows.
+        const radius = island.beachRadius * radial * islandEdgeNoise(angle, island) * fraction * 1.04;
+        positions.push(island.centerX + Math.cos(angle) * radius, level, island.centerZ + Math.sin(angle) * radius * island.scaleZ);
+      }
+    }
+    const indices: number[] = [];
+    for (let segment = 0; segment < segments; segment += 1) indices.push(0, 1 + ((segment + 1) % segments), 1 + segment);
+    for (let ring = 1; ring < rings; ring += 1) {
+      const inner = 1 + (ring - 1) * segments;
+      const outer = 1 + ring * segments;
+      for (let segment = 0; segment < segments; segment += 1) {
+        const next = (segment + 1) % segments;
+        indices.push(inner + segment, inner + next, outer + segment, inner + next, outer + next, outer + segment);
+      }
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setIndex(indices);
+    geometry.computeBoundingSphere();
+    const material = new THREE.ShaderMaterial({
+      name: "LavaLake",
+      vertexShader: lakeVertex,
+      fragmentShader: lakeFragment,
+      uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 }, uHeat: { value: 1 }, uCentre: { value: new THREE.Vector2(island.centerX, island.centerZ) } }]),
+      fog: true,
+      side: THREE.DoubleSide,
+    });
+    material.uniforms.uTime = this.lavaTime;
+    material.uniforms.uHeat = this.lavaHeat;
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = "LavaLake";
+    return mesh;
   }
 
   /**

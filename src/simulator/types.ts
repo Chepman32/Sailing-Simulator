@@ -98,6 +98,8 @@ export type SimulationSnapshot = {
     bagCount: number;
     bagValue: number;
     bag: { kind: string; count: number; total: number }[];
+    /** The backpack's slots in order (each a stack of one kind, at most `STACK_SIZE`). */
+    stacks: { kind: string; count: number; total: number }[];
     upgrades: Record<string, number>;
     decor: string[];
     equipped: { flag: string | null; charm: string | null; bobble: string | null };

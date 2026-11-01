@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { smoothstep } from "../math";
 import { SHIP_SHADOW_LAYER } from "./ShipShadows";
 import { injectAfter, patchMaterialShader } from "../core/ShaderPatch";
 import type { OceanSample } from "../environment/OceanMath";
@@ -52,6 +53,8 @@ type ShipVisual = {
   heave: number;
   pitch: number;
   roll: number;
+  /** How deep the drawn hull reaches below the ship's origin, m (NaN until measured). */
+  draft: number;
 };
 
 type ContactBody = {
@@ -319,7 +322,7 @@ export class ShipSystem {
    * Places the ships' meshes: each rides the swell (a ship of two hundred
    * metres barely moves, and slowly) and shows its lights at night.
    */
-  update(delta: number, sample: (x: number, z: number) => OceanSample): void {
+  update(delta: number, sample: (x: number, z: number) => OceanSample, eye?: THREE.Vector3): void {
     this.ships.forEach((ship, slot) => {
       const visual = this.visuals[slot]!;
       visual.root.visible = ship.active;
@@ -336,10 +339,20 @@ export class ShipSystem {
       const starboard = sample(ship.x + forwardZ * beam, ship.z - forwardX * beam).height;
       const port = sample(ship.x - forwardZ * beam, ship.z + forwardX * beam).height;
       const ease = 1 - Math.exp(-delta * 0.6);
-      visual.heave += ((bow + stern + port + starboard) * 0.25 * 0.6 - visual.heave) * ease;
-      visual.pitch += (Math.atan2(stern - bow, reach * 2) * 0.5 - visual.pitch) * ease;
-      visual.roll += (Math.atan2(port - starboard, beam * 2) * 0.4 - visual.roll) * ease;
-      visual.root.position.set(ship.x, visual.heave + ship.ballast, ship.z);
+      // Far off the sea is drawn with metres-wide facets that cannot show
+      // the swell she rides: there she sits on its mean level, upright, so
+      // no crest lifts her clear of the water drawn under her.
+      const far = eye ? smoothstep(500, 1100, Math.hypot(ship.x - eye.x, ship.z - eye.z)) : 0;
+      const ride = 1 - far;
+      visual.heave += ((bow + stern + port + starboard) * 0.25 * 0.6 * ride - visual.heave) * ease;
+      visual.pitch += (Math.atan2(stern - bow, reach * 2) * 0.5 * ride - visual.pitch) * ease;
+      visual.roll += (Math.atan2(port - starboard, beam * 2) * 0.4 * ride - visual.roll) * ease;
+      // A ship in ballast rides high, but never so high that the drawn hull's
+      // bottom comes out of the water (an imported model is not as deep as
+      // the procedural hull): a metre of it always stays under, more far off.
+      if (!Number.isFinite(visual.draft)) visual.draft = this.measureDraft(visual);
+      const lift = Math.min(ship.ballast, Math.max(0, visual.draft - 1 - far * 0.8));
+      visual.root.position.set(ship.x, visual.heave + lift - far * 0.35, ship.z);
       visual.root.rotation.set(visual.pitch, ship.heading, visual.roll, "YXZ");
       visual.anchored.value = ship.anchored ? 1 : 0;
       visual.beacons.visible = this.night.value > 0.01;
@@ -475,6 +488,7 @@ export class ShipSystem {
     visual.model?.removeFromParent();
     visual.model = model;
     visual.modelKey = key;
+    visual.draft = Number.NaN;
     if (model) visual.root.add(model);
     visual.hull.visible = model === null;
     // Her sides are where the model's are: the yacht's fenders meet the hull she sees.
@@ -482,6 +496,23 @@ export class ShipSystem {
     // And her lights are on the model's own decks, not the procedural ship's.
     const lights = model ? this.models.lights(ship.kind, ship.scheme % variants) : null;
     visual.beacons.geometry = lights ?? this.geometry(ship.kind, ship.scheme).beacons;
+  }
+
+  /** Depth of the drawn hull (model or procedural) below the ship's origin, m. */
+  private measureDraft(visual: ShipVisual): number {
+    const object = visual.model ?? visual.hull;
+    const box = new THREE.Box3();
+    visual.root.updateMatrixWorld(true);
+    const toRoot = new THREE.Matrix4().copy(visual.root.matrixWorld).invert();
+    const corner = new THREE.Box3();
+    object.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.geometry) return;
+      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+      corner.copy(mesh.geometry.boundingBox!).applyMatrix4(new THREE.Matrix4().multiplyMatrices(toRoot, mesh.matrixWorld));
+      box.union(corner);
+    });
+    return box.isEmpty() ? 0 : Math.max(0, -box.min.y);
   }
 
   private assignGeometry(visual: ShipVisual, ship: Ship): void {
@@ -494,6 +525,7 @@ export class ShipSystem {
     visual.model = null;
     ship.hullProfile = null;
     visual.key = this.geometryKey(ship);
+    visual.draft = Number.NaN;
     visual.hull.name = `Ship_${ship.kind}`;
   }
 
@@ -575,7 +607,7 @@ export class ShipSystem {
     root.visible = false;
     this.group.add(root);
     this.rootList.push(root);
-    const visual: ShipVisual = { root, hull, model: null, modelKey: "", beacons, material, beaconMaterial, anchored, key: "", heave: 0, pitch: 0, roll: 0 };
+    const visual: ShipVisual = { root, hull, model: null, modelKey: "", beacons, material, beaconMaterial, anchored, key: "", heave: 0, pitch: 0, roll: 0, draft: Number.NaN };
     this.assignGeometry(visual, ship);
     placeholder.dispose();
     return visual;

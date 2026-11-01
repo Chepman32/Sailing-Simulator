@@ -88,7 +88,7 @@ test("day and night derive from one bounded environment state", () => {
   assert.ok(night.exposure >= 0.8, "night exposure should preserve readable moonlit detail");
 });
 
-test("engine start engages slow ahead and stopping returns the throttle to neutral", () => {
+test("engine start engages slow ahead from neutral, and stopping or starting never resets the lever", () => {
   const state = createSimulatorState();
   state.engineMuted = true;
   assert.equal(state.engineRunning, false);
@@ -103,7 +103,9 @@ test("engine start engages slow ahead and stopping returns the throttle to neutr
   applyEnginePower(state, false);
   assert.equal(state.engineRunning, false);
   assert.equal(state.engineMuted, true, "stopping the engine must not change the engine sound preference");
-  assert.equal(state.controls.throttle, 0);
+  assert.equal(state.controls.throttle, 0.72, "the lever stays where it was put");
+  applyEnginePower(state, true);
+  assert.equal(state.controls.throttle, 0.72, "and is found there when the engine starts again");
 });
 
 test("engine sound mute is independent from engine power", () => {

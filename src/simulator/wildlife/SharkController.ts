@@ -169,6 +169,11 @@ export class SharkController {
     if (this.shark) target.push(this.shark.root.position);
   }
 
+  /** The shark's body (for a swimmer to bump into), or undefined. */
+  get body(): THREE.Object3D | undefined {
+    return this.shark?.root;
+  }
+
   obstacle(): { position: THREE.Vector3; radius: number } | undefined {
     return this.shark ? { position: this.shark.root.position, radius: 3.5 } : undefined;
   }

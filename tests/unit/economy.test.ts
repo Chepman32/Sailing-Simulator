@@ -160,3 +160,25 @@ test("the sonar shows a few dozen echoes, the most valuable and nearest first", 
   loot.dispose();
   deepLoot.dispose();
 });
+
+test("the backpack: 10 × 10 slots, up to 100 finds of one kind in each, and no more", async () => {
+  const { BAG_SLOTS, STACK_SIZE, bagHasRoom, bagStacks } = await import("../../src/simulator/economy/EconomyMath");
+  assert.equal(BAG_SLOTS, 100);
+  assert.equal(STACK_SIZE, 100);
+  const bag = [
+    ...Array.from({ length: 150 }, () => ({ kind: "shell" as const, value: 20 })),
+    { kind: "amphora" as const, value: 200 },
+  ];
+  const stacks = bagStacks(bag);
+  assert.deepEqual(stacks.map((stack) => [stack.kind, stack.count]), [["shell", 100], ["shell", 50], ["amphora", 1]]);
+  assert.equal(stacks[0]!.total, 2000);
+  // A full backpack: every slot a full stack.
+  const full = Array.from({ length: BAG_SLOTS * STACK_SIZE }, () => ({ kind: "can" as const, value: 10 }));
+  assert.equal(bagStacks(full).length, BAG_SLOTS);
+  assert.equal(bagHasRoom(full, "can"), false);
+  assert.equal(bagHasRoom(full, "shell"), false);
+  // One short of full: room for that kind only.
+  const almost = full.slice(1);
+  assert.equal(bagHasRoom(almost, "can"), true);
+  assert.equal(bagHasRoom(almost, "shell"), false);
+});

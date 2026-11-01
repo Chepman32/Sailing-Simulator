@@ -24,7 +24,7 @@ export function helmFromRudder(rudder: number): number {
 }
 
 /** Keys the simulator steers and drives with. */
-const DRIVING_KEYS = ["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "KeyC", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"];
+const DRIVING_KEYS = ["KeyW", "KeyA", "KeyS", "KeyD", "KeyZ", "KeyX", "KeyC", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"];
 
 /** Helm travel a second while a steering key is held, and the rate the helm returns by itself. */
 export const KEY_HELM_RATE = 2.4;
@@ -79,8 +79,10 @@ export class InputController {
    */
   private readonly gamepadRest = new Map<number, number[]>();
   private gamepadArmed = false;
-  /** The helm has been let go after keys or the slider moved it, and is on its way back. */
+  /** The helm has been let go after the slider or wheel moved it, and is on its way back (if auto-centre is on). */
   private returning = false;
+  /** The helm was turned by a key, now released: it always comes back amidships. */
+  private keyReturning = false;
 
   constructor(
     private readonly controls: SimulatorControls,
@@ -103,10 +105,15 @@ export class InputController {
       (this.keys.has("KeyA") || this.keys.has("ArrowLeft") ? 1 : 0);
     const throttle = (this.keys.has("KeyW") || this.keys.has("ArrowUp") ? 1 : 0) -
       (this.keys.has("KeyS") || this.keys.has("ArrowDown") ? 1 : 0);
-    const sheet = (this.keys.has("KeyE") ? 1 : 0) - (this.keys.has("KeyQ") ? 1 : 0);
+    // The sheet on Z and X (Q opens the chart).
+    const sheet = (this.keys.has("KeyX") ? 1 : 0) - (this.keys.has("KeyZ") ? 1 : 0);
     if (steering !== 0) {
       this.controls.rudder = clamp(this.controls.rudder + HELM_STARBOARD * steering * delta * KEY_HELM_RATE, -1, 1);
-      this.returning = this.autoCenter;
+      // A key turns her only while it is held: let go, the helm comes back.
+      this.keyReturning = true;
+    } else if (this.keyReturning) {
+      this.controls.rudder = returnHelm(this.controls.rudder, delta * 1.6);
+      if (this.controls.rudder === 0) this.keyReturning = false;
     } else if (this.returning && this.autoCenter) {
       // Let go: the helm comes back amidships by itself, as a balanced wheel does.
       this.controls.rudder = returnHelm(this.controls.rudder, delta);
@@ -121,6 +128,7 @@ export class InputController {
   setRudder(helm: number): void {
     this.controls.rudder = rudderFromHelm(helm);
     this.returning = false;
+    this.keyReturning = false;
   }
 
   /** The player let go of the helm (slider or wheel released): it returns if auto-centre is on. */

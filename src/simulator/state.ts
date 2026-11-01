@@ -65,15 +65,13 @@ export function createSimulatorState(): SimulatorState {
 
 export function applyEnginePower(state: SimulatorState, running: boolean): void {
   state.engineRunning = running;
-  if (!running) {
-    state.controls.throttle = 0;
-  } else {
-    // Engine power and engine sound are independent controls: starting or
-    // stopping the engine never touches the mute preference, and the sound
-    // button never starts or stops the engine.
-    if (Math.abs(state.controls.throttle) <= 0.08) {
-      state.controls.throttle = ENGINE_START_THROTTLE;
-    }
+  // The lever is never reset: stopping the engine leaves it where it is (a
+  // stopped engine drives nothing whatever the lever says) and starting it
+  // again finds it there. Only a lever at neutral is eased to slow ahead on
+  // starting, so the propellers visibly bite. Engine power and engine sound
+  // are independent controls: neither touches the mute preference.
+  if (running && Math.abs(state.controls.throttle) <= 0.08) {
+    state.controls.throttle = ENGINE_START_THROTTLE;
   }
 }
 
@@ -122,6 +120,7 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
     bagCount: 0,
     bagValue: 0,
     bag: [],
+    stacks: [],
     upgrades: { engine: 0, monitor: 0, sonar: 0, flare: 0, tank: 0, fins: 0, torch: 0 },
     decor: [],
     equipped: { flag: null, charm: null, bobble: null },

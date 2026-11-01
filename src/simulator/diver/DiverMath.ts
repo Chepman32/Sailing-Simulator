@@ -38,9 +38,9 @@ export const STEP_UP = 0.42;
 export const SURFACE_EYE = 0.13;
 /** Swimming at the surface (no fins needed for the crawl), and with fins below it, m/s. */
 export const SURFACE_SWIM_SPEED = 1.15;
-export const SURFACE_SPRINT_SPEED = 1.9;
+export const SURFACE_SPRINT_SPEED = 2.4;
 export const DIVE_SPEED = 1.75;
-export const DIVE_SPRINT_SPEED = 3.1;
+export const DIVE_SPRINT_SPEED = 3.7;
 /** Rising or sinking on purpose, m/s. */
 export const VERTICAL_SPEED = 1.35;
 /** How quickly the water lets him reach the speed he swims for, and how it slows him when he stops (1/s). */
@@ -115,6 +115,12 @@ export type SwimWorld = {
    * would see the water from inside. Defaults to `surface`.
    */
   floatLine?: (x: number, z: number) => number;
+  /**
+   * Distance from the eyes at (x, y, z) to the nearest animal's body
+   * (negative inside) and the way out of it in `normal` (3D): whales, sharks,
+   * dolphins are solid to a swimmer.
+   */
+  bodies?: (x: number, y: number, z: number, normal: { x: number; y: number; z: number }) => number;
 };
 
 export type SwimState = {
@@ -219,6 +225,7 @@ export function isFloating(depth: number, input: SwimInput, ascending: boolean):
  * afterwards (negative above it).
  */
 const obstacleNormal = { x: 0, z: 0 };
+const bodyNormal = { x: 0, y: 0, z: 0 };
 
 export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, dt: number): number {
   const step = clamp(dt, 0, 0.05);
@@ -309,6 +316,23 @@ export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, d
     }
   }
 
+  // Animals: pushed off their bodies in three dimensions, the speed into them lost.
+  if (world.bodies) {
+    const normal = bodyNormal;
+    const clearance = world.bodies(state.x, state.y, state.z, normal) - BODY_RADIUS;
+    if (clearance < 0) {
+      state.x -= normal.x * clearance;
+      state.y -= normal.y * clearance;
+      state.z -= normal.z * clearance;
+      const inward = state.vx * normal.x + state.vy * normal.y + state.vz * normal.z;
+      if (inward < 0) {
+        state.vx -= inward * normal.x;
+        state.vy -= inward * normal.y;
+        state.vz -= inward * normal.z;
+      }
+    }
+  }
+
   // Never out of the water (but for a kick), never into the sand.
   const surfaceNow = world.surface(state.x, state.z);
   const lineNow = floatLine(state.x, state.z);
@@ -350,6 +374,11 @@ export type GroundWorld = {
    * direction in `normal`; Infinity where there is none.
    */
   obstacle?: (x: number, z: number, normal: { x: number; z: number }) => number;
+  /**
+   * Whether a body standing at (x, z) with its feet at `feetY` would be
+   * inside a building's wall, a rail or a post (see `UprightGrid`).
+   */
+  blocked?: (x: number, z: number, feetY: number) => boolean;
 };
 
 export type WalkInput = {
@@ -416,6 +445,8 @@ export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld,
 
   // Swept in short moves (no more than a hand's breadth each), so a fast
   // frame never carries him through a trunk or over the lip of a cliff.
+  // Already inside something (put down there): free to walk out of it.
+  const stuckInside = world.blocked?.(state.x, state.z, state.y) ?? false;
   const travel = Math.hypot(state.vx, state.vz) * step;
   const moves = Math.min(16, Math.max(1, Math.ceil(travel / 0.1)));
   for (let move = 0; move < moves; move += 1) {
@@ -428,7 +459,9 @@ export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld,
       const nextZ = axis === 0 ? state.z : state.z + delta;
       const ground = world.ground(nextX, nextZ);
       const rise = ground - state.y;
-      const blocked = state.grounded ? rise > Math.max(0.05, Math.abs(delta) * MAX_WALK_SLOPE) : rise > 0.05;
+      const blocked =
+        (state.grounded ? rise > Math.max(0.05, Math.abs(delta) * MAX_WALK_SLOPE) : rise > 0.05) ||
+        (!stuckInside && (world.blocked?.(nextX, nextZ, state.y) ?? false));
       if (blocked) {
         if (axis === 0) state.vx = 0;
         else state.vz = 0;

@@ -707,6 +707,54 @@ function drawTraders(context: CanvasRenderingContext2D, camera: ChartCamera, dat
   }
 }
 
+/** Colours of the player's three pins. */
+export const PIN_COLORS = ["#ff5a5f", "#ffc43d", "#7c6cff"] as const;
+
+/** The player's pins: a teardrop with a white dot, its point on the spot. */
+function drawPins(context: CanvasRenderingContext2D, camera: ChartCamera, data: ChartFeatures, style: ChartStyle): void {
+  if (!data.pins?.length) return;
+  const size = style.mini ? 7 : 12;
+  for (const pin of data.pins) {
+    let [x, y] = toScreen(camera, pin.x, pin.z);
+    // On the minimap a pin out of range waits at its edge, pointing the way.
+    if (style.mini) {
+      const cx = camera.width / 2;
+      const cy = camera.height / 2;
+      const reach = Math.min(cx, cy) - size * 1.4;
+      const dx = x - cx;
+      const dy = y - cy;
+      const distance = Math.hypot(dx, dy);
+      if (distance > reach) {
+        x = cx + (dx / distance) * reach;
+        y = cy + (dy / distance) * reach;
+      }
+    } else if (x < -20 || x > camera.width + 20 || y < -20 || y > camera.height + 20) continue;
+    const color = PIN_COLORS[pin.slot] ?? PIN_COLORS[0];
+    context.save();
+    context.translate(x, y);
+    context.shadowColor = "rgba(0, 0, 0, 0.45)";
+    context.shadowBlur = style.mini ? 3 : 6;
+    context.shadowOffsetY = 1.5;
+    context.fillStyle = color;
+    context.beginPath();
+    // A teardrop standing on its point.
+    context.moveTo(0, 0);
+    context.bezierCurveTo(-size * 0.25, -size * 0.55, -size * 0.62, -size * 0.85, -size * 0.62, -size * 1.25);
+    context.arc(0, -size * 1.25, size * 0.62, Math.PI, 0);
+    context.bezierCurveTo(size * 0.62, -size * 0.85, size * 0.25, -size * 0.55, 0, 0);
+    context.fill();
+    context.shadowColor = "transparent";
+    context.strokeStyle = "rgba(10, 20, 28, 0.55)";
+    context.lineWidth = 1;
+    context.stroke();
+    context.fillStyle = "#ffffff";
+    context.beginPath();
+    context.arc(0, -size * 1.25, size * 0.24, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+  }
+}
+
 /** Draws the whole chart into `context` (whose canvas is width·dpr × height·dpr). */
 export function drawChart(context: CanvasRenderingContext2D, camera: ChartCamera, data: ChartFeatures, style: ChartStyle): void {
   context.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
@@ -751,6 +799,7 @@ export function drawChart(context: CanvasRenderingContext2D, camera: ChartCamera
   }
   for (const place of shown) drawPlace(context, camera, place, style, boxes);
   drawYacht(context, camera, data, style);
+  drawPins(context, camera, data, style);
 }
 
 /** A scale bar's length (CSS px) and label for the chart's current zoom. */

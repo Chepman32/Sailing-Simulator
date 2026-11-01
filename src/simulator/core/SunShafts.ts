@@ -58,7 +58,7 @@ const MaskShader = {
   `,
 };
 
-const SAMPLES = 56;
+const SAMPLES = 40;
 
 const BlurShader = {
   uniforms: {

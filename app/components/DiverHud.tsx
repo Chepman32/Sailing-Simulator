@@ -12,6 +12,7 @@ export type DiverActions = {
   interact: () => void;
   jump: () => void;
   toggleTorch: () => void;
+  inventory: () => void;
   stick: (x: number, y: number) => void;
   hold: (up: boolean, down: boolean) => void;
 };
@@ -96,6 +97,11 @@ export function DiverHud({ diver, messages, shop, wallet, touch, actions }: Prop
           </span>
         )}
       </div>
+
+      <button type="button" className="diver-backpack" onClick={actions.inventory} title={`${shop.invTitle} (Tab)`} aria-label={shop.invTitle}>
+        <span aria-hidden="true">🎒</span>
+        {wallet.bag > 0 && <span className="diver-backpack-count">{wallet.bag}</span>}
+      </button>
 
       <button type="button" className="diver-helm" onClick={actions.returnToHelm} title={`${messages.backToHelm} (T)`}>
         <span aria-hidden="true" className="diver-helm-wheel" />

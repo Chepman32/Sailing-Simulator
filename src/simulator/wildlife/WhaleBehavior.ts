@@ -39,9 +39,15 @@ export type WhalePhase =
   | "prepare_tail_slap"
   | "tail_slap"
   | "submerge"
-  | "cooldown";
+  | "cooldown"
+  /** Now and then: a slow, shallow pass right under the yacht, a great dark shape seen from above. */
+  | "pass_under";
 
 export const WHALE_LENGTH = 18;
+/** Share of the whale's dives that are a pass under the yacht instead of a surfacing. */
+export const WHALE_PASS_CHANCE = 0.22;
+/** Depth of the body's centre on a pass under the yacht: clear of her keels, near enough to be seen. */
+export const WHALE_PASS_DEPTH = 5.6;
 /** Body top above the model centre, at the dorsal ridge. */
 export const WHALE_DORSAL_HEIGHT = 2.14;
 /** Belly and flipper tips below the model centre. */
@@ -163,6 +169,8 @@ export type WhaleAgent = {
   rendezvousX: number;
   rendezvousZ: number;
   relocated: boolean;
+  /** Whether this dive is a pass under the yacht (decided as each dive begins). */
+  passRoll: number;
   /**
    * Vertical excursion of the water around the whale. The body rides it on
    * top of its own depth keeping: fully at the surface, hardly at depth.
@@ -216,6 +224,8 @@ export function createWhaleAgent(x: number, z: number, heading: number, random: 
     rendezvousX: x,
     rendezvousZ: z,
     relocated: false,
+    // The very first encounter is a surfacing.
+    passRoll: 1,
     heave: 0,
     wavePitch: 0,
   };
@@ -269,6 +279,25 @@ export function stepWhale(
       }
       if (agent.phase === "cooldown" && agent.elapsed >= agent.duration) {
         enter(agent, "deep_swim", between(random, 8, 16));
+        agent.passRoll = random();
+      } else if (
+        agent.phase === "deep_swim" &&
+        agent.elapsed >= agent.duration &&
+        agent.passRoll < WHALE_PASS_CHANCE &&
+        vessel.speed < 3 &&
+        vesselDistance > 50 &&
+        vesselDistance < 220 &&
+        world.seabedDepth(motion.x, motion.z) > 16 &&
+        world.seabedDepth(vessel.x, vessel.z) > 16
+      ) {
+        // Straight under her and on, slowly, at a depth where the whole
+        // body shows from the deck or from the air as a long shadow.
+        agent.passRoll = 1;
+        const dirX = toVesselX / vesselDistance;
+        const dirZ = toVesselZ / vesselDistance;
+        agent.rendezvousX = vessel.x + dirX * 80;
+        agent.rendezvousZ = vessel.z + dirZ * 80;
+        enter(agent, "pass_under", (vesselDistance + 80) / 1.5 + 20);
       } else if (
         agent.phase === "deep_swim" &&
         agent.elapsed >= agent.duration &&
@@ -324,6 +353,12 @@ export function stepWhale(
     case "tail_slap":
       stepLobtail(agent, dt, random, vesselDistance);
       break;
+    case "pass_under":
+      if (agent.elapsed >= agent.duration || Math.hypot(agent.rendezvousX - motion.x, agent.rendezvousZ - motion.z) < 12) {
+        agent.encounters += 1;
+        enter(agent, "cooldown", between(random, 25, 40));
+      }
+      break;
     case "submerge":
       if (agent.elapsed >= agent.duration) {
         agent.encounters += 1;
@@ -372,9 +407,12 @@ export function stepWhale(
     desiredSpeed = 0.3;
   } else if (agent.phase === "submerge") {
     desiredSpeed = 1.6;
+  } else if (agent.phase === "pass_under") {
+    desiredHeading = Math.atan2(agent.rendezvousX - motion.x, agent.rendezvousZ - motion.z) + Math.sin(agent.wander * 0.05) * 0.05;
+    desiredSpeed = 1.5;
   }
-  // Keep clear of the yacht and of shoal water.
-  if (vesselDistance < 55 && agent.phase !== "prepare_tail_slap" && agent.phase !== "tail_slap") {
+  // Keep clear of the yacht and of shoal water (but for a pass under her, deep enough to clear her keels).
+  if (vesselDistance < 55 && agent.phase !== "prepare_tail_slap" && agent.phase !== "tail_slap" && agent.phase !== "pass_under") {
     const away = Math.atan2(-toVesselX, -toVesselZ);
     const weight = smoothstep(55, 22, vesselDistance);
     desiredHeading = blendHeading(desiredHeading, away, weight);
@@ -489,6 +527,8 @@ function phaseDepth(agent: WhaleAgent, world: MarineWorld): number {
     case "prepare_tail_slap":
     case "tail_slap":
       return WHALE_LOBTAIL_DEPTH;
+    case "pass_under":
+      return Math.min(deepest, WHALE_PASS_DEPTH);
     case "submerge": {
       // A sounding whale pivots at the surface before it goes down.
       const progress = agent.elapsed / agent.duration;

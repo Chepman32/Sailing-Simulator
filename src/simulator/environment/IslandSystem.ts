@@ -33,6 +33,7 @@ import { ISLAND_SLOT_UNIFORMS } from "./SurfMath";
 import { createBarkTextures, createFrondTexture, createPalmVariants, type PalmPart, type PalmVariant } from "./PalmModels";
 import { buildGrass, createGrassMaterial, createLeafClusterTexture, grassAmount } from "./IslandVegetation";
 import { GrassField } from "./GrassField";
+import { UprightGrid } from "../diver/UprightGrid";
 import { patchMaterialShader } from "../core/ShaderPatch";
 import {
   furnishIsland,
@@ -66,6 +67,8 @@ type IslandVisual = {
   beam: THREE.Group | null;
   /** Grass tufts over the turf, drawn only near the camera. */
   grass: THREE.Mesh | null;
+  /** The buildings' walls, rails and posts for a walker (built the first time someone comes ashore near them). */
+  walls?: UprightGrid | null;
 };
 
 /** Furniture (boulders, scrub, huts) beyond this is not drawn; a lighthouse is seen as far as its island. */
@@ -582,6 +585,11 @@ export class IslandSystem {
    * The dense grass: its reach (m) and fraction of the full density (0 off).
    * The field is built on first use and shares the islands' shadows.
    */
+  /** The dense grass (left out of the water's mirror: blades are far below what it can show). */
+  get grassObject(): THREE.Object3D | null {
+    return this.grassField?.group ?? null;
+  }
+
   setGrass(radius: number, density: number): void {
     if (radius <= 0 || density <= 0) {
       this.grassField?.setQuality(0, 0);
@@ -643,6 +651,53 @@ export class IslandSystem {
       return grass * thinning;
     }
     return 0;
+  }
+
+  /**
+   * Gets the islands within `reach` of (x, z) ready for a walker: their
+   * buildings' upright faces rasterised (`UprightGrid`). Done once per island,
+   * when someone first swims or walks near it, not when it is built while
+   * the yacht sails past.
+   */
+  prepareWalls(x: number, z: number, reach = 40): void {
+    for (const visual of this.built.values()) {
+      if (visual.walls !== undefined) continue;
+      const island = visual.definition;
+      const extent = island.beachRadius * Math.max(1, island.scaleZ) * MAX_EDGE_NOISE + reach;
+      if (Math.abs(x - island.centerX) > extent || Math.abs(z - island.centerZ) > extent) continue;
+      const solid = visual.furniture.find((mesh) => mesh.material === this.furnitureMaterial);
+      if (!solid) {
+        visual.walls = null;
+        continue;
+      }
+      const grid = new UprightGrid(0.1);
+      solid.updateMatrixWorld(true);
+      grid.addGeometry(solid.geometry, solid.matrixWorld);
+      visual.walls = grid;
+    }
+  }
+
+  /** Whether a walker at (x, z), feet at `feetY`, would be inside a wall, a rail or a post of an island's buildings. */
+  wallBlocked(x: number, z: number, feetY: number): boolean {
+    for (const visual of this.built.values()) {
+      const island = visual.definition;
+      if (island.volcano) {
+        // Up to the rim to look in, never over it into the lava.
+        const dx = x - island.centerX;
+        const dz = (z - island.centerZ) / island.scaleZ;
+        const r = Math.hypot(dx, dz);
+        if (r < island.beachRadius * VOLCANO_RIM * 1.3) {
+          const angle = Math.atan2(dz, dx);
+          if (r / (island.beachRadius * islandEdgeNoise(angle, island)) < VOLCANO_RIM * 0.96) return true;
+        }
+      }
+      const walls = visual.walls;
+      if (!walls) continue;
+      const extent = island.beachRadius * Math.max(1, island.scaleZ) * MAX_EDGE_NOISE + 20;
+      if (Math.abs(x - island.centerX) > extent || Math.abs(z - island.centerZ) > extent) continue;
+      if (walls.blocked(x, z, feetY, 0.38)) return true;
+    }
+    return false;
   }
 
   private invalidateGrass(island: IslandDefinition): void {

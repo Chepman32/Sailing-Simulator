@@ -4002,3 +4002,198 @@ input[type="range"]:disabled {
 @media (prefers-reduced-motion: reduce) {
   .shop-gold.is-pulse, .shop-flash { animation: none; }
 }
+
+/* The player's chart pins: three colours, the chosen one ringed. */
+.chart-pins {
+  position: absolute;
+  top: calc(var(--edge-top) + 128px);
+  right: var(--edge-right);
+  display: grid;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--glass-strong);
+}
+
+.chart-pin-chip {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  color: var(--pin);
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.chart-pin-chip svg { width: 22px; height: 22px; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4)); }
+.chart-pin-chip.is-out { opacity: 1; }
+.chart-pin-chip[aria-checked="true"] { opacity: 1; border-color: var(--pin); background: rgba(255, 255, 255, 0.08); }
+
+.chart-pin-note {
+  position: absolute;
+  top: calc(var(--edge-top) + 70px);
+  left: 50%;
+  margin: 0;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: var(--glass-strong);
+  font-size: 13px;
+  transform: translateX(-50%);
+  animation: shop-flash 2.6s ease both;
+  pointer-events: none;
+}
+
+@media (max-height: 520px) {
+  .chart-pins { top: auto; bottom: calc(var(--edge-bottom) + 64px); grid-auto-flow: column; }
+}
+
+/* ------------------------------------------------------------------------ */
+/* The backpack                                                             */
+/* ------------------------------------------------------------------------ */
+
+.inventory-card {
+  width: min(960px, 100%);
+  max-height: 100%;
+}
+
+.inventory-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 18px;
+  min-height: 0;
+  padding: 14px 24px;
+  overflow-y: auto;
+}
+
+.inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 5px;
+  align-content: start;
+  /* Square slots: the whole 10 × 10 grid fits the height of the card. */
+  width: min(100%, calc(100dvh - 230px));
+  justify-self: center;
+}
+
+.inventory-slot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(130, 255, 240, 0.12);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms var(--spring);
+}
+
+.inventory-slot.is-empty { cursor: default; background: rgba(0, 0, 0, 0.12); }
+.inventory-slot.tier-2 { border-color: rgba(120, 255, 220, 0.35); }
+.inventory-slot.tier-3 { border-color: rgba(255, 210, 120, 0.5); }
+.inventory-slot:not(.is-empty):hover { background: rgba(101, 226, 214, 0.1); transform: translateY(-1px); }
+.inventory-slot.is-selected { border-color: var(--accent-strong); background: rgba(101, 226, 214, 0.16); box-shadow: 0 0 0 1px var(--accent-strong) inset; }
+.inventory-glyph { font-size: clamp(14px, 2.4vw, 22px); line-height: 1; }
+
+.inventory-count {
+  position: absolute;
+  right: 4px;
+  bottom: 3px;
+  color: var(--text);
+  font-size: 10.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.inventory-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  transform-origin: left;
+}
+
+.inventory-side { display: grid; gap: 14px; align-content: start; }
+
+.inventory-detail {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid rgba(130, 255, 240, 0.16);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.inventory-detail h3 { margin: 2px 0 0; font-size: 16px; font-weight: 800; }
+.inventory-detail p { margin: 0; color: var(--muted); font-size: 13px; }
+.inventory-detail-glyph { font-size: 34px; line-height: 1; }
+.inventory-worth { display: inline-flex; align-items: center; gap: 6px; color: #ffe6a3 !important; font-weight: 750; }
+.inventory-discard { margin-top: 6px; border-color: rgba(255, 140, 120, 0.5); color: #ffb3a6; }
+.inventory-hint { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+
+.inventory-gear h3 { margin: 0 0 8px; color: var(--accent); font-size: 10.5px; font-weight: 850; letter-spacing: 0.16em; text-transform: uppercase; }
+.inventory-gear ul { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.inventory-gear li { display: flex; justify-content: space-between; padding: 6px 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.035); font-size: 13px; }
+.inventory-gear strong { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
+.inventory-total { display: inline-flex; flex: 1; align-items: center; gap: 6px; color: #ffe6a3; font-size: 14px; font-weight: 750; }
+
+@media (max-width: 760px) {
+  .inventory-body { grid-template-columns: 1fr; padding: 12px 14px; }
+  .inventory-grid { gap: 3px; }
+  .inventory-slot { border-radius: 7px; }
+}
+
+@media (max-height: 600px) {
+  .inventory-card .controls-lead { display: none; }
+  .inventory-card .shop-head { padding: 12px 20px 4px; }
+}
+
+.backpack-glyph { font-size: 18px; line-height: 1; filter: saturate(0.85); }
+
+/* The backpack, under the way back to the helm. */
+.diver-backpack {
+  position: absolute;
+  top: calc(var(--edge-top) + 54px);
+  right: var(--edge-right);
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  font-size: 19px;
+  cursor: pointer;
+}
+
+.diver-backpack-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #3a2500;
+  background: #ffd27a;
+  font-size: 10.5px;
+  font-weight: 850;
+  line-height: 18px;
+}

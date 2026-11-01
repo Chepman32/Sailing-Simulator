@@ -61,6 +61,9 @@ const SHELL_TOLERANCE = 0.06;
 /** Parts with a bounding radius under this (metres) skip the mirror and the shadow map. */
 const SMALL_PART_RADIUS = 0.4;
 
+/** Rise of the boom per metre aft of the mast (about 6.5°). */
+const BOOM_RISE = 0.115;
+
 export class Vessel {
   readonly root = new THREE.Group();
   private readonly model: THREE.Group;
@@ -469,7 +472,43 @@ export class Vessel {
     // attach() keeps each part exactly where it was while re-parenting it.
     this.boomPivot.attach(boomPart.mesh);
     this.boomPivot.attach(sailMesh);
+    this.raiseBoom(boomPart.mesh, sailMesh);
     this.hasRig = true;
+  }
+
+  /**
+   * The boom rises toward its end (as a catamaran's does, to clear the
+   * hardtop and the helmsman): as authored it sat at head height, and close
+   * hauled on starboard its end swept through the helm station and the
+   * skipper. Boom and sail are sheared up by `BOOM_RISE` per metre aft of
+   * the mast, the sail less toward its head (which stays at the masthead)
+   * and not at all along the luff, so it still runs up the mast.
+   */
+  private raiseBoom(boom: THREE.Mesh, sail: THREE.Mesh): void {
+    sail.geometry.computeBoundingBox();
+    const sailBox = sail.geometry.boundingBox!.clone().applyMatrix4(sail.matrix);
+    const foot = sailBox.min.y;
+    const head = sailBox.max.y;
+    const shear = (mesh: THREE.Mesh, toHead: boolean) => {
+      const position = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const toPivot = mesh.matrix;
+      const fromPivot = mesh.matrix.clone().invert();
+      const point = new THREE.Vector3();
+      for (let index = 0; index < position.count; index += 1) {
+        point.fromBufferAttribute(position, index).applyMatrix4(toPivot);
+        const aft = Math.hypot(point.x, point.z);
+        const fade = toHead ? THREE.MathUtils.clamp((head - point.y) / Math.max(0.1, head - foot), 0, 1) : 1;
+        point.y += aft * BOOM_RISE * fade;
+        point.applyMatrix4(fromPivot);
+        position.setXYZ(index, point.x, point.y, point.z);
+      }
+      position.needsUpdate = true;
+      mesh.geometry.computeVertexNormals();
+      mesh.geometry.computeBoundingBox();
+      mesh.geometry.computeBoundingSphere();
+    };
+    shear(boom, false);
+    shear(sail, true);
   }
 
   /**

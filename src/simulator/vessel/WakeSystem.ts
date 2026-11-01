@@ -327,8 +327,11 @@ const crownVertexShader = /* glsl */ `
     float flare = 1.0 + level * (0.3 + 0.45 * age);
     vec3 local = vec3(cos(angle) * spread * flare, level * top - 0.04, sin(angle) * spread * flare);
     vec4 world = modelMatrix * instanceMatrix * vec4(local, 1.0);
-    gl_Position = projectionMatrix * viewMatrix * world;
-    vAlpha = (1.0 - smoothstep(0.5, 1.0, age)) * smoothstep(0.0, 0.05, age);
+    vec4 view = viewMatrix * world;
+    gl_Position = projectionMatrix * view;
+    // A sheet of water right at the eyes (the swimmer's own splash) is not
+    // drawn as a white wall across the view.
+    vAlpha = (1.0 - smoothstep(0.5, 1.0, age)) * smoothstep(0.0, 0.05, age) * smoothstep(0.6, 1.8, -view.z);
     vParam = crownParam;
     vSeed = seed;
   }
@@ -442,7 +445,11 @@ export class WakeSystem {
           gl_Position = projectionMatrix * viewPosition;
           // Mist puffs may grow large on screen; droplets stay small.
           gl_PointSize = clamp(particleSize * 420.0 / max(1.0, -viewPosition.z), 1.5, mix(26.0, 160.0, particleKind));
-          vOpacity = particleOpacity;
+          // Spray right at the eyes (a swimmer in the wake or the surf) is not
+          // drawn: a puff a hand's breadth away would fill the whole view
+          // with a white haze. It fades in from about one to two metres.
+          float nearFade = smoothstep(0.9, 2.2, -viewPosition.z);
+          vOpacity = particleOpacity * nearFade;
           vKind = particleKind;
         }
       `,

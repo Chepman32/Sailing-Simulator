@@ -46,10 +46,10 @@ const BUBBLES = 360;
 
 type PropKind =
   | "rock" | "brain" | "staghorn" | "table" | "fan" | "sponge" | "grass" | "urchin" | "star" | "softcoral"
-  | "shell" | "pebbles" | "cucumber" | "dollar" | "rubble";
+  | "shell" | "pebbles" | "cucumber" | "dollar" | "rubble" | "clam" | "anemone" | "tube";
 const PROP_KINDS: readonly PropKind[] = [
   "rock", "brain", "staghorn", "table", "fan", "sponge", "grass", "urchin", "star", "softcoral",
-  "shell", "pebbles", "cucumber", "dollar", "rubble",
+  "shell", "pebbles", "cucumber", "dollar", "rubble", "clam", "anemone", "tube",
 ];
 /** The small things strewn over the sand between the reefs. */
 const LITTER_KINDS: readonly PropKind[] = ["shell", "pebbles", "cucumber", "dollar", "rubble", "grass"];
@@ -103,7 +103,7 @@ export function seabedHeight(x: number, z: number, shore = distanceFromWaterline
 export function reefDensity(x: number, z: number, shore = distanceFromWaterline(x, z)): number {
   const shelf = 1 - smoothstep(SHELF_WIDTH * 0.5, SHELF_WIDTH * 2.4, shore);
   // Bommies: patches of coral over the open bottom.
-  const patch = smoothstep(0.58, 0.82, valueNoise(x * 0.028 + 31, z * 0.028 - 9));
+  const patch = smoothstep(0.5, 0.76, valueNoise(x * 0.028 + 31, z * 0.028 - 9));
   const notOnBeach = smoothstep(1.2, 3.5, depthForShore(x, z, shore));
   return clamp(Math.max(shelf * 0.85, patch), 0, 1) * notOnBeach;
 }
@@ -447,6 +447,82 @@ function rubbleGeometry(): THREE.BufferGeometry {
   return paintAll(merged, (x, y, z, out) => out.setRGB(0.88, 0.85, 0.78).multiplyScalar(0.82 + noise3(x * 40, y * 40, z * 40) * 0.25));
 }
 
+/** A giant clam: two fluted shells gaping open on a mantle of iridescent blue and green. */
+function clamGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (const side of [-1, 1]) {
+    // A valve: half an ellipsoid shell with wavy flutes along its lip.
+    const valve = new THREE.SphereGeometry(0.22, 24, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+    const position = valve.getAttribute("position");
+    for (let index = 0; index < position.count; index += 1) {
+      const x = position.getX(index);
+      const y = position.getY(index);
+      const z = position.getZ(index);
+      const angle = Math.atan2(z, x);
+      const flute = 1 + Math.sin(angle * 5) * 0.12 * (1 - y / 0.22);
+      position.setXYZ(index, x * flute * 1.35, y * 0.8, z * flute * 0.85);
+    }
+    valve.rotateZ((side * Math.PI) / 2 - side * 0.35);
+    valve.translate(side * 0.02, 0.1, 0);
+    parts.push(paintAll(valve, (x, y, z, out) => out.setRGB(0.78, 0.74, 0.66).multiplyScalar(0.75 + noise3(x * 30, y * 30, z * 30) * 0.4)));
+  }
+  // The mantle between the gaping valves.
+  const mantle = new THREE.SphereGeometry(0.2, 20, 8);
+  mantle.scale(1.3, 0.35, 0.55);
+  mantle.translate(0, 0.17, 0);
+  parts.push(
+    paintAll(mantle, (x, _y, z, out) => {
+      const spots = noise3(x * 70, z * 70, 2);
+      out.setRGB(0.05 + spots * 0.25, 0.35 + spots * 0.4, 0.55 + spots * 0.35);
+    }),
+  );
+  const merged = mergeGeometries(parts.map((part) => (part.index ? part.toNonIndexed() : part)), false)!;
+  merged.computeVertexNormals();
+  return merged;
+}
+
+/** A sea anemone: a squat column and a crown of fat, tapering tentacles (they sway). */
+function anemoneGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const column = new THREE.CylinderGeometry(0.11, 0.14, 0.12, 16);
+  column.translate(0, 0.06, 0);
+  parts.push(paintAll(column, (_x, y, _z, out) => out.setRGB(0.55, 0.32, 0.3).multiplyScalar(0.7 + y * 2)));
+  const up = new THREE.Vector3(0, 1, 0);
+  for (let index = 0; index < 34; index += 1) {
+    const ring = index < 14 ? 0.05 : 0.1;
+    const angle = (index / (index < 14 ? 14 : 20)) * Math.PI * 2 + (index < 14 ? 0 : 0.15);
+    const tentacle = new THREE.CylinderGeometry(0.004, 0.012, 0.16 + hash(index, 4, 9) * 0.06, 5);
+    tentacle.translate(0, 0.08, 0);
+    const lean = 0.35 + ring * 3;
+    tentacle.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(up, new THREE.Vector3(Math.cos(angle) * lean, 1, Math.sin(angle) * lean).normalize()));
+    tentacle.translate(Math.cos(angle) * ring, 0.12, Math.sin(angle) * ring);
+    parts.push(paintAll(tentacle, (_x, y, _z, out) => out.setRGB(0.95, 0.78, 0.55).lerp(new THREE.Color(0.75, 0.95, 0.6), Math.min(1, (y - 0.12) * 5))));
+  }
+  const merged = mergeGeometries(parts.map((part) => (part.index ? part.toNonIndexed() : part)), false)!;
+  merged.computeVertexNormals();
+  return merged;
+}
+
+/** Tube sponges: a cluster of tall hollow chimneys of different heights. */
+function tubeGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (let index = 0; index < 5; index += 1) {
+    const height = 0.35 + hash(index, 1, 12) * 0.55;
+    const radius = 0.05 + hash(index, 2, 12) * 0.035;
+    const tube = new THREE.CylinderGeometry(radius * 1.15, radius, height, 12, 4, true);
+    tube.translate((hash(index, 3, 12) - 0.5) * 0.25, height / 2, (hash(index, 4, 12) - 0.5) * 0.25);
+    parts.push(tube);
+    // The rim, a little flared, and its dark mouth.
+    const lip = new THREE.TorusGeometry(radius * 1.12, radius * 0.18, 5, 12);
+    lip.rotateX(Math.PI / 2);
+    lip.translate((hash(index, 3, 12) - 0.5) * 0.25, height, (hash(index, 4, 12) - 0.5) * 0.25);
+    parts.push(lip);
+  }
+  const merged = mergeGeometries(parts.map((part) => (part.index ? part.toNonIndexed() : part)), false)!;
+  merged.computeVertexNormals();
+  return paintAll(merged, (x, y, z, out) => out.setRGB(0.62, 0.36, 0.62).multiplyScalar(0.7 + noise3(x * 25, y * 12, z * 25) * 0.45));
+}
+
 const GEOMETRY_BUILDERS: Record<PropKind, () => THREE.BufferGeometry> = {
   rock: rockGeometry,
   brain: brainGeometry,
@@ -463,6 +539,9 @@ const GEOMETRY_BUILDERS: Record<PropKind, () => THREE.BufferGeometry> = {
   cucumber: cucumberGeometry,
   dollar: dollarGeometry,
   rubble: rubbleGeometry,
+  clam: clamGeometry,
+  anemone: anemoneGeometry,
+  tube: tubeGeometry,
 };
 
 /** Colours an instance of each kind may take (multiplied into its vertex colours). */
@@ -482,6 +561,9 @@ const PALETTES: Record<PropKind, readonly number[]> = {
   cucumber: [0xffffff, 0xc09080, 0x806050],
   dollar: [0xffffff, 0xf0e8d8],
   rubble: [0xffffff, 0xf4ece0, 0xe8e0e8],
+  clam: [0xffffff, 0xd0f0ff, 0xc0ffd8, 0xe8d0ff],
+  anemone: [0xffffff, 0xffd0e0, 0xd0ffd0, 0xffe8a0],
+  tube: [0xffffff, 0xffc890, 0xc0a0ff, 0xffa0a0],
 };
 
 type PropLayer = { kind: PropKind; mesh: THREE.InstancedMesh; count: number };
@@ -664,7 +746,9 @@ export class UnderwaterWorld {
         metalness: 0,
         side: kind === "fan" || kind === "grass" || kind === "sponge" ? THREE.DoubleSide : THREE.FrontSide,
       });
-      if (kind === "grass" || kind === "fan" || kind === "softcoral") this.sway(material, kind === "grass" ? 0.12 : kind === "fan" ? 0.05 : 0.04);
+      if (kind === "grass" || kind === "fan" || kind === "softcoral" || kind === "anemone") {
+        this.sway(material, kind === "grass" ? 0.12 : kind === "fan" ? 0.05 : kind === "anemone" ? 0.3 : 0.04);
+      }
       if (kind === "fan") this.lattice(material);
       underwater.apply(material);
       const mesh = new THREE.InstancedMesh(geometry, material, PROP_CAPACITY);
@@ -1142,8 +1226,8 @@ export class UnderwaterWorld {
         if (depth < 1.1) continue;
         const reef = reefDensity(px, pz, shore);
         const roll = hash(cx, cz, 3);
-        // Bare sand gets the odd urchin, star, grass tuft or rock.
-        const chance = 0.1 + reef * 0.95;
+        // Bare sand is not bare: urchins, stars, anemones, clams, grass tufts, rocks.
+        const chance = 0.45 + reef * 0.75;
         for (let item = 0; item < 3; item += 1) {
           const r = hash(cx * 3 + item, cz, 4);
           if (r > chance - item * 0.3) continue;
@@ -1185,10 +1269,13 @@ export class UnderwaterWorld {
 
   private pickKind(reef: number, depth: number, r: number, cell: number): PropKind {
     if (reef < 0.25) {
-      if (r < 0.32) return "grass";
-      if (r < 0.5) return "star";
-      if (r < 0.66) return "urchin";
-      if (r < 0.86) return "rock";
+      if (r < 0.26) return "grass";
+      if (r < 0.4) return "star";
+      if (r < 0.52) return "urchin";
+      if (r < 0.6) return "anemone";
+      if (r < 0.66) return "clam";
+      if (r < 0.82) return "rock";
+      if (r < 0.88) return "tube";
       return cell < 0.5 ? "brain" : "sponge";
     }
     // A reef: corals by depth (staghorn and tables like the light, fans and
@@ -1200,8 +1287,11 @@ export class UnderwaterWorld {
     if (r < 0.55 - deep * 0.08) return "table";
     if (r < 0.66) return "softcoral";
     if (r < 0.74 + deep * 0.06) return "fan";
-    if (r < 0.84 + deep * 0.06) return "sponge";
-    if (r < 0.9) return "urchin";
+    if (r < 0.8 + deep * 0.04) return "sponge";
+    if (r < 0.85 + deep * 0.03) return "tube";
+    if (r < 0.9) return "anemone";
+    if (r < 0.94) return "clam";
+    if (r < 0.97) return "urchin";
     return "grass";
   }
 
@@ -1224,6 +1314,9 @@ export class UnderwaterWorld {
       cucumber: [0.8, 1.4],
       dollar: [0.8, 1.3],
       rubble: [0.8, 1.6],
+      clam: [0.7, 1.5],
+      anemone: [0.8, 1.5],
+      tube: [0.7, 1.4],
     };
     const [low, high] = sizes[kind];
     const size = (low + (high - low) * hash(Math.floor(seed * 1e6), 1, 40)) * (LITTER_KINDS.includes(kind) && kind !== "grass" ? 1 : 0.75 + reef * 0.4);
