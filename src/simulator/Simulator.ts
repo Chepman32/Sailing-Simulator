@@ -2190,7 +2190,7 @@ export class Simulator {
       rays.extinction = 0.045 + density * 0.6;
       rays.time = this.elapsed;
       const sunUp = Math.max(0, sun.y);
-      rays.strength = daylight * smoothstep(0.02, 0.25, sunUp) * (1 - this.environment.currentWeather.overcast * 0.75) * 1.6;
+      rays.strength = daylight * smoothstep(0.02, 0.25, sunUp) * (1 - this.environment.currentWeather.overcast * 0.75);
       // Sunlight that has come down through the water: its reds lost first.
       rays.tint.copy(this.diverLight).multiply(this.rayWater.setRGB(0.32, 0.82, 0.92));
     }

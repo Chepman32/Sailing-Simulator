@@ -107,14 +107,16 @@ const MarchShader = {
         float path = below / sinUp;
         vec2 entry = p.xz - uSunDown.xz * path;
         // Beams blur out with depth (the focus spreads); light fades on its way down and out to the eye.
-        float focus = mix(beams(entry), 0.35, smoothstep(4.0, 26.0, below));
+        // Only the beams (the focused excess over the even daylight, which the
+        // water's own colour already carries); they blur out with depth.
+        float focus = mix(max(0.0, beams(entry) - 0.06), 0.03, smoothstep(5.0, 28.0, below));
         light += focus * exp(-uExtinction * (path + t));
       }
       light *= stepLength;
       // Forward scattering: brightest looking toward the light.
       float g = 0.62;
       float cosine = dot(direction, -uSunDown);
-      float phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosine, 1.5) * 0.08;
+      float phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosine, 1.5) * 0.012;
       gl_FragColor = vec4(vec3(light * phase), 1.0);
     }
   `,
