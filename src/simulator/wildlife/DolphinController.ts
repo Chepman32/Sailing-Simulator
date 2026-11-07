@@ -91,6 +91,11 @@ export class DolphinController {
     this.visuals.forEach((visual) => target.push(visual.root.position));
   }
 
+  /** The pod (null until it first swims). */
+  get pod(): DolphinPod | null {
+    return this.podState;
+  }
+
   /** Agents, for tests and tuning tools. */
   get agents(): readonly DolphinAgent[] {
     return this.podState?.agents ?? [];

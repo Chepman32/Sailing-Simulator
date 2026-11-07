@@ -209,7 +209,7 @@ function nextCalmPhase(agent: SharkAgent, vessel: VesselState, random: RandomSou
   }
 }
 
-function beginPatrol(agent: SharkAgent, vessel: VesselState, random: RandomSource): void {
+export function beginPatrol(agent: SharkAgent, vessel: VesselState, random: RandomSource): void {
   const angle = random() * Math.PI * 2;
   // Round a swimmer: a slow, wary circle within sight of him, at his depth.
   const swimmer = vessel.swimmer;
@@ -323,7 +323,8 @@ export function stepShark(
 
   // A shark that has wandered off is quietly brought back while out of sight:
   // past this distance a body more than a metre down cannot be seen.
-  if (distance > SHARK_HIDE_DISTANCE && depthNow > 1 && agent.phase !== "fin_show") {
+  // (A swimmer sees far less through the water than an eye above it.)
+  if (distance > (vessel.swimmer ? 75 : SHARK_HIDE_DISTANCE) && depthNow > 1 && agent.phase !== "fin_show") {
     relocate(agent, vessel, world, random);
   }
 
@@ -552,10 +553,11 @@ function relocate(agent: SharkAgent, vessel: VesselState, world: MarineWorld, ra
     const lateral = between(random, -45, 45);
     const x = vessel.x + forwardX * ahead + forwardZ * lateral;
     const z = vessel.z + forwardZ * ahead - forwardX * lateral;
-    if (world.seabedDepth(x, z) < 12) continue;
+    const floor = world.seabedDepth(x, z);
+    if (floor < (vessel.swimmer ? 4 : 12)) continue;
     agent.motion.x = x;
     agent.motion.z = z;
-    agent.motion.y = -between(random, 6, 7.5);
+    agent.motion.y = vessel.swimmer ? -Math.min(floor - 1.5, Math.max(1.5, vessel.swimmer.depth + between(random, -1, 2))) : -between(random, 6, 7.5);
     // Coming back up toward the yacht from the deep, out of sight.
     agent.motion.heading = Math.atan2(vessel.x - x, vessel.z - z) + between(random, -0.6, 0.6);
     agent.motion.yawRate = 0;

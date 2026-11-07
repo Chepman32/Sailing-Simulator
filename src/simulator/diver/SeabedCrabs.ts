@@ -136,7 +136,7 @@ function proceduralKit(): CrabKit {
 /** How many crabs, how far round the eyes they live, how near they let someone come. */
 const SETTINGS: Record<CrabHabitat, { count: number; range: number; near: number; size: [number, number]; speed: [number, number]; shy: number }> = {
   seabed: { count: 56, range: 22, near: 4, size: [0.16, 0.34], speed: [0.09, 0.2], shy: 1.6 },
-  beach: { count: 34, range: 26, near: 5, size: [0.09, 0.16], speed: [0.25, 0.5], shy: 4.5 },
+  beach: { count: 34, range: 26, near: 5, size: [0.12, 0.2], speed: [0.25, 0.5], shy: 4.5 },
 };
 
 export type CrabWorld = {

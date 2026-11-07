@@ -1,3 +1,4 @@
+import { beginPatrol } from "./SharkBehavior";
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
 import { distanceFromWaterline, waterDepthAt } from "../environment/IslandMath";
@@ -125,6 +126,45 @@ export class WildlifeSystem {
 
   private readonly swimmerState = { depth: 0 };
 
+  /** Moves the pod and the sharks that are far from (x, z) to about 45 m off, where a swimmer cannot yet see them. */
+  private gatherRound(x: number, z: number, depth: number): void {
+    const place = (fromX: number, fromZ: number, distance: number): { x: number; z: number } | null => {
+      const base = Math.atan2(fromX - x, fromZ - z);
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const angle = base + (attempt % 2 === 0 ? 1 : -1) * Math.ceil(attempt / 2) * 0.6;
+        const px = x + Math.sin(angle) * distance;
+        const pz = z + Math.cos(angle) * distance;
+        if (this.world.seabedDepth(px, pz) > 4) return { x: px, z: pz };
+      }
+      return null;
+    };
+    const pod = this.dolphins.pod;
+    if (pod && Math.hypot(pod.centreX - x, pod.centreZ - z) > 90) {
+      const spot = place(pod.centreX, pod.centreZ, 45);
+      if (spot) {
+        const dx = spot.x - pod.centreX;
+        const dz = spot.z - pod.centreZ;
+        pod.centreX += dx;
+        pod.centreZ += dz;
+        for (const agent of pod.agents) {
+          agent.motion.x += dx;
+          agent.motion.z += dz;
+        }
+      }
+    }
+    for (const shark of this.sharks) {
+      const agent = shark.state;
+      if (!agent || Math.hypot(agent.motion.x - x, agent.motion.z - z) < 80) continue;
+      const spot = place(agent.motion.x, agent.motion.z, 48 + Math.random() * 10);
+      if (!spot) continue;
+      agent.motion.x = spot.x;
+      agent.motion.z = spot.z;
+      agent.motion.y = -Math.min(this.world.seabedDepth(spot.x, spot.z) - 1.5, Math.max(1.5, depth + 1));
+      agent.motion.heading = Math.atan2(x - spot.x, z - spot.z);
+      beginPatrol(agent, { x, z, heading: 0, speed: 0, swimmer: { depth } }, Math.random);
+    }
+  }
+
   /** Everything that lives under the surface (left out of the water's mirror). */
   get underwater(): THREE.Object3D {
     return this.marineGroup;
@@ -138,6 +178,9 @@ export class WildlifeSystem {
   update(delta: number, physics: VesselPhysics, camera: THREE.Camera, swimmer: { x: number; z: number; depth: number; heading: number } | null = null): void {
     const vessel = this.vessel;
     if (swimmer) {
+      // Just gone into the water: animals far off are brought in, out of his
+      // sight, to come and look at him (they would take minutes otherwise).
+      if (!vessel.swimmer) this.gatherRound(swimmer.x, swimmer.z, swimmer.depth);
       vessel.x = swimmer.x;
       vessel.z = swimmer.z;
       vessel.heading = swimmer.heading;
