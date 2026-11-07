@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { FOREARM_LENGTH, HumanFigure, SHIN_LENGTH, THIGH_LENGTH, UPPER_ARM_LENGTH, type FigureOutfit } from "../vessel/HumanFigure";
+import { RiggedFigure } from "./RiggedFigure";
 
 /**
  * The island traders: one stands on the sand in front of the stilt hut on
@@ -9,8 +10,13 @@ import { FOREARM_LENGTH, HumanFigure, SHIN_LENGTH, THIGH_LENGTH, UPPER_ARM_LENGT
  * at his sides or on his hips, looking round; when someone comes up the
  * beach he turns to them, follows them with his eyes and raises a hand.
  *
- * The figure is the project's own procedural rig (no model to download, so
- * nothing can fail to load, and it matches the skipper exactly).
+ * The traders are rigged character models (a man, a woman and a pirate,
+ * `public/models/trader-*.glb`) posed procedurally (`RiggedFigure`): a
+ * visitor coming up the beach is turned to and greeted with a raised,
+ * waving hand and a friendly tilt of the head; while he stands near, the
+ * trader shifts from foot to foot, glances round and back at him, nods now
+ * and then. Should the models be missing, the project's own procedural
+ * figure (the skipper's rig in other clothes) stands in.
  */
 
 export type TraderSpot = { id: number; x: number; z: number; facing: number };
@@ -19,6 +25,8 @@ export type TraderSpot = { id: number; x: number; z: number; facing: number };
 export const TRADE_REACH = 3.2;
 /** Most traders kept built at once (the nearest ones). */
 const MAX_TRADERS = 6;
+/** Seconds a greeting wave lasts. */
+const WAVE_TIME = 2.8;
 
 const OUTFITS: readonly FigureOutfit[] = [
   { skin: 0x8a5a3c, shirt: 0xd9472b, shorts: 0xe8dcc0, shoes: 0x3a2a1e, hair: 0x1c140e, cap: 0xd8c27a, sunglasses: false, sleeve: 0.55 },
@@ -29,7 +37,11 @@ const OUTFITS: readonly FigureOutfit[] = [
 
 type Trader = {
   spot: TraderSpot;
-  figure: HumanFigure;
+  /** The procedural stand-in (null when the trader is a rigged model). */
+  figure: HumanFigure | null;
+  rig: RiggedFigure | null;
+  /** The scene object placed for him (the stand-in's mesh or the model's root). */
+  object: THREE.Object3D;
   /** Where he faces now (eases toward the visitor), and where his eyes are turned. */
   facing: number;
   gazeYaw: number;
@@ -41,7 +53,22 @@ type Trader = {
   hips: number;
   phase: number;
   ground: number;
+  /** Rigged traders: weight from the right foot (−1) to the left (1), eased, its goal, and when it shifts next. */
+  weight: number;
+  weightGoal: number;
+  shiftIn: number;
+  /** A glance away from the visitor (or round about): its direction, how long it lasts, when the next comes. */
+  glanceYaw: number;
+  glancePitch: number;
+  glanceFor: number;
+  glanceIn: number;
+  /** Seconds into a nod (−1 when none), and 0…1 how warmly the head is tilted in greeting. */
+  nod: number;
+  warmth: number;
 };
+
+/** Where each rigged model comes from: a clone of a loaded trader model, by index (null if not loaded). */
+export type TraderModels = { count: number; create: (index: number) => THREE.Object3D | null };
 
 export class Traders {
   readonly group = new THREE.Group();
@@ -51,9 +78,24 @@ export class Traders {
   private readonly local = new THREE.Vector3();
   private time = 0;
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, private readonly models: TraderModels | null = null) {
     this.group.name = "Island_Traders";
     scene.add(this.group);
+  }
+
+  /** A rigged trader for this spot, or null if the models did not load. */
+  private createRig(spot: TraderSpot): RiggedFigure | null {
+    if (!this.models || this.models.count === 0) return null;
+    const model = this.models.create(Math.abs(spot.id) % this.models.count);
+    if (!model) return null;
+    try {
+      const rig = new RiggedFigure(model);
+      rig.root.name = `Trader_${spot.id}`;
+      return rig;
+    } catch (error) {
+      console.warn("A trader model has not the expected skeleton; the procedural figure stands in.", error);
+      return null;
+    }
   }
 
   /** The traders standing now (built and placed). */
@@ -95,46 +137,240 @@ export class Traders {
     const keep = new Set(wanted.map((spot) => spot.id));
     for (const [id, trader] of this.traders) {
       if (keep.has(id)) continue;
-      this.group.remove(trader.figure.mesh);
-      trader.figure.dispose();
+      this.group.remove(trader.object);
+      trader.figure?.dispose();
+      trader.rig?.dispose();
       this.traders.delete(id);
     }
     for (const spot of wanted) {
       let trader = this.traders.get(spot.id);
       if (!trader) {
-        const figure = new HumanFigure(OUTFITS[Math.abs(spot.id) % OUTFITS.length]);
-        figure.mesh.name = `Trader_${spot.id}`;
-        figure.mesh.castShadow = true;
-        this.group.add(figure.mesh);
+        const rig = this.createRig(spot);
+        const figure = rig ? null : new HumanFigure(OUTFITS[Math.abs(spot.id) % OUTFITS.length]);
+        const object = rig ? rig.root : figure!.mesh;
+        if (figure) {
+          figure.mesh.name = `Trader_${spot.id}`;
+          figure.mesh.castShadow = true;
+        }
+        this.group.add(object);
+        const seed = Math.abs(spot.id) % 97;
         trader = {
           spot,
           figure,
+          rig,
+          object,
           facing: spot.facing,
           gazeYaw: 0,
           gazePitch: 0,
           wave: -1,
           greeted: false,
           hips: 0,
-          phase: (Math.abs(spot.id) % 97) * 0.37,
+          phase: seed * 0.37,
           ground: ground(spot.x, spot.z),
+          weight: 0,
+          weightGoal: seed % 2 === 0 ? 0.8 : -0.8,
+          shiftIn: 1 + (seed % 5),
+          glanceYaw: 0,
+          glancePitch: 0,
+          glanceFor: 0,
+          glanceIn: 2 + (seed % 3),
+          nod: -1,
+          warmth: 0,
         };
         // Stood at his place at once: a trader only posed when near would
         // otherwise wait at the world's origin, out at sea.
-        figure.mesh.position.set(spot.x, trader.ground - 0.02, spot.z);
-        figure.mesh.rotation.y = spot.facing;
+        object.position.set(spot.x, trader.ground - (rig ? 0 : 0.02), spot.z);
+        object.rotation.y = spot.facing;
+        object.updateMatrixWorld(true);
+        // A rigged one stands posed from the start (not in the model's A-pose).
+        if (rig) this.poseRigged(trader, 0, null);
         this.traders.set(spot.id, trader);
       }
       trader.spot = spot;
       const distanceToEye = Math.hypot(spot.x - eye.x, spot.z - eye.z);
       // Never one standing in the water (an island whose beach is all swash there).
-      trader.figure.mesh.visible = distanceToEye < 600 && trader.ground > 0.2;
+      trader.object.visible = distanceToEye < 600 && trader.ground > 0.2;
       if (distanceToEye > 160) continue;
-      this.pose(trader, step, visitor);
+      if (trader.rig) this.poseRigged(trader, step, visitor);
+      else this.pose(trader, step, visitor);
+    }
+  }
+
+  private readonly offset = new THREE.Vector3();
+  private readonly up = new THREE.Vector3(0, 1, 0);
+  private readonly forward = new THREE.Vector3();
+  private readonly left = new THREE.Vector3();
+  private readonly handTarget = new THREE.Vector3();
+  private readonly handPole = new THREE.Vector3();
+  private readonly scratch = new THREE.Vector3();
+  private readonly scratch2 = new THREE.Vector3();
+
+  /**
+   * A rigged trader for this frame. His moods: alone, he stands at ease,
+   * looking round, now and then with his hands on his hips; when someone
+   * comes up the beach he turns to him, looks at him, raises a hand and
+   * waves, his head tilted a little; while the visitor stands by, he
+   * shifts his weight from foot to foot more often, glances round and back,
+   * nods now and then.
+   */
+  private poseRigged(trader: Trader, step: number, visitor: THREE.Vector3 | null): void {
+    const rig = trader.rig!;
+    const { spot } = trader;
+    const t = this.time + trader.phase;
+    const random = (salt: number) => {
+      const n = Math.sin((t * 12.9898 + salt * 78.233 + spot.id * 0.0137) * 43.17) * 43758.5453;
+      return n - Math.floor(n);
+    };
+
+    // --- What he is doing ---------------------------------------------------
+    let distance = Number.POSITIVE_INFINITY;
+    let toward = spot.facing;
+    let visitorPitch = 0;
+    if (visitor) {
+      const dx = visitor.x - spot.x;
+      const dz = visitor.z - spot.z;
+      distance = Math.hypot(dx, dz);
+      toward = Math.atan2(dx, dz);
+      visitorPitch = Math.atan2(visitor.y - (trader.ground + rig.height * 0.93), Math.max(distance, 0.5));
+    }
+    const noticed = distance < 16;
+    const close = distance < 5.5;
+    if (noticed && !trader.greeted && distance < 12) {
+      trader.greeted = true;
+      trader.wave = 0;
+      trader.nod = 0;
+    } else if (distance > 26) {
+      trader.greeted = false;
+    }
+    let goalFacing = spot.facing + Math.sin(t * 0.07) * 0.2;
+    if (noticed && distance < 12) goalFacing = toward;
+    trader.facing += Math.atan2(Math.sin(goalFacing - trader.facing), Math.cos(goalFacing - trader.facing)) * (1 - Math.exp(-step * 2.4));
+    // Weight from foot to foot: every few seconds, more often with a visitor close.
+    trader.shiftIn -= step;
+    if (trader.shiftIn <= 0) {
+      trader.weightGoal = -Math.sign(trader.weightGoal || 1) * (0.55 + random(1) * 0.45);
+      trader.shiftIn = close ? 2 + random(2) * 2.2 : 4 + random(3) * 5;
+    }
+    trader.weight += (trader.weightGoal - trader.weight) * (1 - Math.exp(-step * 2.2));
+    // Glances: round about when alone; with a visitor, mostly at him, now and then aside.
+    trader.glanceIn -= step;
+    if (trader.glanceFor > 0) trader.glanceFor -= step;
+    // Never looking away in the middle of a greeting.
+    if (trader.wave >= 0) trader.glanceFor = 0;
+    if (trader.glanceIn <= 0) {
+      trader.glanceYaw = (random(4) < 0.5 ? -1 : 1) * (0.45 + random(5) * 0.65);
+      trader.glancePitch = (random(6) - 0.6) * 0.25;
+      trader.glanceFor = noticed ? 0.9 + random(7) * 0.9 : 2 + random(8) * 3;
+      trader.glanceIn = trader.glanceFor + (noticed ? (close ? 2.5 : 4) + random(9) * 3 : 0.5 + random(10) * 2);
+      if (close && random(11) < 0.3) trader.nod = 0;
+    }
+    let lookYaw = Math.sin(t * 0.21) * 0.25;
+    let lookPitch = Math.sin(t * 0.17) * 0.05;
+    if (trader.glanceFor > 0) {
+      lookYaw = trader.glanceYaw;
+      lookPitch = trader.glancePitch;
+    } else if (noticed) {
+      lookYaw = Math.atan2(Math.sin(toward - trader.facing), Math.cos(toward - trader.facing));
+      lookPitch = visitorPitch;
+    }
+    lookYaw = Math.max(-1.25, Math.min(1.25, lookYaw));
+    lookPitch = Math.max(-0.5, Math.min(0.45, lookPitch));
+    const ease = 1 - Math.exp(-step * 6);
+    trader.gazeYaw += (lookYaw - trader.gazeYaw) * ease;
+    trader.gazePitch += (lookPitch - trader.gazePitch) * ease;
+    if (trader.wave >= 0) {
+      trader.wave += step;
+      if (trader.wave > WAVE_TIME) trader.wave = -1;
+    }
+    if (trader.nod >= 0) {
+      trader.nod += step;
+      if (trader.nod > 0.9) trader.nod = -1;
+    }
+    trader.warmth += ((noticed ? 1 : 0) - trader.warmth) * (1 - Math.exp(-step * 1.5));
+    // Hands on his hips for a while when no one is about.
+    const hipsGoal = !noticed && trader.wave < 0 && Math.sin(t * 0.08 + 1.3) > 0.35 ? 1 : 0;
+    trader.hips += (hipsGoal - trader.hips) * (1 - Math.exp(-step * 1.6));
+
+    // --- The pose -------------------------------------------------------------
+    rig.resetPose();
+    const root = rig.root;
+    root.position.set(spot.x, trader.ground, spot.z);
+    root.rotation.set(0, trader.facing, 0);
+    root.updateMatrixWorld(true);
+    const s = rig.height / 1.8;
+    const up = this.up;
+    const forward = rig.axis(0, 0, 1, this.forward);
+    const left = rig.axis(1, 0, 0, this.left);
+    const w = trader.weight;
+    const breath = Math.sin(t * 1.35);
+    // Hips over the loaded foot, the free side dropping a little.
+    this.offset.copy(left).multiplyScalar(w * 0.038 * s).addScaledVector(up, (-0.006 - Math.abs(w) * 0.012) * s);
+    rig.shiftBone("Hips", this.offset);
+    rig.turnBone("Hips", forward, w * 0.055);
+    rig.turnBone("Hips", up, w * 0.05);
+    // The torso back upright over the hips, breathing.
+    rig.turnBone("Spine02", forward, -w * 0.04);
+    rig.turnBone("Spine01", left, breath * 0.012 + 0.015);
+    rig.turnBone("Spine", left, breath * 0.01);
+    // Look: the turn shared down the neck, the head tilted kindly when greeting, a nod.
+    const nod = trader.nod >= 0 ? Math.sin((trader.nod / 0.9) * Math.PI) * 0.22 : 0;
+    rig.turnBone("Spine", up, trader.gazeYaw * 0.15);
+    rig.turnBone("neck", up, trader.gazeYaw * 0.35);
+    rig.turnBone("Head", up, trader.gazeYaw * 0.5);
+    rig.turnBone("neck", rig.axis(1, 0, 0, this.scratch), -trader.gazePitch * 0.4 + nod * 0.35);
+    rig.turnBone("Head", rig.axis(1, 0, 0, this.scratch), -trader.gazePitch * 0.6 + nod * 0.65);
+    rig.turnBone("Head", forward, trader.warmth * 0.07 + Math.sin(t * 0.31) * 0.02);
+
+    // Legs: feet planted where they stand at rest, the free heel lifted a little.
+    for (const side of ["Left", "Right"] as const) {
+      const sign = side === "Left" ? 1 : -1;
+      const free = Math.max(0, -w * sign);
+      const foot = rig.restPoint.get(`${side}Foot`)!;
+      this.scratch.set(foot.x, foot.y + free * 0.025 * s, foot.z + free * 0.02 * s);
+      rig.toWorld(this.scratch, this.handTarget);
+      const knee = rig.restPoint.get(`${side}Leg`)!;
+      this.scratch.set(knee.x + sign * 0.05, knee.y, knee.z + 0.6);
+      rig.toWorld(this.scratch, this.handPole);
+      rig.solveLimb(`${side}UpLeg`, `${side}Leg`, `${side}Foot`, this.handTarget, this.handPole);
+      rig.levelFoot(`${side}Foot`);
+    }
+
+    // Arms: at his sides (swinging a hair with his breath), on his hips, or
+    // the right one raised and waving.
+    const hips = rig.restPoint.get("Hips")!;
+    for (const side of ["Left", "Right"] as const) {
+      const sign = side === "Left" ? 1 : -1;
+      const shoulder = rig.restPoint.get(`${side}Arm`)!;
+      // At the side, the arm hanging nearly straight, a little forward.
+      const hang = 0.52 * s;
+      this.handTarget.set(shoulder.x + sign * 0.035 * s, shoulder.y - hang + breath * 0.004, shoulder.z + 0.06 * s);
+      this.handPole.set(shoulder.x + sign * 0.15, shoulder.y - 0.25 * s, shoulder.z - 0.6);
+      // On the hip, the elbow out and back.
+      this.scratch.set(hips.x + sign * 0.17 * s, hips.y + 0.04 * s, hips.z + 0.01);
+      this.scratch2.set(shoulder.x + sign * 0.65, shoulder.y - 0.15, shoulder.z - 0.35);
+      this.handTarget.lerp(this.scratch, trader.hips);
+      this.handPole.lerp(this.scratch2, trader.hips);
+      let waving = 0;
+      if (side === "Right" && trader.wave >= 0) {
+        // Raised beside the head, the forearm swinging side to side from the elbow.
+        waving = Math.min(1, trader.wave / 0.45, (WAVE_TIME - trader.wave) / 0.45);
+        waving = waving * waving * (3 - 2 * waving);
+        const swing = Math.sin(trader.wave * 10.5) * 0.11 * s;
+        this.scratch.set(shoulder.x - 0.16 * s + swing, shoulder.y + 0.4 * s, shoulder.z + 0.13 * s);
+        this.scratch2.set(shoulder.x - 0.7, shoulder.y - 0.2, shoulder.z - 0.05);
+        this.handTarget.lerp(this.scratch, waving);
+        this.handPole.lerp(this.scratch2, waving);
+      }
+      rig.toWorld(this.handTarget, this.handTarget);
+      rig.toWorld(this.handPole, this.handPole);
+      rig.solveLimb(`${side}Arm`, `${side}ForeArm`, `${side}Hand`, this.handTarget, this.handPole);
+      if (waving > 0) rig.turnBone(`${side}Hand`, forward, Math.sin(trader.wave * 10.5) * 0.35 * waving);
     }
   }
 
   private pose(trader: Trader, step: number, visitor: THREE.Vector3 | null): void {
-    const { figure, spot } = trader;
+    const { spot } = trader;
+    const figure = trader.figure!;
     const mesh = figure.mesh;
     const t = this.time + trader.phase;
     figure.uniforms.uFigureTime.value = t;
@@ -230,7 +466,10 @@ export class Traders {
   }
 
   dispose(): void {
-    for (const trader of this.traders.values()) trader.figure.dispose();
+    for (const trader of this.traders.values()) {
+      trader.figure?.dispose();
+      trader.rig?.dispose();
+    }
     this.traders.clear();
     this.group.removeFromParent();
   }

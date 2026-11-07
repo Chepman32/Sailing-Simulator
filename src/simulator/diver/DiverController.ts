@@ -56,12 +56,14 @@ export type DiverHooks = {
   inhale: (depth: number) => void;
   /** A footstep on deck. */
   footstep: (running: boolean) => void;
-  /** A stroke at the surface. */
-  stroke: (position: THREE.Vector3) => void;
+  /** A stroke at the surface (sprinting: harder and quicker). */
+  stroke: (position: THREE.Vector3, sprint: boolean) => void;
+  /** A fin kick under the water. */
+  kick?: (sprint: boolean) => void;
   /** The mode changed (helm, leap, deck, swim, land). */
   modeChanged: (mode: DiverMode) => void;
-  /** A step through shallow water at `position` (a slosh rather than a footfall). */
-  wade?: (position: THREE.Vector3) => void;
+  /** A step through shallow water `depth` deep at `position` (a slosh rather than a footfall). */
+  wade?: (position: THREE.Vector3, depth: number, running: boolean) => void;
 };
 
 /** The skipper's body during the leap over the side, written by the simulator each frame. */
@@ -432,7 +434,7 @@ export class DiverController {
     const water = wadingDepth(walk.x, walk.z, this.land);
     if (walk.landed > 0) {
       this.landing = Math.min(1, walk.landed * 0.12);
-      if (water > 0.12) this.hooks.wade?.(this.scratch.set(walk.x, walk.y + water, walk.z));
+      if (water > 0.12) this.hooks.wade?.(this.scratch.set(walk.x, walk.y + water, walk.z), water, true);
       else this.hooks.footstep(true);
       walk.landed = 0;
     }
@@ -441,7 +443,7 @@ export class DiverController {
       this.stepClock += (dt * moving) / (input.sprint ? RUN_STRIDE : WALK_STRIDE);
       if (this.stepClock >= 1) {
         this.stepClock -= 1;
-        if (water > 0.12) this.hooks.wade?.(this.scratch.set(walk.x, walk.y + water, walk.z));
+        if (water > 0.12) this.hooks.wade?.(this.scratch.set(walk.x, walk.y + water, walk.z), water, input.sprint);
         else this.hooks.footstep(input.sprint);
       }
       this.bobClock += (dt * moving * Math.PI * 2) / (input.sprint ? RUN_STRIDE : WALK_STRIDE);
@@ -470,7 +472,7 @@ export class DiverController {
       swim.airborne = false;
       swim.surface = Number.NaN;
       swim.air = this.air;
-      this.hooks.wade?.(this.scratch.set(walk.x, surface, walk.z));
+      this.hooks.wade?.(this.scratch.set(walk.x, surface, walk.z), 0.9, false);
       this.setMode("swim");
     }
   }
@@ -611,7 +613,7 @@ export class DiverController {
       walk.landed = 0;
       this.air = swim.air;
       this.eyeLag += swim.y - (ground + EYE_HEIGHT);
-      this.hooks.wade?.(this.scratch.set(swim.x, surfaceHere, swim.z));
+      this.hooks.wade?.(this.scratch.set(swim.x, surfaceHere, swim.z), 0.6, false);
       this.setMode("land");
       this.prompt = null;
       return;
@@ -654,12 +656,20 @@ export class DiverController {
       }
       if (phase < 0.42) this.exhaled = false;
       this.lastBreath = phase;
+      // Fin kicks while swimming along.
+      if (Math.hypot(swim.vx, swim.vy, swim.vz) > 0.5) {
+        this.stepClock += dt * (input.sprint ? 1.5 : 0.85);
+        if (this.stepClock >= 1) {
+          this.stepClock -= 1;
+          this.hooks.kick?.(input.sprint);
+        }
+      }
     } else if (Math.hypot(swim.vx, swim.vz) > 0.4) {
       // The crawl at the surface: a stroke every second or so, quicker when sprinting.
       this.stepClock += dt * (this.swimInput.sprint ? 1.9 : 1.1);
       if (this.stepClock >= 1) {
         this.stepClock -= 1;
-        this.hooks.stroke(this.scratch.set(swim.x, this.world.surface(swim.x, swim.z), swim.z));
+        this.hooks.stroke(this.scratch.set(swim.x, this.world.surface(swim.x, swim.z), swim.z), this.swimInput.sprint);
       }
     }
     this.bobClock += dt;

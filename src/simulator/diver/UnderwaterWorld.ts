@@ -168,7 +168,7 @@ function brainGeometry(): THREE.BufferGeometry {
   return paintAll(geometry, (x, y, z, out) => {
     const warp = noise3(x * 2.5, (y / 0.95 + 0.35) * 2.5, z * 2.5) * 6;
     const groove = Math.abs(Math.sin((x + z * 0.6) * 14 + warp));
-    out.setRGB(0.62, 0.55, 0.36).multiplyScalar(0.7 + groove * 0.35);
+    out.setRGB(0.78, 0.7, 0.5).multiplyScalar(0.62 + groove * 0.45);
   });
 }
 
@@ -208,7 +208,7 @@ function staghornGeometry(): THREE.BufferGeometry {
   merged.computeVertexNormals();
   return paintAll(merged, (_x, y, _z, out) => {
     // Pale growing tips over a deeper base.
-    out.setRGB(0.78, 0.5, 0.36).lerp(new THREE.Color(0.95, 0.85, 0.72), smoothstep(0.4, 1.3, y));
+    out.setRGB(0.62, 0.5, 0.46).lerp(new THREE.Color(1, 0.97, 0.94), smoothstep(0.3, 1.25, y));
   });
 }
 
@@ -231,7 +231,7 @@ function tableGeometry(): THREE.BufferGeometry {
   merged.computeVertexNormals();
   return paintAll(merged, (x, y, z, out) => {
     const r = Math.hypot(x, z);
-    out.setRGB(0.42, 0.55, 0.4).lerp(new THREE.Color(0.78, 0.8, 0.6), smoothstep(0.6, 1, r) * (y > 0.5 ? 1 : 0));
+    out.setRGB(0.55, 0.68, 0.55).lerp(new THREE.Color(0.95, 0.98, 0.9), smoothstep(0.55, 1, r) * (y > 0.5 ? 1 : 0));
   });
 }
 
@@ -547,15 +547,18 @@ const GEOMETRY_BUILDERS: Record<PropKind, () => THREE.BufferGeometry> = {
 /** Colours an instance of each kind may take (multiplied into its vertex colours). */
 const PALETTES: Record<PropKind, readonly number[]> = {
   rock: [0xffffff, 0xe8e2d8, 0xd8d0c4],
-  brain: [0xffffff, 0xc8d8a8, 0xe2b8d8, 0xd0c090],
-  staghorn: [0xffffff, 0xf6c0a8, 0xe0e8a0, 0xd0a0e8, 0xa8d8f0],
-  table: [0xffffff, 0xd8e8c0, 0xc0d8e0],
-  fan: [0xffffff, 0xff9070, 0xe8d060, 0xc080ff],
-  sponge: [0xffffff, 0xe0a070, 0xc080c0],
+  // A reef's colours: violet, rose and lime brain corals, staghorn with
+  // blue, pink or yellow tips, mint and sea-green tables, fans in red,
+  // gold and purple.
+  brain: [0xffffff, 0xb8f0a0, 0xf0b8e0, 0xffe090, 0xb0d0ff, 0xd8b0ff],
+  staghorn: [0xffffff, 0xa8ccff, 0xf4a8d8, 0xd8f490, 0xffc890, 0xc8a0ff, 0x90e8e0],
+  table: [0xffffff, 0x98f0d0, 0xd0f8a0, 0xb0d8ff, 0xf8d8a8],
+  fan: [0xffffff, 0xff6050, 0xffd040, 0xc060ff, 0xff50a0],
+  sponge: [0xffffff, 0xff9850, 0xc070d0, 0xffd060],
   grass: [0xffffff, 0xe0f0c0],
   urchin: [0xffffff],
   star: [0xffffff, 0xff7080, 0x70a0ff],
-  softcoral: [0xffffff, 0xffc0a0, 0xa0d0ff, 0xffe0a0],
+  softcoral: [0xffffff, 0xff98b8, 0xffb860, 0xb898ff, 0xff7890, 0x98e8ff],
   shell: [0xffffff, 0xffe0d0, 0xf0d8b0, 0xe8c8d8],
   pebbles: [0xffffff, 0xe8e0d4, 0xd0d4d8],
   cucumber: [0xffffff, 0xc09080, 0x806050],
@@ -696,6 +699,8 @@ export class UnderwaterWorld {
   private reefX = Number.NaN;
   private reefZ = Number.NaN;
   private readonly shafts: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial>;
+  /** Whether the light shafts are drawn as slabs here (false: as a volume, by the post-processing). */
+  billboardShafts = true;
   private readonly shaftData: Float32Array;
   private readonly shaftAttribute: THREE.InstancedBufferAttribute;
   private readonly snow: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial>;
@@ -1087,7 +1092,9 @@ export class UnderwaterWorld {
     shaftMaterial.uniforms.uTime!.value = this.time;
     shaftMaterial.uniforms.uSurface!.value = surfaceHere - 0.15;
     (shaftMaterial.uniforms.uAxis!.value as THREE.Vector3).copy(sunDown);
-    shaftMaterial.uniforms.uStrength!.value = amount * daylight * 0.14 * smoothstep(-2, 6, centre.y + 30);
+    // (With post-processing the shafts are a volume drawn by `UnderwaterRaysPass` instead.)
+    shaftMaterial.uniforms.uStrength!.value = this.billboardShafts ? amount * daylight * 0.14 * smoothstep(-2, 6, centre.y + 30) : 0;
+    this.shafts.visible = this.billboardShafts;
     (shaftMaterial.uniforms.uColor!.value as THREE.Color).copy(light).multiply(water).multiplyScalar(14);
     for (let index = 0; index < SHAFTS; index += 1) {
       const o = index * 4;
@@ -1226,6 +1233,26 @@ export class UnderwaterWorld {
         if (depth < 1.1) continue;
         const reef = reefDensity(px, pz, shore);
         const roll = hash(cx, cz, 3);
+        // Now and then on a thriving reef, a coral head: a big outcrop of old
+        // reef rock crowned with living colonies, standing metres off the sand.
+        if (reef > 0.55 && depth > 4.5 && hash(cx, cz, 60) < 0.09) {
+          const rocks = byKind.get("rock")!;
+          if (rocks.count < PROP_CAPACITY) {
+            const head = 1.8 + hash(cx, cz, 61) * 1.6;
+            const top = this.placeProp(rocks, px, pz, hash(cx, cz, 62), reef, shore, 0, head);
+            const lift = Math.min(top - seabedHeight(px, pz, shore), depth - 1.6) * 0.92;
+            const crown = 3 + Math.floor(hash(cx, cz, 63) * 3);
+            for (let piece = 0; piece < crown; piece += 1) {
+              const pick = hash(cx * 5 + piece, cz, 64);
+              const kind: PropKind = pick < 0.28 ? "table" : pick < 0.55 ? "staghorn" : pick < 0.72 ? "brain" : pick < 0.88 ? "softcoral" : "fan";
+              const layer = byKind.get(kind)!;
+              if (layer.count >= PROP_CAPACITY) continue;
+              const around = hash(cx, cz * 5 + piece, 65) * Math.PI * 2;
+              const out = head * 0.45 * Math.sqrt(hash(cx * 3, cz + piece, 66));
+              this.placeProp(layer, px + Math.cos(around) * out, pz + Math.sin(around) * out, hash(cx * 7 + piece, cz * 3, 67), reef, shore, lift * (1 - (out / head) * 0.6));
+            }
+          }
+        }
         // Bare sand is not bare: urchins, stars, anemones, clams, grass tufts, rocks.
         const chance = 0.45 + reef * 0.75;
         for (let item = 0; item < 3; item += 1) {
@@ -1281,10 +1308,10 @@ export class UnderwaterWorld {
     // A reef: corals by depth (staghorn and tables like the light, fans and
     // sponges the deeper water).
     const deep = smoothstep(6, 16, depth);
-    if (r < 0.16) return "rock";
-    if (r < 0.3) return "brain";
+    if (r < 0.12) return "rock";
+    if (r < 0.26) return "brain";
     if (r < 0.46 - deep * 0.12) return "staghorn";
-    if (r < 0.55 - deep * 0.08) return "table";
+    if (r < 0.57 - deep * 0.08) return "table";
     if (r < 0.66) return "softcoral";
     if (r < 0.74 + deep * 0.06) return "fan";
     if (r < 0.8 + deep * 0.04) return "sponge";
@@ -1295,20 +1322,27 @@ export class UnderwaterWorld {
     return "grass";
   }
 
-  private placeProp(layer: PropLayer, x: number, z: number, seed: number, reef: number, shore: number): void {
+  /**
+   * Puts one prop of `layer` down at (x, z) on the sand (or `lift` metres
+   * higher, on top of a coral head), its size `size` if given; returns the
+   * height of its top.
+   */
+  private placeProp(layer: PropLayer, x: number, z: number, seed: number, reef: number, shore: number, lift = 0, size?: number): number {
     const kind = layer.kind;
-    const ground = seabedHeight(x, z, shore);
+    const ground = seabedHeight(x, z, shore) + lift;
     const sizes: Record<PropKind, [number, number]> = {
       rock: [0.4, 1.6],
-      brain: [0.35, 1.1],
-      staghorn: [0.7, 1.5],
-      table: [0.6, 1.5],
-      fan: [0.4, 0.9],
-      sponge: [0.5, 1.1],
+      // Colonies the size they grow to on a healthy reef: brain corals a
+      // metre or two across, staghorn thickets and tables two and more.
+      brain: [0.6, 2.0],
+      staghorn: [1.1, 2.5],
+      table: [0.9, 2.5],
+      fan: [0.6, 1.5],
+      sponge: [0.6, 1.3],
       grass: [0.7, 1.3],
       urchin: [0.8, 1.3],
       star: [0.7, 1.2],
-      softcoral: [0.8, 1.6],
+      softcoral: [1.0, 2.0],
       shell: [0.7, 1.5],
       pebbles: [0.8, 1.6],
       cucumber: [0.8, 1.4],
@@ -1319,7 +1353,7 @@ export class UnderwaterWorld {
       tube: [0.7, 1.4],
     };
     const [low, high] = sizes[kind];
-    const size = (low + (high - low) * hash(Math.floor(seed * 1e6), 1, 40)) * (LITTER_KINDS.includes(kind) && kind !== "grass" ? 1 : 0.75 + reef * 0.4);
+    size ??= (low + (high - low) * hash(Math.floor(seed * 1e6), 1, 40)) * (LITTER_KINDS.includes(kind) && kind !== "grass" ? 1 : 0.75 + reef * 0.4);
     const yaw = hash(Math.floor(seed * 1e6), 2, 40) * Math.PI * 2;
     const flat = kind === "shell" || kind === "dollar" || kind === "cucumber" || kind === "pebbles" || kind === "rubble";
     const tilt = kind === "fan" ? 0 : (hash(Math.floor(seed * 1e6), 3, 40) - 0.5) * (flat ? 0.1 : 0.25);
@@ -1334,6 +1368,7 @@ export class UnderwaterWorld {
     scratchColor.set(palette[Math.floor(hash(Math.floor(seed * 1e6), 5, 40) * palette.length) % palette.length]!);
     layer.mesh.setColorAt(layer.count, scratchColor);
     layer.count += 1;
+    return scratchPosition.y + size * squash * 0.92;
   }
 
   dispose(): void {

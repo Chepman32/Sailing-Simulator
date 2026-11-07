@@ -37,7 +37,24 @@ export type IslandSurfaceUniforms = {
   uPalmNearTexel: THREE.IUniform<number>;
   uPalmShadowStrength: THREE.IUniform<number>;
   uPalmTrunks: THREE.IUniform<THREE.Vector4[]>;
+  /** The photographed turf (seamless, sRGB) and a normal map derived from it. */
+  uGrassMap: THREE.IUniform<THREE.Texture>;
+  uGrassNormalMap: THREE.IUniform<THREE.Texture>;
+  /** 1 once the turf photo has loaded (the procedural turf until then). */
+  uGrassReady: THREE.IUniform<number>;
 };
+
+/** Mean linear colour of the turf photo (`public/textures/grass.jpg`). */
+const GRASS_PHOTO_MEAN = [0.1175, 0.174, 0.0569] as const;
+/** Size on the ground of one tile of the turf photo, metres (and of the second, rotated layer). */
+const GRASS_TILE = 0.72;
+const GRASS_TILE_ALT = 0.97;
+
+function placeholderTexture(r: number, g: number, b: number): THREE.DataTexture {
+  const texture = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1, THREE.RGBAFormat);
+  texture.needsUpdate = true;
+  return texture;
+}
 
 export const MAX_PALM_TRUNKS = 32;
 /** Half the side of the square of islands the palm shadow map covers, metres. */
@@ -60,7 +77,43 @@ export function createIslandSurfaceUniforms(): IslandSurfaceUniforms {
     uPalmNearTexel: { value: 0 },
     uPalmShadowStrength: { value: 0 },
     uPalmTrunks: { value: Array.from({ length: MAX_PALM_TRUNKS }, () => new THREE.Vector4(0, -1000, 0, 0)) },
+    uGrassMap: { value: placeholderTexture(77, 100, 48) },
+    uGrassNormalMap: { value: placeholderTexture(128, 128, 255) },
+    uGrassReady: { value: 0 },
   };
+}
+
+/**
+ * Loads the turf photo and its normal map into the island surface's
+ * uniforms: repeating, mipmapped, filtered as sharply as the quality allows.
+ */
+export function loadGrassTextures(surface: IslandSurfaceUniforms, anisotropy: number): void {
+  const loader = new THREE.TextureLoader();
+  let loaded = 0;
+  const setUp = (texture: THREE.Texture, color: boolean) => {
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    texture.anisotropy = anisotropy;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = true;
+    texture.needsUpdate = true;
+  };
+  const done = () => {
+    loaded += 1;
+    if (loaded === 2) surface.uGrassReady.value = 1;
+  };
+  loader.load("/textures/grass.jpg", (texture) => {
+    setUp(texture, true);
+    surface.uGrassMap.value = texture;
+    done();
+  }, undefined, () => console.warn("The turf texture could not be loaded; the procedural turf stays."));
+  loader.load("/textures/grass-normal.jpg", (texture) => {
+    setUp(texture, false);
+    surface.uGrassNormalMap.value = texture;
+    done();
+  });
 }
 
 /**
@@ -136,6 +189,9 @@ const SAND_DECLARATIONS = /* glsl */ `
   uniform float uSurfTime;
   uniform vec2 uWindDirection;
   uniform vec4 uPalmTrunks[${MAX_PALM_TRUNKS}];
+  uniform sampler2D uGrassMap;
+  uniform sampler2D uGrassNormalMap;
+  uniform float uGrassReady;
   varying vec3 vSandWorld;
   varying float vSandMask;
   varying float vRockMask;
@@ -187,7 +243,7 @@ export function applyIslandSurface(
   surface: IslandSurfaceUniforms,
   sky: Record<string, THREE.IUniform>,
 ): void {
-  patchMaterialShader(material, "island-surface-v4", (shader) => {
+  patchMaterialShader(material, "island-surface-v5", (shader) => {
     Object.assign(shader.uniforms, sky, surface, ISLAND_SLOT_UNIFORMS);
     shader.vertexShader = injectAfter(
       shader.vertexShader.replace(
@@ -233,6 +289,11 @@ export function applyIslandSurface(
       float tuftResolved = 1.0 - smoothstep(0.08, 0.5, sandFootprint);
       float grassBroad = skyFbm3(sandPosition * 0.07 + 3.3);
       float grassTufts = skyNoise(sandPosition * 2.6 + 1.7);
+      // The turf photo, laid twice (at two sizes, the second turned) and
+      // blended by a slow noise, so no tile repeats in a grid.
+      vec2 grassUv = sandPosition / ${GRASS_TILE.toFixed(3)};
+      vec2 grassUvAlt = mat2(0.809, 0.588, -0.588, 0.809) * sandPosition / ${GRASS_TILE_ALT.toFixed(3)} + vec2(0.37, 0.71);
+      float grassPick = smoothstep(0.32, 0.68, skyNoise(sandPosition * 0.42 + 4.1));
       `,
     );
     fragment = injectAfter(
@@ -272,16 +333,23 @@ export function applyIslandSurface(
         float litter = smoothstep(0.62, 0.8, skyFbm3(sandPosition * 0.33 + 5.7));
         grass = mix(grass, vec3(0.36, 0.3, 0.18) * (0.75 + grassTufts * 0.5), litter * 0.55);
         grass *= mix(1.0, 0.72 + grassTufts * 0.5, tuftResolved);
-        // Blades: a stretched, fine grain that fades out before it can shimmer.
-        vec2 bladeCell = floor(sandPosition * vec2(42.0, 13.0) + vec2(0.0, skyHash(floor(sandPosition * 42.0)) * 7.0));
-        float blade = skyHash(bladeCell);
-        grass *= mix(1.0, 0.82 + blade * 0.36, grassResolved);
-        grass = mix(grass, grass * vec3(1.3, 1.22, 0.7), step(0.94, blade) * grassResolved * 0.55);
+        // The blades themselves: the turf photo. Its structure (relative to
+        // its own mean colour) is laid over the island's own greens, and its
+        // real hues are mixed in at the same brightness.
+        if (uGrassReady > 0.5) {
+          vec3 photo = mix(texture2D(uGrassMap, grassUv).rgb, texture2D(uGrassMap, grassUvAlt).rgb, grassPick);
+          vec3 photoMean = vec3(${GRASS_PHOTO_MEAN.map((v) => v.toFixed(4)).join(", ")});
+          vec3 detail = photo / photoMean;
+          float brightness = dot(grass, vec3(0.3, 0.59, 0.11)) / dot(photoMean, vec3(0.3, 0.59, 0.11));
+          grass = mix(grass * detail, photo * brightness * 1.08, 0.78);
+        } else {
+          grass *= 0.9 + grassTufts * 0.2;
+        }
         // Bare earth: on slopes and in patches, a warm brown soil with a few stones.
         float slope = 1.0 - smoothstep(0.7, 0.92, normalize(vGroundNormal).y);
         float bare = clamp(slope * 0.85 + smoothstep(0.72, 0.86, skyFbm3(sandPosition * 0.21 + 9.1)) * 0.7, 0.0, 1.0);
         vec3 soil = vec3(0.3, 0.22, 0.14) * (0.8 + grassTufts * 0.4);
-        soil = mix(soil, vec3(0.5, 0.47, 0.42), step(0.965, skyHash(floor(sandPosition * 18.0) + 2.3)) * grassResolved);
+        soil = mix(soil, vec3(0.5, 0.47, 0.42), smoothstep(0.78, 0.86, skyNoise(sandPosition * 7.0 + 2.3)) * grassResolved);
         grass = mix(grass, soil, bare * 0.75);
         diffuseColor.rgb = mix(diffuseColor.rgb, grass, groundGreen);
       }
@@ -344,6 +412,11 @@ export function applyIslandSurface(
         vec2 tuftSlope = vec2(skyNoise((sandPosition + vec2(e, 0.0)) * 2.6 + 1.7) - t0, skyNoise((sandPosition + vec2(0.0, e)) * 2.6 + 1.7) - t0) / e * 0.09 * tuftResolved;
         float m0 = skyFbm3(sandPosition * 0.6);
         tuftSlope += vec2(skyFbm3((sandPosition + vec2(0.5, 0.0)) * 0.6) - m0, skyFbm3((sandPosition + vec2(0.0, 0.5)) * 0.6) - m0) * 0.5;
+        // The photo's blades in the normal, fading where they are too fine to resolve.
+        if (uGrassReady > 0.5) {
+          vec2 bladeSlope = mix(texture2D(uGrassNormalMap, grassUv).xy, texture2D(uGrassNormalMap, grassUvAlt).xy, grassPick) * 2.0 - 1.0;
+          tuftSlope += bladeSlope * 0.55 * tuftResolved;
+        }
         vec3 tuftView = (viewMatrix * vec4(-tuftSlope.x, 0.0, -tuftSlope.y, 0.0)).xyz;
         normal = normalize(normal + tuftView * groundGreen);
       }

@@ -1,3 +1,4 @@
+import { BodySounds, type FootSurface } from "./BodySounds";
 import { clamp } from "../math";
 import { BoatVoices } from "./BoatVoices";
 import { BELL_RING, ringBell } from "./BellSynth";
@@ -1253,23 +1254,39 @@ export class AudioSystem {
     }
   }
 
-  /** A footstep on deck (bare feet on teak and gelcoat). */
-  footstep(running: boolean): void {
+  /** The skipper's own body sounds (footsteps, wading, swimming, leaves). */
+  private body?: BodySounds;
+
+  private get bodyReady(): BodySounds | null {
     const context = this.context;
-    if (!context || !this.master || context.state !== "running" || !this.enabled) return;
-    const now = context.currentTime;
-    const thump = context.createBufferSource();
-    thump.buffer = this.createNoiseBuffer(0.2, "brown");
-    const low = context.createBiquadFilter();
-    low.type = "lowpass";
-    low.frequency.value = running ? 420 : 300;
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(running ? 0.16 : 0.1, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-    thump.connect(low).connect(gain).connect(this.master);
-    thump.start(now, Math.random() * 0.05);
-    thump.stop(now + 0.15);
-    thump.onended = () => gain.disconnect();
+    if (!context || !this.master || context.state !== "running" || !this.enabled) return null;
+    this.body ??= new BodySounds(context, this.master);
+    return this.body;
+  }
+
+  /** One footstep on `surface` (sand, wet sand, grass, pier planks, rock, the deck). */
+  footstep(surface: FootSurface, running: boolean): void {
+    this.bodyReady?.footstep(surface, running);
+  }
+
+  /** Pushing through a bush (with each step), `depth` 0…1 how far in. */
+  rustle(depth: number, running: boolean): void {
+    this.bodyReady?.rustle(depth, running);
+  }
+
+  /** A step through shallow water `depth` metres deep. */
+  wade(depth: number, running: boolean): void {
+    this.bodyReady?.wade(depth, running);
+  }
+
+  /** One arm stroke swimming at the surface. */
+  swimStroke(sprint: boolean): void {
+    this.bodyReady?.stroke(sprint);
+  }
+
+  /** One fin kick under the water. */
+  finKick(sprint: boolean): void {
+    this.bodyReady?.kick(sprint);
   }
 
   /** Where the engine is (the yacht's engine room), for how it is heard from the camera. */

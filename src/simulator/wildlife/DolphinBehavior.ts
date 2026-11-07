@@ -376,7 +376,8 @@ function updatePodMode(pod: DolphinPod, world: MarineWorld, vessel: VesselState,
     const dx = pod.centreX - vessel.x;
     const dz = pod.centreZ - vessel.z;
     const distance = Math.hypot(dx, dz) || 1;
-    const desired = 17 + Math.sin(pod.wander * 0.05) * 5;
+    // Round a swimmer they come much closer: curious, circling at ten metres.
+    const desired = vessel.swimmer ? 9 + Math.sin(pod.wander * 0.07) * 3 : 17 + Math.sin(pod.wander * 0.05) * 5;
     const tangentX = (dz / distance) * pod.side;
     const tangentZ = (-dx / distance) * pod.side;
     const radial = (desired - distance) * 0.08;
@@ -463,11 +464,18 @@ function slotFor(
     }
     case "roam": {
       const angle = agent.id * 2.1 + agent.wander * 0.05;
+      // Cruising at rest they rise to breathe: backs and fins break the surface in turn.
+      let roamDepth = 0.12 + 0.75 * (0.5 + 0.5 * Math.sin(agent.wander * 0.55 + agent.id * 1.9));
+      if (vessel.swimmer) {
+        // With a swimmer down there, each in turn dives to have a look at him
+        // and comes back up to breathe.
+        const down = smoothstep(-0.1, 0.5, Math.sin(agent.wander * 0.23 + agent.id * 1.7));
+        roamDepth += (Math.min(Math.max(vessel.swimmer.depth, 1.5), 8) - roamDepth) * down;
+      }
       return {
         x: pod.centreX + Math.cos(angle) * (3 + rank * 1.4),
         z: pod.centreZ + Math.sin(angle) * (3 + rank * 1.4),
-        // Cruising at rest they rise to breathe: backs and fins break the surface in turn.
-        depth: 0.12 + 0.75 * (0.5 + 0.5 * Math.sin(agent.wander * 0.55 + agent.id * 1.9)),
+        depth: roamDepth,
         speed: 2.8 + agent.speedBias,
       };
     }

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { leafCards, leafGeometry } from "./IslandVegetation";
+import { leafGeometry, leafMass, type LeafBuffers } from "./IslandVegetation";
 import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import { computeBoundingSphereFast, computeVertexNormalsFast } from "../core/FastGeometry";
 import { smoothstep } from "../math";
@@ -296,11 +296,13 @@ function transformed(geometry: THREE.BufferGeometry, x: number, y: number, z: nu
 // --- The pieces -------------------------------------------------------------------
 
 type Surface = (radial: number, angle: number) => number;
-type LeafBuffers = { positions: number[]; uvs: number[]; colors: number[]; normals: number[] };
 /** Something solid a walker goes round: centre (island-local) and radius, m. */
 export type PropFootprint = { x: number; z: number; radius: number };
 
-type Parts = { solid: THREE.BufferGeometry[]; glow: THREE.BufferGeometry[]; leaves: LeafBuffers; stones: PropFootprint[] };
+/** A bush's footprint (island-local centre and radius): a walker pushes through it, rustling. */
+export type BushFootprint = { x: number; z: number; radius: number; top: number };
+
+type Parts = { solid: THREE.BufferGeometry[]; glow: THREE.BufferGeometry[]; leaves: LeafBuffers; stones: PropFootprint[]; bushes: BushFootprint[] };
 
 /** Granite boulders: clusters on the shore, half in the water, and a few on the hills. */
 function addBoulders(island: IslandDefinition, profile: IslandProfile, surface: Surface, parts: Parts): void {
@@ -360,14 +362,18 @@ function addBoulders(island: IslandDefinition, profile: IslandProfile, surface: 
   }
 }
 
-/** Scrub and bushes under the palms: clumps of small leafy masses, speckled light and dark like foliage. */
+/**
+ * Scrub and bushes under the palms: each bush a few leafy masses heaped
+ * together, the biggest in the middle, in one of a handful of greens. They
+ * are soft (a walker pushes through), and none grows on a volcano's ash.
+ */
 function addShrubs(island: IslandDefinition, profile: IslandProfile, surface: Surface, clearings: readonly Clearing[], parts: Parts): void {
-  if (island.beachRadius < 20) return;
+  if (island.beachRadius < 20 || island.volcano) return;
   const id = island.id;
   const density = profile.character === "lush" ? 0.7 : profile.character === "hilly" ? 0.45 : profile.character === "rocky" ? 0.3 : 0.22;
   const count = Math.min(70, Math.round(island.beachRadius * density));
-  const greens = [0x2c6332, 0x3a7334, 0x47803a, 0x30693f, 0x55853a].map((hex) => new THREE.Color(hex));
-  const dry = new THREE.Color(0x8a8a46);
+  const greens = [0x2f6a2c, 0x3b7a30, 0x4c8636, 0x2c6a44, 0x5a8a34, 0x3f7d3a].map((hex) => new THREE.Color(hex));
+  const tint = new THREE.Color();
   for (let index = 0; index < count; index += 1) {
     const angle = hash(id, 1000 + index) * Math.PI * 2;
     const radial = 0.12 + Math.sqrt(hash(id, 1100 + index)) * 0.55;
@@ -375,31 +381,25 @@ function addShrubs(island: IslandDefinition, profile: IslandProfile, surface: Su
     if (inClearing(clearings, point.x, point.z, 1.5)) continue;
     const ground = surface(radial, angle);
     const green = greens[Math.floor(hash(id, 1200 + index) * greens.length)]!;
-    const masses = 4 + Math.floor(hash(id, 1400 + index) * 3);
-    const size = 0.8 + hash(id, 1500 + index) * 1.1;
+    const masses = 3 + Math.floor(hash(id, 1400 + index) * 3);
+    const size = 0.75 + hash(id, 1500 + index) * 1.0;
+    let reach = 0;
+    let top = ground;
     for (let part = 0; part < masses; part += 1) {
-      const r = size * (0.42 + hash(id, 1600 + index * 8 + part) * 0.38);
-      const spread = size * 0.85;
-      const ox = (hash(id, 1700 + index * 8 + part) - 0.5) * spread * 2;
-      const oz = (hash(id, 1800 + index * 8 + part) - 0.5) * spread * 2;
-      const lift = hash(id, 1900 + index * 8 + part) * size * 0.5;
-      // A dense, dark core; the leafy outline is the leaf cards round it.
-      const geometry = blob(r * 0.82, 0.8, index * 3.1 + part * 1.7, 1, 0.38);
-      transformed(geometry, point.x + ox, ground + r * 0.5 + lift, point.z + oz, part * 1.3, 0.3);
-      leafCards(point.x + ox, ground + r * 0.55 + lift, point.z + oz, r, green, id * 131 + index * 17 + part, parts.leaves);
-      const top = ground + r + lift;
-      parts.solid.push(
-        painted(geometry, (x, y, z, out) => {
-          // Leaf speckle: each vertex its own shade, a few sunlit or dry.
-          const n = Math.sin(x * 37.1 + z * 29.3 + y * 41.7) * 43758.5453;
-          const speckle = n - Math.floor(n);
-          out.copy(green).multiplyScalar(0.5 + speckle * 0.5);
-          if (speckle > 0.9) out.lerp(dry, 0.5);
-          // Darker underneath and inside the clump.
-          out.multiplyScalar(0.5 + 0.5 * smoothstep(ground, top, y));
-        }, PROP_KIND.foliage),
-      );
+      // The first mass is the biggest, in the middle; the others lean on it.
+      const r = size * (part === 0 ? 0.72 : 0.4 + hash(id, 1600 + index * 8 + part) * 0.3);
+      const around = hash(id, 1700 + index * 8 + part) * Math.PI * 2;
+      const out = part === 0 ? 0 : size * (0.45 + hash(id, 1800 + index * 8 + part) * 0.4);
+      const ox = Math.cos(around) * out;
+      const oz = Math.sin(around) * out;
+      const y = ground + r * (0.62 + hash(id, 1900 + index * 8 + part) * 0.2);
+      // Each mass its own shade of the bush's green.
+      tint.copy(green).multiplyScalar(0.85 + hash(id, 2000 + index * 8 + part) * 0.3);
+      leafMass(point.x + ox, y, point.z + oz, r, ground, tint, id * 131 + index * 17 + part, parts.leaves);
+      reach = Math.max(reach, out + r);
+      top = Math.max(top, y + r);
     }
+    parts.bushes.push({ x: point.x, z: point.z, radius: reach, top });
   }
 }
 
@@ -686,11 +686,13 @@ export type IslandFurniture = {
   lamp: THREE.Vector3 | null;
   /** Boulders and tors a walker goes round (island-local). */
   stones: PropFootprint[];
+  /** Bushes a walker pushes through (island-local). */
+  bushes: BushFootprint[];
 };
 
 /** Builds everything that furnishes an island (see `islandProfile`). */
 export function furnishIsland(island: IslandDefinition, profile: IslandProfile, surface: Surface): IslandFurniture {
-  const parts: Parts = { solid: [], glow: [], leaves: { positions: [], uvs: [], colors: [], normals: [] }, stones: [] };
+  const parts: Parts = { solid: [], glow: [], leaves: { positions: [], uvs: [], colors: [], normals: [], sway: [] }, stones: [], bushes: [] };
   const clearings = islandClearings(island, profile);
   addBoulders(island, profile, surface, parts);
   addShrubs(island, profile, surface, clearings, parts);
@@ -704,7 +706,7 @@ export function furnishIsland(island: IslandDefinition, profile: IslandProfile, 
     if (merged) computeBoundingSphereFast(merged);
     return merged;
   };
-  return { solid: merge(parts.solid), glow: merge(parts.glow), leaves: leafGeometry(parts.leaves), pier, lamp, stones: parts.stones };
+  return { solid: merge(parts.solid), glow: merge(parts.glow), leaves: leafGeometry(parts.leaves), pier, lamp, stones: parts.stones, bushes: parts.bushes };
 }
 
 /** Signed distance from (x, z) to a pier's footprint (negative inside) and the outward normal. */

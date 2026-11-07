@@ -152,58 +152,99 @@ const lakeFragment = /* glsl */ `
   uniform float uTime;
   uniform float uHeat;
   uniform vec2 uCentre;
+  uniform vec2 uShape;
   varying vec2 vWorld;
   #include <fog_pars_fragment>
-  vec2 lakeHash2(vec2 p) {
-    p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
-    return fract(sin(p) * 43758.5453);
+  float lakeHash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
   }
   float lakeNoise(vec2 p) {
     vec2 i = floor(p);
     vec2 f = fract(p);
     vec2 u = f * f * (3.0 - 2.0 * f);
-    float a = lakeHash2(i).x, b = lakeHash2(i + vec2(1.0, 0.0)).x, c = lakeHash2(i + vec2(0.0, 1.0)).x, d = lakeHash2(i + vec2(1.0, 1.0)).x;
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    return mix(mix(lakeHash(i), lakeHash(i + vec2(1.0, 0.0)), u.x), mix(lakeHash(i + vec2(0.0, 1.0)), lakeHash(i + vec2(1.0, 1.0)), u.x), u.y);
   }
-  // Crust plates: cells of a Voronoi pattern, their seams the cracks.
-  vec2 plates(vec2 p, float t) {
-    vec2 cell = floor(p);
-    vec2 f = fract(p);
-    float first = 8.0;
-    float second = 8.0;
-    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
-      vec2 o = vec2(float(i), float(j));
-      vec2 h = lakeHash2(cell + o);
-      vec2 point = o + 0.5 + 0.4 * sin(t * 0.25 + 6.2831 * h);
-      float d = length(point - f);
-      if (d < first) { second = first; first = d; } else if (d < second) second = d;
+  const mat2 LAKE_OCTAVE = mat2(1.6, 1.2, -1.2, 1.6);
+  float lakeFbm(vec2 p) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    for (int octave = 0; octave < 5; octave++) {
+      value += amplitude * lakeNoise(p);
+      p = LAKE_OCTAVE * p;
+      amplitude *= 0.5;
     }
-    return vec2(first, second - first);
+    return value;
+  }
+  // Ridged noise: thin, jagged lines where the noise crosses its middle.
+  float lakeRidge(vec2 p) {
+    return 1.0 - abs(2.0 * lakeNoise(p) - 1.0);
+  }
+  // Incandescence by temperature (0 cold … 1 hottest): the colour of glowing
+  // rock, from a dull blood red through orange to a yellow-white, in HDR so
+  // the brightest lava blooms.
+  vec3 incandescence(float t) {
+    vec3 c = mix(vec3(0.0), vec3(0.42, 0.025, 0.0), smoothstep(0.0, 0.18, t));
+    c = mix(c, vec3(1.9, 0.22, 0.01), smoothstep(0.15, 0.45, t));
+    c = mix(c, vec3(4.2, 1.25, 0.12), smoothstep(0.42, 0.75, t));
+    c = mix(c, vec3(6.5, 4.3, 1.5), smoothstep(0.75, 1.0, t));
+    return c;
   }
   void main() {
     vec2 p = vWorld - uCentre;
-    // The crust drifts outward from the middle, where the lava wells up.
+    float t = uTime;
+    // Distance from the middle as a share of the lake's radius (an ellipse).
+    float rn = length(vec2(p.x, p.y / uShape.y)) / uShape.x;
     float r = length(p);
-    vec2 drift = p / max(r, 1.0) * uTime * 0.35;
-    vec2 q = (p - drift) * 0.16 + vec2(lakeNoise(p * 0.05 + uTime * 0.02), lakeNoise(p * 0.05 - 3.1)) * 1.5;
-    vec2 cell = plates(q, uTime);
-    float seam = 1.0 - smoothstep(0.02, 0.14, cell.y);
-    float fine = lakeNoise(p * 0.9 + uTime * 0.3) * 0.5 + lakeNoise(p * 2.3 - uTime * 0.2) * 0.5;
-    // Hotter where it wells up, and in a pulse that breathes through the lake.
-    float welling = exp(-r * r * 0.02) * (0.7 + 0.3 * sin(uTime * 0.8));
-    float heat = clamp(seam * 0.95 + welling * 0.45 + smoothstep(0.72, 0.95, fine) * 0.25, 0.0, 1.0);
-    // Bubbles bursting through the crust: brief bright rings.
-    vec2 bubbleCell = floor(p * 0.12 + 0.5);
-    vec2 bubbleSeed = lakeHash2(bubbleCell + 17.0);
-    float phase = fract(uTime * (0.08 + bubbleSeed.x * 0.08) + bubbleSeed.y);
-    vec2 bubbleCentre = (bubbleCell + (lakeHash2(bubbleCell) - 0.5) * 0.6) / 0.12;
-    float bubble = smoothstep(0.85, 1.0, phase) * (1.0 - smoothstep(0.0, 2.6 * phase + 0.4, length(p - bubbleCentre)));
-    heat = max(heat, bubble);
-    // Dark, cooling crust plates; the cracks between them and the welling
-    // middle glow red to yellow-white.
-    vec3 crust = mix(vec3(0.03, 0.02, 0.018), vec3(0.09, 0.04, 0.025), fine) + vec3(0.25, 0.04, 0.0) * smoothstep(0.0, 0.35, heat) * 0.4;
-    vec3 molten = mix(vec3(2.2, 0.35, 0.04), vec3(5.5, 2.2, 0.45), heat * heat);
-    vec3 color = mix(crust, molten * uHeat, smoothstep(0.35, 0.8, heat));
+    // The lake churns slowly: lava wells up in the middle and spreads to the
+    // walls, where it sinks again. Domain warping gives the flow its swirls.
+    vec2 outward = p / max(r, 1.0);
+    vec2 q = p * 0.075 - outward * t * 0.012;
+    vec2 warp = vec2(lakeFbm(q + vec2(0.0, t * 0.010)), lakeFbm(q + vec2(5.2, 1.3) - t * 0.008));
+    vec2 warp2 = vec2(lakeFbm(q + 3.2 * warp + vec2(1.7, 9.2)), lakeFbm(q + 3.2 * warp + vec2(8.3, 2.8) + t * 0.006));
+    float field = lakeFbm(q * 1.4 + 2.6 * warp2);
+    // A cooled skin floats where the field is high: black, glassy basalt in
+    // rafts torn into irregular plates. Between the rafts, open lanes of
+    // molten rock.
+    float skin = smoothstep(0.44, 0.56, field);
+    // The skin cracks: thin, jagged, branching lines of glowing rock, a few
+    // wide ones and many fine ones, sheared by the same flow.
+    vec2 crackSpace = p * 0.42 + warp2 * 6.0;
+    float cracks = pow(lakeRidge(crackSpace), 22.0) + 0.65 * pow(lakeRidge(crackSpace * 2.7 + 11.0), 30.0) + 0.35 * pow(lakeRidge(crackSpace * 6.1 - 4.0), 40.0);
+    cracks = clamp(cracks, 0.0, 1.0);
+    // Heat of the open lava: hottest in the welling middle, in the core of
+    // each lane, and in a bright band at the walls where the crust is torn
+    // apart against the rock; a slow pulse of turbulence runs through it.
+    float lane = 1.0 - smoothstep(0.28, 0.48, field);
+    float turbulence = lakeFbm(p * 0.35 + vec2(t * 0.22, -t * 0.17)) ;
+    float welling = exp(-rn * rn * 9.0) * (0.75 + 0.25 * sin(t * 0.6));
+    float shore = smoothstep(0.82, 0.98, rn);
+    float heat = lane * (0.45 + 0.55 * turbulence) + welling * 0.55 + shore * (0.55 + 0.35 * turbulence);
+    heat = clamp(heat, 0.0, 1.0);
+    // Through the cracks the hot interior shows, dimmer than the open lanes.
+    float crackHeat = cracks * (0.55 + 0.35 * turbulence);
+    // Thin skin near a lane still glows a dull red from beneath.
+    float underglow = (1.0 - smoothstep(0.44, 0.62, field)) * 0.22;
+    // Gas bursting through: a bright, spreading dome that tears the skin and
+    // leaves a ring of spatter, here and there, now and then.
+    vec2 cell = floor(p * 0.09 + 0.5);
+    float seed = lakeHash(cell + 17.0);
+    float phase = fract(t * (0.05 + seed * 0.06) + lakeHash(cell + 3.0));
+    vec2 centre = (cell + (vec2(lakeHash(cell), lakeHash(cell + 9.0)) - 0.5) * 0.6) / 0.09;
+    float burst = smoothstep(0.88, 0.94, phase) * (1.0 - smoothstep(0.94, 1.0, phase));
+    float fromBurst = length(p - centre);
+    float dome = burst * (1.0 - smoothstep(0.0, 1.0 + 3.5 * (phase - 0.88) * 8.0, fromBurst));
+    // The skin itself: black and faintly glassy, lit a little by the glow.
+    float grain = lakeFbm(p * 2.2);
+    vec3 basalt = vec3(0.018, 0.016, 0.016) * (0.6 + 0.9 * grain);
+    float skinHeat = max(crackHeat, underglow);
+    vec3 skinColor = basalt + incandescence(skinHeat);
+    vec3 openColor = incandescence(0.35 + heat * 0.65);
+    vec3 color = mix(openColor, skinColor, skin * (1.0 - shore * 0.8));
+    color = mix(color, incandescence(1.0), clamp(dome, 0.0, 1.0));
+    // Cooler lava dims everything a little when the volcano is resting.
+    color *= mix(0.75, 1.0, uHeat);
     gl_FragColor = vec4(color, 1.0);
     #include <fog_fragment>
   }
@@ -706,7 +747,16 @@ export class VolcanoSystem {
       name: "LavaLake",
       vertexShader: lakeVertex,
       fragmentShader: lakeFragment,
-      uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 }, uHeat: { value: 1 }, uCentre: { value: new THREE.Vector2(island.centerX, island.centerZ) } }]),
+      uniforms: THREE.UniformsUtils.merge([
+        THREE.UniformsLib.fog,
+        {
+          uTime: { value: 0 },
+          uHeat: { value: 1 },
+          uCentre: { value: new THREE.Vector2(island.centerX, island.centerZ) },
+          // The lake's mean radius (m) and the island's stretch along z.
+          uShape: { value: new THREE.Vector2(island.beachRadius * radial, island.scaleZ) },
+        },
+      ]),
       fog: true,
       side: THREE.DoubleSide,
     });

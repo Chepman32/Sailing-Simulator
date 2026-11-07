@@ -211,12 +211,16 @@ function nextCalmPhase(agent: SharkAgent, vessel: VesselState, random: RandomSou
 
 function beginPatrol(agent: SharkAgent, vessel: VesselState, random: RandomSource): void {
   const angle = random() * Math.PI * 2;
-  const offset = between(random, 12, 30);
+  // Round a swimmer: a slow, wary circle within sight of him, at his depth.
+  const swimmer = vessel.swimmer;
+  const offset = swimmer ? between(random, 4, 10) : between(random, 12, 30);
   agent.centreX = vessel.x + Math.sin(angle) * offset;
   agent.centreZ = vessel.z + Math.cos(angle) * offset;
-  agent.radius = between(random, 18, 32);
+  agent.radius = swimmer ? between(random, 9, 16) : between(random, 18, 32);
   agent.direction = random() < 0.5 ? -1 : 1;
-  agent.depth = between(random, SHARK_CRUISE_DEPTH.min, SHARK_CRUISE_DEPTH.max);
+  agent.depth = swimmer
+    ? Math.max(1.2, swimmer.depth + between(random, -1.5, 2.5))
+    : between(random, SHARK_CRUISE_DEPTH.min, SHARK_CRUISE_DEPTH.max);
   enter(agent, "patrol", between(random, 22, 40));
 }
 

@@ -170,12 +170,13 @@ export class UnderwaterLight {
             float causticB = underwaterNoise(causticPosition * 1.37 - vec2(uUnderwaterTime * 0.3, uUnderwaterTime * 0.11) + 5.3);
             float caustic = pow(1.0 - abs(causticA - causticB), 6.0);
             float sunlit = exp(-underwaterDepth * 0.28) * uUnderwaterCaustics;
-            gl_FragColor.rgb *= 1.0 + caustic * 0.9 * sunlit;
+            gl_FragColor.rgb *= 1.0 + caustic * mix(0.9, 1.4, uUnderwaterView) * sunlit;
             // Below the surface a body gets only the light that came down
             // through the water, while the water around it glows with light
             // scattered from all of it: a dolphin or a shark reads as a dark
             // shape against the blue, as in any photograph from above.
-            gl_FragColor.rgb *= mix(1.0, 0.42, smoothstep(0.25, 2.6, underwaterDepth));
+            // (A diver down among them sees them lit by that light, much less dimmed.)
+            gl_FragColor.rgb *= mix(1.0, mix(0.42, 0.86, uUnderwaterView), smoothstep(0.25, 2.6, underwaterDepth));
             gl_FragColor.rgb = gl_FragColor.rgb * transmittance + uUnderwaterColor * (1.0 - transmittance);
             // At night the sea is black a few decimetres down: nothing lights
             // a submerged body, so it disappears into the water around it.

@@ -33,6 +33,12 @@ export type VesselState = {
   z: number;
   heading: number;
   speed: number;
+  /**
+   * Set while the skipper is in the water: the animals gather round him
+   * instead of the yacht (`x`, `z` are then his), at his depth (m) now and
+   * then, near enough to be seen through the water.
+   */
+  swimmer?: { depth: number } | null;
 };
 
 /** Effects a contact with the surface can produce. */

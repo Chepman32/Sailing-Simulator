@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { AudioSystem, type AudioWeather } from "./audio/AudioSystem";
 import { CameraController } from "./camera/CameraController";
-import { AssetManager, ASSET_LOAD_TOTAL, LOAD_STEPS_TOTAL, SCENE_LOAD_STEPS } from "./core/AssetManager";
+import { AssetManager, ASSET_LOAD_TOTAL, LOAD_STEPS_TOTAL, SCENE_LOAD_STEPS, TRADER_MODEL_KEYS } from "./core/AssetManager";
 import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
 import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
@@ -17,7 +17,7 @@ import { EnvironmentSystem } from "./environment/EnvironmentSystem";
 import type { TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
 import { distanceFromWaterline, islandsInCell, worldCell } from "./environment/IslandMath";
-import { traderSpot } from "./environment/IslandProps";
+import { traderSpot, type PierFootprint } from "./environment/IslandProps";
 import { OceanReflection } from "./environment/OceanReflection";
 import { OceanSystem } from "./environment/OceanSystem";
 import { setShoalField, significantWaveHeight } from "./environment/OceanMath";
@@ -90,7 +90,7 @@ import {
 } from "./economy/EconomyMath";
 import { SeabedLoot, type SonarContact } from "./economy/SeabedLoot";
 import { Traders, type TraderSpot } from "./economy/Traders";
-import { SeabedCrabs } from "./diver/SeabedCrabs";
+import { crabKit, SeabedCrabs, type CrabWorld } from "./diver/SeabedCrabs";
 import { DiveFish } from "./diver/DiveFish";
 import { HelmStation, HULL_TRANSOM_Z } from "./vessel/HelmStation";
 import { HULL_CENTER_Z, HULL_HALF_BEAM, HULL_HALF_LENGTH, HULL_OFFSET_X } from "./environment/shaders/oceanShader";
@@ -134,6 +134,10 @@ export type ChartPlace = { key: string; kind: PlaceKind; x: number; z: number; d
 /** What the chart shows of the sea within a rectangle (see `Simulator.chart`). */
 export type ChartFeatures = {
   yacht: { x: number; z: number; heading: number };
+  /** The skipper when he is away from the helm (null at the helm). */
+  walker: { x: number; z: number; heading: number } | null;
+  /** The piers of the islands round about (drawn when the chart is zoomed in). */
+  piers: PierFootprint[];
   wind: { x: number; z: number };
   islands: ChartIsland[];
   /** What the sonar sees on the sea floor, by tier. */
@@ -221,6 +225,29 @@ export class Simulator {
   private underwaterWorld?: UnderwaterWorld;
   private diveFish?: DiveFish;
   private crabs?: SeabedCrabs;
+  private beachCrabs?: SeabedCrabs;
+  /** Where crabs may live: on the seabed a metre down or more, on a beach on the dry sand by the sea. */
+  private readonly seabedCrabWorld: CrabWorld = {
+    ground: (x, z) => this.groundBase(x, z),
+    allowed: (x, z) => -this.groundBase(x, z) > 1,
+  };
+  private readonly beachCrabWorld: CrabWorld = {
+    ground: (x, z) => this.groundWalk(x, z),
+    allowed: (x, z) => {
+      const shore = distanceFromWaterline(x, z);
+      return shore < -0.8 && shore > -8 && this.groundWalk(x, z) > 0.15 && this.islands.wallBlocked(x, z, this.groundWalk(x, z)) === false;
+    },
+    seaward: (x, z, out) => {
+      const here = distanceFromWaterline(x, z);
+      out.x = distanceFromWaterline(x + 0.5, z) - here;
+      out.z = distanceFromWaterline(x, z + 0.5) - here;
+      const length = Math.hypot(out.x, out.z);
+      if (length < 1e-4) return false;
+      out.x /= length;
+      out.z /= length;
+      return true;
+    },
+  };
   /** The economy: bag, upgrades, decor, finds taken (gold is `state.doubloons`). */
   private economy: EconomyState = createEconomyState();
   private readonly takenFinds = new Set<string>();
@@ -240,6 +267,7 @@ export class Simulator {
   private readonly diverWater = new THREE.Color();
   private readonly diverLight = new THREE.Color();
   private readonly sunDown = new THREE.Vector3();
+  private readonly rayWater = new THREE.Color();
   private readonly diverScratch = new THREE.Vector3();
   private torchOffered = false;
   private readonly swimSurface = (x: number, z: number): number => this.ocean.sample(x, z).height;
@@ -597,7 +625,13 @@ export class Simulator {
       });
       this.underwaterWorld = new UnderwaterWorld(this.scene, this.underwater, this.quality.settings.oceanDetail);
       this.diveFish = new DiveFish(this.scene, this.underwater);
-      this.crabs = new SeabedCrabs(this.scene, this.underwater);
+      // The crab models, turned legs-sideways and front-forward (the red crab
+      // is modelled that way; the blue one faces +x).
+      const redCrab = this.assets.animated("crabRed")?.scene;
+      const blueCrab = this.assets.animated("crabBlue")?.scene;
+      const crabKits = [redCrab ? crabKit(redCrab, 0) : null, blueCrab ? crabKit(blueCrab, -Math.PI / 2) : null];
+      this.crabs = new SeabedCrabs(this.scene, this.underwater, "seabed", crabKits);
+      this.beachCrabs = new SeabedCrabs(this.scene, this.underwater, "beach", [crabKits[0] ?? crabKits[1] ?? null]);
       this.seabedLoot = new SeabedLoot(
         this.scene,
         this.underwater,
@@ -609,7 +643,12 @@ export class Simulator {
         },
         this.takenFinds,
       );
-      this.traders = new Traders(this.scene);
+      // The traders are the rigged character models that loaded (the procedural figure if none did).
+      const traderModels = TRADER_MODEL_KEYS.filter((key) => this.assets.has(key));
+      this.traders = new Traders(this.scene, {
+        count: traderModels.length,
+        create: (index) => this.assets.animated(traderModels[index]!)?.scene ?? null,
+      });
       this.diver = new DiverController(
         this.canvas,
         {
@@ -642,15 +681,16 @@ export class Simulator {
             this.audio.exhaleBubbles(depth);
           },
           inhale: (depth) => this.audio.regulatorInhale(depth),
-          footstep: (running) => this.audio.footstep(running),
-          stroke: (position) => {
-            this.wake.splash(position, 0.28, "slap", undefined, false);
-            this.audio.splash(0.28, "slap", 0, position);
+          footstep: (running) => this.footstep(running),
+          stroke: (position, sprint) => {
+            this.wake.splash(position, sprint ? 0.36 : 0.28, "slap", undefined, false);
+            this.audio.swimStroke(sprint);
           },
+          kick: (sprint) => this.audio.finKick(sprint),
           modeChanged: (mode) => this.onDiverMode(mode),
-          wade: (position) => {
+          wade: (position, depth, running) => {
             this.wake.splash(position, 0.2, "slap", undefined, false);
-            this.audio.splash(0.2, "slap", 0, position);
+            this.audio.wade(depth, running);
           },
         },
         {
@@ -1167,8 +1207,40 @@ export class Simulator {
   }
 
   /** The yacht's position on the chart, once the voyage is running. */
-  chartCentre(): { x: number; z: number } | null {
-    return this.initialized ? { x: this.physics.position.x, z: this.physics.position.z } : null;
+  /**
+   * A footstep: what it sounds like depends on what is underfoot (the deck,
+   * pier planks, volcanic rock, grass, wet or dry sand), and pushing through
+   * a bush the leaves rustle too.
+   */
+  private footstep(running: boolean): void {
+    const diver = this.diver;
+    if (!diver) return;
+    if (diver.mode !== "land") {
+      this.audio.footstep("deck", running);
+      return;
+    }
+    const { x, z, y } = diver.walk;
+    this.audio.footstep(this.islands.groundKind(x, z, y), running);
+    const bush = this.islands.bushAt(x, z, y);
+    if (bush > 0.05) this.audio.rustle(bush, running);
+  }
+
+  /** Where the chart centres: on the skipper when he is away from the helm (ashore, swimming), else on the yacht. */
+  chartCentre(): { x: number; z: number; afoot: boolean } | null {
+    if (!this.initialized) return null;
+    const walker = this.walkerPosition();
+    if (walker) return { x: walker.x, z: walker.z, afoot: true };
+    return { x: this.physics.position.x, z: this.physics.position.z, afoot: false };
+  }
+
+  /** The skipper's position and heading while he is off the helm (on deck, ashore, in the water), else null. */
+  private walkerPosition(): { x: number; z: number; heading: number } | null {
+    const diver = this.diver;
+    if (!diver?.active || diver.mode === "leap") return null;
+    if (diver.mode === "swim") return { x: diver.swim.x, z: diver.swim.z, heading: diver.yaw };
+    if (diver.mode === "land") return { x: diver.walk.x, z: diver.walk.z, heading: diver.yaw };
+    const eye = this.camera.camera.position;
+    return { x: eye.x, z: eye.z, heading: diver.yaw };
   }
 
   /** How many places the logbook holds. */
@@ -1247,6 +1319,8 @@ export class Simulator {
     }
     return {
       yacht: { x: yacht.x, z: yacht.z, heading: this.physics.heading },
+      walker: this.walkerPosition(),
+      piers: this.islands.piers().filter((pier) => pier.x > x0 - 60 && pier.x < x1 + 60 && pier.z > z0 - 60 && pier.z < z1 + 60),
       wind: { x: this.physics.wind.x, z: this.physics.wind.z },
       islands,
       sonar: this.sonarContacts.map((contact) => ({ x: contact.x, z: contact.z, tier: contact.tier })),
@@ -1625,6 +1699,7 @@ export class Simulator {
     this.underwaterWorld?.dispose();
     this.diveFish?.dispose();
     this.crabs?.dispose();
+    this.beachCrabs?.dispose();
     this.radio?.dispose();
     this.audio?.dispose();
     this.wildlife?.dispose();
@@ -1735,7 +1810,14 @@ export class Simulator {
     const slam = this.vessel.consumeBoomSlam();
     if (slam > 0) this.audio.boomSlam(slam);
     this.ships.update(delta, this.sampleSurface, this.camera.camera.position);
-    this.wildlife.update(delta, this.physics, this.camera.camera);
+    // A swimmer has the sea's animals round him (seen through the water).
+    const swimmer = this.diver?.active && this.diver.mode === "swim" ? this.diver.swim : null;
+    this.wildlife.update(
+      delta,
+      this.physics,
+      this.camera.camera,
+      swimmer ? { x: swimmer.x, z: swimmer.z, depth: Math.max(0, this.swimSurface(swimmer.x, swimmer.z) - swimmer.y), heading: this.diver!.yaw } : null,
+    );
     this.wake.update(this.elapsed);
     this.camera.update(delta, this.physics, { root: this.vessel.root, eye: this.vessel.helmEye });
     // Heavy meshes draw fewer triangles when small on screen. New ones (a
@@ -2076,8 +2158,8 @@ export class Simulator {
     const light = 0.012 + daylight * 0.95;
     this.diverWater.setRGB(
       (0.012 + 0.02 * daylight) * light * Math.exp(-Math.max(0, depth) * 0.12),
-      0.13 * light * depthFade,
-      0.19 * light * Math.pow(depthFade, 0.7),
+      0.165 * light * depthFade,
+      0.245 * light * Math.pow(depthFade, 0.7),
       THREE.LinearSRGBColorSpace,
     );
     const density = 0.034 + Math.max(0, depth) * 0.0005 + (1 - daylight) * 0.012 + this.environment.currentWeather.storm * 0.02;
@@ -2097,6 +2179,21 @@ export class Simulator {
     this.sunDown.set(-sun.x / 1.333, 0, -sun.z / 1.333);
     this.sunDown.y = -Math.sqrt(Math.max(0.05, 1 - this.sunDown.x * this.sunDown.x - this.sunDown.z * this.sunDown.z));
     setLinearRgb(this.diverLight, palette.lightColor);
+    // The sunlight in the water as a volume: beams from the surface, cut off
+    // by the seabed and the hull, brightest looking toward the sun.
+    const rays = this.post.underwaterRays;
+    const volumetric = this.post.volumetricUnderwater;
+    if (this.underwaterWorld) this.underwaterWorld.billboardShafts = !volumetric;
+    if (volumetric && amount > 0.01) {
+      rays.surface = this.swimSurface(camera.position.x, camera.position.z);
+      rays.sunDown.copy(this.sunDown);
+      rays.extinction = 0.045 + density * 0.6;
+      rays.time = this.elapsed;
+      const sunUp = Math.max(0, sun.y);
+      rays.strength = daylight * smoothstep(0.02, 0.25, sunUp) * (1 - this.environment.currentWeather.overcast * 0.75) * 1.6;
+      // Sunlight that has come down through the water: its reds lost first.
+      rays.tint.copy(this.diverLight).multiply(this.rayWater.setRGB(0.32, 0.82, 0.92));
+    }
     const swimming = below;
     this.underwaterWorld?.update(
       delta,
@@ -2112,7 +2209,10 @@ export class Simulator {
       diver?.torch ?? false,
     );
     this.diveFish?.update(delta, swimming, camera.position, seabedHeight, this.swimSurface, this.wildlife.presence);
-    this.crabs?.update(delta, swimming, camera.position, diver?.yaw ?? 0, this.groundBase, (x, z) => -this.groundBase(x, z));
+    this.crabs?.update(delta, swimming, camera.position, diver?.yaw ?? 0, this.seabedCrabWorld);
+    // Ghost crabs on the beach, for someone ashore (or wading in).
+    const onBeach = active && (diver!.mode === "land" || (diver!.mode === "swim" && depth < 0.4)) && distanceFromWaterline(camera.position.x, camera.position.z) < 30;
+    this.beachCrabs?.update(delta, onBeach, camera.position, diver?.yaw ?? 0, this.beachCrabWorld);
   }
 
   private lootIsOpen(x: number, z: number): boolean {

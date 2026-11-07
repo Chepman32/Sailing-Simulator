@@ -2,11 +2,13 @@ import * as THREE from "three";
 import { injectAfter, patchMaterialShader } from "../core/ShaderPatch";
 import type { EnvironmentPalette } from "../environment/EnvironmentPalette";
 import { smoothstep } from "../math";
+import { islandsWithin } from "../environment/IslandMath";
 import {
   airlinerPosition,
   contrailShape,
   FIRST_LOW_PASS,
   LOW_PASS_GAP,
+  LOW_PASS_HALF,
   lowPassActive,
   lowPassPose,
   planAirliner,
@@ -63,6 +65,10 @@ const BANNERS = [
   ["MARRY ME, LENA?", "♥ ♥ ♥"],
   ["SUNSET CRUISE", "CAPTAIN RAY · CHANNEL 16"],
 ] as const;
+
+/** The advertising banner, metres. */
+const BANNER_LENGTH = 40;
+const BANNER_HEIGHT = 6.4;
 
 /** Pulls far vertices in to the sky sphere (view space), keeping direction and angular size. */
 const SKY_PROJECT = /* glsl */ `
@@ -221,8 +227,9 @@ export class AircraftSystem {
     this.group.add(this.smoke.mesh);
 
     // The banner: a ripple travelling down the cloth, growing toward its tail.
-    const bannerGeometry = new THREE.PlaneGeometry(24, 3.6, 48, 4);
-    bannerGeometry.translate(-12, -1.8, 0);
+    // Big enough to read from the beach or the deck as it goes by: 40 × 6.4 m.
+    const bannerGeometry = new THREE.PlaneGeometry(BANNER_LENGTH, BANNER_HEIGHT, 64, 6);
+    bannerGeometry.translate(-BANNER_LENGTH / 2, -BANNER_HEIGHT / 2, 0);
     bannerGeometry.rotateY(-Math.PI / 2);
     this.owned.geometries.push(bannerGeometry);
     for (const [title, line] of BANNERS) this.bannerTextures.push(this.bannerTexture(title, line));
@@ -235,11 +242,21 @@ export class AircraftSystem {
         shader.vertexShader,
         "begin_vertex",
         `{
-           float along = clamp(-transformed.z / 24.0, 0.0, 1.0);
-           float wave = sin(along * 9.0 - uBannerTime * 7.0) + 0.4 * sin(along * 17.0 - uBannerTime * 11.0 + 1.3);
-           transformed.x += wave * (0.08 + along * along * 0.9);
-           transformed.y -= along * along * 0.5;
+           float along = clamp(-transformed.z / ${BANNER_LENGTH.toFixed(1)}, 0.0, 1.0);
+           float wave = sin(along * 11.0 - uBannerTime * 6.0) + 0.4 * sin(along * 21.0 - uBannerTime * 10.0 + 1.3);
+           transformed.x += wave * (0.1 + along * along * 1.1);
+           transformed.y -= along * along * 0.7;
          }`,
+      );
+      // Printed on both faces: from either side of the plane the letters read
+      // the right way round (the texture is drawn for the back face).
+      shader.fragmentShader = shader.fragmentShader.replace(
+        "#include <map_fragment>",
+        `#ifdef USE_MAP
+          vec2 bannerUv = gl_FrontFacing ? vec2(1.0 - vMapUv.x, vMapUv.y) : vMapUv;
+          vec4 sampledDiffuseColor = texture2D(map, bannerUv);
+          diffuseColor *= sampledDiffuseColor;
+        #endif`,
       );
     });
     this.owned.materials.push(bannerMaterial);
@@ -328,7 +345,8 @@ export class AircraftSystem {
     this.bannerTime.value = time;
     if (lightDirection) this.lightDirection.copy(lightDirection);
     this.contrails.material.uniforms.uPixelAngle!.value = pixelAngle;
-    this.updateLowPass(time, delta, yachtX, yachtZ, night);
+    // Low passes are flown past whoever is watching (the skipper may be ashore, far from her).
+    this.updateLowPass(time, delta, eye.x, eye.z, night);
     this.updateSmoke(time, eye, palette);
     this.updateAirliners(time, yachtX, yachtZ, eye, palette, night);
   }
@@ -367,6 +385,21 @@ export class AircraftSystem {
       const day = night < 0.5;
       const kind: LowPassKind = !day ? "tour" : DAY_PASSES[this.passes % DAY_PASSES.length]!;
       this.pass = planLowPass(yachtX, yachtZ, this.random, kind);
+      // A low pass climbs over the islands on its track: twenty metres clear
+      // of the highest ground (and the palms on it) under its path.
+      const pass = this.pass;
+      const dirX = Math.sin(pass.heading);
+      const dirZ = Math.cos(pass.heading);
+      let ground = 0;
+      for (const island of islandsWithin(pass.centerX, pass.centerZ, LOW_PASS_HALF + 200)) {
+        const dx = island.centerX - pass.centerX;
+        const dz = island.centerZ - pass.centerZ;
+        const along = dx * dirX + dz * dirZ;
+        const across = Math.abs(-dx * dirZ + dz * dirX);
+        if (Math.abs(along) > LOW_PASS_HALF + island.beachRadius || across > island.beachRadius * Math.max(1, island.scaleZ) + pass.weave + 60) continue;
+        ground = Math.max(ground, island.height + 14);
+      }
+      pass.altitude = Math.max(pass.altitude, ground + (pass.kind === "banner" ? 30 : 20));
       this.passStart = time;
       this.passes += 1;
       if (kind === "banner") this.banner.material.map = this.bannerTextures[this.pass.seed % this.bannerTextures.length]!;
@@ -435,8 +468,8 @@ export class AircraftSystem {
     this.lowPlane.velocity.set(pose.vx, pose.vy, pose.vz);
 
     if (pass.kind === "banner") {
-      // The banner follows the plane's track 45 m behind (where the plane was), hanging upright.
-      const lag = 45 / pass.speed;
+      // The banner follows the plane's track 40 m behind (where the plane was), hanging upright.
+      const lag = 40 / pass.speed;
       const tow = lowPassPose(pass, t - lag, this.towPose);
       this.banner.visible = true;
       this.banner.position.set(tow.x, tow.y - 9, tow.z);
@@ -592,31 +625,31 @@ export class AircraftSystem {
 
   private bannerTexture(title: string, line: string): THREE.CanvasTexture {
     const canvas = document.createElement("canvas");
-    canvas.width = 2048;
-    canvas.height = 320;
+    canvas.width = 2560;
+    canvas.height = 410;
     const g = canvas.getContext("2d")!;
     g.fillStyle = "#ffd43a";
     g.fillRect(0, 0, canvas.width, canvas.height);
     // Hemmed edges and a weathered red border.
     g.strokeStyle = "#c81e1e";
-    g.lineWidth = 14;
-    g.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+    g.lineWidth = 18;
+    g.strokeRect(12, 12, canvas.width - 24, canvas.height - 24);
     g.fillStyle = "#c81e1e";
     g.textAlign = "center";
     g.textBaseline = "middle";
-    g.font = "900 150px Arial Black, Arial, sans-serif";
+    g.font = "900 205px Arial Black, Arial, sans-serif";
     // Banners are read from the plane's left side, nose toward the start of the text.
     g.save();
     g.translate(canvas.width, 0);
     g.scale(-1, 1);
-    g.fillText(title, canvas.width / 2, 120);
-    g.font = "bold 82px Arial, sans-serif";
+    g.fillText(title, canvas.width / 2, 150, canvas.width - 120);
+    g.font = "bold 110px Arial, sans-serif";
     g.fillStyle = "#1d1d1f";
-    g.fillText(line, canvas.width / 2, 245);
+    g.fillText(line, canvas.width / 2, 320, canvas.width - 160);
     g.restore();
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
-    texture.anisotropy = 4;
+    texture.anisotropy = 8;
     return texture;
   }
 }

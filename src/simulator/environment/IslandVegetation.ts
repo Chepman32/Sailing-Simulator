@@ -12,9 +12,10 @@ import { islandEdgeNoise, terrainNoise, type IslandDefinition } from "./IslandMa
  *   meets the sand in a ragged fringe instead of a ruled edge. Static
  *   geometry merged per island (one draw call), swaying in the breeze in the
  *   vertex shader, drawn only near the camera;
- * - **leaf clusters**: the texture of broad, glossy beach-shrub leaves (sea
- *   grape, scaevola) cut out on crossed cards round each bush's core, so a
- *   bush has a leafy, broken outline and light shows through its edges.
+ * - **bushes**: leafy masses of glossy beach-shrub leaves (sea grape,
+ *   scaevola): a shadowed core of solid foliage under dozens of cut-out leaf
+ *   clumps standing out from it at all angles, lit as a rounded volume,
+ *   swaying in the breeze. A walker pushes through them.
  */
 
 /** A deterministic generator (mulberry32). */
@@ -29,51 +30,112 @@ function random(seed: number): () => number {
   };
 }
 
-// --- Leaf clusters ----------------------------------------------------------------
+// --- Bushes ----------------------------------------------------------------------------
 
-/** A sheet of overlapping oval leaves on short twigs, alpha cut out, coverage-preserving mipmaps. */
+/**
+ * Share of the leaf texture's width taken by the leaf clump; the strip to its
+ * right is solid foliage (no holes), for the shadowed core of each bush.
+ */
+export const LEAF_ATLAS_SPLIT = 0.875;
+
+/**
+ * The bushes' leaf texture: a dense clump of glossy, pointed beach-shrub
+ * leaves (scaevola, sea grape) seen from outside the bush, radiating from
+ * twigs at its middle, dark deep inside and lit at the tips, with a ragged,
+ * leafy outline cut out of the alpha. To its right, a strip of solid
+ * foliage for the cores. Coverage-preserving mipmaps keep distant bushes as
+ * full as near ones.
+ */
 export function createLeafClusterTexture(): THREE.DataTexture {
-  const size = 256;
+  const size = 512;
+  const clumpWidth = Math.round(size * LEAF_ATLAS_SPLIT);
   const rng = random(913);
   const canvas = Object.assign(document.createElement("canvas"), { width: size, height: size });
   const g = canvas.getContext("2d")!;
   g.clearRect(0, 0, size, size);
-  // Leaves are drawn from the back (dark, inside the bush) to the front (bright).
-  const leaves = 150;
-  for (let index = 0; index < leaves; index += 1) {
-    const depth = index / leaves;
-    // A rough disc of leaves, thinning toward its rim.
-    const a = rng() * Math.PI * 2;
-    const r = Math.sqrt(rng()) * size * 0.44;
-    const x = size / 2 + Math.cos(a) * r;
-    const y = size / 2 + Math.sin(a) * r;
-    const length = 14 + rng() * 14;
-    const width = length * (0.5 + rng() * 0.2);
-    const angle = a + (rng() - 0.5) * 1.6;
-    const hue = 95 + (rng() - 0.5) * 22;
-    const light = 18 + depth * 20 + rng() * 6;
-    const saturation = 40 + rng() * 18;
+  const leaf = (x: number, y: number, length: number, angle: number, hue: number, light: number, saturation: number) => {
+    const width = length * (0.36 + rng() * 0.14);
     g.save();
     g.translate(x, y);
     g.rotate(angle);
-    const gradient = g.createLinearGradient(-length / 2, 0, length / 2, 0);
-    gradient.addColorStop(0, `hsl(${hue}, ${saturation}%, ${light - 4}%)`);
-    gradient.addColorStop(0.6, `hsl(${hue + 4}, ${saturation}%, ${light + 4}%)`);
-    gradient.addColorStop(1, `hsl(${hue + 8}, ${saturation - 6}%, ${light + 9}%)`);
+    // Lit on one side of the midrib, shaded on the other: a leaf folded a little along it.
+    const gradient = g.createLinearGradient(0, -width / 2, 0, width / 2);
+    gradient.addColorStop(0, `hsl(${hue + 6}, ${saturation}%, ${light + 9}%)`);
+    gradient.addColorStop(0.48, `hsl(${hue + 3}, ${saturation}%, ${light + 4}%)`);
+    gradient.addColorStop(0.52, `hsl(${hue}, ${saturation + 4}%, ${light - 2}%)`);
+    gradient.addColorStop(1, `hsl(${hue - 4}, ${saturation + 6}%, ${light - 7}%)`);
     g.fillStyle = gradient;
     g.beginPath();
-    g.ellipse(0, 0, length / 2, width / 2, 0, 0, Math.PI * 2);
+    // A pointed ellipse: rounded at the stalk, tapering to a tip.
+    g.moveTo(0, 0);
+    g.bezierCurveTo(length * 0.22, -width * 0.62, length * 0.72, -width * 0.55, length, 0);
+    g.bezierCurveTo(length * 0.72, width * 0.55, length * 0.22, width * 0.62, 0, 0);
     g.fill();
-    // The midrib.
-    g.strokeStyle = `hsla(${hue + 15}, 30%, ${light + 22}%, 0.5)`;
+    // A thin, dark rim and a pale midrib.
+    g.strokeStyle = `hsla(${hue - 8}, ${saturation}%, ${Math.max(6, light - 14)}%, 0.55)`;
     g.lineWidth = 0.8;
+    g.stroke();
+    g.strokeStyle = `hsla(${hue + 18}, 35%, ${light + 22}%, 0.55)`;
+    g.lineWidth = 1;
     g.beginPath();
-    g.moveTo(-length / 2, 0);
-    g.lineTo(length / 2, 0);
+    g.moveTo(length * 0.04, 0);
+    g.lineTo(length * 0.9, 0);
+    g.stroke();
+    // A glossy highlight along the lit half.
+    g.strokeStyle = `hsla(${hue + 25}, 40%, ${light + 34}%, ${0.18 + rng() * 0.2})`;
+    g.lineWidth = Math.max(1, width * 0.12);
+    g.beginPath();
+    g.moveTo(length * 0.25, -width * 0.18);
+    g.quadraticCurveTo(length * 0.55, -width * 0.3, length * 0.8, -width * 0.1);
     g.stroke();
     g.restore();
+  };
+  // Twigs first (seen between the leaves deep inside), then leaves from the
+  // back (dark) to the front (bright), each pointing out from the middle.
+  const cx = clumpWidth / 2;
+  const cy = size / 2;
+  g.strokeStyle = "hsl(28, 30%, 16%)";
+  g.lineCap = "round";
+  for (let twig = 0; twig < 9; twig += 1) {
+    const a = (twig / 9) * Math.PI * 2 + rng() * 0.5;
+    g.lineWidth = 3 + rng() * 2;
+    g.beginPath();
+    g.moveTo(cx, cy);
+    g.quadraticCurveTo(cx + Math.cos(a + 0.3) * 60, cy + Math.sin(a + 0.3) * 60, cx + Math.cos(a) * 150, cy + Math.sin(a) * 150);
+    g.stroke();
   }
-  const data = new Uint8Array(g.getImageData(0, 0, size, size).data.buffer.slice(0));
+  const leaves = 520;
+  const reach = Math.min(clumpWidth, size) * 0.47;
+  for (let index = 0; index < leaves; index += 1) {
+    const depth = index / leaves;
+    const a = rng() * Math.PI * 2;
+    // Front leaves crowd the middle; the back ones reach out to the ragged rim.
+    const r = Math.pow(rng(), 0.75 + depth * 0.6) * reach * (0.62 + 0.38 * (1 - depth * 0.5));
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r;
+    const length = 26 + rng() * 22;
+    const angle = a + (rng() - 0.5) * 1.1;
+    const older = rng() < 0.06;
+    const hue = older ? 62 + rng() * 10 : 98 + (rng() - 0.5) * 24;
+    const light = (older ? 34 : 13) + depth * 22 + rng() * 6;
+    const saturation = (older ? 48 : 42) + rng() * 16;
+    leaf(x, y, length, angle, hue, light, saturation);
+  }
+  // The core strip: solid foliage, leaves packed edge to edge, all in shadow.
+  g.save();
+  g.beginPath();
+  g.rect(clumpWidth, 0, size - clumpWidth, size);
+  g.clip();
+  g.fillStyle = "hsl(104, 40%, 11%)";
+  g.fillRect(clumpWidth, 0, size - clumpWidth, size);
+  for (let index = 0; index < 260; index += 1) {
+    leaf(clumpWidth + rng() * (size - clumpWidth), rng() * size, 18 + rng() * 14, rng() * Math.PI * 2, 100 + (rng() - 0.5) * 20, 12 + rng() * 12, 40 + rng() * 12);
+  }
+  g.restore();
+  const image = g.getImageData(0, 0, size, size).data;
+  // The core strip is fully opaque whatever the leaves left.
+  for (let y = 0; y < size; y += 1) for (let x = clumpWidth; x < size; x += 1) image[(y * size + x) * 4 + 3] = 255;
+  const data = new Uint8Array(image.buffer.slice(0));
   const texture = new THREE.DataTexture(new Uint8Array(data), size, size, THREE.RGBAFormat);
   texture.mipmaps = coverageMipmaps(data, size, size, 0.5);
   texture.generateMipmaps = false;
@@ -85,53 +147,121 @@ export function createLeafClusterTexture(): THREE.DataTexture {
   return texture;
 }
 
+export type LeafBuffers = { positions: number[]; uvs: number[]; colors: number[]; normals: number[]; sway: number[] };
+
+const scratchA = new THREE.Vector3();
+const scratchB = new THREE.Vector3();
+const scratchC = new THREE.Vector3();
+const scratchD = new THREE.Vector3();
+const scratchN = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
+
 /**
- * Crossed leaf cards round a bush mass at (x, y, z) of radius r: three
- * quads through its centre at different headings and tilts, each a little
- * larger than the mass, tinted with its green.
+ * One leafy mass of a bush, centred at (x, y, z) with radius r, its foot at
+ * `ground`: a shadowed core of solid foliage and, over it, a few dozen leaf
+ * clumps standing out from its surface at all angles, so it reads as a
+ * rounded, leafy volume with a broken outline from any side. Every vertex's
+ * normal points out from the mass's middle (lit like a ball of leaves, not
+ * like flat cards), darker underneath and deep inside; `sway` grows with
+ * height above the ground, for the breeze.
  */
-export function leafCards(x: number, y: number, z: number, r: number, tint: THREE.Color, seed: number, out: { positions: number[]; uvs: number[]; colors: number[]; normals: number[] }): void {
+export function leafMass(x: number, y: number, z: number, r: number, ground: number, tint: THREE.Color, seed: number, out: LeafBuffers): void {
   const rng = random(seed);
-  const quad = new THREE.Vector3();
-  const up = new THREE.Vector3();
+  const top = y + r;
+  const swayAt = (py: number) => Math.max(0, Math.min(1, (py - ground) / Math.max(0.3, top - ground)));
+  const shadeAt = (px: number, py: number, pz: number, depth: number, jitter: number) => {
+    const height = swayAt(py);
+    const ao = (0.5 + 0.5 * height) * (0.62 + 0.38 * depth) * jitter;
+    return ao;
+  };
+  const push = (p: THREE.Vector3, u: number, v: number, shade: number, normal: THREE.Vector3) => {
+    out.positions.push(p.x, p.y, p.z);
+    out.uvs.push(u, v);
+    out.colors.push(tint.r * shade * 1.7, tint.g * shade * 1.7, tint.b * shade * 1.7);
+    out.normals.push(normal.x, normal.y, normal.z);
+    out.sway.push(swayAt(p.y));
+  };
+  const sphereNormal = (p: THREE.Vector3, target: THREE.Vector3) =>
+    target.set(p.x - x, (p.y - y) * 0.85 + r * 0.25, p.z - z).normalize();
+
+  // The core: an octahedral ball of solid foliage, squashed a little, in shadow.
+  const core = r * 0.66;
+  const corners: [number, number, number][] = [
+    [0, 1, 0], [1, 0, 0], [0, 0, 1], [-1, 0, 0], [0, 0, -1], [0, -0.55, 0],
+  ];
+  const faces = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1], [5, 2, 1], [5, 3, 2], [5, 4, 3], [5, 1, 4]] as const;
+  // Each face split into four, the new corners pushed out to the ball.
+  const lift = (v: THREE.Vector3) => v.normalize().multiplyScalar(core);
+  for (const [i0, i1, i2] of faces) {
+    const a = scratchA.fromArray(corners[i0]!).normalize().multiplyScalar(core);
+    const b = scratchB.fromArray(corners[i1]!).normalize().multiplyScalar(core);
+    const c = scratchC.fromArray(corners[i2]!).normalize().multiplyScalar(core);
+    const ab = lift(new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5));
+    const bc = lift(new THREE.Vector3().addVectors(b, c).multiplyScalar(0.5));
+    const ca = lift(new THREE.Vector3().addVectors(c, a).multiplyScalar(0.5));
+    for (const triangle of [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]) {
+      for (const corner of triangle) {
+        const p = scratchD.set(x + corner.x, y + corner.y * 0.85, z + corner.z);
+        const u = LEAF_ATLAS_SPLIT + 0.01 + rng() * (0.98 - LEAF_ATLAS_SPLIT);
+        push(p, u, rng(), shadeAt(p.x, p.y, p.z, 0.2, 0.85), sphereNormal(p, scratchN));
+      }
+    }
+  }
+
+  // The leaf clumps over it, more on a bigger mass, fewer facing the ground.
+  const cards = Math.round(14 + r * 18);
   const across = new THREE.Vector3();
-  const normal = new THREE.Vector3();
-  for (let card = 0; card < 3; card += 1) {
-    const heading = (card / 3) * Math.PI + rng() * 0.8;
-    const tilt = (rng() - 0.5) * 0.9;
-    across.set(Math.cos(heading), 0, Math.sin(heading));
-    up.set(-Math.sin(heading) * Math.sin(tilt), Math.cos(tilt), Math.cos(heading) * Math.sin(tilt));
-    normal.crossVectors(across, up).normalize();
-    // Lean the normals toward the sky so the cards are lit like the bush's top.
-    normal.lerp(new THREE.Vector3(0, 1, 0), 0.55).normalize();
-    const half = r * (1.05 + rng() * 0.25);
-    const shade = 0.85 + rng() * 0.3;
-    const corners: [number, number, number, number][] = [
+  const along = new THREE.Vector3();
+  const facing = new THREE.Vector3();
+  const centre = new THREE.Vector3();
+  const corner = new THREE.Vector3();
+  for (let card = 0; card < cards; card += 1) {
+    // A direction out of the mass, spread evenly (golden spiral) and jittered,
+    // the lower hemisphere thinned out.
+    const t = (card + 0.5) / cards;
+    const elevation = Math.asin(1 - 1.55 * t) + (rng() - 0.5) * 0.25;
+    const heading = card * 2.39996 + rng() * 0.6;
+    facing.set(Math.cos(elevation) * Math.cos(heading), Math.sin(elevation), Math.cos(elevation) * Math.sin(heading));
+    const depth = 0.55 + rng() * 0.4;
+    centre.set(x, y, z).addScaledVector(facing, r * depth);
+    centre.y = Math.max(centre.y, ground + r * 0.18);
+    // The clump's plane: square to the outward direction, rolled at random,
+    // tipped a little so neighbours cross each other.
+    const tilt = (rng() - 0.5) * 1.0;
+    along.crossVectors(Math.abs(facing.y) > 0.92 ? scratchA.set(1, 0, 0) : UP, facing).normalize();
+    across.crossVectors(facing, along).normalize();
+    const roll = rng() * Math.PI * 2;
+    const cos = Math.cos(roll);
+    const sin = Math.sin(roll);
+    const u0 = scratchB.copy(along).multiplyScalar(cos).addScaledVector(across, sin);
+    const v0 = scratchC.copy(across).multiplyScalar(cos).addScaledVector(along, -sin);
+    u0.addScaledVector(facing, tilt * 0.4).normalize();
+    const half = r * (0.5 + rng() * 0.22);
+    const jitter = 0.82 + rng() * 0.34;
+    const quad: [number, number, number, number][] = [
       [-1, -1, 0, 1],
-      [1, -1, 1, 1],
-      [1, 1, 1, 0],
+      [1, -1, LEAF_ATLAS_SPLIT, 1],
+      [1, 1, LEAF_ATLAS_SPLIT, 0],
       [-1, -1, 0, 1],
-      [1, 1, 1, 0],
+      [1, 1, LEAF_ATLAS_SPLIT, 0],
       [-1, 1, 0, 0],
     ];
-    for (const [a, b, u, v] of corners) {
-      quad.set(x, y, z).addScaledVector(across, a * half).addScaledVector(up, b * half * 0.85);
-      out.positions.push(quad.x, quad.y, quad.z);
-      out.uvs.push(u, v);
-      out.colors.push(tint.r * shade * 1.6, tint.g * shade * 1.6, tint.b * shade * 1.6);
-      out.normals.push(normal.x, normal.y, normal.z);
+    for (const [a, b, u, v] of quad) {
+      corner.copy(centre).addScaledVector(u0, a * half).addScaledVector(v0, b * half);
+      push(corner, u, v, shadeAt(corner.x, corner.y, corner.z, depth, jitter), sphereNormal(corner, scratchN));
     }
   }
 }
 
-export function leafGeometry(out: { positions: number[]; uvs: number[]; colors: number[]; normals: number[] }): THREE.BufferGeometry | null {
+export function leafGeometry(out: LeafBuffers): THREE.BufferGeometry | null {
   if (out.positions.length === 0) return null;
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(out.positions, 3));
   geometry.setAttribute("normal", new THREE.Float32BufferAttribute(out.normals, 3));
   geometry.setAttribute("uv", new THREE.Float32BufferAttribute(out.uvs, 2));
   geometry.setAttribute("color", new THREE.Float32BufferAttribute(out.colors, 3));
-  geometry.computeBoundingSphere();
+  geometry.setAttribute("leafSway", new THREE.Float32BufferAttribute(out.sway, 1));
+  computeBoundingSphereFast(geometry);
   return geometry;
 }
 

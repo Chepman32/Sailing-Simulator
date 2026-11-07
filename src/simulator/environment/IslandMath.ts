@@ -67,10 +67,13 @@ export function volcanoHeight(radial: number, angle: number, height: number, see
     const lip = Math.exp(-Math.pow((radial - VOLCANO_RIM) / 0.03, 2)) * rise * 0.025;
     return base + rise * cone + gullies + lip;
   }
-  // Inside the rim: down into the crater.
+  // Inside the rim: down into the crater. The rim's lip is rounded on both
+  // sides (it once stopped at the crest, leaving a step of a metre and more
+  // that a walker dropped down and could not climb back up).
   const inside = radial / VOLCANO_RIM;
   const bowl = 1 - VOLCANO_CRATER_DEPTH * (1 - inside * inside);
-  return base + rise * bowl;
+  const lip = Math.exp(-Math.pow((radial - VOLCANO_RIM) / 0.03, 2)) * rise * 0.025;
+  return base + rise * bowl + lip;
 }
 
 /** Mean open-water depth in metres. */

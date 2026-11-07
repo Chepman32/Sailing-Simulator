@@ -235,7 +235,8 @@ function toScreen(camera: ChartCamera, x: number, z: number): [number, number] {
 function islandPath(camera: ChartCamera, island: ChartIsland, fraction: number, extra: number): Path2D {
   const [cx, cy] = toScreen(camera, island.x, island.z);
   const screenRadius = (island.radius * fraction + extra) / camera.mpp;
-  const count = Math.round(Math.min(84, Math.max(14, screenRadius * 0.9)));
+  // Enough corners that the coast stays a curve even zoomed in to a hundred metres.
+  const count = Math.round(Math.min(420, Math.max(14, screenRadius * 0.9)));
   const path = new Path2D();
   for (let index = 0; index < count; index += 1) {
     const angle = (index / count) * Math.PI * 2;
@@ -755,6 +756,71 @@ function drawPins(context: CanvasRenderingContext2D, camera: ChartCamera, data: 
   }
 }
 
+/** The skipper away from the helm: a bright dot with the cone of his view, pulsing. */
+function drawWalker(context: CanvasRenderingContext2D, camera: ChartCamera, data: ChartFeatures, style: ChartStyle): void {
+  const walker = data.walker;
+  if (!walker) return;
+  const [x, y] = toScreen(camera, walker.x, walker.z);
+  const size = style.mini ? 5 : 8;
+  context.save();
+  context.translate(x, y);
+  // The view: a soft wedge where he is looking.
+  context.rotate(-walker.heading);
+  const cone = context.createRadialGradient(0, 0, 0, 0, 0, size * 5);
+  cone.addColorStop(0, "rgba(255, 214, 120, 0.55)");
+  cone.addColorStop(1, "rgba(255, 214, 120, 0)");
+  context.fillStyle = cone;
+  context.beginPath();
+  context.moveTo(0, 0);
+  context.arc(0, 0, size * 5, -Math.PI / 2 - 0.55, -Math.PI / 2 + 0.55);
+  context.closePath();
+  context.fill();
+  context.rotate(walker.heading);
+  const pulse = 0.5 + 0.5 * Math.sin(style.time * 3);
+  context.strokeStyle = `rgba(255, 214, 120, ${0.35 + pulse * 0.4})`;
+  context.lineWidth = 1.5;
+  context.beginPath();
+  context.arc(0, 0, size * (1.5 + pulse * 0.5), 0, Math.PI * 2);
+  context.stroke();
+  context.shadowColor = "rgba(0, 0, 0, 0.5)";
+  context.shadowBlur = 4;
+  context.fillStyle = "#ffd678";
+  context.beginPath();
+  context.arc(0, 0, size, 0, Math.PI * 2);
+  context.fill();
+  context.shadowBlur = 0;
+  context.strokeStyle = "#ffffff";
+  context.lineWidth = 2;
+  context.stroke();
+  context.restore();
+}
+
+/** Piers, as planked rectangles, once the chart is zoomed in far enough to show them. */
+function drawPiers(context: CanvasRenderingContext2D, camera: ChartCamera, data: ChartFeatures): void {
+  if (camera.mpp > 3 || !data.piers?.length) return;
+  context.save();
+  context.fillStyle = "#b58a5a";
+  context.strokeStyle = "rgba(60, 40, 20, 0.7)";
+  context.lineWidth = 1;
+  for (const pier of data.piers) {
+    const width = (pier.halfWidth - 0.6) * 0.95;
+    // Along the pier from its root, then the T-head across its end.
+    const corner = (along: number, across: number) => toScreen(camera, pier.x + pier.dirX * along - pier.dirZ * across, pier.z + pier.dirZ * along + pier.dirX * across);
+    for (const [a0, a1, half] of [
+      [0, pier.length - 2.4, width / 2],
+      [pier.length - 2.4 - 0.1, pier.length - 2.4 + 0.3, 2.3],
+    ] as const) {
+      const points = [corner(a0, -half), corner(a1, -half), corner(a1, half), corner(a0, half)];
+      context.beginPath();
+      points.forEach(([px, py], index) => (index === 0 ? context.moveTo(px, py) : context.lineTo(px, py)));
+      context.closePath();
+      context.fill();
+      context.stroke();
+    }
+  }
+  context.restore();
+}
+
 /** Draws the whole chart into `context` (whose canvas is width·dpr × height·dpr). */
 export function drawChart(context: CanvasRenderingContext2D, camera: ChartCamera, data: ChartFeatures, style: ChartStyle): void {
   context.setTransform(camera.dpr, 0, 0, camera.dpr, 0, 0);
@@ -787,6 +853,7 @@ export function drawChart(context: CanvasRenderingContext2D, camera: ChartCamera
   drawTrack(context, camera, data.track.points, style.mini);
   drawLoot(context, camera, data, style);
   drawFog(context, camera, data.explored, style.time);
+  drawPiers(context, camera, data);
   drawTraders(context, camera, data, style);
   drawSonar(context, camera, data, style);
   // Found places first, so their names win over the question marks'.
@@ -799,6 +866,7 @@ export function drawChart(context: CanvasRenderingContext2D, camera: ChartCamera
   }
   for (const place of shown) drawPlace(context, camera, place, style, boxes);
   drawYacht(context, camera, data, style);
+  drawWalker(context, camera, data, style);
   drawPins(context, camera, data, style);
 }
 

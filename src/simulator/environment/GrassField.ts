@@ -120,7 +120,7 @@ export function createClumpGeometry(blades: number, segments: number, seed: numb
         positions.push(cx + sideX * half * side, y, cz + sideZ * half * side);
         normals.push(facing.x, facing.y, facing.z);
         // A dark, yellowed root to a fresh green tip (tinted per clump by its instance colour).
-        colors.push(0.16 + t * 0.2, 0.26 + t * 0.32, 0.08 + t * 0.07);
+        colors.push(0.035 + t * 0.09, 0.075 + t * 0.15, 0.018 + t * 0.03);
         bladeT.push(t);
         centre.push(1 - r / 0.16);
       }
@@ -240,7 +240,7 @@ export class GrassField {
             vec3 toEyeView = normalize(vViewPosition);
             vec3 sunView = normalize((viewMatrix * vec4(uSunDirection, 0.0)).xyz);
             float through = pow(max(dot(-toEyeView, sunView), 0.0), 3.0) * smoothstep(-0.05, 0.15, uSunDirection.y);
-            totalEmissiveRadiance += diffuseColor.rgb * uSunColor * through * vBladeT * 0.45;
+            totalEmissiveRadiance += diffuseColor.rgb * uSunColor * through * vBladeT * 0.3;
           }`,
         );
     });
@@ -381,9 +381,9 @@ export class GrassField {
         data[o + 5] = width;
         data[o + 6] = height;
         // Lush green, or sun-bleached straw in the dry swathes.
-        data[o + 7] = tone * (0.95 + dry * 0.75);
+        data[o + 7] = tone * (0.95 + dry * 0.5);
         data[o + 8] = tone * (1.05 + dry * 0.12);
-        data[o + 9] = tone * (0.9 - dry * 0.25);
+        data[o + 9] = tone * (0.9 - dry * 0.2);
         count += 1;
       }
     }

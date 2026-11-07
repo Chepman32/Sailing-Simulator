@@ -6,6 +6,7 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { Pass } from "three/addons/postprocessing/Pass.js";
 import { AmbientOcclusionPass } from "./AmbientOcclusion";
 import type { QualitySettings } from "./QualityManager";
+import { UnderwaterRaysPass } from "./UnderwaterRays";
 import { SunShaftsPass } from "./SunShafts";
 
 /**
@@ -160,6 +161,8 @@ export class PostProcessing {
   private readonly tap: DepthTap;
   private readonly occlusion: AmbientOcclusionPass;
   private readonly shafts: SunShaftsPass;
+  /** Sunlight in the water as a volume, for a diver (needs the scene's depth). */
+  readonly underwaterRays: UnderwaterRaysPass;
   /** Whether the scene targets carry depth textures (ambient occlusion or sun shafts on). */
   private depthTextures = false;
   /** Sun shafts are on in this preset (the pass itself is off while the sun is hidden). */
@@ -210,11 +213,15 @@ export class PostProcessing {
     this.occlusion = new AmbientOcclusionPass(scene, camera, this.width * pixelRatio, this.height * pixelRatio);
     this.shafts = new SunShaftsPass(this.width * pixelRatio, this.height * pixelRatio);
     this.shafts.camera = camera;
-    this.tap = new DepthTap([this.occlusion, this.shafts]);
+    this.underwaterRays = new UnderwaterRaysPass(this.width * pixelRatio, this.height * pixelRatio);
+    this.underwaterRays.camera = camera;
+    this.underwaterRays.enabled = false;
+    this.tap = new DepthTap([this.occlusion, this.shafts, this.underwaterRays]);
     this.composer.addPass(this.renderPass);
     this.composer.addPass(this.tap);
     this.composer.addPass(this.occlusion);
     this.composer.addPass(this.shafts);
+    this.composer.addPass(this.underwaterRays);
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.finish);
     this.applyDepthPasses(quality);
@@ -229,7 +236,9 @@ export class PostProcessing {
     this.occlusion.enabled = quality.ambientOcclusion;
     this.godRays = quality.godRays;
     this.shafts.enabled = quality.godRays;
-    const wanted = quality.ambientOcclusion || quality.godRays;
+    // The scene's depth is kept whenever post-processing runs: the diver's
+    // light shafts need it, as do ambient occlusion and the sun shafts.
+    const wanted = true;
     if (wanted === this.depthTextures) return;
     this.depthTextures = wanted;
     for (const target of [this.composer.renderTarget1, this.composer.renderTarget2]) {
@@ -276,6 +285,7 @@ export class PostProcessing {
     this.renderPass.camera = camera;
     this.occlusion.setCamera(camera);
     this.shafts.camera = camera;
+    this.underwaterRays.camera = camera;
   }
 
   setQuality(quality: QualitySettings): void {
@@ -327,6 +337,13 @@ export class PostProcessing {
   setUnderwater(amount: number): void {
     this.finish.uniforms.uUnderwater!.value = amount;
     this.occlusion.underwater = amount > 0.5 ? 1 : 0;
+    this.underwaterRays.amount = amount;
+    this.underwaterRays.enabled = amount > 0.01;
+  }
+
+  /** Whether the diver's light shafts are drawn as a volume (post-processing on). */
+  get volumetricUnderwater(): boolean {
+    return this.active && this.depthTextures;
   }
 
   render(delta: number, time: number): void {
@@ -344,6 +361,7 @@ export class PostProcessing {
     this.finish.dispose();
     this.occlusion.dispose();
     this.shafts.dispose();
+    this.underwaterRays.dispose();
     this.composer.dispose();
   }
 

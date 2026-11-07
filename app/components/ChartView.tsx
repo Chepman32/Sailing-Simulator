@@ -14,7 +14,11 @@ import { fill, type FeatureMessages } from "./featureMessages";
  */
 
 const MINI_RANGE = 1300;
-const MIN_MPP = 0.9;
+/** On foot (or swimming) the minimap shows the hundred metres round the skipper. */
+const MINI_RANGE_AFOOT = 50;
+/** Opened on foot, the chart spans this many metres across its shorter side. */
+const AFOOT_SPAN = 100;
+const MIN_MPP = 0.06;
 const MAX_MPP = 70;
 
 type Props = {
@@ -50,7 +54,7 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
   const fullRef = useRef<HTMLCanvasElement | null>(null);
   const miniSize = useCanvasSize(miniRef, ready && !open && !hideMini);
   const fullSize = useCanvasSize(fullRef, ready && open);
-  const view = useRef({ x: 0, z: 0, mpp: 7, follow: true });
+  const view = useRef<{ x: number; z: number; mpp: number; follow: boolean; afoot: boolean | null }>({ x: 0, z: 0, mpp: 7, follow: true, afoot: null });
   const [stats, setStats] = useState({ area: 0, found: 0 });
   const [scale, setScale] = useState(scaleBar(7));
   /** The pin colour a click drops, and which pins are out. */
@@ -95,9 +99,9 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
       last = now;
       const simulator = simulatorRef.current;
       const { width, height, dpr } = miniSize;
-      const mpp = (MINI_RANGE * 2) / width;
       const position = simulator?.chartCentre();
       if (!simulator || !position) return;
+      const mpp = ((position.afoot ? MINI_RANGE_AFOOT : MINI_RANGE) * 2) / width;
       const camera: ChartCamera = { x: position.x, z: position.z, mpp, width, height, dpr };
       const data = simulator.chart(
         camera.x - (width / 2) * mpp,
@@ -155,11 +159,23 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
     return () => cancelAnimationFrame(frame);
   }, [ready, open, fullSize, simulatorRef, labels]);
 
-  // Opening the chart centres it on the yacht.
+  // Opening the chart centres it on the yacht, or on the skipper when he is
+  // away from her, zoomed to the hundred metres round him (the yacht's own
+  // zoom is kept for when he is back at the helm).
+  const yachtMpp = useRef(7);
   useEffect(() => {
     if (open) {
-      view.current.follow = true;
-      setScale(scaleBar(view.current.mpp));
+      const afoot = simulatorRef.current?.chartCentre()?.afoot ?? false;
+      const state = view.current;
+      state.follow = true;
+      if (afoot) {
+        if (state.afoot === false) yachtMpp.current = state.mpp;
+        state.mpp = Math.max(MIN_MPP, AFOOT_SPAN / Math.max(1, Math.min(window.innerWidth, window.innerHeight)));
+      } else if (state.afoot === true) {
+        state.mpp = yachtMpp.current;
+      }
+      state.afoot = afoot;
+      setScale(scaleBar(state.mpp));
       const slots = simulatorRef.current?.chartPinSlots;
       if (slots) {
         setPinsOut(slots);

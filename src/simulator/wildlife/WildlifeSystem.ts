@@ -123,17 +123,34 @@ export class WildlifeSystem {
     );
   }
 
+  private readonly swimmerState = { depth: 0 };
+
   /** Everything that lives under the surface (left out of the water's mirror). */
   get underwater(): THREE.Object3D {
     return this.marineGroup;
   }
 
-  update(delta: number, physics: VesselPhysics, camera: THREE.Camera): void {
+  /**
+   * @param swimmer the skipper while he is in the water (where, how deep,
+   *   which way he looks): the whale, the sharks and the dolphins then keep
+   *   round him, within sight through the water, instead of round the yacht.
+   */
+  update(delta: number, physics: VesselPhysics, camera: THREE.Camera, swimmer: { x: number; z: number; depth: number; heading: number } | null = null): void {
     const vessel = this.vessel;
-    vessel.x = physics.position.x;
-    vessel.z = physics.position.z;
-    vessel.heading = physics.heading;
-    vessel.speed = Math.max(0, physics.telemetry.forwardSpeed);
+    if (swimmer) {
+      vessel.x = swimmer.x;
+      vessel.z = swimmer.z;
+      vessel.heading = swimmer.heading;
+      vessel.speed = 0;
+      this.swimmerState.depth = swimmer.depth;
+      vessel.swimmer = this.swimmerState;
+    } else {
+      vessel.x = physics.position.x;
+      vessel.z = physics.position.z;
+      vessel.heading = physics.heading;
+      vessel.speed = Math.max(0, physics.telemetry.forwardSpeed);
+      vessel.swimmer = null;
+    }
 
     // In a storm the whales, sharks, dolphins and fish go deep and stay
     // there: they sink out of sight over STORM_LEAVE seconds, and come

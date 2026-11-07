@@ -9,6 +9,7 @@ import {
   addIslandShadows,
   applyIslandSurface,
   createIslandSurfaceUniforms,
+  loadGrassTextures,
   MAX_PALM_TRUNKS,
   PALM_SHADOW_LAYER,
   PalmShadowMap,
@@ -16,6 +17,7 @@ import {
 } from "./IslandSurface";
 import {
   islandEdgeNoise,
+  distanceFromWaterline,
   islandsAround,
   MAX_EDGE_NOISE,
   islandsWithin,
@@ -61,6 +63,8 @@ type IslandVisual = {
   trunks: THREE.Vector4[];
   /** Boulders and tors a walker goes round (world x, z and radius). */
   stones: THREE.Vector3[];
+  /** Bushes a walker pushes through (world x, z, radius and top). */
+  bushes: THREE.Vector4[];
   /** Boulders, scrub, pier, hut, lighthouse (see IslandProps), and what glows at night. */
   furniture: THREE.Mesh[];
   pier: PierFootprint | null;
@@ -158,6 +162,8 @@ export class IslandSystem {
   ) {
     this.group.name = "TropicalIslandSystem";
     scene.add(this.group);
+    // The turf photo arrives a moment later; the islands show the plain turf until then.
+    loadGrassTextures(this.surface, 8);
     this.createSeabed();
     // One material for every island's terrain: one shader program, and the
     // islands differ only in their geometry.
@@ -653,6 +659,58 @@ export class IslandSystem {
     return 0;
   }
 
+  /** The piers of the islands built round here (world footprints), for the chart. */
+  piers(out: PierFootprint[] = []): PierFootprint[] {
+    out.length = 0;
+    for (const visual of this.built.values()) if (visual.pier) out.push(visual.pier);
+    return out;
+  }
+
+  /**
+   * What a walker's feet at (x, z, `feetY`) are on, for his footsteps: pier
+   * planks, rock (a boulder, a volcano's cinder slopes), grass, or sand (wet
+   * near the water).
+   */
+  groundKind(x: number, z: number, feetY: number): "wood" | "rock" | "grass" | "sand" | "wetSand" {
+    if (Math.abs(this.pierDeckAt(x, z) - feetY) < 0.3) return "wood";
+    for (const visual of this.built.values()) {
+      const island = visual.definition;
+      const extent = island.beachRadius * Math.max(1, island.scaleZ) * MAX_EDGE_NOISE + 6;
+      if (Math.abs(x - island.centerX) > extent || Math.abs(z - island.centerZ) > extent) continue;
+      for (const stone of visual.stones) {
+        if (Math.hypot(stone.x - x, stone.y - z) < stone.z + 0.3) return "rock";
+      }
+      if (island.volcano) {
+        const dx = x - island.centerX;
+        const dz = (z - island.centerZ) / island.scaleZ;
+        const angle = Math.atan2(dz, dx);
+        const radial = Math.hypot(dx, dz) / (island.beachRadius * islandEdgeNoise(angle, island));
+        if (radial < VOLCANO_FOOT * 0.97) return "rock";
+      }
+    }
+    if (this.turfAt(x, z) > 0.35) return "grass";
+    return distanceFromWaterline(x, z) > -3 ? "wetSand" : "sand";
+  }
+
+  /**
+   * How deep (x, z) is inside a bush, 0 outside … 1 at its middle, for a
+   * walker pushing through (the rustle, a little slowing), and whether his
+   * feet at `feetY` are below its top.
+   */
+  bushAt(x: number, z: number, feetY: number): number {
+    let deepest = 0;
+    for (const visual of this.built.values()) {
+      const island = visual.definition;
+      const extent = island.beachRadius * Math.max(1, island.scaleZ) * MAX_EDGE_NOISE;
+      if (Math.abs(x - island.centerX) > extent || Math.abs(z - island.centerZ) > extent) continue;
+      for (const bush of visual.bushes) {
+        if (Math.abs(bush.x - x) > bush.z || Math.abs(bush.y - z) > bush.z || feetY > bush.w) continue;
+        deepest = Math.max(deepest, 1 - Math.hypot(bush.x - x, bush.y - z) / bush.z);
+      }
+    }
+    return deepest;
+  }
+
   /**
    * Gets the islands within `reach` of (x, z) ready for a walker: their
    * buildings' upright faces rasterised (`UprightGrid`). Done once per island,
@@ -688,7 +746,9 @@ export class IslandSystem {
         const r = Math.hypot(dx, dz);
         if (r < island.beachRadius * VOLCANO_RIM * 1.3) {
           const angle = Math.atan2(dz, dx);
-          if (r / (island.beachRadius * islandEdgeNoise(angle, island)) < VOLCANO_RIM * 0.96) return true;
+          // The crest itself is the last place he can stand: a step past it
+          // is the crater's inner wall, too steep to climb back out of.
+          if (r / (island.beachRadius * islandEdgeNoise(angle, island)) < VOLCANO_RIM * 1.005) return true;
         }
       }
       const walls = visual.walls;
@@ -849,7 +909,8 @@ export class IslandSystem {
       islandGroup.add(beam);
     }
     const stones = built.stones.map((stone) => new THREE.Vector3(island.centerX + stone.x, island.centerZ + stone.z, stone.radius));
-    return { definition: island, group: islandGroup, holder, lod, batches, trunks, stones, furniture, pier: built.pier, beam, grass };
+    const bushes = built.bushes.map((bush) => new THREE.Vector4(island.centerX + bush.x, island.centerZ + bush.z, bush.radius, bush.top));
+    return { definition: island, group: islandGroup, holder, lod, batches, trunks, stones, bushes, furniture, pier: built.pier, beam, grass };
   }
 
   /**
@@ -887,6 +948,8 @@ export class IslandSystem {
       });
       source.alphaToCoverage = true;
       source.userData.translucent = true;
+      // Swaying by the leaf's own height in the bush, not by its height above the sea.
+      source.userData.bush = true;
       this.leafMaterial = this.palmMaterial(source);
       this.leafMaterial.userData.shadowDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: texture, alphaTest: 0.5, side: THREE.DoubleSide });
     }
@@ -1021,6 +1084,7 @@ export class IslandSystem {
     if (existing) return existing;
     const material = source.clone();
     const translucent = material.userData.translucent === true;
+    const bush = material.userData.bush === true;
     const wind = this.palmWind;
     const strength = this.palmStrength;
     const sky = this.sky;
@@ -1035,17 +1099,16 @@ export class IslandSystem {
       // breeze, whatever its own scale and orientation. Fronds also flutter:
       // a quicker, smaller shiver that grows toward their tips.
       shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", "#include <common>\nuniform float uPalmTime;\nuniform float uPalmStrength;\nvarying vec3 vPalmWorld;")
+        .replace("#include <common>", `#include <common>\nuniform float uPalmTime;\nuniform float uPalmStrength;\nvarying vec3 vPalmWorld;${bush ? "\nattribute float leafSway;" : ""}`)
         .replace(
           "#include <project_vertex>",
           `#include <project_vertex>
            vec4 palmWorld = modelMatrix * vec4(transformed, 1.0);
-           float palmSway = smoothstep(1.5, 13.0, palmWorld.y);
-           palmSway *= palmSway;
+           ${bush ? "float palmSway = leafSway * leafSway * 0.16;" : "float palmSway = smoothstep(1.5, 13.0, palmWorld.y);\n           palmSway *= palmSway;"}
            float palmPhase = uPalmTime * 1.3 + palmWorld.x * 0.23 + palmWorld.z * 0.17;
            palmWorld.x += (sin(palmPhase) * 0.34 + 0.22) * palmSway * uPalmStrength;
            palmWorld.z += (cos(palmPhase * 0.73) * 0.2 + 0.14) * palmSway * uPalmStrength;
-           ${translucent ? `float palmFlutter = sin(uPalmTime * 7.1 + palmWorld.x * 1.9 + palmWorld.z * 2.3) * 0.045 * uPalmStrength * palmSway;
+           ${translucent ? `float palmFlutter = sin(uPalmTime * 7.1 + palmWorld.x * 1.9 + palmWorld.z * 2.3) * ${bush ? "0.18" : "0.045"} * uPalmStrength * palmSway;
            palmWorld.y += palmFlutter;` : ""}
            vPalmWorld = palmWorld.xyz;
            mvPosition = viewMatrix * palmWorld;
@@ -1076,7 +1139,7 @@ export class IslandSystem {
       // Crowns shade their own trunks and the fronds below them.
       addIslandShadows(shader, surface, translucent ? 2 : 4);
     };
-    material.customProgramCacheKey = () => `palm-wind-v6-${translucent ? "leaf" : "solid"}`;
+    material.customProgramCacheKey = () => `palm-wind-v7-${bush ? "bush" : translucent ? "leaf" : "solid"}`;
     this.palmMaterials.set(source, material);
     return material;
   }

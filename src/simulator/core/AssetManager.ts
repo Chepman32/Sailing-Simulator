@@ -4,7 +4,11 @@ import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import type { LoadingState } from "../types";
 
-export type AnimatedAssetKey = "dolphin" | "shark" | "whale" | "fishSchool" | "seagull";
+export type AnimatedAssetKey =
+  | "dolphin" | "shark" | "whale" | "fishSchool" | "seagull"
+  | "traderMan" | "traderWoman" | "traderPirate" | "crabRed" | "crabBlue";
+/** The island traders' models, in the order they are handed out. */
+export const TRADER_MODEL_KEYS = ["traderMan", "traderWoman", "traderPirate"] as const satisfies readonly AnimatedAssetKey[];
 export type StaticAssetKey = "yacht";
 export type AssetKey = StaticAssetKey | AnimatedAssetKey;
 
@@ -26,6 +30,11 @@ const ASSETS = {
   whale: { url: "/models/blue-whale-rigged-pbr-v2.glb", label: "Loading whale", required: false },
   fishSchool: { url: "/models/tropical-fish-school.glb", label: "Loading tropical fish", required: false },
   seagull: { url: "/models/seagull-animated.glb", label: "Loading seabirds", required: false },
+  traderMan: { url: "/models/trader-man.glb", label: "Loading islanders", required: false },
+  traderWoman: { url: "/models/trader-woman.glb", label: "Loading islanders", required: false },
+  traderPirate: { url: "/models/trader-pirate.glb", label: "Loading islanders", required: false },
+  crabRed: { url: "/models/crab-red.glb", label: "Loading crabs", required: false },
+  crabBlue: { url: "/models/crab-blue.glb", label: "Loading crabs", required: false },
 } satisfies Record<AssetKey, AssetDefinition>;
 
 const ASSET_ENTRIES = Object.entries(ASSETS) as Array<[AssetKey, AssetDefinition]>;
