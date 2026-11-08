@@ -19,7 +19,19 @@
  * walk never sounds like a loop.
  */
 
+import { SampleBank, type SampleGroup } from "./SampleBank";
+
 export type FootSurface = "sand" | "wetSand" | "grass" | "wood" | "rock" | "deck";
+
+/** The recorded footsteps of each surface (see `SampleBank`). */
+const FOOT_SAMPLES: Record<FootSurface, SampleGroup> = {
+  sand: "sand",
+  wetSand: "wet",
+  grass: "grass",
+  wood: "wood",
+  rock: "rock",
+  deck: "deck",
+};
 
 type Envelope = { attack: number; decay: number; peak: number };
 
@@ -32,11 +44,17 @@ export class BodySounds {
   /** Fluttering leaf noise. */
   private readonly leaves: AudioBuffer;
   private lastFoot = 0;
+  /** Recorded takes, preferred over the synthesis once loaded. */
+  readonly samples: SampleBank;
 
   constructor(
     private readonly context: AudioContext,
     private readonly output: AudioNode,
+    /** Heard inside the mask, past the water's muffling (his own plunge and bubbles). */
+    private readonly inner: AudioNode = output,
   ) {
+    this.samples = new SampleBank(context, output);
+    this.samples.load();
     this.white = this.buffer(1.2, () => Math.random() * 2 - 1);
     let brown = 0;
     this.brown = this.buffer(1.2, () => {
@@ -147,6 +165,7 @@ export class BodySounds {
     const force = (running ? 1.45 : 1) * (0.85 + Math.random() * 0.3);
     // Heel then the roll onto the toe, a few hundredths of a second apart.
     const roll = (running ? 0.045 : 0.075) * (0.85 + Math.random() * 0.3);
+    if (this.recordedStep(surface, running, force, roll)) return;
     switch (surface) {
       case "sand": {
         this.thud(0.09 * force, 220);
@@ -219,6 +238,107 @@ export class BodySounds {
     }
   }
 
+  /**
+   * A recorded footstep (when the takes have loaded), with a little of the
+   * synthesis laid under it where a surface has more to it than one take:
+   * loose grains on dry sand, the hollow ring and the creak of pier planks.
+   */
+  private recordedStep(surface: FootSurface, running: boolean, force: number, roll: number): boolean {
+    const samples = this.samples;
+    const group = FOOT_SAMPLES[surface];
+    if (!samples.has(group)) return false;
+    const rate = running ? 1.07 : 1;
+    switch (surface) {
+      case "sand":
+        samples.play("sand", { gain: 0.42 * force, rate });
+        this.burst(this.grains, "bandpass", 3200 + Math.random() * 900, 0.8, { attack: 0.01, decay: 0.08, peak: 0.05 * force }, roll);
+        break;
+      case "wetSand":
+        samples.play("wet", { gain: 0.55 * force, rate });
+        if (samples.has("sand")) samples.play("sand", { gain: 0.12 * force, rate: rate * 0.85, lowpass: 2200 });
+        break;
+      case "grass":
+        samples.play("grass", { gain: 0.38 * force, rate, length: 0.45 });
+        break;
+      case "wood": {
+        // Bare feet on planks over the water: a padded knock, the hollow under it.
+        samples.play("wood", { gain: 0.32 * force, rate, highpass: 90 });
+        if (samples.has("plank")) samples.play("plank", { gain: 0.3 * force, rate, delay: roll * 0.5 });
+        this.tone(118 + Math.random() * 25, 82, 0.05 * force, 0.004, 0.12);
+        if (Math.random() < 0.14) this.creak(roll);
+        break;
+      }
+      case "rock":
+        samples.play("rock", { gain: 0.36 * force, rate });
+        this.burst(this.gravel, "bandpass", 3200 + Math.random() * 1200, 0.7, { attack: 0.008, decay: 0.11, peak: 0.08 * force }, roll * 0.5);
+        break;
+      case "deck":
+        samples.play("deck", { gain: 0.3 * force, rate, lowpass: 3800 });
+        break;
+    }
+    return true;
+  }
+
+  /** A plank creaking under the weight. */
+  private creak(delay: number): void {
+    const context = this.context;
+    const start = context.currentTime + delay;
+    const saw = context.createOscillator();
+    saw.type = "sawtooth";
+    saw.frequency.setValueAtTime(170 + Math.random() * 60, start);
+    saw.frequency.linearRampToValueAtTime(130 + Math.random() * 40, start + 0.28);
+    const band = context.createBiquadFilter();
+    band.type = "bandpass";
+    band.frequency.value = 900 + Math.random() * 400;
+    band.Q.value = 6;
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.014, start + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.3);
+    saw.connect(band).connect(gain).connect(this.output);
+    saw.start(start);
+    saw.stop(start + 0.32);
+    saw.onended = () => gain.disconnect();
+  }
+
+  /**
+   * Going under: the rush of water closing over the head, the ears filling,
+   * and a cloud of bubbles streaming up past the mask. `speed` m/s downward.
+   */
+  submerge(speed: number): void {
+    const force = Math.min(1.4, 0.55 + speed * 0.35);
+    if (!this.samples.play("plunge", { gain: 0.55 * force, rate: 0.82, lowpass: 1600, output: this.inner })) {
+      this.burst(this.brown, "lowpass", 420, 0.8, { attack: 0.03, decay: 0.5, peak: 0.2 * force }, 0, this.inner);
+    }
+    this.samples.play("bubblesRush", { gain: 0.5 * force, rate: 1.05, lowpass: 3200, output: this.inner, length: 1.8 });
+    for (let index = 0; index < 3; index += 1) {
+      if (!this.samples.play("bubble", { gain: 0.32 * force, rate: 0.9 + index * 0.18, delay: 0.08 + index * 0.17 + Math.random() * 0.08, output: this.inner, lowpass: 2600 })) {
+        const pitch = 300 + Math.random() * 500;
+        this.tone(pitch, pitch * 1.7, 0.05 * force, 0.004, 0.08, 0.05 + index * 0.12);
+      }
+    }
+    // The pressure in the ears: a deep, short swell.
+    this.burst(this.brown, "lowpass", 140, 0.7, { attack: 0.08, decay: 0.6, peak: 0.12 * force }, 0.02, this.inner);
+  }
+
+  /** Breaking the surface: the water streaming off the head, drops falling round. */
+  emerge(): void {
+    if (!this.samples.play("stroke", { gain: 0.32, rate: 0.85, length: 0.6 })) {
+      this.burst(this.white, "bandpass", 900, 0.8, { attack: 0.02, decay: 0.3, peak: 0.08 });
+    }
+    this.drops(7, 0.7, 0.018, 0.12);
+  }
+
+  /** His breath out under water, as bubbles past the ears (recorded takes; false if not loaded). */
+  breathBubbles(depth: number): boolean {
+    if (!this.samples.has("bubble")) return false;
+    const deep = Math.min(1, depth / 20);
+    this.samples.play("bubblesRush", { gain: 0.28, rate: 1.15 - deep * 0.15, lowpass: 3000 - deep * 900, output: this.inner, length: 1.2 });
+    this.samples.play("bubble", { gain: 0.22, rate: 1.1, delay: 0.15, output: this.inner, lowpass: 2600 });
+    this.samples.play("bubble", { gain: 0.18, rate: 1.35, delay: 0.5, output: this.inner, lowpass: 2600 });
+    return true;
+  }
+
   /** A walker pushing through a bush: leaves brushing his legs. `depth` 0…1 how far in. */
   rustle(depth: number, running: boolean): void {
     const level = (0.08 + depth * 0.12) * (running ? 1.4 : 1);
@@ -242,6 +362,11 @@ export class BodySounds {
   /** A shin pushed through shallow water (one step); `depth` of the water, m. */
   wade(depth: number, running: boolean): void {
     const force = (running ? 1.5 : 1) * Math.min(1.4, 0.5 + depth * 1.6) * (0.85 + Math.random() * 0.3);
+    if (this.samples.play("wade", { gain: 0.42 * force, rate: running ? 1.12 : 1, length: running ? 0.9 : 1.4 })) {
+      if (depth < 0.25 && this.samples.has("wet")) this.samples.play("wet", { gain: 0.25, lowpass: 2500 });
+      this.drops(Math.round(2 + force * 2), 0.3, 0.012 * force, 0.15);
+      return;
+    }
     // The slosh: water shoved aside and closing again behind the leg.
     this.burst(this.white, "bandpass", 700 + Math.random() * 300, 0.9, { attack: 0.04, decay: 0.24, peak: 0.1 * force }, 0, this.output, 420);
     this.burst(this.brown, "lowpass", 380, 0.8, { attack: 0.05, decay: 0.3, peak: 0.12 * force });
@@ -254,6 +379,15 @@ export class BodySounds {
   /** One arm stroke of the crawl at the surface (sprinting: harder, with the churn of the kick). */
   stroke(sprint: boolean): void {
     const force = (sprint ? 1.5 : 1) * (0.85 + Math.random() * 0.3);
+    if (this.samples.has("stroke")) {
+      // The hand going in, then the pull and the arm coming out: two takes,
+      // the second softer and lower; sprinting, the churn of the kick too.
+      this.samples.play("stroke", { gain: 0.5 * force, rate: sprint ? 1.08 : 1 });
+      this.samples.play("stroke", { gain: 0.22 * force, rate: 0.78, delay: 0.24 + Math.random() * 0.06, lowpass: 2400 });
+      this.drops(sprint ? 6 : 3, 0.4, 0.014 * force, 0.36);
+      if (sprint) this.samples.play("stroke", { gain: 0.18, rate: 0.7, delay: 0.12, lowpass: 900 });
+      return;
+    }
     // The hand going in: a short, bright plunge.
     this.burst(this.white, "bandpass", 1600 + Math.random() * 600, 1.1, { attack: 0.004, decay: 0.07, peak: 0.12 * force });
     // Air dragged down with it: two or three bubbles ringing upward.
@@ -278,6 +412,8 @@ export class BodySounds {
   /** A fin kick under the water: a muffled, heavy push and a swirl. */
   kick(sprint: boolean): void {
     const force = (sprint ? 1.5 : 1) * (0.85 + Math.random() * 0.3);
+    // The water swirled by the blade, heard through the water.
+    this.samples.play("stroke", { gain: 0.2 * force, rate: 0.62, lowpass: 650 });
     this.burst(this.brown, "lowpass", 180, 0.8, { attack: 0.06, decay: 0.32, peak: 0.16 * force });
     this.burst(this.white, "lowpass", 520, 0.7, { attack: 0.08, decay: 0.4, peak: 0.035 * force }, 0.04, this.output, 260);
   }

@@ -4197,3 +4197,264 @@ input[type="range"]:disabled {
   font-weight: 850;
   line-height: 18px;
 }
+
+/* On foot and in the water: the minimap stays, bottom left above the controls hint. */
+.minimap.is-afoot {
+  z-index: 27;
+  bottom: calc(var(--edge-bottom) + 46px);
+}
+
+/* Touch: the joystick has the bottom-left corner, the minimap goes under the gauges. */
+@media (pointer: coarse) {
+  .minimap.is-afoot {
+    top: calc(var(--edge-top) + 58px);
+    bottom: auto;
+  }
+}
+
+/* ---- The pause menu (Esc on foot) ----------------------------------------- */
+
+.pause-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: max(16px, var(--edge-top)) 16px max(16px, var(--edge-bottom));
+  background: radial-gradient(ellipse at 50% 40%, rgba(4, 22, 32, 0.35), rgba(2, 12, 18, 0.72));
+  backdrop-filter: blur(6px) saturate(0.85);
+  -webkit-backdrop-filter: blur(6px) saturate(0.85);
+  animation: pause-in 180ms ease-out;
+}
+
+@keyframes pause-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.pause-card {
+  display: flex;
+  flex-direction: column;
+  width: min(440px, 100%);
+  max-height: min(680px, calc(100dvh - 32px));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--glass-strong);
+  color: var(--text);
+  box-shadow: 0 30px 80px rgba(0, 8, 14, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  animation: pause-card-in 260ms var(--spring-soft);
+}
+
+@keyframes pause-card-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.pause-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 22px 12px;
+}
+
+.pause-head h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+.pause-back {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  cursor: pointer;
+}
+.pause-back svg { width: 18px; height: 18px; }
+.pause-back:hover, .pause-back:focus-visible { border-color: var(--accent); outline: none; }
+
+.pause-list,
+.pause-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 16px 18px;
+  overflow-y: auto;
+}
+
+.pause-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 50px;
+  padding: 0 16px;
+  border: 1px solid rgba(151, 231, 238, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  text-align: start;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+.pause-item small { color: var(--muted); font-size: 13px; font-weight: 500; }
+.pause-item kbd {
+  min-width: 34px;
+  padding: 3px 8px;
+  border: 1px solid rgba(151, 231, 238, 0.3);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--muted);
+  font: 600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
+.pause-item:hover,
+.pause-item:focus-visible { border-color: var(--accent); background: rgba(101, 226, 214, 0.1); outline: none; }
+.pause-item:active { transform: scale(0.99); }
+.pause-item.is-primary { border-color: rgba(101, 226, 214, 0.55); background: linear-gradient(180deg, rgba(101, 226, 214, 0.24), rgba(101, 226, 214, 0.12)); }
+.pause-item.is-quiet { background: transparent; }
+
+.pause-label {
+  margin: 4px 4px 2px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pause-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 8px;
+}
+
+.pause-languages {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+}
+
+.pause-choice {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid rgba(151, 231, 238, 0.16);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.pause-choice:hover,
+.pause-choice:focus-visible { border-color: var(--accent); outline: none; }
+.pause-choice.is-on {
+  border-color: var(--accent);
+  background: rgba(101, 226, 214, 0.2);
+  color: var(--accent-strong);
+}
+
+.pause-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pause-key-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 4px 4px 8px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+.pause-key-row:nth-child(odd) { background: rgba(255, 255, 255, 0.025); }
+
+.pause-key {
+  min-width: 78px;
+  min-height: 34px;
+  padding: 4px 12px;
+  border: 1px solid rgba(151, 231, 238, 0.3);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--text);
+  font: 650 13px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  cursor: pointer;
+}
+.pause-key:hover,
+.pause-key:focus-visible { border-color: var(--accent); outline: none; }
+.pause-key.is-listening {
+  border-color: var(--warning);
+  color: var(--warning);
+  animation: pause-listen 0.9s ease-in-out infinite;
+}
+
+@keyframes pause-listen {
+  50% { box-shadow: 0 0 0 4px rgba(255, 208, 135, 0.18); }
+}
+
+.pause-note {
+  margin: 2px 6px;
+  color: var(--warning);
+  font-size: 13px;
+}
+
+.pause-slider {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px 8px 4px;
+  border-top: 1px solid rgba(151, 231, 238, 0.12);
+  font-size: 15px;
+}
+.pause-slider input { width: 100%; accent-color: var(--accent); }
+.pause-slider output { justify-self: end; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+.pause-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  font-size: 15px;
+  cursor: pointer;
+}
+.pause-toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+.pause-reset { justify-content: center; margin-top: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pause-backdrop, .pause-card { animation: none; }
+  .pause-key.is-listening { animation: none; }
+}
+
+.diver-pause {
+  position: absolute;
+  top: calc(var(--edge-top) + 108px);
+  right: var(--edge-right);
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+}
+.diver-pause svg { width: 20px; height: 20px; }
+.diver-pause:hover { border-color: var(--accent); }

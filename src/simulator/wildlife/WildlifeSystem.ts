@@ -126,7 +126,11 @@ export class WildlifeSystem {
 
   private readonly swimmerState = { depth: 0 };
 
-  /** Moves the pod and the sharks that are far from (x, z) to about 45 m off, where a swimmer cannot yet see them. */
+  /**
+   * Brings the pod and the sharks that are far from (x, z) to the edge of a
+   * swimmer's sight (about 22 and 30 m off), so within a few seconds of
+   * going in he sees them come out of the blue to look at him.
+   */
   private gatherRound(x: number, z: number, depth: number): void {
     const place = (fromX: number, fromZ: number, distance: number): { x: number; z: number } | null => {
       const base = Math.atan2(fromX - x, fromZ - z);
@@ -139,8 +143,8 @@ export class WildlifeSystem {
       return null;
     };
     const pod = this.dolphins.pod;
-    if (pod && Math.hypot(pod.centreX - x, pod.centreZ - z) > 90) {
-      const spot = place(pod.centreX, pod.centreZ, 45);
+    if (pod && Math.hypot(pod.centreX - x, pod.centreZ - z) > 30) {
+      const spot = place(pod.centreX, pod.centreZ, 22);
       if (spot) {
         const dx = spot.x - pod.centreX;
         const dz = spot.z - pod.centreZ;
@@ -154,8 +158,8 @@ export class WildlifeSystem {
     }
     for (const shark of this.sharks) {
       const agent = shark.state;
-      if (!agent || Math.hypot(agent.motion.x - x, agent.motion.z - z) < 80) continue;
-      const spot = place(agent.motion.x, agent.motion.z, 48 + Math.random() * 10);
+      if (!agent || Math.hypot(agent.motion.x - x, agent.motion.z - z) < 36) continue;
+      const spot = place(agent.motion.x, agent.motion.z, 26 + Math.random() * 8);
       if (!spot) continue;
       agent.motion.x = spot.x;
       agent.motion.z = spot.z;

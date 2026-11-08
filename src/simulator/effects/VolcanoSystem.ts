@@ -185,10 +185,12 @@ const lakeFragment = /* glsl */ `
   // rock, from a dull blood red through orange to a yellow-white, in HDR so
   // the brightest lava blooms.
   vec3 incandescence(float t) {
-    vec3 c = mix(vec3(0.0), vec3(0.42, 0.025, 0.0), smoothstep(0.0, 0.18, t));
-    c = mix(c, vec3(1.9, 0.22, 0.01), smoothstep(0.15, 0.45, t));
-    c = mix(c, vec3(4.2, 1.25, 0.12), smoothstep(0.42, 0.75, t));
-    c = mix(c, vec3(6.5, 4.3, 1.5), smoothstep(0.75, 1.0, t));
+    // Kept below the bloom's blow-out: lava is a deep orange with yellow
+    // only in its hottest threads, never a white glare.
+    vec3 c = mix(vec3(0.0), vec3(0.32, 0.025, 0.0), smoothstep(0.0, 0.2, t));
+    c = mix(c, vec3(1.15, 0.15, 0.008), smoothstep(0.18, 0.45, t));
+    c = mix(c, vec3(2.3, 0.62, 0.05), smoothstep(0.45, 0.78, t));
+    c = mix(c, vec3(3.1, 1.45, 0.3), smoothstep(0.8, 1.0, t));
     return c;
   }
   void main() {
@@ -207,7 +209,7 @@ const lakeFragment = /* glsl */ `
     // A cooled skin floats where the field is high: black, glassy basalt in
     // rafts torn into irregular plates. Between the rafts, open lanes of
     // molten rock.
-    float skin = smoothstep(0.44, 0.56, field);
+    float skin = smoothstep(0.33, 0.45, field);
     // The skin cracks: thin, jagged, branching lines of glowing rock, a few
     // wide ones and many fine ones, sheared by the same flow.
     vec2 crackSpace = p * 0.42 + warp2 * 6.0;
@@ -216,16 +218,16 @@ const lakeFragment = /* glsl */ `
     // Heat of the open lava: hottest in the welling middle, in the core of
     // each lane, and in a bright band at the walls where the crust is torn
     // apart against the rock; a slow pulse of turbulence runs through it.
-    float lane = 1.0 - smoothstep(0.28, 0.48, field);
+    float lane = 1.0 - smoothstep(0.22, 0.38, field);
     float turbulence = lakeFbm(p * 0.35 + vec2(t * 0.22, -t * 0.17)) ;
-    float welling = exp(-rn * rn * 9.0) * (0.75 + 0.25 * sin(t * 0.6));
+    float welling = exp(-rn * rn * 12.0) * (0.75 + 0.25 * sin(t * 0.6));
     float shore = smoothstep(0.82, 0.98, rn);
-    float heat = lane * (0.45 + 0.55 * turbulence) + welling * 0.55 + shore * (0.55 + 0.35 * turbulence);
+    float heat = lane * (0.35 + 0.45 * turbulence) + welling * 0.3 + shore * (0.4 + 0.3 * turbulence);
     heat = clamp(heat, 0.0, 1.0);
     // Through the cracks the hot interior shows, dimmer than the open lanes.
-    float crackHeat = cracks * (0.55 + 0.35 * turbulence);
+    float crackHeat = cracks * (0.5 + 0.3 * turbulence);
     // Thin skin near a lane still glows a dull red from beneath.
-    float underglow = (1.0 - smoothstep(0.44, 0.62, field)) * 0.22;
+    float underglow = (1.0 - smoothstep(0.33, 0.5, field)) * 0.2;
     // Gas bursting through: a bright, spreading dome that tears the skin and
     // leaves a ring of spatter, here and there, now and then.
     vec2 cell = floor(p * 0.09 + 0.5);
@@ -237,12 +239,14 @@ const lakeFragment = /* glsl */ `
     float dome = burst * (1.0 - smoothstep(0.0, 1.0 + 3.5 * (phase - 0.88) * 8.0, fromBurst));
     // The skin itself: black and faintly glassy, lit a little by the glow.
     float grain = lakeFbm(p * 2.2);
-    vec3 basalt = vec3(0.018, 0.016, 0.016) * (0.6 + 0.9 * grain);
+    // Fresh crust is a glassy grey-black, wrinkled into ropes (pahoehoe).
+    float ropes = 0.5 + 0.5 * sin(dot(p, vec2(0.8, 0.6)) * 3.1 + grain * 9.0 + warp2.x * 14.0);
+    vec3 basalt = vec3(0.032, 0.029, 0.028) * (0.55 + 0.8 * grain) * (0.8 + 0.35 * ropes);
     float skinHeat = max(crackHeat, underglow);
     vec3 skinColor = basalt + incandescence(skinHeat);
-    vec3 openColor = incandescence(0.35 + heat * 0.65);
-    vec3 color = mix(openColor, skinColor, skin * (1.0 - shore * 0.8));
-    color = mix(color, incandescence(1.0), clamp(dome, 0.0, 1.0));
+    vec3 openColor = incandescence(0.24 + heat * 0.52);
+    vec3 color = mix(openColor, skinColor, skin * (1.0 - shore * 0.45));
+    color = mix(color, incandescence(0.9), clamp(dome, 0.0, 1.0));
     // Cooler lava dims everything a little when the volcano is resting.
     color *= mix(0.75, 1.0, uHeat);
     gl_FragColor = vec4(color, 1.0);
@@ -718,15 +722,19 @@ export class VolcanoSystem {
     const radial = VOLCANO_RIM * LAKE_RADIAL;
     const level = volcanoHeight(radial, 0, island.height, island.seed) + 0.25;
     const segments = 72;
-    const rings = 6;
+    const rings = 8;
     const positions: number[] = [island.centerX, level, island.centerZ];
     for (let ring = 1; ring <= rings; ring += 1) {
       const fraction = ring / rings;
       for (let segment = 0; segment < segments; segment += 1) {
         const angle = (segment / segments) * Math.PI * 2;
         // A hand's breadth beyond the shoreline, under the crater wall, so no gap shows.
-        const radius = island.beachRadius * radial * islandEdgeNoise(angle, island) * fraction * 1.04;
-        positions.push(island.centerX + Math.cos(angle) * radius, level, island.centerZ + Math.sin(angle) * radius * island.scaleZ);
+        const radius = island.beachRadius * radial * islandEdgeNoise(angle, island) * fraction * 1.1;
+        // The outer rings sag under the crater floor, so wherever the drawn
+        // terrain (coarser than its formula) lies, the lake meets it from
+        // below instead of floating over it as a raised disc.
+        const sag = Math.pow(fraction, 4) * (2.5 + island.height * 0.02);
+        positions.push(island.centerX + Math.cos(angle) * radius, level - sag, island.centerZ + Math.sin(angle) * radius * island.scaleZ);
       }
     }
     const indices: number[] = [];

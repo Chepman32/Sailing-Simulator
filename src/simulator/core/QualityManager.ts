@@ -69,8 +69,10 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     ambientOcclusion: false,
     godRays: false,
     oceanMicro: false,
-    grassRadius: 0,
-    grassDensity: 0,
+    // A few clumps right round a walker's feet: the turf texture alone is
+    // flat up close.
+    grassRadius: 11,
+    grassDensity: 0.28,
     fullDetail: false,
   },
   medium: {

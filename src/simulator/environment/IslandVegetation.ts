@@ -104,7 +104,7 @@ export function createLeafClusterTexture(): THREE.DataTexture {
     g.quadraticCurveTo(cx + Math.cos(a + 0.3) * 60, cy + Math.sin(a + 0.3) * 60, cx + Math.cos(a) * 150, cy + Math.sin(a) * 150);
     g.stroke();
   }
-  const leaves = 520;
+  const leaves = 300;
   const reach = Math.min(clumpWidth, size) * 0.47;
   for (let index = 0; index < leaves; index += 1) {
     const depth = index / leaves;
@@ -113,11 +113,13 @@ export function createLeafClusterTexture(): THREE.DataTexture {
     const r = Math.pow(rng(), 0.75 + depth * 0.6) * reach * (0.62 + 0.38 * (1 - depth * 0.5));
     const x = cx + Math.cos(a) * r;
     const y = cy + Math.sin(a) * r;
-    const length = 26 + rng() * 22;
+    // Leaves a hand long on a bush a metre across (sea grape, scaevola):
+    // big enough to read as leaves from a few paces, not a green speckle.
+    const length = 38 + rng() * 34;
     const angle = a + (rng() - 0.5) * 1.1;
     const older = rng() < 0.06;
     const hue = older ? 62 + rng() * 10 : 98 + (rng() - 0.5) * 24;
-    const light = (older ? 34 : 13) + depth * 22 + rng() * 6;
+    const light = (older ? 34 : 11) + depth * 26 + rng() * 8;
     const saturation = (older ? 48 : 42) + rng() * 16;
     leaf(x, y, length, angle, hue, light, saturation);
   }
@@ -183,9 +185,17 @@ export function leafMass(x: number, y: number, z: number, r: number, ground: num
   };
   const sphereNormal = (p: THREE.Vector3, target: THREE.Vector3) =>
     target.set(p.x - x, (p.y - y) * 0.85 + r * 0.25, p.z - z).normalize();
+  // A leaf clump's own facing, half its plane and half the ball, tipped at
+  // random: neighbouring clumps catch the light differently, so the bush is
+  // a heap of leafy sprays and not a smooth green ball.
+  const cardNormal = (p: THREE.Vector3, plane: THREE.Vector3, tip: THREE.Vector3, target: THREE.Vector3) => {
+    sphereNormal(p, target);
+    const sign = plane.dot(target) >= 0 ? 1 : -1;
+    return target.multiplyScalar(0.55).addScaledVector(plane, 0.45 * sign).add(tip).normalize();
+  };
 
   // The core: an octahedral ball of solid foliage, squashed a little, in shadow.
-  const core = r * 0.66;
+  const core = r * 0.56;
   const corners: [number, number, number][] = [
     [0, 1, 0], [1, 0, 0], [0, 0, 1], [-1, 0, 0], [0, 0, -1], [0, -0.55, 0],
   ];
@@ -209,7 +219,9 @@ export function leafMass(x: number, y: number, z: number, r: number, ground: num
   }
 
   // The leaf clumps over it, more on a bigger mass, fewer facing the ground.
-  const cards = Math.round(14 + r * 18);
+  const cards = Math.round(18 + r * 24);
+  const plane = new THREE.Vector3();
+  const tip = new THREE.Vector3();
   const across = new THREE.Vector3();
   const along = new THREE.Vector3();
   const facing = new THREE.Vector3();
@@ -222,7 +234,10 @@ export function leafMass(x: number, y: number, z: number, r: number, ground: num
     const elevation = Math.asin(1 - 1.55 * t) + (rng() - 0.5) * 0.25;
     const heading = card * 2.39996 + rng() * 0.6;
     facing.set(Math.cos(elevation) * Math.cos(heading), Math.sin(elevation), Math.cos(elevation) * Math.sin(heading));
-    const depth = 0.55 + rng() * 0.4;
+    // Some sprays stand well out of the mass (more of them on top): a
+    // ragged, leafy outline instead of a ball's.
+    const outward = rng() < 0.28 + Math.max(0, facing.y) * 0.25;
+    const depth = outward ? 0.95 + rng() * 0.32 : 0.5 + rng() * 0.42;
     centre.set(x, y, z).addScaledVector(facing, r * depth);
     centre.y = Math.max(centre.y, ground + r * 0.18);
     // The clump's plane: square to the outward direction, rolled at random,
@@ -236,8 +251,11 @@ export function leafMass(x: number, y: number, z: number, r: number, ground: num
     const u0 = scratchB.copy(along).multiplyScalar(cos).addScaledVector(across, sin);
     const v0 = scratchC.copy(across).multiplyScalar(cos).addScaledVector(along, -sin);
     u0.addScaledVector(facing, tilt * 0.4).normalize();
-    const half = r * (0.5 + rng() * 0.22);
-    const jitter = 0.82 + rng() * 0.34;
+    const half = r * (outward ? 0.36 + rng() * 0.18 : 0.48 + rng() * 0.24);
+    // Shade per spray: young bright tips, older darker leaves, a few sunlit.
+    const jitter = 0.66 + rng() * 0.52;
+    plane.crossVectors(u0, v0).normalize();
+    tip.set(rng() - 0.5, rng() - 0.5, rng() - 0.5).multiplyScalar(0.55);
     const quad: [number, number, number, number][] = [
       [-1, -1, 0, 1],
       [1, -1, LEAF_ATLAS_SPLIT, 1],
@@ -248,7 +266,7 @@ export function leafMass(x: number, y: number, z: number, r: number, ground: num
     ];
     for (const [a, b, u, v] of quad) {
       corner.copy(centre).addScaledVector(u0, a * half).addScaledVector(v0, b * half);
-      push(corner, u, v, shadeAt(corner.x, corner.y, corner.z, depth, jitter), sphereNormal(corner, scratchN));
+      push(corner, u, v, shadeAt(corner.x, corner.y, corner.z, Math.min(1, depth), jitter), cardNormal(corner, plane, tip, scratchN));
     }
   }
 }

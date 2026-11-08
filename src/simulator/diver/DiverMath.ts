@@ -403,10 +403,21 @@ export type WalkState = {
   grounded: boolean;
   /** Set by the step in which he came down from a jump or a fall (his speed down, m/s); cleared by the caller. */
   landed: number;
+  /** Seconds since his feet left the ground without a jump (a stride over a bump, off a ledge). */
+  airTime: number;
+  /** True for the step in which a jump took him off the ground. */
+  jumped: boolean;
 };
 
+/**
+ * A jump asked for this soon after the feet left the ground by themselves
+ * (over a bump, down a dune, off a ledge) still springs: the player saw
+ * him on the ground (s).
+ */
+export const COYOTE_TIME = 0.14;
+
 export function createWalkState(x: number, y: number, z: number): WalkState {
-  return { x, y, z, vx: 0, vy: 0, vz: 0, grounded: true, landed: 0 };
+  return { x, y, z, vx: 0, vy: 0, vz: 0, grounded: true, landed: 0, airTime: 0, jumped: false };
 }
 
 /** Water over the ground at (x, z), m (0 on dry land). */
@@ -486,22 +497,32 @@ export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld,
   }
 
   const ground = world.ground(state.x, state.z);
-  if (input.jump && state.grounded) {
+  state.jumped = false;
+  const canSpring = state.grounded || (state.airTime < COYOTE_TIME && state.vy <= 0.5);
+  if (input.jump && canSpring) {
     // Water round the legs takes some of the spring out of a jump.
     state.vy = JUMP_SPEED * (1 - 0.45 * clamp((water - 0.3) / 0.7, 0, 1));
     state.grounded = false;
+    state.jumped = true;
+    // No second spring from the same ground.
+    state.airTime = COYOTE_TIME;
   }
   if (state.grounded) {
-    if (ground >= state.y - 0.45) {
-      // Down a slope or up one: the feet follow the ground.
+    // Down a slope or up one the feet follow the ground (running down a
+    // dune drops further per step than walking: the reach scales with speed).
+    const reach = 0.45 + Math.hypot(state.vx, state.vz) * step * 1.2;
+    if (ground >= state.y - reach) {
       state.y = ground;
       state.vy = 0;
+      state.airTime = 0;
     } else {
       // Off a ledge.
       state.grounded = false;
+      state.airTime = 0;
     }
   }
   if (!state.grounded) {
+    if (!state.jumped) state.airTime += step;
     state.vy -= GRAVITY * step;
     state.y += state.vy * step;
     if (state.y <= ground && state.vy <= 0) {
@@ -509,6 +530,7 @@ export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld,
       state.y = ground;
       state.vy = 0;
       state.grounded = true;
+      state.airTime = 0;
     }
   }
 }

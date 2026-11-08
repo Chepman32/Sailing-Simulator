@@ -29,7 +29,9 @@ test("the ultra preset is everything at its best, and automatic mode steps down 
   for (const key of ["pixelBudget", "oceanSegments", "reflectionScale", "grassRadius", "grassDensity", "maxDpr"] as const) {
     assert.ok(ultra[key] >= high[key], `${key} is no lower than on high`);
   }
-  assert.equal(QUALITY_SETTINGS.low.grassRadius, 0, "no dense grass on the low preset");
+  const { low, medium } = QUALITY_SETTINGS;
+  assert.ok(low.grassRadius > 0 && low.grassRadius < medium.grassRadius, "only a few clumps round the feet on the low preset");
+  assert.ok(low.grassDensity < medium.grassDensity, "sparser grass on the low preset");
   assert.equal(stepDown("ultra"), "high");
   assert.equal(stepDown("high"), "medium");
   assert.equal(stepDown("medium"), "low");

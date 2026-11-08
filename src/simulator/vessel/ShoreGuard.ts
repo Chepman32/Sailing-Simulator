@@ -1,6 +1,6 @@
 import { clamp, smoothstep } from "../math";
 import type { SimulatorControls } from "../types";
-import type { PlanarBody, ShoreSampler } from "./ShoreContact";
+import { HULL_OUTLINE, type PlanarBody, type ShoreSampler } from "./ShoreContact";
 
 /**
  * Collision avoidance for the yacht near islands: a helmsman's reflex that the
@@ -26,23 +26,33 @@ import type { PlanarBody, ShoreSampler } from "./ShoreContact";
  * for anything the guard cannot prevent (drifting with the engine off).
  */
 
-/** Room the hull edge keeps from the rendered waterline. */
-export const GUARD_MARGIN = 3.2;
-/** Fixed look-ahead and look-ahead per m/s of speed, metres. */
-export const GUARD_BASE_LOOKAHEAD = 15;
-export const GUARD_LOOKAHEAD_PER_SPEED = 5.5;
+/**
+ * Room the hull edge keeps from the rendered waterline: half a metre, so the
+ * skipper can bring her right up to a beach and step off. The guard stays
+ * out of the way until the bow is about to reach that line.
+ */
+export const GUARD_MARGIN = 0.5;
+/**
+ * Look-ahead at rest and per m/s of speed, metres, plus the room to stop
+ * (`GUARD_BRAKING`): the guard engages only when the yacht could not stop
+ * or turn by herself short of the margin, never metres out on a slow approach.
+ */
+export const GUARD_BASE_LOOKAHEAD = 1;
+export const GUARD_LOOKAHEAD_PER_SPEED = 0.8;
+/** Deceleration the guard can count on (astern, sheets eased, turning), m/s². */
+export const GUARD_BRAKING = 0.45;
 /** Helm (|rudder|) above which the player counts as steering for himself. */
 export const ACTIVE_HELM = 0.3;
 /** Seconds the guard holds the helm at least, once engaged. */
 const MINIMUM_ENGAGEMENT = 1.6;
 /** Distance off the coast (hull centre) before the helm is handed back. */
-const RELEASE_CLEARANCE = 16;
+const RELEASE_CLEARANCE = 7;
 /**
  * A helmsman who turns straight back in gets taken further out each time, so
  * the yacht never shuffles back and forth in front of the beach.
  */
 const REPEAT_WINDOW = 12;
-const MAX_RELEASE_CLEARANCE = 34;
+const MAX_RELEASE_CLEARANCE = 16;
 
 /**
  * How closely the guard lets the yacht come to a coast. A coast shoals out
@@ -52,9 +62,10 @@ const MAX_RELEASE_CLEARANCE = 34;
 export type GuardProfile = {
   /** Room the hull edge keeps from the obstacle, m. */
   margin: number;
-  /** Look-ahead at rest and per m/s of speed, m. */
+  /** Look-ahead at rest and per m/s of speed, m, and the braking that sets the room to stop (m/s²). */
   baseLookAhead: number;
   lookAheadPerSpeed: number;
+  braking: number;
   /** Distance off (hull centre) before the helm is handed back, and its cap after repeats. */
   release: number;
   maxRelease: number;
@@ -66,14 +77,15 @@ export const SHORE_PROFILE: GuardProfile = {
   margin: GUARD_MARGIN,
   baseLookAhead: GUARD_BASE_LOOKAHEAD,
   lookAheadPerSpeed: GUARD_LOOKAHEAD_PER_SPEED,
+  braking: GUARD_BRAKING,
   release: RELEASE_CLEARANCE,
   maxRelease: MAX_RELEASE_CLEARANCE,
   handBackSeaward: true,
 };
 
 /** Room ahead below which the yacht backs off before turning, and the room that ends it. */
-const BACKING_START = 2.5;
-const BACKING_END = 9;
+const BACKING_START = 0.8;
+const BACKING_END = 5;
 const SWEEP_STEP = 1.25;
 /**
  * A manoeuvre that has crept along the beach this long without turning out
@@ -173,11 +185,64 @@ export function hullFreeRun(
 }
 
 export function guardLookAhead(speed: number, profile: GuardProfile = SHORE_PROFILE): number {
-  return profile.baseLookAhead + Math.max(0, speed) * profile.lookAheadPerSpeed;
+  const v = Math.max(0, speed);
+  return profile.baseLookAhead + v * profile.lookAheadPerSpeed + (v * v) / (2 * profile.braking);
 }
 
 function wrap(angle: number): number {
   return Math.atan2(Math.sin(angle), Math.cos(angle));
+}
+
+const PINCH_OUTLINE: readonly (readonly [number, number])[] = [...BOW_EDGE, ...STERN_EDGE, ...HULL_OUTLINE];
+const pinchNormal = { x: 0, z: 1 };
+const pinchResult = { closing: 0, ahead: 0, swingSide: 0 };
+/** Seconds ahead the pinch check looks for a hull point reaching the margin. */
+const PINCH_HORIZON = 1;
+/** The deceleration the approach governor leaves room for, m/s². */
+const APPROACH_BRAKING = 0.5;
+
+/** How far ahead the approach governor looks at `speed` m/s: the room to stop, and a little more. */
+function approachReach(speed: number): number {
+  return Math.min(140, 3 + speed * 1.2 + (speed * speed) / (2 * APPROACH_BRAKING));
+}
+
+/**
+ * The hull point nearest the shore within `reach` that is closing on it:
+ * how fast (m/s), whether it is forward (+1) or aft (−1) of the centre, and
+ * which way of turning (+1 starboard) swings it in. Closing 0 when none is.
+ */
+function hullPinch(shore: ShoreSampler, body: PlanarBody, margin: number): typeof pinchResult {
+  pinchResult.closing = 0;
+  pinchResult.ahead = 0;
+  pinchResult.swingSide = 0;
+  const reach = margin + PINCH_HORIZON * 3 + 0.4;
+  if (shore(body.position.x, body.position.z, pinchNormal) > reach + HULL_REACH + 1) return pinchResult;
+  const fx = Math.sin(body.heading);
+  const fz = Math.cos(body.heading);
+  const rx = fz;
+  const rz = -fx;
+  let soonest = Infinity;
+  for (const [side, ahead] of PINCH_OUTLINE) {
+    const offX = rx * side + fx * ahead;
+    const offZ = rz * side + fz * ahead;
+    const clearance = shore(body.position.x + offX, body.position.z + offZ, pinchNormal);
+    if (clearance > reach) continue;
+    const pointVx = body.velocity.x + body.yawRate * offZ;
+    const pointVz = body.velocity.z - body.yawRate * offX;
+    const closing = -(pointVx * pinchNormal.x + pointVz * pinchNormal.z);
+    if (closing <= 0) continue;
+    // Where this point will be in a moment, at the speed it is closing.
+    const room = clearance - margin;
+    if (room - closing * PINCH_HORIZON > 0.3) continue;
+    const time = Math.max(0, room) / closing;
+    if (time >= soonest) continue;
+    soonest = time;
+    pinchResult.closing = closing;
+    pinchResult.ahead = Math.sign(ahead) || 0;
+    // The swing's own share of the closing: which sense of turn drives it in.
+    pinchResult.swingSide = Math.sign(-(offZ * pinchNormal.x - offX * pinchNormal.z));
+  }
+  return pinchResult;
 }
 
 const OFFSET_STEP = 0.2;
@@ -206,7 +271,7 @@ function escapeOnSide(
  * Decides this step's commands. `controls` are the player's; the result is
  * written to `guard.output` and returned. Pure apart from `guard`.
  */
-export function updateShoreGuard(
+function steerShoreGuard(
   guard: ShoreGuardState,
   body: PlanarBody,
   controls: SimulatorControls,
@@ -225,6 +290,9 @@ export function updateShoreGuard(
   const forwardSpeed = body.velocity.x * fx + body.velocity.z * fz;
   const lookAhead = guardLookAhead(Math.max(forwardSpeed, 0), profile);
   const margin = profile.margin;
+  // Once it has the helm, the guard plans its way out with more room than it
+  // waited for: the quarters swing wide in a tight turn.
+  const turnMargin = margin + 0.9;
   // Sweep along the course and along where the present swing will take the
   // bow in a couple of seconds, so a yacht turning in is caught early.
   const swing = clamp(body.yawRate * 2, -0.8, 0.8);
@@ -260,8 +328,8 @@ export function updateShoreGuard(
     if (!(ahead < lookAhead && drivingAhead && (forwardSpeed > 0.1 || ahead < lookAhead * 0.6))) return output;
     if (playerClears) return output;
     // Engage: turn to whichever side clears with the smaller turn and more room.
-    const port = escapeOnSide(shore, body, -1, lookAhead, margin);
-    const starboard = escapeOnSide(shore, body, 1, lookAhead, margin);
+    const port = escapeOnSide(shore, body, -1, lookAhead, turnMargin);
+    const starboard = escapeOnSide(shore, body, 1, lookAhead, turnMargin);
     const score = (option: { run: number; offset: number }): number => option.run / lookAhead - option.offset * 0.12;
     // A helmsman already turning one way keeps turning that way when it helps.
     const preference = clamp(controls.rudder * 0.15 + body.yawRate * 0.4, -0.15, 0.15);
@@ -290,7 +358,7 @@ export function updateShoreGuard(
     guard.turnSide = playerSide;
     guard.turned = 0;
     guard.stallTime = 0;
-    guard.escapeHeading = escapeOnSide(shore, body, playerSide, lookAhead, margin).heading;
+    guard.escapeHeading = escapeOnSide(shore, body, playerSide, lookAhead, turnMargin).heading;
   }
   // Creeping along the beach without getting out: turn the short way out,
   // and if that is already the way, back off first to make room.
@@ -301,7 +369,7 @@ export function updateShoreGuard(
     guard.turned = 0;
     if (guard.turnSide !== seaSide) {
       guard.turnSide = seaSide;
-      guard.escapeHeading = escapeOnSide(shore, body, seaSide, lookAhead, margin).heading;
+      guard.escapeHeading = escapeOnSide(shore, body, seaSide, lookAhead, turnMargin).heading;
     } else if (engineRunning) {
       guard.backing = true;
     }
@@ -309,8 +377,8 @@ export function updateShoreGuard(
   guard.turned += Math.abs(wrap(body.heading - guard.previousHeading));
   guard.previousHeading = body.heading;
   // Refresh the escape heading, always on the same side.
-  const escape = escapeOnSide(shore, body, guard.turnSide, lookAhead, margin);
-  if (escape.run >= lookAhead || escape.run > hullFreeRun(shore, body.position.x, body.position.z, guard.escapeHeading, lookAhead, 1, margin) + 1) {
+  const escape = escapeOnSide(shore, body, guard.turnSide, lookAhead, turnMargin);
+  if (escape.run >= lookAhead || escape.run > hullFreeRun(shore, body.position.x, body.position.z, guard.escapeHeading, lookAhead, 1, turnMargin) + 1) {
     guard.escapeHeading = escape.heading;
   }
   const offshore = shore(body.position.x, body.position.z, coastNormal);
@@ -318,7 +386,7 @@ export function updateShoreGuard(
   if (offshore < guard.releaseClearance && ahead >= lookAhead) {
     const seaward = Math.atan2(coastNormal.x, coastNormal.z);
     const outward = wrap(seaward + clamp(wrap(body.heading - seaward), -0.8, 0.8));
-    if (hullFreeRun(shore, body.position.x, body.position.z, outward, lookAhead, 1, margin) >= lookAhead) guard.escapeHeading = outward;
+    if (hullFreeRun(shore, body.position.x, body.position.z, outward, lookAhead, 1, turnMargin) >= lookAhead) guard.escapeHeading = outward;
   }
   const error = wrap(guard.escapeHeading - body.heading);
 
@@ -339,8 +407,8 @@ export function updateShoreGuard(
   // Helm: steer for the escape heading, damped by the turn rate.
   const steer = clamp(error * 2.4 - body.yawRate * 1.1, -1, 1);
   // Room left decides the speed: enough way for the rudders, never a crash.
-  const room = Math.max(0, ahead - 3);
-  const safeSpeed = clamp(room * 0.45, 0, 4.5);
+  const room = Math.max(0, ahead - 0.5);
+  const safeSpeed = clamp(Math.sqrt(2 * profile.braking * room), 0, 4.5);
   if (engineRunning) {
     // Very close and still facing the beach: back off first, then turn. The
     // decision is latched so the yacht does not shuffle back and forth.
@@ -356,7 +424,7 @@ export function updateShoreGuard(
       const brake = clamp(0.45 + (safeSpeed - forwardSpeed) * 0.6, -0.7, Math.max(0.45, playerAhead));
       // With room to turn, keep the propellers driving: slowing down would
       // only take the bite out of the rudders.
-      output.throttle = ahead > profile.margin + 2.8 ? Math.max(brake, Math.min(0.45, Math.max(0.45, playerAhead))) : brake;
+      output.throttle = ahead > profile.margin + 3 + forwardSpeed ? Math.max(brake, Math.min(0.45, Math.max(0.45, playerAhead))) : brake;
       output.rudder = forwardSpeed < -0.3 ? -steer : steer;
     }
   } else {
@@ -376,6 +444,51 @@ export function updateShoreGuard(
     guard.turned = 0;
   }
   guard.urgency = Math.max(guard.urgency, smoothstep(0.1, 1.2, Math.abs(error)) * 0.5);
+  return output;
+}
+
+export function updateShoreGuard(
+  guard: ShoreGuardState,
+  body: PlanarBody,
+  controls: SimulatorControls,
+  engineRunning: boolean,
+  shore: ShoreSampler,
+  delta: number,
+  profile: GuardProfile = SHORE_PROFILE,
+): SimulatorControls {
+  const output = steerShoreGuard(guard, body, controls, engineRunning, shore, delta, profile);
+  const fx = Math.sin(body.heading);
+  const fz = Math.cos(body.heading);
+  const forwardSpeed = body.velocity.x * fx + body.velocity.z * fz;
+  // Coming in to a beach she slows as the room runs out, like a skipper
+  // easing up to it, so she can always stop half a metre off: the speed
+  // allowed is the speed she could still take off in the room left.
+  if (!guard.backing) {
+    if (forwardSpeed > 0.15) {
+      const reach = approachReach(forwardSpeed);
+      const room = hullFreeRun(shore, body.position.x, body.position.z, body.heading, reach, 1, profile.margin);
+      const allowed = Math.sqrt(2 * APPROACH_BRAKING * Math.max(0, room - 0.15)) + 0.12;
+      if (room < reach && forwardSpeed > allowed) {
+        if (engineRunning) output.throttle = Math.min(output.throttle, clamp((allowed - forwardSpeed) * 1.6, -0.8, 0.3));
+        else output.sailTrim = Math.min(output.sailTrim, 0.2);
+      }
+    } else if (forwardSpeed < -0.15 && engineRunning) {
+      const reach = approachReach(-forwardSpeed);
+      const room = hullFreeRun(shore, body.position.x, body.position.z, body.heading, reach, -1, profile.margin);
+      const allowed = Math.sqrt(2 * APPROACH_BRAKING * Math.max(0, room - 0.15)) + 0.12;
+      if (room < reach && -forwardSpeed > allowed) output.throttle = Math.max(output.throttle, clamp((forwardSpeed + allowed) * -1.6, -0.3, 0.8));
+    }
+  }
+  // Pivoting close in (the guard's turn or the helmsman's), a quarter or the
+  // bow can swing onto the sand: a point of the hull about to reach the
+  // margin takes the helm off that way and stops the way toward it.
+  const pinch = hullPinch(shore, body, profile.margin);
+  if (pinch.closing > 0.01) {
+    if (pinch.swingSide !== 0 && Math.sign(output.rudder) === pinch.swingSide * (forwardSpeed < -0.2 ? -1 : 1)) output.rudder *= 0.1;
+    if (pinch.ahead > 0 && forwardSpeed > -0.1) output.throttle = Math.min(output.throttle, engineRunning ? -0.4 : 0);
+    else if (pinch.ahead < 0 && forwardSpeed < 0.1) output.throttle = Math.max(output.throttle, engineRunning ? 0.4 : 0);
+    if (!engineRunning) output.sailTrim = Math.min(output.sailTrim, 0.2);
+  }
   return output;
 }
 

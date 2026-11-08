@@ -20,8 +20,11 @@ const HEAD_PITCH_SHARE = 0.45;
  * so a ship or an island kilometres off does not shimmer where surfaces meet.
  */
 const NEAR_PLANE_CLOSE = 0.08;
-/** Most the steady helm view's eyes may lag behind the yacht's heave, m. */
-const STEADY_EYE_LAG = 0.045;
+/**
+ * How quickly the helmsman's head follows the yacht's slow pitch and roll
+ * (1/s): slower motion than this the neck takes out, quicker the head shares.
+ */
+const HEAD_SWING_RATE = 1.6;
 const NEAR_PLANE_OUTSIDE = 0.35;
 
 export class CameraController {
@@ -53,7 +56,9 @@ export class CameraController {
 
   /** At the helm, keep the horizon level and the heave smoothed (a setting, on by default). */
   steadyHelm = true;
-  private steadyEyeY = Number.NaN;
+  /** The yacht's slow pitch and roll, which the helmsman's neck takes out (see `update`). */
+  private headPitch = Number.NaN;
+  private headRoll = Number.NaN;
   /** The sea level the outside cameras ride at: the yacht's heave, slowed (see `update`). */
   private rideY = Number.NaN;
 
@@ -166,25 +171,23 @@ export class CameraController {
       // lags into the wheel or the pod), while the head keeps most of its
       // own level against her roll and pitch, as a helmsman's does.
       this.camera.position.copy(helm.eye).applyMatrix4(helm.root.matrixWorld);
-      // Steady view (the default): the eyes ride the boat but the head keeps
-      // the horizon level and soaks up the heave, so the deck still moves
-      // under the player without the whole world swinging with it.
+      // The head is braced against the boat: every quick movement of hers
+      // (slamming through chop at speed, the engines' shudder) it shares in
+      // full, so the wheel, the pod and the compass a hand's breadth away
+      // stand still in the view. Only her slow swing over the swell is
+      // taken out by the neck (in the steady view, nearly all of it), which
+      // keeps the horizon level. (Eyes held still while the deck shook under
+      // them made the whole station judder at speed.)
       const steady = this.steadyHelm;
-      if (steady) {
-        const y = this.camera.position.y;
-        this.steadyEyeY = Number.isFinite(this.steadyEyeY) && !this.snapNext ? this.steadyEyeY + (y - this.steadyEyeY) * this.follow(2.2, delta) : y;
-        // The head soaks up only a few centimetres of the heave: any more and
-        // the eyes, lagging behind a yacht that rises or drops, end up in the
-        // hardtop or the instrument pod a hand's breadth away.
-        this.steadyEyeY = clamp(this.steadyEyeY, y - STEADY_EYE_LAG, y + STEADY_EYE_LAG);
-        this.camera.position.y = this.steadyEyeY;
-      }
-      this.camera.rotation.set(
-        -this.pitch - physics.pitch * (steady ? HEAD_PITCH_SHARE * 0.15 : HEAD_PITCH_SHARE),
-        physics.heading + this.yawOffset + Math.PI,
-        physics.roll * (steady ? HEAD_ROLL_SHARE * 0.1 : HEAD_ROLL_SHARE),
-        "YXZ",
-      );
+      const swing = this.follow(HEAD_SWING_RATE, delta);
+      const fresh = !Number.isFinite(this.headPitch) || this.snapNext;
+      this.headPitch = fresh ? physics.pitch : this.headPitch + (physics.pitch - this.headPitch) * swing;
+      this.headRoll = fresh ? physics.roll : this.headRoll + (physics.roll - this.headRoll) * swing;
+      const pitchShare = steady ? HEAD_PITCH_SHARE * 0.15 : HEAD_PITCH_SHARE;
+      const rollShare = steady ? HEAD_ROLL_SHARE * 0.1 : HEAD_ROLL_SHARE;
+      const headPitch = physics.pitch - (1 - pitchShare) * this.headPitch;
+      const headRoll = physics.roll - (1 - rollShare) * this.headRoll;
+      this.camera.rotation.set(-this.pitch - headPitch, physics.heading + this.yawOffset + Math.PI, headRoll, "YXZ");
       this.camera.fov = damp(this.camera.fov, 66, 2.6, delta);
       this.camera.near = NEAR_PLANE_CLOSE;
       this.camera.updateProjectionMatrix();

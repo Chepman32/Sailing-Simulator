@@ -173,42 +173,64 @@ function brainGeometry(): THREE.BufferGeometry {
 }
 
 function branch(parts: THREE.BufferGeometry[], from: THREE.Vector3, direction: THREE.Vector3, length: number, radius: number, depth: number, seed: number): void {
-  const geometry = new THREE.CylinderGeometry(radius * 0.72, radius, length, 7, 2);
+  // A smooth, tapering limb (welded, with its own smooth normals: a merged
+  // pile of flat facets read as plastic sticks), its growing tip rounded.
+  const geometry = new THREE.CylinderGeometry(radius * 0.7, radius, length, 10, 3, true);
+  // A slight bow in each limb, so a thicket is not ruled lines.
+  const position = geometry.getAttribute("position");
+  for (let index = 0; index < position.count; index += 1) {
+    const t = position.getY(index) / length + 0.5;
+    position.setX(index, position.getX(index) + Math.sin(t * Math.PI) * length * 0.06 * (hash(seed, 1, 13) - 0.5));
+  }
+  geometry.computeVertexNormals();
   geometry.translate(0, length / 2, 0);
   const quaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
   geometry.applyQuaternion(quaternion);
   geometry.translate(from.x, from.y, from.z);
   parts.push(geometry);
   const tip = from.clone().addScaledVector(direction.clone().normalize(), length);
-  // Rounded growing tip.
-  const cap = new THREE.SphereGeometry(radius * 0.74, 7, 5);
+  const cap = new THREE.SphereGeometry(radius * 0.7, 10, 5, 0, Math.PI * 2, 0, Math.PI / 2);
+  cap.applyQuaternion(quaternion);
   cap.translate(tip.x, tip.y, tip.z);
   parts.push(cap);
   if (depth <= 0) return;
   const children = 2 + Math.floor(hash(seed, depth, 3) * 2);
   for (let index = 0; index < children; index += 1) {
-    const spread = 0.45 + hash(seed, index, 5) * 0.4;
+    const spread = 0.4 + hash(seed, index, 5) * 0.45;
     const turn = hash(seed, index, 9) * Math.PI * 2;
     const next = direction.clone().normalize();
     const side = new THREE.Vector3(Math.cos(turn), 0, Math.sin(turn));
     next.addScaledVector(side, spread).normalize();
-    next.y = Math.max(next.y, 0.25);
-    branch(parts, tip, next, length * (0.7 + hash(seed, index, 11) * 0.2), radius * 0.72, depth - 1, seed * 7 + index + 1);
+    next.y = Math.max(next.y, 0.3);
+    // Branching from along the limb as well as its tip, as staghorn does.
+    const at = from.clone().lerp(tip, index === 0 ? 1 : 0.55 + hash(seed, index, 17) * 0.4);
+    branch(parts, at, next, length * (0.68 + hash(seed, index, 11) * 0.22), radius * 0.74, depth - 1, seed * 7 + index + 1);
   }
+}
+
+/** Merges indexed parts that carry their own normals (no re-computing: that would facet them). */
+function mergeSmooth(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  const merged = mergeGeometries(parts.map((part) => (part.index ? part : part)), false)!;
+  parts.forEach((part) => part.dispose());
+  merged.deleteAttribute("uv");
+  return merged;
 }
 
 function staghornGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  for (let trunk = 0; trunk < 5; trunk += 1) {
-    const angle = (trunk / 5) * Math.PI * 2 + hash(trunk, 1, 1);
-    branch(parts, new THREE.Vector3(Math.cos(angle) * 0.1, 0, Math.sin(angle) * 0.1), new THREE.Vector3(Math.cos(angle) * 0.5, 1, Math.sin(angle) * 0.5), 0.32, 0.05, 3, trunk + 11);
+  const trunks = 9;
+  for (let trunk = 0; trunk < trunks; trunk += 1) {
+    const angle = (trunk / trunks) * Math.PI * 2 + hash(trunk, 1, 1);
+    const lean = 0.3 + hash(trunk, 2, 1) * 0.55;
+    const out = 0.06 + hash(trunk, 3, 1) * 0.12;
+    branch(parts, new THREE.Vector3(Math.cos(angle) * out, 0, Math.sin(angle) * out), new THREE.Vector3(Math.cos(angle) * lean, 1, Math.sin(angle) * lean), 0.27 + hash(trunk, 4, 1) * 0.08, 0.03, 3, trunk + 11);
   }
-  const merged = mergeGeometries(parts.map((part) => (part.index ? part.toNonIndexed() : part)), false)!;
-  parts.forEach((part) => part.dispose());
-  merged.computeVertexNormals();
-  return paintAll(merged, (_x, y, _z, out) => {
-    // Pale growing tips over a deeper base.
-    out.setRGB(0.62, 0.5, 0.46).lerp(new THREE.Color(1, 0.97, 0.94), smoothstep(0.3, 1.25, y));
+  const merged = mergeSmooth(parts);
+  return paintAll(merged, (x, y, z, out) => {
+    // A brown, algae-dusted base to bright growing tips (the colony's own
+    // colour comes from the instance): the look of a living thicket.
+    const n = noise3(x * 9, y * 9, z * 9);
+    out.setRGB(0.42, 0.32, 0.24).multiplyScalar(0.85 + n * 0.3).lerp(new THREE.Color(0.86, 0.84, 0.8), smoothstep(0.08, 0.7, y)).lerp(new THREE.Color(1.1, 1.1, 1.08), smoothstep(0.85, 1.3, y));
   });
 }
 
@@ -341,17 +363,15 @@ function softCoralGeometry(): THREE.BufferGeometry {
     const angle = hash(finger, 1, 4) * Math.PI * 2;
     const r = Math.sqrt(hash(finger, 2, 4)) * 0.2;
     const height = 0.18 + hash(finger, 3, 4) * 0.28;
-    const geometry = new THREE.CapsuleGeometry(0.035, height, 3, 7);
+    const geometry = new THREE.CapsuleGeometry(0.035, height, 4, 10);
     geometry.translate(0, height / 2 + 0.03, 0);
     geometry.rotateZ((hash(finger, 4, 4) - 0.5) * 0.7);
     geometry.rotateX((hash(finger, 5, 4) - 0.5) * 0.7);
     geometry.translate(Math.cos(angle) * r, 0, Math.sin(angle) * r);
     parts.push(geometry);
   }
-  const merged = mergeGeometries(parts.map((part) => part.toNonIndexed()), false)!;
-  parts.forEach((part) => part.dispose());
-  merged.computeVertexNormals();
-  return paintAll(merged, (_x, y, _z, out) => out.setRGB(0.62, 0.34, 0.55).lerp(new THREE.Color(0.85, 0.65, 0.78), smoothstep(0.1, 0.4, y)));
+  const merged = mergeSmooth(parts);
+  return paintAll(merged, (_x, y, _z, out) => out.setRGB(0.5, 0.3, 0.42).lerp(new THREE.Color(1, 0.92, 0.96), smoothstep(0.08, 0.42, y)));
 }
 
 function shellGeometry(): THREE.BufferGeometry {
@@ -550,15 +570,15 @@ const PALETTES: Record<PropKind, readonly number[]> = {
   // A reef's colours: violet, rose and lime brain corals, staghorn with
   // blue, pink or yellow tips, mint and sea-green tables, fans in red,
   // gold and purple.
-  brain: [0xffffff, 0xb8f0a0, 0xf0b8e0, 0xffe090, 0xb0d0ff, 0xd8b0ff],
-  staghorn: [0xffffff, 0xa8ccff, 0xf4a8d8, 0xd8f490, 0xffc890, 0xc8a0ff, 0x90e8e0],
-  table: [0xffffff, 0x98f0d0, 0xd0f8a0, 0xb0d8ff, 0xf8d8a8],
-  fan: [0xffffff, 0xff6050, 0xffd040, 0xc060ff, 0xff50a0],
+  brain: [0xb8e07a, 0xe8b46a, 0xf09ac8, 0xa898f0, 0x8ad0a8, 0xf0d070],
+  staghorn: [0x6aa0ff, 0xb078ff, 0x9ee05a, 0xffa25a, 0xff78b0, 0xe8e070, 0x60e0d8],
+  table: [0x8fc89a, 0xc8d878, 0x88b8e8, 0xe0b080, 0xa0d8c0],
+  fan: [0xff5a48, 0xffc838, 0xb050f0, 0xff4898, 0xff8a3a],
   sponge: [0xffffff, 0xff9850, 0xc070d0, 0xffd060],
   grass: [0xffffff, 0xe0f0c0],
   urchin: [0xffffff],
   star: [0xffffff, 0xff7080, 0x70a0ff],
-  softcoral: [0xffffff, 0xff98b8, 0xffb860, 0xb898ff, 0xff7890, 0x98e8ff],
+  softcoral: [0xff88b0, 0xffb050, 0xa888ff, 0xff6880, 0x88e0ff, 0xf0f0f0],
   shell: [0xffffff, 0xffe0d0, 0xf0d8b0, 0xe8c8d8],
   pebbles: [0xffffff, 0xe8e0d4, 0xd0d4d8],
   cucumber: [0xffffff, 0xc09080, 0x806050],
@@ -755,6 +775,9 @@ export class UnderwaterWorld {
         this.sway(material, kind === "grass" ? 0.12 : kind === "fan" ? 0.05 : kind === "anemone" ? 0.3 : 0.04);
       }
       if (kind === "fan") this.lattice(material);
+      if (kind === "staghorn" || kind === "brain" || kind === "table" || kind === "softcoral" || kind === "tube" || kind === "rock") {
+        this.corallites(material, kind === "brain" ? 34 : kind === "rock" ? 9 : kind === "softcoral" ? 60 : 46, kind === "rock" ? 0.5 : 0.4);
+      }
       underwater.apply(material);
       const mesh = new THREE.InstancedMesh(geometry, material, PROP_CAPACITY);
       mesh.name = `Reef_${kind}`;
@@ -1001,6 +1024,67 @@ export class UnderwaterWorld {
             float h = max(position.y, 0.0);
             transformed.x += surge * h * h * ${amount.toFixed(3)} * 4.0;
             transformed.z += cos(uSwayTime * 0.7 + phase) * h * h * ${amount.toFixed(3)} * 2.0;
+          }`,
+        );
+    });
+  }
+
+  /**
+   * A living coral's surface: not smooth plastic but a skin of tiny cups
+   * (corallites) and polyps, a fine relief bent into the normal and a
+   * little darkening in the pits, faded out before it could shimmer.
+   * `frequency` is the bumps per metre of the model, `strength` their depth.
+   */
+  private corallites(material: THREE.MeshStandardMaterial, frequency: number, strength: number): void {
+    patchMaterialShader(material, `dive-corallite-${frequency}-${strength}`, (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vCoralPoint;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvCoralPoint = position;");
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          `#include <common>
+          varying vec3 vCoralPoint;
+          float coralHash(vec3 p) {
+            p = fract(p * 0.3183099 + 0.1);
+            p *= 17.0;
+            return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+          }
+          float coralNoise(vec3 p) {
+            vec3 i = floor(p);
+            vec3 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            return mix(
+              mix(mix(coralHash(i), coralHash(i + vec3(1.0, 0.0, 0.0)), f.x), mix(coralHash(i + vec3(0.0, 1.0, 0.0)), coralHash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+              mix(mix(coralHash(i + vec3(0.0, 0.0, 1.0)), coralHash(i + vec3(1.0, 0.0, 1.0)), f.x), mix(coralHash(i + vec3(0.0, 1.0, 1.0)), coralHash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y),
+              f.z);
+          }`,
+        )
+        .replace(
+          "#include <normal_fragment_maps>",
+          `#include <normal_fragment_maps>
+          {
+            vec3 cp = vCoralPoint * ${frequency.toFixed(1)};
+            float footprint = length(fwidth(cp));
+            float resolved = 1.0 - smoothstep(0.35, 1.2, footprint);
+            if (resolved > 0.0) {
+              float c0 = coralNoise(cp);
+              // Screen-space bump (as three's bump map): the relief's slope
+              // across the pixel bends the normal, whatever the instance's turn.
+              vec3 sigmaX = dFdx(-vViewPosition);
+              vec3 sigmaY = dFdy(-vViewPosition);
+              // The relief in metres: bumps about as deep as they are wide times the strength.
+              float amplitude = ${(1 / frequency).toFixed(4)} * ${strength.toFixed(2)} * resolved;
+              float bumpX = dFdx(c0) * amplitude;
+              float bumpY = dFdy(c0) * amplitude;
+              vec3 r1 = cross(sigmaY, normal);
+              vec3 r2 = cross(normal, sigmaX);
+              float det = dot(sigmaX, r1);
+              vec3 slope = sign(det) * (bumpX * r1 + bumpY * r2);
+              normal = normalize(abs(det) * normal - slope);
+              // Pits darker, rims catching the light.
+              diffuseColor.rgb *= mix(1.0, 0.72 + c0 * 0.5, resolved * ${strength.toFixed(2)} * 1.6);
+            }
           }`,
         );
     });
@@ -1334,15 +1418,15 @@ export class UnderwaterWorld {
       rock: [0.4, 1.6],
       // Colonies the size they grow to on a healthy reef: brain corals a
       // metre or two across, staghorn thickets and tables two and more.
-      brain: [0.6, 2.0],
-      staghorn: [1.1, 2.5],
-      table: [0.9, 2.5],
-      fan: [0.6, 1.5],
+      brain: [0.8, 2.3],
+      staghorn: [1.3, 2.6],
+      table: [1.1, 2.7],
+      fan: [0.8, 1.8],
       sponge: [0.6, 1.3],
       grass: [0.7, 1.3],
       urchin: [0.8, 1.3],
       star: [0.7, 1.2],
-      softcoral: [1.0, 2.0],
+      softcoral: [1.1, 2.2],
       shell: [0.7, 1.5],
       pebbles: [0.8, 1.6],
       cucumber: [0.8, 1.4],

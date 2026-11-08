@@ -129,6 +129,8 @@ export type SimulatorOptions = {
   onFind?: (find: FindEvent) => void;
   /** The skipper spoke to an island trader: open the shop. */
   onTrade?: () => void;
+  /** On foot, the browser let go of the mouse by itself (Esc): the pause menu opens. */
+  onPointerLost?: () => void;
 };
 
 export type Discovery = {

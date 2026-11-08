@@ -188,6 +188,35 @@ export function stormShoalAt(x: number, z: number): number {
   return smoothstep(SHOAL_NEAR, SHOAL_FAR, nearest);
 }
 
+/**
+ * The sea's own waves die on the beach: their height falls from full,
+ * `SHORE_CALM_FAR` metres off the waterline, to nothing at it, where the
+ * surf's swash takes over. Without this a crest of the swell flooded metres
+ * of dry beach in a moment and, falling, uncovered it at once: the water
+ * ran up as the surf's sheet and then simply vanished instead of draining.
+ */
+export const SHORE_CALM_NEAR = -0.4;
+export const SHORE_CALM_FAR = 15;
+
+export function shoreCalm(distance: number): number {
+  return smoothstep(SHORE_CALM_NEAR, SHORE_CALM_FAR, distance);
+}
+
+/** {@link shoreCalm} at a point, from the rendered waterline of the nearest island (1 in open water). */
+export function shoreCalmAt(x: number, z: number): number {
+  // Quick bound on the smooth ellipses first: nearly every sample is far out.
+  let near = false;
+  for (const island of islandsAround(x, z)) {
+    const centre = Math.hypot(x - island.centerX, (z - island.centerZ) / island.scaleZ);
+    if (centre - island.beachRadius * MAX_EDGE_NOISE * WATERLINE_RADIAL < SHORE_CALM_FAR) {
+      near = true;
+      break;
+    }
+  }
+  if (!near) return 1;
+  return shoreCalm(nearestShore(x, z).distance);
+}
+
 const glslNumber = (value: number): string => (Number.isInteger(value) ? `${value}.0` : value.toFixed(6));
 
 /**
@@ -256,6 +285,10 @@ export const SURF_GLSL = /* glsl */ `
       nearest = min(nearest, length(local) - shape.z * ${glslNumber(WATERLINE_RADIAL)});
     }
     return smoothstep(${glslNumber(SHOAL_NEAR)}, ${glslNumber(SHOAL_FAR)}, nearest);
+  }
+
+  float shoreCalmFactor(float distance) {
+    return smoothstep(${glslNumber(SHORE_CALM_NEAR)}, ${glslNumber(SHORE_CALM_FAR)}, distance);
   }
 
   vec3 shoreInfo(vec2 position) {

@@ -941,7 +941,7 @@ export class IslandSystem {
         name: "BushLeaves",
         map: texture,
         vertexColors: true,
-        roughness: 0.55,
+        roughness: 0.68,
         metalness: 0,
         side: THREE.DoubleSide,
         alphaTest: 0.5,

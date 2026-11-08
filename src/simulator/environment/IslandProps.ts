@@ -381,18 +381,22 @@ function addShrubs(island: IslandDefinition, profile: IslandProfile, surface: Su
     if (inClearing(clearings, point.x, point.z, 1.5)) continue;
     const ground = surface(radial, angle);
     const green = greens[Math.floor(hash(id, 1200 + index) * greens.length)]!;
-    const masses = 3 + Math.floor(hash(id, 1400 + index) * 3);
-    const size = 0.75 + hash(id, 1500 + index) * 1.0;
+    // A shrub is a cluster of leafy heads of different sizes and heights
+    // (sea grape, scaevola, hibiscus), not one ball.
+    const masses = 4 + Math.floor(hash(id, 1400 + index) * 4);
+    const size = 0.7 + hash(id, 1500 + index) * 0.95;
     let reach = 0;
     let top = ground;
     for (let part = 0; part < masses; part += 1) {
       // The first mass is the biggest, in the middle; the others lean on it.
-      const r = size * (part === 0 ? 0.72 : 0.4 + hash(id, 1600 + index * 8 + part) * 0.3);
+      const r = size * (part === 0 ? 0.6 : 0.3 + hash(id, 1600 + index * 8 + part) * 0.28);
       const around = hash(id, 1700 + index * 8 + part) * Math.PI * 2;
-      const out = part === 0 ? 0 : size * (0.45 + hash(id, 1800 + index * 8 + part) * 0.4);
+      const out = part === 0 ? 0 : size * (0.35 + hash(id, 1800 + index * 8 + part) * 0.5);
       const ox = Math.cos(around) * out;
       const oz = Math.sin(around) * out;
-      const y = ground + r * (0.62 + hash(id, 1900 + index * 8 + part) * 0.2);
+      // Heads at different heights: a few held up on their stems.
+      const raised = hash(id, 2100 + index * 8 + part);
+      const y = ground + r * (0.6 + hash(id, 1900 + index * 8 + part) * 0.25) + (raised > 0.6 ? size * 0.35 * (raised - 0.6) / 0.4 : 0);
       // Each mass its own shade of the bush's green.
       tint.copy(green).multiplyScalar(0.85 + hash(id, 2000 + index * 8 + part) * 0.3);
       leafMass(point.x + ox, y, point.z + oz, r, ground, tint, id * 131 + index * 17 + part, parts.leaves);

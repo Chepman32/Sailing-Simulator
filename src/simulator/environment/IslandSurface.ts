@@ -313,8 +313,13 @@ export function applyIslandSurface(
         // Wet sand is darker and a little more saturated.
         vec3 wetSand = sand * vec3(0.78, 0.76, 0.72);
         sand = mix(sand, wetSand, sandWet);
-        // The swash sheet: clear water over the sand, tinted by its depth.
-        sand = mix(sand, sand * vec3(0.86, 0.95, 0.97), smoothstep(0.0, 0.05, sheet));
+        // The swash sheet: clear water over the sand, a film at its edge and
+        // a few centimetres of green-blue water further down, running up and
+        // draining back alike (the sea's own waves are calmed at the beach,
+        // so this sheet is all the water there is on the sand).
+        float sheetCover = smoothstep(0.0, 0.01, sheet);
+        vec3 sheetWater = sand * mix(vec3(0.78, 0.9, 0.92), vec3(0.5, 0.74, 0.78), smoothstep(0.015, 0.12, sheet));
+        sand = mix(sand, sheetWater, sheetCover);
         // Foam on the sheet and the lace it leaves behind.
         float lace = skyFbm3(mat2(0.8, 0.6, -0.6, 0.8) * sandPosition * 2.3 + vec2(uSurfTime * 0.06, 0.0));
         float sandFoam = smoothstep(0.3, 0.85, swash.x * (0.1 + lace * 1.3)) * vSandMask;
@@ -327,24 +332,33 @@ export function applyIslandSurface(
         // or trodden. The vertex colour stays the average, so from afar the
         // island keeps its colours.
         vec3 grass = diffuseColor.rgb;
-        // Wild coastal turf is not a lawn: swathes of sun-dried grass, darker
-        // lush hollows, and patches of leaf litter and sandy soil.
-        grass *= mix(vec3(0.86, 0.98, 0.84), vec3(1.25, 1.08, 0.7), smoothstep(0.35, 0.8, grassBroad));
-        float litter = smoothstep(0.62, 0.8, skyFbm3(sandPosition * 0.33 + 5.7));
-        grass = mix(grass, vec3(0.36, 0.3, 0.18) * (0.75 + grassTufts * 0.5), litter * 0.55);
-        grass *= mix(1.0, 0.72 + grassTufts * 0.5, tuftResolved);
-        // The blades themselves: the turf photo. Its structure (relative to
-        // its own mean colour) is laid over the island's own greens, and its
-        // real hues are mixed in at the same brightness.
+        // The blades themselves: the turf photo, in its own colours. The
+        // island's vertex green only nudges its hue (a fifth), so a lush
+        // hollow and a sun-dried swathe still read, but the turf up close is
+        // the photo, not a pale wash of it.
+        float litter = smoothstep(0.66, 0.82, skyFbm3(sandPosition * 0.33 + 5.7));
+        float drySwathe = smoothstep(0.42, 0.82, grassBroad);
         if (uGrassReady > 0.5) {
           vec3 photo = mix(texture2D(uGrassMap, grassUv).rgb, texture2D(uGrassMap, grassUvAlt).rgb, grassPick);
           vec3 photoMean = vec3(${GRASS_PHOTO_MEAN.map((v) => v.toFixed(4)).join(", ")});
-          vec3 detail = photo / photoMean;
-          float brightness = dot(grass, vec3(0.3, 0.59, 0.11)) / dot(photoMean, vec3(0.3, 0.59, 0.11));
-          grass = mix(grass * detail, photo * brightness * 1.08, 0.78);
+          const vec3 lumaWeights = vec3(0.2126, 0.7152, 0.0722);
+          // The island's hue relative to the photo's, at the photo's brightness.
+          vec3 islandHue = grass / max(dot(grass, lumaWeights), 1e-3) * dot(photoMean, lumaWeights) / photoMean;
+          // A little more depth between the blades than the photo's flat
+          // overhead light gives (seen at a slant in the sun the gaps are darker).
+          vec3 photoDeep = photoMean * pow(max(photo / photoMean, vec3(0.0)), vec3(1.22)) * 0.92;
+          vec3 turf = photoDeep * mix(vec3(1.0), clamp(islandHue, vec3(0.6), vec3(1.6)), 0.22);
+          // Broad patches: a lusher, darker green and sun-dried, yellower turf.
+          turf *= mix(vec3(0.84, 0.9, 0.8), vec3(1.0), smoothstep(0.15, 0.45, grassBroad));
+          turf = mix(turf, turf * vec3(1.42, 1.18, 0.62), drySwathe * 0.55);
+          // Tussocks: a gentle darkening in the hollows between them.
+          turf *= mix(1.0, 0.82 + grassTufts * 0.3, tuftResolved);
+          grass = turf;
         } else {
+          grass *= mix(vec3(0.86, 0.98, 0.84), vec3(1.25, 1.08, 0.7), drySwathe);
           grass *= 0.9 + grassTufts * 0.2;
         }
+        grass = mix(grass, vec3(0.2, 0.15, 0.08) * (0.75 + grassTufts * 0.5), litter * 0.45);
         // Bare earth: on slopes and in patches, a warm brown soil with a few stones.
         float slope = 1.0 - smoothstep(0.7, 0.92, normalize(vGroundNormal).y);
         float bare = clamp(slope * 0.85 + smoothstep(0.72, 0.86, skyFbm3(sandPosition * 0.21 + 9.1)) * 0.7, 0.0, 1.0);
@@ -373,7 +387,7 @@ export function applyIslandSurface(
       fragment,
       "roughnessmap_fragment",
       // Dry sand is matte, wet sand glossy, the swash sheet a mirror.
-      "roughnessFactor = mix(roughnessFactor, mix(roughnessFactor, 0.32, sandWet), vSandMask);\nroughnessFactor = mix(roughnessFactor, 0.16, smoothstep(0.0, 0.03, sheet));\nroughnessFactor = mix(roughnessFactor, 0.97, vRockMask);\nroughnessFactor = mix(roughnessFactor, 0.78, groundGreen);",
+      "roughnessFactor = mix(roughnessFactor, mix(roughnessFactor, 0.32, sandWet), vSandMask);\nroughnessFactor = mix(roughnessFactor, 0.1, smoothstep(0.0, 0.012, sheet));\nroughnessFactor = mix(roughnessFactor, 0.97, vRockMask);\nroughnessFactor = mix(roughnessFactor, 0.93, groundGreen);",
     );
     fragment = injectAfter(
       fragment,
@@ -402,6 +416,15 @@ export function applyIslandSurface(
         float clusterResolved = 1.0 - smoothstep(0.008, 0.035, sandFootprint);
         vec2 clusterCell = floor(sandPosition * 70.0);
         bump += (vec2(skyHash(clusterCell + 9.7), skyHash(clusterCell - 2.9)) - 0.5) * 0.22 * clusterResolved * vSandMask;
+        // The swash sheet's own surface: small wavelets streaming over it
+        // (up the beach or back down), so it glints like moving water.
+        float sheetSurface = smoothstep(0.0, 0.012, sheet) * vSandMask;
+        if (sheetSurface > 0.0) {
+          vec2 flow = vec2(uSurfTime * 0.9, uSurfTime * -0.6);
+          float w0 = skyNoise(sandPosition * 3.1 + flow);
+          vec2 wavelet = vec2(skyNoise(sandPosition * 3.1 + flow + vec2(0.12, 0.0)) - w0, skyNoise(sandPosition * 3.1 + flow + vec2(0.0, 0.12)) - w0);
+          bump = mix(bump, wavelet * 2.4, sheetSurface);
+        }
         vec3 bumpView = (viewMatrix * vec4(-bump.x, 0.0, -bump.y, 0.0)).xyz;
         normal = normalize(normal + bumpView);
       }
@@ -457,6 +480,11 @@ export function applyIslandSurface(
           reflectedLight.directSpecular += uSunColor * weight * 5.0;
         }
       }
+      // Turf is a mat of blades, not a polished floor: the sky's sheen on it
+      // at a low angle (a whitish film over the whole lawn) is mostly lost
+      // between the blades.
+      reflectedLight.indirectSpecular *= 1.0 - 0.7 * groundGreen;
+      reflectedLight.directSpecular *= 1.0 - 0.5 * groundGreen;
       float trunkShade = trunkOcclusion(vSandWorld.xz);
       reflectedLight.indirectDiffuse *= trunkShade;
       reflectedLight.directDiffuse *= mix(1.0, trunkShade, 0.5);

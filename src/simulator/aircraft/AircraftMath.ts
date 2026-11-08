@@ -97,16 +97,16 @@ export function planLowPass(x: number, z: number, random: () => number, kind: Lo
   if (kind === "banner") {
     // Low and slow, along the beach line a stone's throw away: near enough
     // to read the banner as it goes by.
-    const bannerMiss = (70 + random() * 70) * Math.sign(miss);
-    const bannerSpeed = 30 + random() * 4;
+    const bannerMiss = (45 + random() * 45) * Math.sign(miss);
+    const bannerSpeed = 26 + random() * 3;
     return {
       kind,
       centerX: x + rightX * bannerMiss,
       centerZ: z + rightZ * bannerMiss,
       heading,
-      altitude: 38 + random() * 14,
+      altitude: 24 + random() * 8,
       speed: bannerSpeed,
-      weave: 15 + random() * 20,
+      weave: 8 + random() * 8,
       wavelength: 3000 + random() * 1200,
       duration: (2 * LOW_PASS_HALF) / bannerSpeed,
       seed: Math.floor(random() * 1e6),

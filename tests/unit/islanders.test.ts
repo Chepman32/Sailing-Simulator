@@ -170,8 +170,8 @@ test("the banner plane flies low and close enough to read, never into a hill", (
   for (let index = 0; index < 20; index += 1) {
     const pass = planLowPass(0, 0, random, "banner");
     const miss = Math.abs(pass.centerX * Math.cos(pass.heading) - pass.centerZ * Math.sin(pass.heading));
-    assert.ok(pass.altitude >= 38 && pass.altitude <= 52, `altitude ${pass.altitude.toFixed(0)}`);
-    assert.ok(miss <= 140, `passes ${miss.toFixed(0)} m off`);
-    assert.ok(pass.speed <= 34);
+    assert.ok(pass.altitude >= 24 && pass.altitude <= 32, `altitude ${pass.altitude.toFixed(0)}`);
+    assert.ok(miss <= 90, `passes ${miss.toFixed(0)} m off`);
+    assert.ok(pass.speed <= 29);
   }
 });

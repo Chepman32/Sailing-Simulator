@@ -120,7 +120,7 @@ export function createClumpGeometry(blades: number, segments: number, seed: numb
         positions.push(cx + sideX * half * side, y, cz + sideZ * half * side);
         normals.push(facing.x, facing.y, facing.z);
         // A dark, yellowed root to a fresh green tip (tinted per clump by its instance colour).
-        colors.push(0.035 + t * 0.09, 0.075 + t * 0.15, 0.018 + t * 0.03);
+        colors.push(0.03 + t * 0.075, 0.07 + t * 0.21, 0.014 + t * 0.026);
         bladeT.push(t);
         centre.push(1 - r / 0.16);
       }
@@ -172,9 +172,9 @@ export class GrassField {
     decorate: (material: THREE.MeshStandardMaterial) => void,
   ) {
     this.group.name = "Grass_Field";
-    this.material = new THREE.MeshStandardMaterial({ name: "GrassField", vertexColors: true, roughness: 0.72, metalness: 0, side: THREE.DoubleSide });
+    this.material = new THREE.MeshStandardMaterial({ name: "GrassField", vertexColors: true, roughness: 0.82, metalness: 0, side: THREE.DoubleSide });
     const uniforms = this.uniforms;
-    patchMaterialShader(this.material, "grass-field-v1", (shader) => {
+    patchMaterialShader(this.material, "grass-field-v2", (shader) => {
       Object.assign(shader.uniforms, uniforms, { uSunDirection: sky.uSunDirection, uSunColor: sky.uSunColor });
       shader.vertexShader = shader.vertexShader
         .replace(
@@ -222,6 +222,16 @@ export class GrassField {
           uniform vec3 uSunColor;
           varying float vBladeT;
           varying float vClumpCentre;`,
+        )
+        .replace(
+          "#include <normal_fragment_begin>",
+          `#include <normal_fragment_begin>
+          // A blade is thin: lit from the side the sun is on whichever face
+          // is seen. (Flipped for the back face, its upward normal pointed
+          // into the ground and the blade turned black.)
+          #ifdef DOUBLE_SIDED
+            normal *= faceDirection;
+          #endif`,
         )
         .replace(
           "#include <color_fragment>",

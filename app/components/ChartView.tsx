@@ -29,6 +29,8 @@ type Props = {
   onClose: () => void;
   /** The minimap is not shown (photo mode, the settings open, the first-run guide). */
   hideMini: boolean;
+  /** The skipper is on foot or in the water (the minimap moves clear of his controls). */
+  afoot?: boolean;
   ready: boolean;
 };
 
@@ -49,7 +51,7 @@ function useCanvasSize(canvas: RefObject<HTMLCanvasElement | null>, active: bool
   return size;
 }
 
-export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideMini, ready }: Props) {
+export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideMini, afoot = false, ready }: Props) {
   const miniRef = useRef<HTMLCanvasElement | null>(null);
   const fullRef = useRef<HTMLCanvasElement | null>(null);
   const miniSize = useCanvasSize(miniRef, ready && !open && !hideMini);
@@ -318,7 +320,7 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
   return (
     <>
       {!open && !hideMini && (
-        <button type="button" className="minimap" onClick={onOpen} aria-label={messages.chartOpen} title={messages.chartOpen}>
+        <button type="button" className={`minimap${afoot ? " is-afoot" : ""}`} onClick={onOpen} aria-label={messages.chartOpen} title={messages.chartOpen}>
           <canvas ref={miniRef} aria-hidden="true" />
           <span className="minimap-north" aria-hidden="true">
             N

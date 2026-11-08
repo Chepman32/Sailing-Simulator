@@ -161,7 +161,9 @@ export class UnderwaterLight {
             float path = (min(underwaterDepth / slant, viewDistance) + underwaterDepth * 0.6) * fade;
             // A diver sees through the water all the way: the colour is lost
             // along the line of sight as well as on the light's way down.
-            path = mix(path, viewDistance * 0.2 + underwaterDepth * 0.38, uUnderwaterView);
+            // (The daylight that lights it came down the whole depth first, so
+            // the reds are gone a few metres down: sand turns pale blue-green.)
+            path = mix(path, viewDistance * 0.24 + underwaterDepth * 0.72, uUnderwaterView);
             vec3 transmittance = exp(-${glslVector(UNDERWATER_ABSORPTION)} * path);
             // Sunlight focused by the waves plays over anything near the
             // surface: caustics fade with depth as the light spreads out.

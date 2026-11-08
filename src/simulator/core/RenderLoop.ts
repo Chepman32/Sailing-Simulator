@@ -19,6 +19,11 @@ export class RenderLoop {
   private fpsElapsed = 0;
   private fpsFrames = 0;
   private pausedByVisibility = document.hidden;
+  /**
+   * Held by the player (the pause menu): the world stands still and the
+   * last frame is drawn again, so a changed quality still shows.
+   */
+  held = false;
   private readonly pacer = new FramePacer();
 
   constructor(private readonly callbacks: FrameCallbacks) {
@@ -75,8 +80,15 @@ export class RenderLoop {
     const unclamped = (now - this.lastTime) / 1000;
     const delta = Math.min(0.05, Math.max(0, unclamped));
     this.lastTime = now;
-    this.elapsed += delta;
+    if (!this.held) this.elapsed += delta;
     this.accumulator = Math.min(this.accumulator + delta, this.fixedDelta * 5);
+
+    if (this.held) {
+      // A still: the last frame drawn again (no update: nothing moves).
+      this.accumulator = 0;
+      this.guard("render", () => this.callbacks.render());
+      return;
+    }
 
     let steps = 0;
     while (this.accumulator >= this.fixedDelta && steps < 5) {

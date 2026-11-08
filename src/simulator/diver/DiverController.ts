@@ -34,15 +34,16 @@ import {
   type WalkState,
 } from "./DiverMath";
 import { LEAP_SECONDS, leapVelocity } from "./LeapMath";
+import { keyBindings, type BindingAction } from "../input/KeyBindings";
 
 /** What the player could do right here with the interact key. */
 export type DiverPrompt = "helm" | "board" | "pickup" | "trade" | null;
 
-/** Keys the diver listens to (the sailing keys are off while he is out of the helm). */
-const KEYS = new Set([
-  "KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-  "Space", "ShiftLeft", "ShiftRight", "KeyC", "ControlLeft", "ControlRight", "KeyE", "KeyF",
-]);
+/** The diver's own actions among the bindings (the chart, backpack and helm keys are the interface's). */
+const DIVER_ACTIONS: readonly BindingAction[] = ["forward", "back", "left", "right", "jump", "sprint", "crouch", "interact", "torch"];
+
+/** A jump pressed this long before he lands still happens (s). */
+export const JUMP_BUFFER = 0.18;
 
 /** The yacht's hulls seen from the side, for the swimmer to keep off (vessel space, m). */
 export type HullShape = { offsetX: number; centreZ: number; halfLength: number; halfBeam: number; draught: number; freeboard: number };
@@ -62,6 +63,8 @@ export type DiverHooks = {
   kick?: (sprint: boolean) => void;
   /** The mode changed (helm, leap, deck, swim, land). */
   modeChanged: (mode: DiverMode) => void;
+  /** The browser let go of the mouse by itself (Esc, another window): the pause menu opens. */
+  pointerLost?: () => void;
   /** A step through shallow water `depth` deep at `position` (a slosh rather than a footfall). */
   wade?: (position: THREE.Vector3, depth: number, running: boolean) => void;
 };
@@ -120,8 +123,8 @@ export class DiverController {
   private landing = 0;
   /** Seconds into the leap over the side (counted on into the water until control returns). */
   leapTime = 0;
-  /** The jump key went down (consumed by the next step ashore). */
-  private jumpRequested = false;
+  /** Seconds a jump press is still waiting to be used (a press just before landing is not lost). */
+  private jumpRequested = 0;
   /** On his feet ashore (world frame). */
   readonly walk: WalkState = createWalkState(0, 0, 0);
   private readonly walkInput: WalkInput = { moveX: 0, moveY: 0, sprint: false, yaw: 0, jump: false };
@@ -257,11 +260,8 @@ export class DiverController {
   /** A jump (the jump key or the touch button): on deck, ashore, or a kick up out of the water at the surface. */
   jump(): void {
     if (!this.inControl) return;
-    if (this.mode === "deck" && this.grounded) {
-      this.feetVy = JUMP_SPEED;
-      this.grounded = false;
-    } else if (this.mode === "land") {
-      this.jumpRequested = true;
+    if (this.mode === "deck" || this.mode === "land") {
+      this.jumpRequested = JUMP_BUFFER;
     } else if (this.mode === "swim" && hop(this.swim, this.world)) {
     }
   }
@@ -285,8 +285,14 @@ export class DiverController {
   }
 
   releasePointer(): void {
-    if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+    if (document.pointerLockElement === this.canvas) {
+      this.releasing = true;
+      document.exitPointerLock();
+    }
   }
+
+  /** The lock is being let go on purpose (a card opened), not by the browser. */
+  private releasing = false;
 
   private interactRequested = false;
 
@@ -303,12 +309,16 @@ export class DiverController {
   }
 
   private readonly onLockChange = (): void => {
+    const was = this.pointerLocked;
     this.pointerLocked = document.pointerLockElement === this.canvas;
+    if (was && !this.pointerLocked && !this.releasing && this.active && !this.frozen) this.hooks.pointerLost?.();
+    if (!this.pointerLocked) this.releasing = false;
   };
 
   private readonly onMouseMove = (event: MouseEvent): void => {
     if (!this.pointerLocked || !this.active || !this.inControl || this.frozen) return;
-    this.look(event.movementX, event.movementY, false);
+    const look = keyBindings.look;
+    this.look(event.movementX * look.sensitivity, event.movementY * look.sensitivity * (look.invertY ? -1 : 1), false);
   };
 
   /**
@@ -325,27 +335,38 @@ export class DiverController {
     this.holdDown = false;
     this.sprintHeld = false;
     this.interactRequested = false;
+    this.jumpRequested = 0;
   }
 
   private frozen = false;
 
+  /** The diver action a key stands for, if any. */
+  private actionOf(code: string): BindingAction | null {
+    for (const action of DIVER_ACTIONS) if (keyBindings.matches(action, code)) return action;
+    return null;
+  }
+
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (!this.active || this.frozen || !KEYS.has(event.code)) return;
+    if (!this.active || this.frozen || event.ctrlKey || event.metaKey || event.altKey) return;
+    const action = this.actionOf(event.code);
+    if (!action) return;
     const target = event.target;
     if (target instanceof HTMLInputElement && target.type !== "range") return;
     if (target instanceof HTMLTextAreaElement) return;
-    this.keys.add(event.code);
-    if (event.code === "Space" && !event.repeat) {
-      // In the water Space is also held to rise; at the surface a press kicks him up.
+    this.keys.add(action);
+    if (action === "jump" && !event.repeat) {
+      // In the water the jump key is also held to rise; at the surface a press kicks him up.
       if (this.mode !== "swim" || this.depth < DIVE_DEPTH * 0.8) this.jump();
     }
-    if (event.code === "KeyF" && !event.repeat) this.torch = !this.torch;
-    if (event.code === "KeyE" && !event.repeat) this.interactRequested = true;
-    if (event.code === "Space" || event.code.startsWith("Arrow")) event.preventDefault();
+    if (action === "torch" && !event.repeat) this.torch = !this.torch;
+    if (action === "interact" && !event.repeat) this.interactRequested = true;
+    // A walking key must not scroll the page or press a focused button.
+    event.preventDefault();
   };
 
   private readonly onKeyUp = (event: KeyboardEvent): void => {
-    this.keys.delete(event.code);
+    // Whatever the key now means, let go of every action it could have held.
+    for (const action of DIVER_ACTIONS) if (keyBindings.matches(action, event.code)) this.keys.delete(action);
   };
 
   private readonly onBlur = (): void => {
@@ -355,12 +376,12 @@ export class DiverController {
   private moveInput(): { x: number; y: number; vertical: number; sprint: boolean } {
     if (!this.inControl) return { x: 0, y: 0, vertical: 0, sprint: false };
     const k = this.keys;
-    const forward = (k.has("KeyW") || k.has("ArrowUp") ? 1 : 0) - (k.has("KeyS") || k.has("ArrowDown") ? 1 : 0);
-    const right = (k.has("KeyD") || k.has("ArrowRight") ? 1 : 0) - (k.has("KeyA") || k.has("ArrowLeft") ? 1 : 0);
-    const up = (k.has("Space") || this.holdUp ? 1 : 0) - (k.has("KeyC") || k.has("ControlLeft") || k.has("ControlRight") || this.holdDown ? 1 : 0);
+    const forward = (k.has("forward") ? 1 : 0) - (k.has("back") ? 1 : 0);
+    const right = (k.has("right") ? 1 : 0) - (k.has("left") ? 1 : 0);
+    const up = (k.has("jump") || this.holdUp ? 1 : 0) - (k.has("crouch") || this.holdDown ? 1 : 0);
     const x = clamp(right + this.stickX, -1, 1);
     const y = clamp(forward + this.stickY, -1, 1);
-    const sprint = k.has("ShiftLeft") || k.has("ShiftRight") || this.sprintHeld || Math.hypot(this.stickX, this.stickY) > 0.97;
+    const sprint = k.has("sprint") || this.sprintHeld || Math.hypot(this.stickX, this.stickY) > 0.97;
     return { x, y, vertical: up, sprint };
   }
 
@@ -428,9 +449,14 @@ export class DiverController {
     walkInput.moveY = input.y;
     walkInput.sprint = input.sprint;
     walkInput.yaw = this.yaw;
-    walkInput.jump = this.jumpRequested && this.inControl;
-    this.jumpRequested = false;
+    walkInput.jump = this.jumpRequested > 0 && this.inControl;
+    const wasAirborne = !walk.grounded;
     stepWalk(walk, walkInput, this.land, dt, this.normal);
+    // Used if it lifted him; otherwise it waits a moment (pressed just
+    // before his feet touch down, or on a stride's bump) rather than vanish.
+    if (walkInput.jump && (walk.vy > 0 || walk.jumped)) this.jumpRequested = 0;
+    else this.jumpRequested = Math.max(0, this.jumpRequested - dt);
+    if (wasAirborne && walk.grounded) this.stepClock = 0;
     const water = wadingDepth(walk.x, walk.z, this.land);
     if (walk.landed > 0) {
       this.landing = Math.min(1, walk.landed * 0.12);
@@ -479,6 +505,13 @@ export class DiverController {
 
   private updateDeck(dt: number, root: THREE.Object3D, velocity: THREE.Vector3, heading: number, deck: DeckField, helmSpot: THREE.Vector3): void {
     const input = this.moveInput();
+    if (this.jumpRequested > 0 && this.grounded) {
+      this.feetVy = JUMP_SPEED;
+      this.grounded = false;
+      this.jumpRequested = 0;
+    } else {
+      this.jumpRequested = Math.max(0, this.jumpRequested - dt);
+    }
     this.air = refillAir(this.air, dt);
     const speed = input.sprint ? RUN_SPEED : WALK_SPEED;
     const sinYaw = Math.sin(this.yaw);

@@ -67,8 +67,8 @@ const BANNERS = [
 ] as const;
 
 /** The advertising banner, metres. */
-const BANNER_LENGTH = 40;
-const BANNER_HEIGHT = 6.4;
+const BANNER_LENGTH = 58;
+const BANNER_HEIGHT = 9.5;
 
 /** Pulls far vertices in to the sky sphere (view space), keeping direction and angular size. */
 const SKY_PROJECT = /* glsl */ `
@@ -227,7 +227,7 @@ export class AircraftSystem {
     this.group.add(this.smoke.mesh);
 
     // The banner: a ripple travelling down the cloth, growing toward its tail.
-    // Big enough to read from the beach or the deck as it goes by: 40 × 6.4 m.
+    // Big enough to read from the beach or the deck as it goes by: 58 × 9.5 m.
     const bannerGeometry = new THREE.PlaneGeometry(BANNER_LENGTH, BANNER_HEIGHT, 64, 6);
     bannerGeometry.translate(-BANNER_LENGTH / 2, -BANNER_HEIGHT / 2, 0);
     bannerGeometry.rotateY(-Math.PI / 2);

@@ -20,8 +20,8 @@ import { distanceFromWaterline, islandsInCell, worldCell } from "./environment/I
 import { traderSpot, type PierFootprint } from "./environment/IslandProps";
 import { OceanReflection } from "./environment/OceanReflection";
 import { OceanSystem } from "./environment/OceanSystem";
-import { setShoalField, significantWaveHeight } from "./environment/OceanMath";
-import { stormShoalAt } from "./environment/SurfMath";
+import { setShoalField, setShoreCalmField, significantWaveHeight } from "./environment/OceanMath";
+import { shoreCalmAt, stormShoalAt } from "./environment/SurfMath";
 import { RainSystem } from "./environment/RainSystem";
 import { thunderDelay } from "./environment/LightningMath";
 import { autoWeatherKind, isWeatherKind, type WeatherKind, type WeatherMode } from "./environment/WeatherMath";
@@ -64,7 +64,7 @@ import type { LootKind } from "./effects/LootMath";
 import { nearestHullClearance } from "./ships/ShipMath";
 import { DiverController, type DiverPrompt } from "./diver/DiverController";
 import { DeckField } from "./diver/DeckField";
-import { DIVE_DEPTH, type DiverMode } from "./diver/DiverMath";
+import type { DiverMode } from "./diver/DiverMath";
 import { reefDensity, seabedHeight, UnderwaterWorld } from "./diver/UnderwaterWorld";
 import {
   bagByKind,
@@ -258,6 +258,9 @@ export class Simulator {
   private seabedLoot?: SeabedLoot;
   private traders?: Traders;
   private readonly traderSpotList: TraderSpot[] = [];
+  /** The diver's eyes are under the surface (with a little hysteresis), and seconds since his last splash. */
+  private eyesUnder = false;
+  private sinceSplash = 10;
   private sonarContacts: SonarContact[] = [];
   private sonarClock = 0;
   private promptDetail: string | null = null;
@@ -485,6 +488,7 @@ export class Simulator {
       this.ocean = new OceanSystem(this.scene, this.quality.settings);
       // The storm swell dies out over the island shelves, for the CPU sampler as for the GPU.
       setShoalField(stormShoalAt);
+      setShoreCalmField(shoreCalmAt);
       this.environment = new EnvironmentSystem(this.scene, this.renderer, this.ocean);
       this.environment.setMode(this.state.lightingMode);
       this.environment.setAutoCycle(this.state.autoTime);
@@ -663,6 +667,8 @@ export class Simulator {
         { offsetX: HULL_OFFSET_X, centreZ: HULL_CENTER_Z, halfLength: HULL_HALF_LENGTH, halfBeam: HULL_HALF_BEAM + 0.2, draught: 1.25, freeboard: 1.4 },
         {
           splash: (position, speed) => {
+            this.sinceSplash = 0;
+            if (speed > 1.5) this.audio.submerge(speed);
             const intensity = Math.min(3, 0.7 + speed * 0.35);
             // His own splash, seen from inside it: the ring and the white
             // water, but no cloud of spray hanging round his eyes.
@@ -688,6 +694,7 @@ export class Simulator {
           },
           kick: (sprint) => this.audio.finKick(sprint),
           modeChanged: (mode) => this.onDiverMode(mode),
+          pointerLost: () => this.options.onPointerLost?.(),
           wade: (position, depth, running) => {
             this.wake.splash(position, 0.2, "slap", undefined, false);
             this.audio.wade(depth, running);
@@ -1146,13 +1153,23 @@ export class Simulator {
       this.stuckTime = 0;
       return;
     }
-    const hemmed =
-      telemetry.grounding > 0.05 ||
-      this.islands.shoreClearance(yacht.x, yacht.z, this.obstacleNormal) < 6 ||
-      (this.physics.hullClearance?.(yacht.x, yacht.z, this.obstacleNormal) ?? 1e6) < 6;
-    // Only when the player is trying to get somewhere (lying alongside on purpose is not stuck).
+    const shoreRoom = this.islands.shoreClearance(yacht.x, yacht.z, this.obstacleNormal);
+    const shipNormal = { x: 0, z: 0 };
+    const shipRoom = this.physics.hullClearance?.(yacht.x, yacht.z, shipNormal) ?? 1e6;
+    if (shipRoom < shoreRoom) {
+      this.obstacleNormal.x = shipNormal.x;
+      this.obstacleNormal.z = shipNormal.z;
+    }
+    const hemmed = telemetry.grounding > 0.05 || shoreRoom < 8 || shipRoom < 6;
+    // Only when the player is trying to get somewhere other than where he
+    // is: lying alongside, or bows to a beach half a metre off it with the
+    // throttle still on (to step ashore), is not stuck.
     const controls = this.state.controls;
-    const trying = telemetry.grounding > 0.05 || (this.state.engineRunning ? Math.abs(controls.throttle) > 0.15 : controls.sailTrim > 0.45);
+    const driving = this.state.engineRunning ? Math.abs(controls.throttle) > 0.15 : controls.sailTrim > 0.45;
+    const intent = this.state.engineRunning ? Math.sign(controls.throttle) : 1;
+    const heading = this.physics.heading;
+    const intoObstacle = (Math.sin(heading) * this.obstacleNormal.x + Math.cos(heading) * this.obstacleNormal.z) * intent < -0.35;
+    const trying = driving && !intoObstacle;
     const wasStuck = this.stuckTime > STUCK_SECONDS;
     this.stuckTime = hemmed && trying && telemetry.speedKnots < 0.45 ? this.stuckTime + delta : Math.max(0, this.stuckTime - delta * 2);
     // She is never left stuck: after a moment held against a coast, a ship or
@@ -1578,6 +1595,14 @@ export class Simulator {
   }
 
   /** A dialog over the skipper's own view: he stands still and leaves the keys to it. */
+  /** The pause menu: the world stands still and falls quiet, the skipper waits. */
+  setPaused(paused: boolean): void {
+    if (this.loop) this.loop.held = paused;
+    this.audio?.setHeld(paused);
+    this.diver?.setFrozen(paused);
+    if (paused) this.diver?.releasePointer();
+  }
+
   setDiverFrozen(frozen: boolean): void {
     this.diver?.setFrozen(frozen);
     if (frozen) this.diver?.releasePointer();
@@ -1710,6 +1735,7 @@ export class Simulator {
     this.shipShadows?.dispose();
     this.gpuTimer?.dispose();
     setShoalField(null);
+    setShoreCalmField(null);
     this.rain?.dispose(this.scene);
     this.flares?.dispose();
     this.fireworks?.dispose();
@@ -2036,6 +2062,7 @@ export class Simulator {
   }
 
   private updateDiver(delta: number): void {
+    this.sinceSplash += delta;
     const diver = this.diver!;
     if (diver.mode === "leap") {
       const pose = this.vessel.skipperLeap;
@@ -2173,7 +2200,32 @@ export class Simulator {
     this.ocean.setUnderside(depth > 0, this.diverWater, density);
     this.underwater.setView(amount);
     this.post.setUnderwater(amount);
-    this.audio.setUnderwater(amount, Math.max(0, depth), active && diver!.mode === "swim" && depth > DIVE_DEPTH);
+    // In-mask sounds (breath, bubbles, his own plunge) as soon as the head is under.
+    this.audio.setUnderwater(amount, Math.max(0, depth), active && diver!.mode === "swim" && depth > 0.02);
+    // The eyes crossing the surface: going under, a cloud of bubbles all
+    // round the mask and the rush of the water closing over the head;
+    // coming up, the water streaming off.
+    const wasUnder = this.eyesUnder;
+    const diverSwimming = active && diver!.mode === "swim";
+    if (!diverSwimming) this.eyesUnder = false;
+    else if (!wasUnder && depth > 0.06) this.eyesUnder = true;
+    else if (wasUnder && depth < -0.04) this.eyesUnder = false;
+    if (diverSwimming && this.eyesUnder !== wasUnder) {
+      const swim = diver!.swim;
+      if (this.eyesUnder) {
+        const down = Math.max(0, -swim.vy);
+        const camera = this.camera.camera;
+        // Round and in front of the mask (the air carried down with him), and below it.
+        for (let burst = 0; burst < 3; burst += 1) {
+          this.diverScratch.set((Math.random() - 0.5) * 0.5, -0.15 - burst * 0.25, -0.35 - Math.random() * 0.4).applyQuaternion(camera.quaternion).add(camera.position);
+          this.underwaterWorld?.emitBubbles(this.diverScratch, 26, 0.035, 0.55);
+        }
+        // Not twice for a plunge from the air (its splash already did both).
+        if (this.sinceSplash > 0.6) this.audio.submerge(down + Math.hypot(swim.vx, swim.vz) * 0.3);
+      } else {
+        this.audio.emerge();
+      }
+    }
     // Sunlight bent down into the water (Snell), for the shafts.
     const sun = this.environment.lightDirection;
     this.sunDown.set(-sun.x / 1.333, 0, -sun.z / 1.333);

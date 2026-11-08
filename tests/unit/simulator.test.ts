@@ -470,7 +470,7 @@ test("shoal water never holds her: no drag, and she is eased back toward deep wa
   // The coast lies toward −Z (the outward normal is +Z).
   const shoal: IslandPhysics = {
     ...OPEN_WATER,
-    depthAt: () => 1.2,
+    depthAt: () => 0.15,
     shoreClearance: (_x, _z, normal) => {
       normal.x = 0;
       normal.z = 1;
@@ -600,11 +600,28 @@ test("a helmsman who keeps steering into an island cannot strand the yacht", () 
     }
     const label = `${mode} from bearing ${bearing}`;
     assert.equal(impacts, 0, `${label}: struck the shore`);
-    assert.ok(worst > 0.8, `${label}: a hull came within ${worst.toFixed(2)} m of the sand`);
-    // Never parked: she keeps moving through every twenty-second window.
-    sailed.forEach((distance, index) => {
-      assert.ok(distance > 6, `${label}: stuck between ${index * 20} and ${index * 20 + 20} s`);
-    });
+    assert.ok(worst > SHORE_CONTACT_CLEARANCE, `${label}: a hull came within ${worst.toFixed(2)} m of the sand`);
+    // Circling, she is never parked: she keeps moving through every
+    // twenty-second window. Driven straight at the island she may lie half a
+    // metre off the beach (the skipper can step ashore there), but never
+    // stranded: as soon as he steers for the sea she gets clear.
+    if (mode === "circle") {
+      sailed.forEach((distance, index) => {
+        assert.ok(distance > 6, `${label}: stuck between ${index * 20} and ${index * 20 + 20} s`);
+      });
+    } else {
+      const normal = { x: 0, z: 1 };
+      for (let step = 0; step < 40 * 60; step += 1) {
+        shoreClearance(physics.position.x, physics.position.z, normal);
+        const wanted = Math.atan2(normal.x, normal.z);
+        const error = Math.atan2(Math.sin(wanted - physics.heading), Math.cos(wanted - physics.heading));
+        controls.rudder = THREE.MathUtils.clamp(error * 2, -1, 1);
+        physics.fixedUpdate(1 / 60, controls, true);
+        if (physics.telemetry.shoreImpact > 0) impacts += 1;
+      }
+      assert.equal(impacts, 0, `${label}: struck the shore leaving`);
+      assert.ok(shoreClearance(physics.position.x, physics.position.z, normal) > 25, `${label}: could not get clear when steered out to sea`);
+    }
   }
 });
 

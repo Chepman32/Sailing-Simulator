@@ -147,8 +147,8 @@ const WAVE_SWAY_COUPLING = 0.12;
 // --- Shoal water -----------------------------------------------------------
 /** Acceleration (m/s²) easing her off shallow water toward deep water. */
 const SHALLOWS_PUSH = 2.4;
-const GROUNDING_START_DEPTH = 2.4;
-const GROUNDING_FULL_DEPTH = 1.3;
+const GROUNDING_START_DEPTH = 0.55;
+const GROUNDING_FULL_DEPTH = 0.2;
 
 function moveToward(current: number, target: number, maximumStep: number): number {
   const difference = target - current;

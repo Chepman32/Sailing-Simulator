@@ -17,6 +17,9 @@ import { findName, getShopMessages } from "./shopMessages";
 import { DustNotices, type NoticeItem } from "./DustNotice";
 import { getDiverMessages } from "./diverMessages";
 import { ChartView } from "./ChartView";
+import { PauseMenu } from "./PauseMenu";
+import { getPauseMessages } from "./pauseMessages";
+import { keyBindings, type BindingAction } from "@/src/simulator/input/KeyBindings";
 import {
   DiscoveryCard,
   LootChip,
@@ -315,6 +318,8 @@ export function SailingSimulator() {
   const [error, setError] = useState("");
   const [panelMinimized, setPanelMinimized] = useState(true);
   const [chartOpen, setChartOpen] = useState(false);
+  /** The pause menu (Esc on foot): the world holds still behind it. */
+  const [pauseOpen, setPauseOpen] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
   // Any press outside the open control panel closes it (the press still does
   // what it does: steer, look around, press another control).
@@ -610,8 +615,38 @@ export function SailingSimulator() {
   const messages = useMemo(() => getMessages(language), [language]);
   const voyage = useMemo(() => getFeatureMessages(language), [language]);
   const diverWords = useMemo(() => getDiverMessages(language), [language]);
+  const pauseWords = useMemo(() => getPauseMessages(language), [language]);
   const away = snapshot.diver.mode !== "helm";
   const closeChart = useCallback(() => setChartOpen(false), []);
+  // The pause menu holds the world still; it belongs to the skipper's own
+  // eyes, so taking the helm (or the helm taking him) closes it.
+  const pausedAfoot = pauseOpen && snapshot.diver.mode !== "helm";
+  useEffect(() => {
+    simulatorRef.current?.setPaused(pausedAfoot);
+  }, [pausedAfoot]);
+  const resumeFromPause = () => {
+    setPauseOpen(false);
+    const simulator = simulatorRef.current;
+    if (!simulator) return;
+    simulator.setPaused(false);
+    // The press on "Resume" is a gesture: the mouse is his eyes again at once.
+    simulator.requestDiverPointer();
+  };
+  // On foot the chart is a card over his eyes: he stands still and lets the
+  // mouse go while it is open, and walks on when it closes.
+  const chartFroze = useRef(false);
+  useEffect(() => {
+    const simulator = simulatorRef.current;
+    if (!simulator) return;
+    if (chartOpen && snapshot.diver.mode !== "helm") {
+      chartFroze.current = true;
+      simulator.releaseDiverPointer();
+      simulator.setDiverFrozen(true);
+    } else if (!chartOpen && chartFroze.current) {
+      chartFroze.current = false;
+      simulator.setDiverFrozen(false);
+    }
+  }, [chartOpen, snapshot.diver.mode]);
   // Callbacks the simulator holds for its lifetime reach the current render through this.
   type LatestHandlers = {
     keyAction: (action: string) => void;
@@ -619,8 +654,9 @@ export function SailingSimulator() {
     radioFailed: (station: string) => void;
     find: (find: FindEvent) => void;
     trade: () => void;
+    pointerLost: () => void;
   };
-  const latest = useRef<LatestHandlers>({ keyAction: () => {}, discovery: () => {}, radioFailed: () => {}, find: () => {}, trade: () => {} });
+  const latest = useRef<LatestHandlers>({ keyAction: () => {}, discovery: () => {}, radioFailed: () => {}, find: () => {}, trade: () => {}, pointerLost: () => {} });
   const shopWords = useMemo(() => getShopMessages(language), [language]);
   const cameraLabels = useMemo<Record<CameraMode, string>>(() => ({
     chase: messages.chase,
@@ -708,6 +744,7 @@ export function SailingSimulator() {
           onRadioFailed: (station) => latest.current.radioFailed(station),
           onFind: (find) => latest.current.find(find),
           onTrade: () => latest.current.trade(),
+          onPointerLost: () => latest.current.pointerLost(),
         });
         simulatorRef.current = simulator;
         // Development builds only: lets visual checks drive the scene from a
@@ -857,6 +894,12 @@ export function SailingSimulator() {
       simulatorRef.current?.setDiverFrozen(true);
       setShopOpen(true);
     },
+    pointerLost: () => {
+      // Esc with the mouse held: the browser takes the key and lets the
+      // mouse go; that is the player asking for the menu.
+      if (shopOpen || inventoryOpen || controlsOpen || chartOpen) return;
+      setPauseOpen(true);
+    },
   };
   useEffect(() => {
     latest.current = handlers;
@@ -976,11 +1019,22 @@ export function SailingSimulator() {
   const onKey = (event: KeyboardEvent) => {
     if (!ready || event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     if (isTypingTarget(event.target)) return;
+    if (pausedAfoot) return;
+    // On foot, Esc is the pause menu (with the mouse held, the browser keeps
+    // the key and only lets the mouse go: that opens the menu too).
+    if (away && event.code === "Escape" && !shopOpen && !inventoryOpen && !controlsOpen && !chartOpen && !photoMode) {
+      setPauseOpen(true);
+      event.preventDefault();
+      return;
+    }
+    // On foot his own keys (as the player set them) are his, not the interface's.
+    const afootAction = (action: BindingAction) => away && keyBindings.matches(action, event.code);
+    if (away && !afootAction("chart") && !afootAction("backpack") && !afootAction("helm") && keyBindings.bound(event.code)) return;
     // The controls card: H opens and closes it, Esc closes it; it holds the keys while open.
     // The shop and the backpack hold the keys while open (they close themselves).
     if (shopOpen || inventoryOpen) return;
     // The backpack, on foot and at the helm.
-    if (event.code === "Tab") {
+    if (away ? afootAction("backpack") : event.code === "Tab") {
       if (!controlsOpen) openInventory();
       event.preventDefault();
       return;
@@ -1009,18 +1063,19 @@ export function SailingSimulator() {
       event.preventDefault();
       return;
     }
-    if (event.code === "KeyT") {
+    if (away ? afootAction("helm") : event.code === "KeyT") {
       // From the cinematic view too: it closes, and he steps away.
       if (photoMode) exitPhotoMode();
       setChartOpen(false);
       // Away from the helm and back (on foot the walk keys are the diver's own).
+      setPauseOpen(false);
       if (away) simulatorRef.current?.returnToHelm();
       else simulatorRef.current?.leaveHelm();
       event.preventDefault();
       return;
     }
     // The chart (Q or N), on foot too.
-    if (event.code === "KeyQ" || event.code === "KeyN") {
+    if (away ? afootAction("chart") : event.code === "KeyQ" || event.code === "KeyN") {
       if (photoMode) exitPhotoMode();
       setChartOpen((value) => !value);
       event.preventDefault();
@@ -1245,7 +1300,58 @@ export function SailingSimulator() {
             inventory: openInventory,
             stick: (x, y) => simulatorRef.current?.setDiverStick(x, y),
             hold: (up, down) => simulatorRef.current?.setDiverHold(up, down),
+            pause: () => setPauseOpen(true),
           }}
+        />
+      )}
+
+      {pausedAfoot && (
+        <PauseMenu
+          messages={pauseWords}
+          labels={{
+            language: messages.language,
+            controls: messages.controls,
+            quality: messages.quality,
+            backToHelm: diverWords.backToHelm,
+            sound: messages.sound,
+            on: messages.on,
+            off: messages.off,
+          }}
+          qualityLabels={qualityLabels}
+          quality={snapshot.qualityChoice}
+          ultra={!coarsePointer}
+          language={language}
+          soundOn={snapshot.soundEnabled && snapshot.audioReady}
+          touch={coarsePointer}
+          onResume={resumeFromPause}
+          onBackToHelm={() => {
+            setPauseOpen(false);
+            simulatorRef.current?.setPaused(false);
+            simulatorRef.current?.returnToHelm();
+          }}
+          onQuality={setQuality}
+          onLanguage={changeLanguage}
+          onSound={toggleSoundKey}
+        />
+      )}
+
+      {/* The chart and its minimap belong to the skipper as much as to the
+          helm: they live outside the sailing interface, which is hidden
+          while he is on foot or in the water. */}
+      {!photoMode && (
+        <ChartView
+          simulatorRef={simulatorRef}
+          messages={voyage}
+          open={chartOpen}
+          onOpen={() => {
+            setPanelMinimized(true);
+            simulatorRef.current?.releaseDiverPointer();
+            setChartOpen(true);
+          }}
+          onClose={closeChart}
+          hideMini={(!away && !panelMinimized) || pausedAfoot}
+          afoot={away}
+          ready={ready}
         />
       )}
 
@@ -1450,19 +1556,6 @@ export function SailingSimulator() {
           <span className={`status-dot ${snapshot.status}`} />
           <strong>{compass}</strong><span>{messages.heading}</span>
         </section>
-
-        <ChartView
-          simulatorRef={simulatorRef}
-          messages={voyage}
-          open={chartOpen}
-          onOpen={() => {
-            setPanelMinimized(true);
-            setChartOpen(true);
-          }}
-          onClose={closeChart}
-          hideMini={!panelMinimized}
-          ready={ready}
-        />
 
         {!panelMinimized && (
           <button

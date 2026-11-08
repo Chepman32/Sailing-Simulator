@@ -235,10 +235,19 @@ export class AudioSystem {
     document.addEventListener("visibilitychange", this.handleVisibility);
   }
 
+  /** The pause menu is open: everything falls quiet (the graph keeps running, so it resumes at once). */
+  private held = false;
+
+  setHeld(held: boolean): void {
+    if (this.held === held) return;
+    this.held = held;
+    this.setBusGain(this.master, this.enabled && !held ? MASTER_GAIN : 0, 0.25);
+  }
+
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     this.syncShanty();
-    this.setBusGain(this.master, enabled ? MASTER_GAIN : 0, 0.08);
+    this.setBusGain(this.master, enabled && !this.held ? MASTER_GAIN : 0, 0.08);
     window.clearTimeout(this.muteTimer);
     if (!enabled) {
       // A muted graph still synthesises every voice; once the fade is done the
@@ -806,7 +815,7 @@ export class AudioSystem {
     if (!context) return false;
     if (context.state === "running") {
       this.setReady(true);
-      this.setBusGain(this.master, MASTER_GAIN, 0.035);
+      this.setBusGain(this.master, this.held ? 0 : MASTER_GAIN, 0.035);
       return true;
     }
     if (this.resumePromise) {
@@ -832,7 +841,7 @@ export class AudioSystem {
       .then((running) => {
         if (this.context !== context) return false;
         this.setReady(running);
-        if (running) this.setBusGain(this.master, MASTER_GAIN, 0.035);
+        if (running) this.setBusGain(this.master, this.held ? 0 : MASTER_GAIN, 0.035);
         return running;
       })
       .finally(() => {
@@ -1123,6 +1132,23 @@ export class AudioSystem {
     const context = this.context;
     if (!context || !this.diverBus || context.state !== "running" || !this.enabled) return;
     const now = context.currentTime;
+    if (this.bodyReady?.breathBubbles(depth)) {
+      // The recorded bubbles, over a softer rush through the exhaust valve.
+      const rush = context.createBufferSource();
+      rush.buffer = this.createNoiseBuffer(1.2, "pink");
+      const low = context.createBiquadFilter();
+      low.type = "lowpass";
+      low.frequency.value = 700;
+      const rushGain = context.createGain();
+      rushGain.gain.setValueAtTime(0, now);
+      rushGain.gain.linearRampToValueAtTime(0.05, now + 0.08);
+      rushGain.gain.exponentialRampToValueAtTime(0.001, now + 1.0);
+      rush.connect(low).connect(rushGain).connect(this.diverBus);
+      rush.start(now);
+      rush.stop(now + 1.1);
+      rush.onended = () => rushGain.disconnect();
+      return;
+    }
     const rush = context.createBufferSource();
     rush.buffer = this.createNoiseBuffer(1.5, "pink");
     const low = context.createBiquadFilter();
@@ -1260,7 +1286,7 @@ export class AudioSystem {
   private get bodyReady(): BodySounds | null {
     const context = this.context;
     if (!context || !this.master || context.state !== "running" || !this.enabled) return null;
-    this.body ??= new BodySounds(context, this.master);
+    this.body ??= new BodySounds(context, this.master, this.diverBus ?? this.master);
     return this.body;
   }
 
@@ -1277,6 +1303,16 @@ export class AudioSystem {
   /** A step through shallow water `depth` metres deep. */
   wade(depth: number, running: boolean): void {
     this.bodyReady?.wade(depth, running);
+  }
+
+  /** Going under the water (`speed` m/s down): the rush closing over the head and a cloud of bubbles. */
+  submerge(speed: number): void {
+    this.bodyReady?.submerge(speed);
+  }
+
+  /** Coming up through the surface: the water streaming off the head. */
+  emerge(): void {
+    this.bodyReady?.emerge();
   }
 
   /** One arm stroke swimming at the surface. */
@@ -1690,7 +1726,7 @@ export class AudioSystem {
   private readonly handleContextStateChange = (): void => {
     const running = this.context?.state === "running";
     this.setReady(running);
-    if (running) this.setBusGain(this.master, this.enabled ? MASTER_GAIN : 0, 0.04);
+    if (running) this.setBusGain(this.master, this.enabled && !this.held ? MASTER_GAIN : 0, 0.04);
   };
 
   private createGraph(): void {

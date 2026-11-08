@@ -123,7 +123,7 @@ const straightCoast = (x: number, _z: number, normal: { x: number; z: number }):
 test("the shore guard turns the short way out to sea when the helmsman does", () => {
   const guard = createShoreGuard();
   // Close in, bow angled at the beach, the guard committed to the long way round.
-  const body = { position: { x: 8, z: 0 }, velocity: { x: -1.2, z: -0.4 }, heading: -1.3, yawRate: 0 };
+  const body = { position: { x: 6.2, z: 0 }, velocity: { x: -1.2, z: -0.4 }, heading: -1.3, yawRate: 0 };
   updateShoreGuard(guard, body, { throttle: 1, rudder: 0, sailTrim: 1 }, true, straightCoast, 1 / 60);
   assert.ok(guard.active, "the guard should take the helm this close");
   guard.turnSide = -1;
@@ -132,9 +132,21 @@ test("the shore guard turns the short way out to sea when the helmsman does", ()
   assert.equal(guard.turnSide, 1);
 });
 
+test("the shore guard leaves a slow approach alone until the bow is half a metre off the beach", () => {
+  const guard = createShoreGuard();
+  // Bow-on to the beach at a walking pace, the bow 6 m off: the helmsman's business.
+  const body = { position: { x: 10.7, z: 0 }, velocity: { x: -1, z: 0 }, heading: -Math.PI / 2, yawRate: 0 };
+  updateShoreGuard(guard, body, { throttle: 0.3, rudder: 0, sailTrim: 1 }, true, straightCoast, 1 / 60);
+  assert.ok(!guard.active, "the guard took the helm metres off the beach");
+  // The bow a metre off and still closing: now it must act.
+  body.position.x = 5.9;
+  updateShoreGuard(guard, body, { throttle: 0.3, rudder: 0, sailTrim: 1 }, true, straightCoast, 1 / 60);
+  assert.ok(guard.active, "the guard should take the helm with the bow about to touch");
+});
+
 test("a guard manoeuvre that makes no way out to sea gives up the long turn", () => {
   const guard = createShoreGuard();
-  const body = { position: { x: 8, z: 0 }, velocity: { x: -0.3, z: -0.2 }, heading: -1.3, yawRate: 0 };
+  const body = { position: { x: 5.5, z: 0 }, velocity: { x: -0.3, z: -0.2 }, heading: -1.3, yawRate: 0 };
   updateShoreGuard(guard, body, { throttle: 0.4, rudder: 0, sailTrim: 1 }, true, straightCoast, 1 / 60);
   assert.ok(guard.active);
   guard.turnSide = -1;

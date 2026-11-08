@@ -104,6 +104,16 @@ export function setShoalField(field: ((x: number, z: number) => number) | null):
   shoalField = field ?? (() => 1);
 }
 
+/**
+ * Every wave dies on the beach (0 at the waterline … 1 offshore), set by the
+ * island system; `SurfMath.shoreCalmAt` and its GLSL twin define it.
+ */
+let shoreField: (x: number, z: number) => number = () => 1;
+
+export function setShoreCalmField(field: ((x: number, z: number) => number) | null): void {
+  shoreField = field ?? (() => 1);
+}
+
 /** Storm swell factor of the shoals at (x, z). */
 export function stormShoal(x: number, z: number): number {
   return shoalField(x, z);
@@ -236,6 +246,7 @@ export function surfaceBasePoint(x: number, z: number, time: number, target: { x
   let baseX = x;
   let baseZ = z;
   const shoal = stormFactorsActive() ? shoalField(x, z) : 1;
+  const calm = shoreField(x, z);
   for (let iteration = 0; iteration < SURFACE_INVERSION_ITERATIONS; iteration += 1) {
     let offsetX = 0;
     let offsetZ = 0;
@@ -243,7 +254,7 @@ export function surfaceBasePoint(x: number, z: number, time: number, target: { x
       const wave = WAVE_TERMS[index]!;
       const phase = wave.waveNumber * (wave.directionX * baseX + wave.directionZ * baseZ) - wave.angularSpeed * time;
       const cosine = Math.cos(phase);
-      const excursion = wave.excursion * seaFactors[index]! * (wave.storm ? shoal : 1);
+      const excursion = wave.excursion * seaFactors[index]! * (wave.storm ? shoal : 1) * calm;
       offsetX += wave.directionX * excursion * cosine;
       offsetZ += wave.directionZ * excursion * cosine;
     }
@@ -279,6 +290,7 @@ export function sampleOcean(x: number, z: number, time: number, depth = 0): Ocea
   const baseZ = scratchBase.z;
   const submerged = Math.max(0, depth);
   const shoal = stormFactorsActive() ? shoalField(baseX, baseZ) : 1;
+  const calm = shoreField(baseX, baseZ);
   let height = 0;
   let slopeX = 0;
   let slopeZ = 0;
@@ -290,7 +302,7 @@ export function sampleOcean(x: number, z: number, time: number, depth = 0): Ocea
     const sine = Math.sin(phase);
     const cosine = Math.cos(phase);
     const attenuation = submerged > 0 ? Math.exp(-wave.waveNumber * submerged) : 1;
-    const amplitude = wave.amplitude * seaFactors[index]! * (wave.storm ? shoal : 1);
+    const amplitude = wave.amplitude * seaFactors[index]! * (wave.storm ? shoal : 1) * calm;
     const peakSlope = amplitude * wave.waveNumber * attenuation;
     height += amplitude * attenuation * sine;
     slopeX += peakSlope * wave.directionX * cosine;

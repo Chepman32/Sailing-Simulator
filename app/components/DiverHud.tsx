@@ -15,6 +15,8 @@ export type DiverActions = {
   inventory: () => void;
   stick: (x: number, y: number) => void;
   hold: (up: boolean, down: boolean) => void;
+  /** The pause menu (also Esc). */
+  pause?: () => void;
 };
 
 type Props = {
@@ -102,6 +104,12 @@ export function DiverHud({ diver, messages, shop, wallet, touch, actions }: Prop
         <span aria-hidden="true">🎒</span>
         {wallet.bag > 0 && <span className="diver-backpack-count">{wallet.bag}</span>}
       </button>
+
+      {actions.pause && (
+        <button type="button" className="diver-pause" onClick={actions.pause} title="Menu (Esc)" aria-label="Menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>
+        </button>
+      )}
 
       <button type="button" className="diver-helm" onClick={actions.returnToHelm} title={`${messages.backToHelm} (T)`}>
         <span aria-hidden="true" className="diver-helm-wheel" />

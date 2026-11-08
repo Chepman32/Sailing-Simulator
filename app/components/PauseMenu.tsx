@@ -1,0 +1,229 @@
+"use client";
+
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { QualityChoice } from "@/src/simulator/types";
+import {
+  BINDING_ACTIONS,
+  keyBindings,
+  keyLabel,
+  MOUSE_SENSITIVITY_MAX,
+  MOUSE_SENSITIVITY_MIN,
+  RESERVED_KEYS,
+  type BindingAction,
+} from "@/src/simulator/input/KeyBindings";
+import { LANGUAGE_OPTIONS, type LanguageCode } from "./i18n";
+import type { PauseMessages } from "./pauseMessages";
+
+type Page = "main" | "graphics" | "keys" | "language";
+
+type Props = {
+  messages: PauseMessages;
+  /** Existing words: "Language", "Controls", "Quality", "Back to the helm", "Sound", on/off. */
+  labels: { language: string; controls: string; quality: string; backToHelm: string; sound: string; on: string; off: string };
+  qualityLabels: Record<QualityChoice, string>;
+  quality: QualityChoice;
+  /** Whether "ultra" is offered (not on phones). */
+  ultra: boolean;
+  language: LanguageCode;
+  soundOn: boolean;
+  touch: boolean;
+  onResume: () => void;
+  onBackToHelm: () => void;
+  onQuality: (choice: QualityChoice) => void;
+  onLanguage: (language: LanguageCode) => void;
+  onSound: () => void;
+};
+
+const QUALITY_ORDER: QualityChoice[] = ["auto", "low", "medium", "high", "ultra"];
+
+/** The bindings, re-read whenever they change. */
+function useBindings() {
+  const keys = useSyncExternalStore(
+    (listener) => keyBindings.subscribe(listener),
+    () => keyBindings.keys,
+    () => keyBindings.keys,
+  );
+  const look = useSyncExternalStore(
+    (listener) => keyBindings.subscribe(listener),
+    () => keyBindings.look,
+    () => keyBindings.look,
+  );
+  return { keys, look };
+}
+
+/**
+ * The pause menu, opened by Esc on foot (and in the water): the world
+ * stands still behind it. Resume, graphics, key bindings and the mouse,
+ * the language, sound, and the way back to the helm.
+ */
+export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, language, soundOn, touch, onResume, onBackToHelm, onQuality, onLanguage, onSound }: Props) {
+  const [page, setPage] = useState<Page>("main");
+  const [listening, setListening] = useState<BindingAction | null>(null);
+  const { keys, look } = useBindings();
+  const cardRef = useRef<HTMLElement>(null);
+  // The Esc that opened the menu (when the browser passes it on after
+  // letting the mouse go) must not close it again.
+  const openedAt = useRef(0);
+  useEffect(() => {
+    openedAt.current = performance.now();
+  }, []);
+
+  // Focus the first control of each page (keyboard play without a mouse).
+  useEffect(() => {
+    cardRef.current?.querySelector<HTMLElement>("button, select, input")?.focus({ preventScroll: true });
+  }, [page]);
+
+  // Esc: stop listening for a key, or go back a page, or resume. Captured
+  // before the game's own key handlers, which must not see it.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (listening) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (event.code !== "Escape" && !RESERVED_KEYS.has(event.code)) keyBindings.set(listening, event.code);
+        setListening(null);
+        return;
+      }
+      if (event.code === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (performance.now() - openedAt.current < 350) return;
+        if (page !== "main") setPage("main");
+        else onResume();
+        return;
+      }
+      // Nothing behind the menu hears a key while it is open (Tab still moves focus).
+      if (event.code !== "Tab") event.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [listening, page, onResume]);
+
+  const title = page === "main" ? messages.paused : page === "graphics" ? messages.graphics : page === "keys" ? labels.controls : labels.language;
+
+  return (
+    <div className="pause-backdrop" role="presentation">
+      <section ref={cardRef} className="pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
+        <header className="pause-head">
+          {page !== "main" && (
+            <button type="button" className="pause-back" onClick={() => setPage("main")} aria-label={messages.back}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+          )}
+          <h2 id="pause-title">{title}</h2>
+        </header>
+
+        {page === "main" && (
+          <nav className="pause-list">
+            <button type="button" className="pause-item is-primary" onClick={onResume}>
+              <span>{messages.resume}</span>
+              <kbd>Esc</kbd>
+            </button>
+            <button type="button" className="pause-item" onClick={() => setPage("graphics")}>
+              <span>{messages.graphics}</span>
+              <small>{qualityLabels[quality]}</small>
+            </button>
+            {!touch && (
+              <button type="button" className="pause-item" onClick={() => setPage("keys")}>
+                <span>{labels.controls}</span>
+                <small>{messages.keys}</small>
+              </button>
+            )}
+            <button type="button" className="pause-item" onClick={() => setPage("language")}>
+              <span>{labels.language}</span>
+              <small>{LANGUAGE_OPTIONS.find((option) => option.code === language)?.name}</small>
+            </button>
+            <button type="button" className="pause-item" onClick={onSound} aria-pressed={soundOn}>
+              <span>{labels.sound}</span>
+              <small>{soundOn ? labels.on : labels.off}</small>
+            </button>
+            <button type="button" className="pause-item is-quiet" onClick={onBackToHelm}>
+              <span>{labels.backToHelm}</span>
+              <kbd>{keyLabel(keys.helm)}</kbd>
+            </button>
+          </nav>
+        )}
+
+        {page === "graphics" && (
+          <div className="pause-body">
+            <p className="pause-label">{labels.quality}</p>
+            <div className="pause-choices" role="radiogroup" aria-label={labels.quality}>
+              {QUALITY_ORDER.filter((choice) => choice !== "ultra" || ultra || quality === "ultra").map((choice) => (
+                <button
+                  key={choice}
+                  type="button"
+                  role="radio"
+                  aria-checked={quality === choice}
+                  className={`pause-choice${quality === choice ? " is-on" : ""}`}
+                  onClick={() => onQuality(choice)}
+                >
+                  {qualityLabels[choice]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {page === "keys" && (
+          <div className="pause-body">
+            <div className="pause-keys" role="list">
+              {BINDING_ACTIONS.map((action) => (
+                <div key={action} className="pause-key-row" role="listitem">
+                  <span>{messages.actions[action]}</span>
+                  <button
+                    type="button"
+                    className={`pause-key${listening === action ? " is-listening" : ""}`}
+                    onClick={() => setListening(listening === action ? null : action)}
+                    aria-label={`${messages.actions[action]}: ${keyLabel(keys[action])}`}
+                  >
+                    {listening === action ? "…" : keyLabel(keys[action])}
+                  </button>
+                </div>
+              ))}
+            </div>
+            {listening && <p className="pause-note" role="status">{messages.pressKey}</p>}
+            <label className="pause-slider">
+              <span>{messages.sensitivity}</span>
+              <input
+                type="range"
+                min={MOUSE_SENSITIVITY_MIN}
+                max={MOUSE_SENSITIVITY_MAX}
+                step={0.05}
+                value={look.sensitivity}
+                onChange={(event) => keyBindings.setLook({ sensitivity: Number(event.target.value) })}
+              />
+              <output>{look.sensitivity.toFixed(2)}×</output>
+            </label>
+            <label className="pause-toggle">
+              <input type="checkbox" checked={look.invertY} onChange={(event) => keyBindings.setLook({ invertY: event.target.checked })} />
+              <span>{messages.invertY}</span>
+            </label>
+            <button type="button" className="pause-item is-quiet pause-reset" onClick={() => keyBindings.reset()}>
+              <span>{messages.resetKeys}</span>
+            </button>
+          </div>
+        )}
+
+        {page === "language" && (
+          <div className="pause-body">
+            <div className="pause-languages" role="radiogroup" aria-label={labels.language}>
+              {LANGUAGE_OPTIONS.map((option) => (
+                <button
+                  key={option.code}
+                  type="button"
+                  role="radio"
+                  lang={option.code}
+                  aria-checked={language === option.code}
+                  className={`pause-choice${language === option.code ? " is-on" : ""}`}
+                  onClick={() => onLanguage(option.code)}
+                >
+                  {option.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}

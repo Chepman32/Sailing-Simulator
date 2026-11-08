@@ -28,6 +28,7 @@ const vertexShader = /* glsl */ `
   varying vec3 vLight;
   varying vec3 vDown;
   varying float vForward;
+  varying float vNear;
   #include <fog_pars_vertex>
   void main() {
     vec4 mvPosition = viewMatrix * vec4(aCenter, 1.0);
@@ -48,6 +49,9 @@ const vertexShader = /* glsl */ `
     vDown = vec3(back * down.xy, down.z);
     // How nearly the viewer looks toward the light through this puff.
     vForward = max(dot(normalize(mvPosition.xyz), normalize(light)), 0.0);
+    // A puff the eye is in (a walker on the rim, a camera in the plume) thins
+    // away instead of filling the view with a flat brown wall.
+    vNear = smoothstep(aSize * 0.2, aSize * 0.9 + 2.5, -mvPosition.z);
     #include <fog_vertex>
     #ifdef USE_FOG
       // Smoke is denser than the haze between: it keeps its shape farther off.
@@ -68,6 +72,7 @@ const fragmentShader = /* glsl */ `
   varying vec3 vLight;
   varying vec3 vDown;
   varying float vForward;
+  varying float vNear;
   #include <fog_pars_fragment>
   void main() {
     vec2 p = vUv * 2.0 - 1.0;
@@ -99,7 +104,7 @@ const fragmentShader = /* glsl */ `
     color += uSun * vAlbedo.rgb * (0.12 + 0.88 * rim) * pow(vForward, 8.0) * 0.45;
     float underside = clamp(dot(normal, normalize(vDown)) * 0.5 + 0.5, 0.0, 1.0);
     color += vGlow * (0.3 + 0.7 * underside) * (0.6 + 0.4 * billow);
-    gl_FragColor = vec4(color, vAlbedo.a * density);
+    gl_FragColor = vec4(color, vAlbedo.a * density * vNear);
     #include <fog_fragment>
     #include <tonemapping_fragment>
     #include <colorspace_fragment>

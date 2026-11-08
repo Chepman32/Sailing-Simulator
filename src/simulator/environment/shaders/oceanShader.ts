@@ -63,9 +63,13 @@ export const SEA_FACTORS_UNIFORM = `
   uniform float uSeaFactors[${OCEAN_WAVES.length}];
   #endif`;
 
-/** A component's amplitude in GLSL; storm swell is scaled by the local `stormShoal`. */
+/**
+ * A component's amplitude in GLSL: storm swell is scaled by the local
+ * `stormShoal`, every component by `shoreCalm` (the waves dying on the
+ * beach, see `SurfMath.shoreCalmAt`).
+ */
 function amplitude(wave: (typeof OCEAN_WAVES)[number], index: number): string {
-  return `${glsl(wave.amplitude)} * uSeaFactors[${index}]${wave.storm ? " * stormShoal" : ""}`;
+  return `${glsl(wave.amplitude)} * uSeaFactors[${index}]${wave.storm ? " * stormShoal" : ""} * shoreCalm`;
 }
 
 const displacementCalls = OCEAN_WAVES.map((wave, index) => {
@@ -105,7 +109,7 @@ const excursionTerms = OCEAN_WAVES.map((wave, index) => {
   const k = (Math.PI * 2) / wave.wavelength;
   return `      offset += vec2(${glsl(dx)}, ${glsl(dz)}) * ${glsl(wave.steepness * wave.amplitude)} * uSeaFactors[${index}]${
     wave.storm ? " * stormShoal" : ""
-  } * cos(${glsl(
+  } * shoreCalm * cos(${glsl(
     k,
   )} * dot(vec2(${glsl(dx)}, ${glsl(dz)}), base) - ${glsl(Math.sqrt(9.81 * k) * wave.speed)} * time);`;
 }).join("\n");
@@ -122,8 +126,10 @@ export const OCEAN_SURFACE_HEIGHT_GLSL = /* glsl */ `
   ${SEA_FACTORS_UNIFORM}
   float oceanSurfaceHeight(vec2 position, float time) {
     // Materials using this twin do not know the islands: the storm swell is
-    // taken at full height (a difference only on the shelves, in a gale).
+    // taken at full height (a difference only on the shelves, in a gale),
+    // and so are the waves at the beach (a difference only in the surf).
     float stormShoal = 1.0;
+    float shoreCalm = 1.0;
     vec2 base = position;
     for (int iteration = 0; iteration < ${SURFACE_INVERSION_ITERATIONS}; iteration++) {
       vec2 offset = vec2(0.0);
@@ -148,6 +154,7 @@ export const OCEAN_SURFACE_HEIGHT_FAST_GLSL = /* glsl */ `
   ${SEA_FACTORS_UNIFORM}
   float oceanSurfaceHeightFast(vec2 base, float time) {
     float stormShoal = 1.0;
+    float shoreCalm = 1.0;
     float height = 0.0;
 ${heightTerms}
     return height;
@@ -192,6 +199,7 @@ export const oceanVertexShader = /* glsl */ `
     vec3 offset = vec3(0.0);
     float cellSize = cellSpacing;
     float stormShoal = ${STORM_SHOAL_EXPRESSION("worldBase.xz")};
+    float shoreCalm = shoreCalmFactor(shoreInfo(worldBase.xz).x);
 ${displacementCalls}
     vec3 world = worldBase + offset;
     // Ships' wakes: the same height the CPU sampler adds, where the grid can carry it.
@@ -477,6 +485,10 @@ export const oceanFragmentShader = /* glsl */ `
     float fold = 0.0;
     float lostVariance = 0.0;
     float stormShoal = ${STORM_SHOAL_EXPRESSION("base")};
+    // The waves die on the beach (the swash runs up it instead): the same
+    // calm as the vertices', so the water at the waterline lies level.
+    vec3 shoreHere = shoreInfo(base);
+    float shoreCalm = shoreCalmFactor(shoreHere.x);
     float stormFold = 0.0;
 ${swellCalls}
     // Everything below is wind ripple; an impact's slick smooths it away.
@@ -564,7 +576,6 @@ ${detailCalls}
     // --- Surf ---------------------------------------------------------------
     // Waves steepen and break on the shelf; the crest's face tilts the normal
     // along the shore normal, the white water is drawn with the foam below.
-    vec3 shoreHere = shoreInfo(base);
     float surfFoam = 0.0;
     float surfTrailFoam = 0.0;
     if (shoreHere.x < ${glsl(BREAK_START + 2)}) {

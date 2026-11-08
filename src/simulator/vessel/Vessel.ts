@@ -14,6 +14,7 @@ import { HELM_EYE, HelmStation, type HelmTraffic } from "./HelmStation";
 import { YachtDecor } from "./YachtDecor";
 import type { SonarBlip } from "./WideMonitor";
 import { Skipper } from "./Skipper";
+import { RiggedSkipper } from "./RiggedSkipper";
 import { ShipBell } from "./ShipBell";
 import { audibleSlam, boomPivotPose, boomTarget, createBoomState, steadyLeewardSide, stepBoom } from "./BoomDynamics";
 import { SailSystem } from "./SailSystem";
@@ -81,7 +82,7 @@ export class Vessel {
   private readonly helm = new HelmStation();
   /** Flag, charm and bobblehead bought from the traders. */
   private decor?: YachtDecor;
-  private skipper?: Skipper;
+  private skipper?: Skipper | RiggedSkipper;
   private bell?: ShipBell;
   /** The mast's forward face at its foot (vessel space) and the cabin top there; set by `classifyParts`. */
   private readonly mastFront = new THREE.Vector3(0, 0, 1.9);
@@ -184,12 +185,23 @@ export class Vessel {
     this.bell = new ShipBell(this.mastFront, this.mastFootY);
     this.root.add(this.bell.group);
     this.decor = new YachtDecor(this.root);
-    this.skipper = new Skipper(this.root, {
+    const stand = {
       feet: HelmStation.STAND_FEET,
       eyeHeight: HELM_EYE.y - HelmStation.STAND_FEET.y,
-      rimPoint: (angle, target) => this.helm.rimPoint(angle, target),
+      rimPoint: (angle: number, target: THREE.Vector3) => this.helm.rimPoint(angle, target),
       wheelAngle: () => this.helm.wheelAngle,
-    });
+    };
+    // The skipper is the rigged man (the islanders' model) when it loaded;
+    // the procedural figure stands in otherwise.
+    const man = assets.animated("traderMan");
+    if (man) {
+      try {
+        this.skipper = new RiggedSkipper(this.root, stand, man.scene);
+      } catch (error) {
+        console.warn("The skipper's model has not the expected skeleton; the procedural figure stands in.", error);
+      }
+    }
+    this.skipper ??= new Skipper(this.root, stand);
     this.skipSmallParts();
   }
 

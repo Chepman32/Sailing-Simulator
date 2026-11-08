@@ -27,9 +27,9 @@ export const HULL_OUTLINE: readonly (readonly [number, number])[] = [
 ];
 
 /** Water the keels need between the hull outline and the waterline. */
-export const SHORE_CONTACT_CLEARANCE = 1.4;
+export const SHORE_CONTACT_CLEARANCE = 0.45;
 /** Distance over which the shoaling bottom eases the hull away before contact. */
-export const SHORE_CUSHION = 7;
+export const SHORE_CUSHION = 1.8;
 const CUSHION_ACCELERATION = 3.2;
 export const SHORE_RESTITUTION = 0.5;
 const SHORE_FRICTION = 0.18;
