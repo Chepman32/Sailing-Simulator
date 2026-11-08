@@ -629,8 +629,9 @@ export function SailingSimulator() {
     const simulator = simulatorRef.current;
     if (!simulator) return;
     simulator.setPaused(false);
-    // The press on "Resume" is a gesture: the mouse is his eyes again at once.
-    simulator.requestDiverPointer();
+    // The press on "Resume" is a gesture: the mouse is his eyes again at once
+    // (closed with Esc, at his next key or press).
+    simulator.resumeDiverLook();
   };
   // On foot the chart is a card over his eyes: he stands still and lets the
   // mouse go while it is open, and walks on when it closes.
@@ -645,6 +646,8 @@ export function SailingSimulator() {
     } else if (!chartOpen && chartFroze.current) {
       chartFroze.current = false;
       simulator.setDiverFrozen(false);
+      // Back to his own eyes without a click on the view first.
+      simulator.resumeDiverLook();
     }
   }, [chartOpen, snapshot.diver.mode]);
   // Callbacks the simulator holds for its lifetime reach the current render through this.
@@ -960,6 +963,8 @@ export function SailingSimulator() {
   };
 
   const enterPhotoMode = () => {
+    // Not on foot or in the water: the cinematic view is the yacht's.
+    if (snapshot.diver.mode !== "helm") return;
     photoModeRef.current = true;
     setPhotoMode(true);
     // The interface is hidden in photo mode, so say once how to get it back.
@@ -1097,7 +1102,8 @@ export function SailingSimulator() {
     }
     if (photoMode) return;
     // On deck and in the water the signals, flares and camera keys are not his.
-    if (away && ["KeyF", "KeyG", "KeyJ", "KeyB", "KeyR", "KeyO"].includes(event.code)) return;
+    // Nor is the cinematic view (P): it is a view of the yacht.
+    if (away && ["KeyF", "KeyG", "KeyJ", "KeyB", "KeyR", "KeyO", "KeyP"].includes(event.code)) return;
     switch (event.code) {
       case "KeyP":
         setChartOpen(false);

@@ -21,9 +21,19 @@
 /** Growth of an upgrade's price from one level to the next. */
 export const PRICE_GROWTH = 1.65;
 
-/** Price of the next level when `level` levels are owned: `base × 1.65^level`, in whole gold. */
+/**
+ * A price or a value as a trader would say it: to the nearest 5 gold, and
+ * past a thousand to the nearest 25 (1 725, not 1 723). Rounding to the
+ * nearest keeps the curve's average where it was, so the balance holds.
+ */
+export function roundGold(value: number): number {
+  const step = value >= 1000 ? 25 : 5;
+  return Math.max(step, Math.round(value / step) * step);
+}
+
+/** Price of the next level when `level` levels are owned: `base × 1.65^level`, rounded as a trader would. */
 export function upgradePrice(base: number, level: number): number {
-  return Math.round(base * Math.pow(PRICE_GROWTH, Math.max(0, level)));
+  return roundGold(base * Math.pow(PRICE_GROWTH, Math.max(0, level)));
 }
 
 /** Gold to buy every level of an upgrade from nothing. */
@@ -274,7 +284,7 @@ export function findValue(kind: FindKind, r: number): number {
   const bias = KIND_VALUE_BIAS[kind];
   // Mostly the low end of the range, now and then a good one.
   const t = Math.min(1, Math.max(0, bias * 0.45 + Math.pow(r, 1.7) * 0.55));
-  return Math.round(low + (high - low) * t);
+  return roundGold(low + (high - low) * t);
 }
 
 const TIER_ONE: readonly FindKind[] = ["shell", "shell", "fishbones", "bottle", "can", "debris", "anchor"];

@@ -258,6 +258,21 @@ export class EnvironmentSystem {
     this.skyDetail.value = detail;
   }
 
+  /**
+   * How far round the focus the sun's shadows reach (m): the yacht's deck
+   * at the helm, a walker's surroundings (the palms, the islanders, his own
+   * figure) ashore.
+   */
+  setShadowReach(extent: number): void {
+    const camera = this.sunLight.shadow.camera;
+    if (camera.right === extent) return;
+    camera.left = -extent;
+    camera.right = extent;
+    camera.top = extent;
+    camera.bottom = -extent;
+    camera.updateProjectionMatrix();
+  }
+
   update(delta: number, camera: THREE.Camera | null, focus: THREE.Vector3, time: number): TimeOfDayState {
     // A steady march through dusk or dawn, eased at both ends. In the
     // automatic cycle the goal moves with the clock; a manual choice (or a jump

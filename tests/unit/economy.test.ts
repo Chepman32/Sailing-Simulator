@@ -28,14 +28,15 @@ import { UnderwaterLight } from "../../src/simulator/environment/UnderwaterLight
 test("upgrade prices grow by 1.65 a level", () => {
   assert.equal(upgradePrice(100, 0), 100);
   assert.equal(upgradePrice(100, 1), 165);
-  assert.equal(upgradePrice(100, 2), 272);
+  assert.equal(upgradePrice(100, 2), 270);
   for (const upgrade of UPGRADES) {
     for (let level = 1; level < upgrade.max; level += 1) {
-      const ratio = upgradePrice(upgrade.base, level) / upgradePrice(upgrade.base, level - 1);
-      assert.ok(Math.abs(ratio - 1.65) < 0.02, `${upgrade.id} level ${level}: ×${ratio.toFixed(3)}`);
+      // The exact curve, rounded to 5 gold (25 past a thousand).
+      const exact = upgrade.base * 1.65 ** level;
+      assert.ok(Math.abs(upgradePrice(upgrade.base, level) - exact) <= (exact >= 1000 ? 12.5 : 2.5), `${upgrade.id} level ${level}`);
     }
   }
-  assert.equal(totalUpgradeCost(100, 3), 100 + 165 + 272);
+  assert.equal(totalUpgradeCost(100, 3), 100 + 165 + 270);
 });
 
 test("the first steps are a swim or two away, the top levels want expeditions", () => {
@@ -181,4 +182,16 @@ test("the backpack: 10 × 10 slots, up to 100 finds of one kind in each, and no 
   const almost = full.slice(1);
   assert.equal(bagHasRoom(almost, "can"), true);
   assert.equal(bagHasRoom(almost, "shell"), false);
+});
+
+test("every price and value is a round sum: a multiple of 5 gold", async () => {
+  const { UPGRADES, upgradePrice, DECOR, findValue, roundGold } = await import("../../src/simulator/economy/EconomyMath");
+  for (const upgrade of UPGRADES) for (let level = 0; level < upgrade.max; level += 1) assert.equal(upgradePrice(upgrade.base, level) % 5, 0);
+  for (const item of DECOR) assert.equal(item.price % 5, 0);
+  for (const kind of ["shell", "can", "anchor", "amphora", "statuette", "chest"] as const) {
+    for (let r = 0; r <= 1; r += 0.05) assert.equal(findValue(kind, r) % 5, 0, `${kind} ${r}`);
+  }
+  assert.equal(roundGold(24), 25);
+  assert.equal(roundGold(11), 10);
+  assert.equal(roundGold(1723), 1725);
 });

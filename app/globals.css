@@ -2667,13 +2667,35 @@ input[type="range"]:disabled {
   .minimap { --minimap-size: 80px; }
 }
 
-.chart-overlay {
+.chart-backdrop {
   position: fixed;
   z-index: 70;
   inset: 0;
+  background: rgba(2, 12, 18, 0.5);
+  animation: pause-in 180ms ease-out;
+}
+
+.chart-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
   background: #082231;
   color: var(--text);
   animation: chart-in 220ms ease-out;
+}
+
+/* A big screen with a mouse: the chart is a framed sheet, the world dimmed round it (a click there closes it). */
+@media (min-width: 760px) and (pointer: fine) {
+  .chart-overlay {
+    inset: max(26px, 4vh) max(26px, 4.5vw);
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    box-shadow: 0 30px 90px rgba(0, 8, 14, 0.6);
+    --edge-top: 16px;
+    --edge-bottom: 16px;
+    --edge-left: 16px;
+    --edge-right: 16px;
+  }
 }
 
 @keyframes chart-in {

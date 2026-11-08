@@ -62,6 +62,7 @@ import { ExploredSea, Track } from "./map/ChartMath";
 import { poiInCell, poisAround, POI_CELL, type PlaceKind, type Poi } from "./effects/PoiMath";
 import type { LootKind } from "./effects/LootMath";
 import { nearestHullClearance } from "./ships/ShipMath";
+import { WalkerShadow } from "./diver/WalkerShadow";
 import { DiverController, type DiverPrompt } from "./diver/DiverController";
 import { DeckField } from "./diver/DeckField";
 import type { DiverMode } from "./diver/DiverMath";
@@ -302,6 +303,11 @@ export class Simulator {
   private engineJolt = 0;
   /** Where the world is centred for the fine sea and the islands: the yacht, or the skipper away from her. */
   private readonly worldFocus = new THREE.Vector3();
+  private readonly shadowFocus = new THREE.Vector3();
+  /** The player set the time of day himself (otherwise it runs by itself). */
+  private autoTimeChosen = false;
+  /** The skipper's shadow ashore (an invisible figure that casts one). */
+  private walkerShadow: WalkerShadow | null = null;
   private updateWorldFocus(): THREE.Vector3 {
     const camera = this.camera.camera.position;
     if (this.diver?.active && this.diver.mode !== "leap") this.worldFocus.set(camera.x, 0, camera.z);
@@ -653,6 +659,14 @@ export class Simulator {
         count: traderModels.length,
         create: (index) => this.assets.animated(traderModels[index]!)?.scene ?? null,
       });
+      const shadowModel = this.assets.animated("traderMan");
+      if (shadowModel) {
+        try {
+          this.walkerShadow = new WalkerShadow(this.scene, shadowModel.scene);
+        } catch (error) {
+          console.warn("No shadow for the walker: the model has not the expected skeleton.", error);
+        }
+      }
       this.diver = new DiverController(
         this.canvas,
         {
@@ -785,6 +799,7 @@ export class Simulator {
   setLightingMode(mode: LightingMode): void {
     // Choosing day or night by hand takes the time of day off automatic.
     this.state.autoTime = false;
+    this.autoTimeChosen = true;
     this.environment?.setAutoCycle(false);
     this.state.lightingMode = mode;
     this.environment?.setMode(mode);
@@ -795,6 +810,7 @@ export class Simulator {
   /** Lets the time of day run through day, dusk, night and dawn by itself. */
   setAutoTime(enabled: boolean): void {
     this.state.autoTime = enabled;
+    this.autoTimeChosen = true;
     this.environment?.setAutoCycle(enabled);
     this.persistState();
     this.hud.emit(this.snapshot());
@@ -1718,6 +1734,7 @@ export class Simulator {
     this.input?.dispose();
     this.canvas.removeEventListener("click", this.onCanvasClick);
     this.diver?.dispose();
+    this.walkerShadow?.dispose();
     this.persistEconomy();
     this.seabedLoot?.dispose();
     this.traders?.dispose();
@@ -1831,6 +1848,7 @@ export class Simulator {
       helmReadable:
         this.state.cameraMode === "helm" ||
         this.camera.camera.position.distanceToSquared(this.vessel.worldPoint(this.vessel.helmEye, this.helmPoint)) < 64,
+      helmLive: this.state.cameraMode === "helm" && !diving,
     });
     if (diving) this.updateDiver(delta);
     const slam = this.vessel.consumeBoomSlam();
@@ -1887,10 +1905,17 @@ export class Simulator {
     else if (fireworkLight) this.environment.setFlare(fireworkLight.position, fireworkLight.brightness * FIREWORK_LIGHT, fireworkLight.rgb);
     else if (eruptionLight) this.environment.setFlare(eruptionLight.position, eruptionLight.brightness, ERUPTION_RGB);
     else this.environment.setFlare(null, 0, ERUPTION_RGB);
+    // The sun's shadows are drawn round whoever the player is: the yacht, or
+    // the skipper ashore (where the palms, the islanders and his own figure
+    // throw theirs), a wider patch on foot.
+    const afoot = this.diver?.active && this.diver.mode !== "leap";
+    if (afoot) this.shadowFocus.copy(this.camera.camera.position).setY(this.camera.camera.position.y - 1.2);
+    else this.shadowFocus.copy(this.physics.position);
+    this.environment.setShadowReach(afoot ? 26 : 17);
     this.environmentState = this.environment.update(
       delta,
       this.camera.camera,
-      this.physics.position,
+      this.shadowFocus,
       this.elapsed,
     );
     this.applyWeather();
@@ -2035,6 +2060,11 @@ export class Simulator {
     if (this.diver?.active) this.diver.requestPointer();
   }
 
+  /** A card over the skipper's view closed: the mouse looks round again (now, or at the next key or press). */
+  resumeDiverLook(): void {
+    if (this.diver?.active) this.diver.resumeLook();
+  }
+
   /** Lets the mouse go (a card or a panel over the view). */
   releaseDiverPointer(): void {
     this.diver?.releasePointer();
@@ -2078,6 +2108,12 @@ export class Simulator {
     if (diver.mode === "swim") this.islands.prepareWalls(diver.swim.x, diver.swim.z);
     else if (diver.mode === "land") this.islands.prepareWalls(diver.walk.x, diver.walk.z);
     diver.update(delta, this.vessel.root, this.physics.velocity, this.physics.heading, this.deckField, HelmStation.STAND_FEET);
+    // His own shadow on the sand as he walks.
+    if (this.walkerShadow) {
+      const walk = diver.walk;
+      const ashore = diver.active && diver.mode === "land";
+      this.walkerShadow.update(ashore, walk.x, walk.y, walk.z, diver.yaw, Math.hypot(walk.vx, walk.vz), !walk.grounded, delta);
+    }
     // A find within reach under the water; a trader on the beach.
     this.promptDetail = null;
     this.reachableFind = null;
@@ -2709,7 +2745,11 @@ export class Simulator {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<SimulatorState>;
       if (["day", "night"].includes(saved.lightingMode ?? "")) base.lightingMode = saved.lightingMode!;
       if (["chase", "helm", "orbit", "drone"].includes(saved.cameraMode ?? "")) base.cameraMode = saved.cameraMode!;
-      if (typeof saved.autoTime === "boolean") base.autoTime = saved.autoTime;
+      // Only a choice the player made himself is remembered (the old saves
+      // carried the former default, off, for everyone).
+      const timeChosen = (saved as { autoTimeChosen?: boolean }).autoTimeChosen === true;
+      if (timeChosen && typeof saved.autoTime === "boolean") base.autoTime = saved.autoTime;
+      this.autoTimeChosen = timeChosen;
       if (["auto", "manual"].includes(saved.weatherMode ?? "")) base.weatherMode = saved.weatherMode!;
       if (isWeatherKind(saved.weather)) base.weather = saved.weather;
       // Only a preset the player picked is remembered. The automatic fallback
@@ -2752,6 +2792,7 @@ export class Simulator {
       JSON.stringify({
         lightingMode: this.state.lightingMode,
         autoTime: this.state.autoTime,
+        autoTimeChosen: this.autoTimeChosen || undefined,
         weatherMode: this.state.weatherMode,
         weather: this.state.weather,
         cameraMode: this.state.cameraMode,

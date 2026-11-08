@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { islandEdgeNoise, islandsWithin, VOLCANO_DRAW_DISTANCE, VOLCANO_RIM, volcanoHeight, type IslandDefinition } from "../environment/IslandMath";
+import { islandEdgeNoise, islandsWithin, LAVA_FLOW_STEPS, LAVA_FLOWS, lavaFlowPoint, VOLCANO_DRAW_DISTANCE, VOLCANO_RIM, volcanoHeight, type IslandDefinition } from "../environment/IslandMath";
 import { LitPuffs } from "./LitPuffs";
 import { EmberStreaks } from "./EmberStreaks";
 import type { EnvironmentPalette } from "../environment/EnvironmentPalette";
@@ -49,7 +49,6 @@ const MAX_VOLCANOES = 1;
 /** Plumes are kept to the distance at which the cones themselves are drawn (`VOLCANO_DRAW_DISTANCE`). */
 const VOLCANO_RANGE = VOLCANO_DRAW_DISTANCE;
 const PLUME_PUFFS = 80;
-const FLOWS = 3;
 
 export type VolcanoEvent = {
   /** Where the crater is. */
@@ -784,19 +783,16 @@ export class VolcanoSystem {
     const uvs: number[] = [];
     const along: number[] = [];
     const indices: number[] = [];
-    const steps = 36;
-    for (let flow = 0; flow < FLOWS; flow += 1) {
-      const start = island.seed * 0.7 + flow * 2.1 + (flow === 2 ? 0.6 : 0);
-      const reach = 0.36 + ((island.seed * (flow + 3)) % 7) * 0.025;
-      const width = 5 + flow * 1.5;
+    const steps = LAVA_FLOW_STEPS;
+    for (let flow = 0; flow < LAVA_FLOWS; flow += 1) {
       let travelled = 0;
       let previousX = 0;
       let previousZ = 0;
       const base = positions.length / 3;
       for (let step = 0; step <= steps; step += 1) {
         const t = step / steps;
-        const radial = VOLCANO_RIM + 0.005 + t * reach;
-        const angle = start + Math.sin(t * 5 + flow) * 0.07 + t * 0.05;
+        // The same course the walker is kept off (IslandMath).
+        const { angle, radial, half } = lavaFlowPoint(island, flow, t);
         // (The terrain's rings are scaled by the coastline's own wobble.)
         const radius = island.beachRadius * radial * islandEdgeNoise(angle, island);
         const cx = Math.cos(angle) * radius;
@@ -808,7 +804,6 @@ export class VolcanoSystem {
         const acrossX = -Math.sin(angle);
         const acrossZ = Math.cos(angle) * island.scaleZ;
         const length = Math.hypot(acrossX, acrossZ) || 1;
-        const half = width * (0.6 + 0.4 * Math.sin(t * Math.PI)) * 0.5;
         for (const side of [-1, 1]) {
           const px = cx + (acrossX / length) * half * side;
           const pz = cz + (acrossZ / length) * half * side;

@@ -165,6 +165,6 @@ export function lootContents(item: LootItem, unlocked: readonly SailColor[]): Lo
     if (locked.length > 0 && roll < 0.36) return { kind: "bottle", sailColor: pick(locked, (roll / 0.36 + item.seed) % 1) };
     return { kind: "bottle", message: pick(BOTTLE_MESSAGES, item.seed) };
   }
-  if (item.kind === "crate") return { kind: "crate", cargo: pick(CRATE_CARGO, item.seed), coins: 5 + Math.floor(roll * 36) };
+  if (item.kind === "crate") return { kind: "crate", cargo: pick(CRATE_CARGO, item.seed), coins: 5 + 5 * Math.min(7, Math.floor(roll * 8)) };
   return { kind: "flamingo" };
 }

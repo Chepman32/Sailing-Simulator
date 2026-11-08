@@ -21,6 +21,7 @@ import {
   islandsAround,
   MAX_EDGE_NOISE,
   islandsWithin,
+  onLavaFlow,
   selectIslandSlots,
   shoreClearance,
   terrainNoise,
@@ -750,6 +751,8 @@ export class IslandSystem {
           // is the crater's inner wall, too steep to climb back out of.
           if (r / (island.beachRadius * islandEdgeNoise(angle, island)) < VOLCANO_RIM * 1.005) return true;
         }
+        // Nor onto the lava tongues creeping down the flanks.
+        if (r < island.beachRadius * 0.7 * MAX_EDGE_NOISE && onLavaFlow(island, x, z)) return true;
       }
       const walls = visual.walls;
       if (!walls) continue;

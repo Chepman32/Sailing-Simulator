@@ -25,12 +25,12 @@ export type FootSurface = "sand" | "wetSand" | "grass" | "wood" | "rock" | "deck
 
 /** The recorded footsteps of each surface (see `SampleBank`). */
 const FOOT_SAMPLES: Record<FootSurface, SampleGroup> = {
-  sand: "sand",
-  wetSand: "wet",
-  grass: "grass",
-  wood: "wood",
-  rock: "rock",
-  deck: "deck",
+  sand: "ground",
+  wetSand: "ground",
+  grass: "ground",
+  wood: "woodStep",
+  rock: "ground",
+  deck: "woodStep",
 };
 
 type Envelope = { attack: number; decay: number; peak: number };
@@ -248,32 +248,30 @@ export class BodySounds {
     const group = FOOT_SAMPLES[surface];
     if (!samples.has(group)) return false;
     const rate = running ? 1.07 : 1;
+    // The recording of the step itself, a little differently on each ground:
+    // soft and dull in sand, brighter on rock, damped on grass.
     switch (surface) {
       case "sand":
-        samples.play("sand", { gain: 0.42 * force, rate });
-        this.burst(this.grains, "bandpass", 3200 + Math.random() * 900, 0.8, { attack: 0.01, decay: 0.08, peak: 0.05 * force }, roll);
+        samples.play("ground", { gain: 0.5 * force, rate: rate * 0.94, lowpass: 5200 });
+        samples.play("sand", { gain: 0.1 * force, rate, delay: roll * 0.3 });
         break;
       case "wetSand":
-        samples.play("wet", { gain: 0.55 * force, rate });
-        if (samples.has("sand")) samples.play("sand", { gain: 0.12 * force, rate: rate * 0.85, lowpass: 2200 });
+        samples.play("ground", { gain: 0.42 * force, rate: rate * 0.9, lowpass: 3600 });
+        samples.play("wet", { gain: 0.32 * force, rate });
         break;
       case "grass":
-        samples.play("grass", { gain: 0.38 * force, rate, length: 0.45 });
+        samples.play("ground", { gain: 0.42 * force, rate: rate * 1.02, lowpass: 4200 });
+        this.burst(this.grains, "bandpass", 2600 + Math.random() * 900, 0.6, { attack: 0.02, decay: 0.12, peak: 0.03 * force }, roll * 0.5);
         break;
-      case "wood": {
-        // Bare feet on planks over the water: a padded knock, the hollow under it.
-        samples.play("wood", { gain: 0.32 * force, rate, highpass: 90 });
-        if (samples.has("plank")) samples.play("plank", { gain: 0.3 * force, rate, delay: roll * 0.5 });
-        this.tone(118 + Math.random() * 25, 82, 0.05 * force, 0.004, 0.12);
-        if (Math.random() < 0.14) this.creak(roll);
-        break;
-      }
       case "rock":
-        samples.play("rock", { gain: 0.36 * force, rate });
-        this.burst(this.gravel, "bandpass", 3200 + Math.random() * 1200, 0.7, { attack: 0.008, decay: 0.11, peak: 0.08 * force }, roll * 0.5);
+        samples.play("ground", { gain: 0.5 * force, rate: rate * 1.08, highpass: 140 });
+        break;
+      case "wood":
+        samples.play("woodStep", { gain: 0.55 * force, rate });
+        if (Math.random() < 0.1) this.creak(roll);
         break;
       case "deck":
-        samples.play("deck", { gain: 0.3 * force, rate, lowpass: 3800 });
+        samples.play("woodStep", { gain: 0.38 * force, rate: rate * 1.05, lowpass: 3000 });
         break;
     }
     return true;
@@ -362,11 +360,7 @@ export class BodySounds {
   /** A shin pushed through shallow water (one step); `depth` of the water, m. */
   wade(depth: number, running: boolean): void {
     const force = (running ? 1.5 : 1) * Math.min(1.4, 0.5 + depth * 1.6) * (0.85 + Math.random() * 0.3);
-    if (this.samples.play("wade", { gain: 0.42 * force, rate: running ? 1.12 : 1, length: running ? 0.9 : 1.4 })) {
-      if (depth < 0.25 && this.samples.has("wet")) this.samples.play("wet", { gain: 0.25, lowpass: 2500 });
-      this.drops(Math.round(2 + force * 2), 0.3, 0.012 * force, 0.15);
-      return;
-    }
+    if (this.samples.play("waterStep", { gain: 0.5 * force, rate: running ? 1.1 : 1, length: running ? 0.8 : 1.2 })) return;
     // The slosh: water shoved aside and closing again behind the leg.
     this.burst(this.white, "bandpass", 700 + Math.random() * 300, 0.9, { attack: 0.04, decay: 0.24, peak: 0.1 * force }, 0, this.output, 420);
     this.burst(this.brown, "lowpass", 380, 0.8, { attack: 0.05, decay: 0.3, peak: 0.12 * force });
@@ -379,13 +373,11 @@ export class BodySounds {
   /** One arm stroke of the crawl at the surface (sprinting: harder, with the churn of the kick). */
   stroke(sprint: boolean): void {
     const force = (sprint ? 1.5 : 1) * (0.85 + Math.random() * 0.3);
+    if (this.samples.play("swimStroke", { gain: 0.6 * force, rate: sprint ? 1.08 : 1, length: sprint ? 0.85 : 1.05 })) return;
     if (this.samples.has("stroke")) {
-      // The hand going in, then the pull and the arm coming out: two takes,
-      // the second softer and lower; sprinting, the churn of the kick too.
       this.samples.play("stroke", { gain: 0.5 * force, rate: sprint ? 1.08 : 1 });
       this.samples.play("stroke", { gain: 0.22 * force, rate: 0.78, delay: 0.24 + Math.random() * 0.06, lowpass: 2400 });
       this.drops(sprint ? 6 : 3, 0.4, 0.014 * force, 0.36);
-      if (sprint) this.samples.play("stroke", { gain: 0.18, rate: 0.7, delay: 0.12, lowpass: 900 });
       return;
     }
     // The hand going in: a short, bright plunge.

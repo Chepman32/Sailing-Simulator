@@ -21,6 +21,8 @@ const HEIGHT = 530;
 const CHART_W = 600;
 /** Seconds between redraws while someone can read it. */
 const INTERVAL = 0.25;
+/** Redraw rate while read from the wheel, so the heading-up chart turns and slides smoothly. */
+const LIVE_INTERVAL = 1 / 30;
 /** Where the archipelago lies on the globe: the position readout's origin (a Caribbean latitude). */
 const ORIGIN_LAT = 12.42;
 const ORIGIN_LON = -61.28;
@@ -138,12 +140,12 @@ export class WideMonitor {
     this.contacts = contacts;
   }
 
-  update(delta: number, data: MonitorData, readable: boolean): void {
+  update(delta: number, data: MonitorData, readable: boolean, live = false): void {
     if (!this.features.wide) return;
     this.sweep += delta;
     this.screen.emissiveIntensity = THREE.MathUtils.lerp(1.05, 0.42, Math.min(1, Math.max(0, data.night)));
     this.clock += delta;
-    if (!readable || this.clock < INTERVAL) return;
+    if (!readable || this.clock < (live ? LIVE_INTERVAL : INTERVAL)) return;
     this.clock = 0;
     this.range = Math.round(chartRange(data.speed, this.range / this.features.rangeScale) * this.features.rangeScale);
     this.draw(data);

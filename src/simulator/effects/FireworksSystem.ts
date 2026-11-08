@@ -24,7 +24,7 @@ import {
 export type FireworksSource = { x: number; y: number; z: number; heading: number; halfLength: number };
 
 /** Most stars and sparks in the air at once (one instanced draw). */
-const CAPACITY = 9000;
+const CAPACITY = 16000;
 /** Farther than this the liner's show is not fired (nobody would see it). */
 const SHOW_RANGE = 3200;
 /** Bursts remembered for the light they throw (the newest few dominate). */
@@ -47,10 +47,11 @@ const vertexShader = /* glsl */ `
     // direction of its own: it is drawn upright on the screen.
     vec3 axis = length > 1.0e-3 ? along / length : vec3(0.0, 1.0, 0.0);
     vec3 across = normalize(cross(axis, normalize(head.xyz + tail.xyz)));
-    // Negative width: a round glow (the flash), not a streak.
-    float roundGlow = aColor.w < 0.0 ? 1.0 : 0.0;
+    // Negative width: a round glow (the flash), not a streak; below −1000
+    // the soft, wide glow of lit smoke (width −w − 1000).
+    float roundGlow = aColor.w < -999.0 ? 2.0 : aColor.w < 0.0 ? 1.0 : 0.0;
     // A spark keeps about two pixels at any range.
-    float width = max(abs(aColor.w), -head.z * 0.0021);
+    float width = max(roundGlow > 1.5 ? -aColor.w - 1000.0 : abs(aColor.w), -head.z * 0.0021);
     vec3 point;
     if (roundGlow > 0.5) {
       vec3 up = normalize(cross(across, normalize(head.xyz)));
@@ -75,7 +76,11 @@ const fragmentShader = /* glsl */ `
   #include <fog_pars_fragment>
   void main() {
     vec3 color;
-    if (vRound > 0.5) {
+    if (vRound > 1.5) {
+      // Smoke lit from inside: soft all through, no core.
+      float r = length(vUv - 0.5) * 2.0;
+      color = vColor * exp(-r * r * 3.2) * (1.0 - smoothstep(0.75, 1.0, r));
+    } else if (vRound > 0.5) {
       // The flash: a white-hot core in a soft halo.
       float r = length(vUv - 0.5) * 2.0;
       float halo = exp(-r * r * 5.0) * (1.0 - smoothstep(0.85, 1.0, r));
@@ -238,7 +243,8 @@ export class FireworksSystem {
           const along = slot * 2 * cue.spread * source.halfLength + between(random, -0.04, 0.04) * source.halfLength;
           const x = source.x + Math.sin(source.heading) * along;
           const z = source.z + Math.cos(source.heading) * along;
-          this.rockets.push(launchRocket(random, x, source.y, z, finale, cue));
+          // A shaped shell faces the onlookers.
+          this.rockets.push(launchRocket(random, x, source.y, z, finale, cue, index, Math.atan2(x - viewer.x, z - viewer.z)));
         }
         this.untilLaunch += nextLaunchGap(random, this.showLeft) * (cue.count > 1 ? 1.6 : 1);
       }
@@ -288,8 +294,8 @@ export class FireworksSystem {
   private remember(rocket: Rocket): void {
     const peak = Math.max(rocket.color[0], rocket.color[1], rocket.color[2]) || 1;
     // Most shells light the night in their colour; gold ones in gold.
-    const gold = rocket.shell === "willow" || rocket.shell === "kamuro" || rocket.shell === "palm" || rocket.shell === "chrysanthemum";
-    const crackle = rocket.shell === "crackle" || rocket.shell === "strobe";
+    const gold = rocket.shell === "willow" || rocket.shell === "kamuro" || rocket.shell === "palm" || rocket.shell === "cluster";
+    const crackle = rocket.shell === "crackle" || rocket.shell === "rainbow";
     const glow: BurstGlow = {
       x: rocket.x,
       y: rocket.y,
@@ -298,7 +304,7 @@ export class FireworksSystem {
       r: gold ? 1 : crackle ? 1 : 0.35 + 0.65 * (rocket.color[0] / peak),
       g: gold ? 0.62 : crackle ? 0.97 : 0.35 + 0.65 * (rocket.color[1] / peak),
       b: gold ? 0.22 : crackle ? 0.92 : 0.35 + 0.65 * (rocket.color[2] / peak),
-      size: rocket.size,
+      size: rocket.size * (rocket.shell === "dahlia" || rocket.shell === "heart" ? 0.7 : 1),
     };
     this.glows.push(glow);
     if (this.glows.length > LIGHT_MEMORY) this.glows.shift();
@@ -361,12 +367,17 @@ export class FireworksSystem {
       this.tail.setXYZ(count, star.x - star.vx * trail, star.y - star.vy * trail, star.z - star.vz * trail);
       const t = star.age / star.life;
       const later = star.later;
-      const mix = later ? Math.min(1, t * 2.2) : 0;
+      const mix = later ? Math.min(1, Math.max(0, (t - star.turn) / 0.35)) : 0;
       const r = later ? star.color[0] + (later[0] - star.color[0]) * mix : star.color[0];
       const g = later ? star.color[1] + (later[1] - star.color[1]) * mix : star.color[1];
       const b = later ? star.color[2] + (later[2] - star.color[2]) * mix : star.color[2];
       // The flash swells as it fades; a star thins as it burns down.
-      const size = star.twinkle === "flash" ? -star.size * (0.6 + 0.6 * t) : star.size * (1 - 0.35 * t);
+      const size =
+        star.twinkle === "flash"
+          ? -star.size * (0.6 + 0.6 * t)
+          : star.twinkle === "haze"
+            ? -1000 - star.size * (0.7 + 0.6 * Math.sqrt(t))
+            : star.size * (1 - 0.35 * t);
       this.color.setXYZW(count, r * brightness, g * brightness, b * brightness, size);
       count += 1;
     }

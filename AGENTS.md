@@ -1300,3 +1300,18 @@ When uncertain, prefer a smaller coherent system change with an invariant and te
 - Lava lake: mostly crust (ropy grey-black) with orange cracks and lanes, colours kept under the bloom's blow-out; the lake's outer rings sag under the crater floor. Smoke puffs thin away round the eye (`LitPuffs`, `vNear`).
 - Banner tow: 24–32 m up, 45–90 m off, 26–29 m/s, banner 58 × 9.5 m.
 - Reef: staghorn as welded, tapering, branching limbs (no flat facets), corallite relief in the shader (`UnderwaterWorld.corallites`), saturated colony colours over brown bases, bigger colonies. A diver's view loses the reds with depth (the light came down the whole depth). The pod and the sharks are brought to the edge of a swimmer's sight (22 and ~30 m) when he goes in.
+
+## Round notes (shadows ashore, look kept, round prices, favicon, recorded steps, lava, fireworks)
+
+- Shadows ashore: the sun's shadow camera follows the walker (`shadowFocus`: the camera when afoot, the yacht otherwise; `EnvironmentSystem.setShadowReach`, 26 m ashore, 17 m aboard), so palms, islanders and crabs cast shadows round him. The walker himself is seen from his eyes and never drawn; his shadow is `WalkerShadow`, the rigged man (invisible: no colour, no depth) walking with him (IK stride, arm swing, bob).
+- Mouse look after the chart or the pause menu: a click that closes either (outside the sheet, or a button) takes the mouse back at once; an Esc can not (the browser does not count it as a gesture), so the first key or press after it does (`DiverController.resumeLook`, `retakeLook`). The chart and the pause menu close on a click outside them; on a desktop the full chart is a framed sheet over a dimmed backdrop.
+- No photo (cinematic) mode afoot or swimming: only from the helm.
+- Prices: every upgrade price, decor price and find value is a multiple of 5 gold (25 past a thousand, `roundGold`), on the same 1.65× curve.
+- Favicon and app icons from the user's picture (`public/favicon.ico`, `favicon-16/32.png`, `icon-192/512.png`, `icon-maskable-512.png`, `apple-touch-icon.png`); the service worker's cache is `v1-icon2`.
+- Dolphins and sharks keep 6 m off the waterline (`MARINE_SHORE_KEEP`: the depth they see near the beach is squeezed to nothing).
+- Steps, wading and swimming use the user's recordings (`step-ground-*`, `step-wood-*`, `step-water-*`, `swim-stroke-*`), varied per surface by pitch, filter and layered sand.
+- Time of day: automatic by default, starting in the day; a saved choice is kept only once the player has made one (`autoTimeChosen`).
+- Helm displays: read from the wheel they are redrawn at 30 Hz (`LIVE_INTERVAL`), not every 0.18–0.25 s, so the heading-up chart and the readouts no longer jump in steps under way.
+- Lava: a walker is kept off the lava tongues as off the crater (`onLavaFlow`, the same course `VolcanoSystem` drapes its ribbons on: `lavaFlowPoint`).
+- Fireworks: thirteen colours chosen in harmonies (`harmony`: hues at least three steps apart), shells in two and three colours (peonies that change colour or burst in halves, willows with coloured tips, coloured palms and strobes, double rings, pistils in a third colour), new shells (rainbow, dahlia, cluster of blooming bomblets, a heart turned to the onlookers), volleys with a colour per rocket, denser shells (`CAPACITY` 16000), and each burst's smoke lit in its colours (`haze`).
+- Crabs on the seabed are bigger (0.45–0.95 m across); the traders' models were re-simplified from the originals at about 110k triangles with their own normals.

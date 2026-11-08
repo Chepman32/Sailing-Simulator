@@ -172,7 +172,9 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
       state.follow = true;
       if (afoot) {
         if (state.afoot === false) yachtMpp.current = state.mpp;
-        state.mpp = Math.max(MIN_MPP, AFOOT_SPAN / Math.max(1, Math.min(window.innerWidth, window.innerHeight)));
+        const sheet = fullRef.current?.getBoundingClientRect();
+        const across = sheet && sheet.width > 0 ? Math.min(sheet.width, sheet.height) : Math.min(window.innerWidth, window.innerHeight);
+        state.mpp = Math.max(MIN_MPP, AFOOT_SPAN / Math.max(1, across));
       } else if (state.afoot === true) {
         state.mpp = yachtMpp.current;
       }
@@ -328,6 +330,14 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
         </button>
       )}
       {open && (
+        // A press on the dimmed world round the chart closes it (on a big
+        // screen the chart is a framed sheet over the view).
+        <div
+          className="chart-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) onClose();
+          }}
+        >
         <div className="chart-overlay" role="dialog" aria-modal="true" aria-label={messages.chart}>
           <canvas ref={fullRef} className="chart-canvas" />
           <header className="chart-header">
@@ -427,6 +437,7 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
             </div>
           </footer>
           <p className="chart-hint">{messages.chartHint}</p>
+        </div>
         </div>
       )}
     </>

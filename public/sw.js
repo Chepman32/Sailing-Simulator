@@ -11,13 +11,13 @@
  * Bump VERSION when this file's caching rules change; old caches are dropped
  * on activation.
  */
-const VERSION = "v1";
+const VERSION = "v1-icon2";
 const SHELL = `shell-${VERSION}`;
 const ASSETS = `assets-${VERSION}`;
 const STATIC = `static-${VERSION}`;
 const KEEP = new Set([SHELL, ASSETS, STATIC]);
 
-const PRECACHE = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png", "/favicon.svg"];
+const PRECACHE = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png", "/favicon.ico", "/favicon-32.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

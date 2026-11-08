@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { distanceFromWaterline, islandsInCell, isVolcanoCell, shoreClearance, VOLCANO_FOOT, VOLCANO_RIM, volcanoHeight } from "../../src/simulator/environment/IslandMath";
+import { distanceFromWaterline, islandEdgeNoise, islandsInCell, isVolcanoCell, lavaFlowPoint, LAVA_FLOWS, onLavaFlow, shoreClearance, VOLCANO_FOOT, VOLCANO_RIM, volcanoHeight } from "../../src/simulator/environment/IslandMath";
 import {
   LOOT_RANGE,
   LOOT_SHORE_CLEARANCE,
@@ -170,4 +170,28 @@ test("the radio's music: a shanty and jigs that fit their bars, and four station
   for (const station of RADIO_STATIONS) {
     for (const url of station.streams) assert.ok(url.startsWith("https://"), "secure streams only");
   }
+});
+
+test("the lava tongues down a volcano's flank are no path: the walker is kept off them", () => {
+  const volcano = islandsInCell(1, 0).find((island) => island.volcano)!;
+  for (let flow = 0; flow < LAVA_FLOWS; flow += 1) {
+    for (const t of [0.05, 0.5, 0.95]) {
+      const { angle, radial, half } = lavaFlowPoint(volcano, flow, t);
+      const radius = volcano.beachRadius * radial * islandEdgeNoise(angle, volcano);
+      const x = volcano.centerX + Math.cos(angle) * radius;
+      const z = volcano.centerZ + Math.sin(angle) * radius * volcano.scaleZ;
+      assert.ok(onLavaFlow(volcano, x, z), `flow ${flow} at ${t}`);
+      // Two metres past its edge, across the slope, is bare rock again.
+      const acrossX = -Math.sin(angle);
+      const acrossZ = Math.cos(angle) * volcano.scaleZ;
+      const length = Math.hypot(acrossX, acrossZ);
+      const off = half + 2;
+      const clear = [-1, 1].some((side) => !onLavaFlow(volcano, x + (acrossX / length) * off * side, z + (acrossZ / length) * off * side));
+      assert.ok(clear, `beside flow ${flow} at ${t}`);
+    }
+  }
+  // The beach is never lava, and an ordinary island has none.
+  assert.equal(onLavaFlow(volcano, volcano.centerX + volcano.beachRadius * 0.98, volcano.centerZ), false);
+  const plain = islandsInCell(0, 0).find((island) => !island.volcano)!;
+  assert.equal(onLavaFlow(plain, plain.centerX, plain.centerZ), false);
 });

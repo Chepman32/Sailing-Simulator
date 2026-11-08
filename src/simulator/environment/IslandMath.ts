@@ -452,3 +452,74 @@ export function shoreClearance(x: number, z: number, normal: { x: number; z: num
   normal.z = gz / length;
   return value / length;
 }
+
+/** Lava tongues down a volcano's flank, and the points along each one's course. */
+export const LAVA_FLOWS = 3;
+export const LAVA_FLOW_STEPS = 36;
+
+/**
+ * Where lava tongue `flow` runs at `t` (0 at the rim … 1 at its snout):
+ * the angle round the island, the radial fraction of the coast's radius
+ * and the half width (m). `VolcanoSystem` drapes its ribbons on this
+ * course, and the walker is kept off it.
+ */
+export function lavaFlowPoint(island: Pick<IslandDefinition, "seed">, flow: number, t: number): { angle: number; radial: number; half: number } {
+  const start = island.seed * 0.7 + flow * 2.1 + (flow === 2 ? 0.6 : 0);
+  const reach = 0.36 + ((island.seed * (flow + 3)) % 7) * 0.025;
+  const width = 5 + flow * 1.5;
+  return {
+    angle: start + Math.sin(t * 5 + flow) * 0.07 + t * 0.05,
+    radial: VOLCANO_RIM + 0.005 + t * reach,
+    half: width * (0.6 + 0.4 * Math.sin(t * Math.PI)) * 0.5,
+  };
+}
+
+/** Each volcano's flow centre lines (x, z from the island's centre, half width), made once. */
+const flowCourses = new Map<number, Float32Array>();
+
+function lavaCourses(island: IslandDefinition): Float32Array {
+  let course = flowCourses.get(island.id);
+  if (!course) {
+    course = new Float32Array(LAVA_FLOWS * (LAVA_FLOW_STEPS + 1) * 3);
+    let index = 0;
+    for (let flow = 0; flow < LAVA_FLOWS; flow += 1) {
+      for (let step = 0; step <= LAVA_FLOW_STEPS; step += 1) {
+        const point = lavaFlowPoint(island, flow, step / LAVA_FLOW_STEPS);
+        const radius = island.beachRadius * point.radial * islandEdgeNoise(point.angle, island);
+        course[index++] = Math.cos(point.angle) * radius;
+        course[index++] = Math.sin(point.angle) * radius * island.scaleZ;
+        course[index++] = point.half;
+      }
+    }
+    if (flowCourses.size > 64) flowCourses.clear();
+    flowCourses.set(island.id, course);
+  }
+  return course;
+}
+
+/** Whether (x, z) is on (or within `margin` m of) one of a volcano's lava tongues. */
+export function onLavaFlow(island: IslandDefinition, x: number, z: number, margin = 0.5): boolean {
+  if (!island.volcano) return false;
+  const px = x - island.centerX;
+  const pz = z - island.centerZ;
+  const course = lavaCourses(island);
+  const perFlow = (LAVA_FLOW_STEPS + 1) * 3;
+  for (let flow = 0; flow < LAVA_FLOWS; flow += 1) {
+    for (let step = 0; step < LAVA_FLOW_STEPS; step += 1) {
+      const a = flow * perFlow + step * 3;
+      const ax = course[a]!;
+      const az = course[a + 1]!;
+      const bx = course[a + 3]!;
+      const bz = course[a + 4]!;
+      const dx = bx - ax;
+      const dz = bz - az;
+      const length = dx * dx + dz * dz || 1;
+      const u = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / length));
+      const half = course[a + 2]! + (course[a + 5]! - course[a + 2]!) * u + margin;
+      const ex = px - ax - dx * u;
+      const ez = pz - az - dz * u;
+      if (ex * ex + ez * ez < half * half) return true;
+    }
+  }
+  return false;
+}

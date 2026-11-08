@@ -44,7 +44,9 @@ export function createSimulatorState(): SimulatorState {
     controls: { throttle: 0, rudder: 0, sailTrim: 0.68 },
     cameraMode: "chase",
     lightingMode: "day",
-    autoTime: false,
+    // The time of day runs by itself unless the player picks day or night
+    // (a first visit starts in the morning of that cycle).
+    autoTime: true,
     weatherMode: "auto",
     weather: "clear",
     quality: "high",
@@ -87,7 +89,7 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
   sailTrim: 0.68,
   cameraMode: "chase",
   lightingMode: "day",
-  autoTime: false,
+  autoTime: true,
   weatherMode: "auto",
   weather: "clear",
   weatherNow: "clear",

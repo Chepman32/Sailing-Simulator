@@ -153,6 +153,7 @@ export class DiverController {
   ) {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
+    window.addEventListener("pointerdown", this.onAnyPress);
     window.addEventListener("blur", this.onBlur);
     document.addEventListener("pointerlockchange", this.onLockChange);
     document.addEventListener("mousemove", this.onMouseMove);
@@ -161,6 +162,7 @@ export class DiverController {
   dispose(): void {
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("pointerdown", this.onAnyPress);
     window.removeEventListener("blur", this.onBlur);
     document.removeEventListener("pointerlockchange", this.onLockChange);
     document.removeEventListener("mousemove", this.onMouseMove);
@@ -285,10 +287,39 @@ export class DiverController {
   }
 
   releasePointer(): void {
+    this.wantLook = false;
     if (document.pointerLockElement === this.canvas) {
       this.releasing = true;
       document.exitPointerLock();
     }
+  }
+
+  /**
+   * A card over the view closed: the mouse is his eyes again. Taken at once
+   * when the browser allows it (the closing click or key was a gesture);
+   * otherwise (closed with Esc, which the browser does not count) at the
+   * very next key or press, without a click on the view first.
+   */
+  resumeLook(): void {
+    if (!this.active || matchMedia("(pointer: coarse)").matches) return;
+    this.wantLook = true;
+    this.requestPointer();
+  }
+
+  /** Waiting to take the mouse back at the next gesture (see `resumeLook`). */
+  private wantLook = false;
+
+  private readonly onAnyPress = (event: PointerEvent): void => {
+    if (event.pointerType !== "mouse") return;
+    // A press on a control (a button of the interface) is its own; a press
+    // on the view or anywhere else takes the look back.
+    const target = event.target as Element | null;
+    if (target?.closest?.("button, a, input, select, textarea, [role='dialog']")) return;
+    this.retakeLook();
+  };
+
+  private retakeLook(): void {
+    if (this.wantLook && !this.pointerLocked && this.active && !this.frozen) this.requestPointer();
   }
 
   /** The lock is being let go on purpose (a card opened), not by the browser. */
@@ -311,6 +342,7 @@ export class DiverController {
   private readonly onLockChange = (): void => {
     const was = this.pointerLocked;
     this.pointerLocked = document.pointerLockElement === this.canvas;
+    if (this.pointerLocked) this.wantLook = false;
     if (was && !this.pointerLocked && !this.releasing && this.active && !this.frozen) this.hooks.pointerLost?.();
     if (!this.pointerLocked) this.releasing = false;
   };
@@ -348,6 +380,7 @@ export class DiverController {
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (!this.active || this.frozen || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.code !== "Escape") this.retakeLook();
     const action = this.actionOf(event.code);
     if (!action) return;
     const target = event.target;

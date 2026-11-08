@@ -64,6 +64,8 @@ const WIND: Region = { x: 640, y: 192, w: 384, h: 208 };
 const CARD: Region = { x: 0, y: 400, w: 256, h: 256 };
 /** Seconds between two redraws of the displays while they are read. */
 const DISPLAY_INTERVAL = 0.18;
+/** …and while the skipper stands at the wheel reading them: a heading-up chart redrawn in 0.18 s steps visibly jumps under way. */
+const LIVE_INTERVAL = 1 / 30;
 
 export type HelmTraffic = {
   readonly x: number;
@@ -91,6 +93,8 @@ export type HelmData = {
   night: number;
   /** Whether someone is close enough to read the displays (the helm camera, a close orbit). */
   readable: boolean;
+  /** Read from the wheel: redraw at a smooth rate. */
+  live?: boolean;
 };
 
 /** A box with rounded edges (moulded fibreglass and cushions). */
@@ -425,12 +429,12 @@ export class HelmStation {
     (this.card.material as THREE.MeshStandardMaterial).emissiveIntensity = night * 0.35;
 
     if (this.wide?.active) {
-      this.wide.update(delta, { x: data.x, z: data.z, heading: data.heading, speed: data.speed, depth: data.depth, night, sonarLevel: this.sonarLevel, sonarRange: this.sonarReach }, data.readable);
+      this.wide.update(delta, { x: data.x, z: data.z, heading: data.heading, speed: data.speed, depth: data.depth, night, sonarLevel: this.sonarLevel, sonarRange: this.sonarReach }, data.readable, data.live === true);
       return;
     }
     this.displayClock += delta;
     if (!data.readable || !this.context || !this.texture) return;
-    if (this.displayClock < DISPLAY_INTERVAL) return;
+    if (this.displayClock < (data.live ? LIVE_INTERVAL : DISPLAY_INTERVAL)) return;
     this.displayClock = 0;
     this.range = chartRange(data.speed, this.range);
     const nightPalette = night > 0.5 ? 1 : 0;

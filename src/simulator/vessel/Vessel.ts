@@ -46,6 +46,8 @@ export type VesselLighting = {
   /** For the helm displays: whether the engine runs, and whether anyone is close enough to read them. */
   engineRunning?: boolean;
   helmReadable?: boolean;
+  /** Read from the wheel itself: the moving chart is redrawn smoothly, not in steps. */
+  helmLive?: boolean;
 };
 
 type HullProfile = {
@@ -356,6 +358,7 @@ export class Vessel {
       rudder: controls.rudder,
       night: nightFactor,
       readable: lighting?.helmReadable ?? false,
+      live: lighting?.helmLive ?? false,
     });
     this.skipper?.update(time, delta, physics.roll, physics.pitch, physics.yawRate, physics.telemetry.forwardSpeed, telemetry.apparentWindSpeed);
     this.decor?.update(delta, physics);

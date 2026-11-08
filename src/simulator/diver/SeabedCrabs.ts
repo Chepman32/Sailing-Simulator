@@ -135,7 +135,9 @@ function proceduralKit(): CrabKit {
 
 /** How many crabs, how far round the eyes they live, how near they let someone come. */
 const SETTINGS: Record<CrabHabitat, { count: number; range: number; near: number; size: [number, number]; speed: [number, number]; shy: number }> = {
-  seabed: { count: 56, range: 22, near: 4, size: [0.16, 0.34], speed: [0.09, 0.2], shy: 1.6 },
+  // Seabed crabs are the big reef crabs (spider and king crabs a forearm to a
+  // metre across), seen from metres away through the water.
+  seabed: { count: 40, range: 24, near: 4, size: [0.45, 0.95], speed: [0.12, 0.26], shy: 2.2 },
   beach: { count: 34, range: 26, near: 5, size: [0.12, 0.2], speed: [0.25, 0.5], shy: 4.5 },
 };
 
@@ -191,7 +193,7 @@ export class SeabedCrabs {
         const mesh = new THREE.InstancedMesh(geometry, material, count);
         mesh.name = `Crabs_${habitat}_${kind}`;
         mesh.frustumCulled = false;
-        mesh.castShadow = habitat === "beach";
+        mesh.castShadow = true;
         mesh.receiveShadow = true;
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         mesh.count = 0;

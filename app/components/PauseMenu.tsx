@@ -102,7 +102,14 @@ export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, lan
   const title = page === "main" ? messages.paused : page === "graphics" ? messages.graphics : page === "keys" ? labels.controls : labels.language;
 
   return (
-    <div className="pause-backdrop" role="presentation">
+    <div
+      className="pause-backdrop"
+      role="presentation"
+      onClick={(event) => {
+        // A press outside the menu resumes (and, being a gesture, gives the mouse back at once).
+        if (event.target === event.currentTarget && !listening) onResume();
+      }}
+    >
       <section ref={cardRef} className="pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
         <header className="pause-head">
           {page !== "main" && (

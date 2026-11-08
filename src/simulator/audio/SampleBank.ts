@@ -10,29 +10,29 @@
  */
 
 export type SampleGroup =
+  | "ground"
+  | "woodStep"
+  | "waterStep"
+  | "swimStroke"
   | "sand"
   | "wet"
-  | "grass"
-  | "wood"
-  | "plank"
-  | "rock"
-  | "deck"
-  | "wade"
   | "stroke"
   | "plunge"
   | "bubble"
   | "bubblesRush";
 
+const range = (prefix: string, count: number) => Array.from({ length: count }, (_, index) => `${prefix}-${index + 1}`);
+
 /** Files of each group under `/audio/`. */
 export const SAMPLE_FILES: Readonly<Record<SampleGroup, readonly string[]>> = {
+  // The player's own recordings: steps on the ground, on wood, wading, swimming.
+  ground: range("step-ground", 10),
+  woodStep: range("step-wood", 8),
+  waterStep: range("step-water", 8),
+  swimStroke: range("swim-stroke", 8),
+  // Texture laid under them (dry grains, wet sand), and the water sounds of a dive.
   sand: ["foot-sand-1", "foot-sand-2", "foot-sand-3"],
   wet: ["foot-wet-1", "foot-wet-2", "foot-wet-3"],
-  grass: ["foot-grass-1", "foot-grass-2", "foot-grass-3", "foot-grass-4", "foot-grass-5"],
-  wood: ["foot-wood-1", "foot-wood-2", "foot-wood-3", "foot-wood-4", "foot-wood-5"],
-  plank: ["foot-plank-1", "foot-plank-3", "foot-plank-4"],
-  rock: ["foot-rock-1", "foot-rock-2", "foot-rock-3", "foot-rock-4", "foot-rock-5"],
-  deck: ["foot-deck-1", "foot-deck-2", "foot-deck-3", "foot-deck-4", "foot-deck-5"],
-  wade: ["wade-1", "wade-2", "wade-3"],
   stroke: ["stroke-1", "stroke-2", "stroke-3", "stroke-4", "stroke-5", "stroke-6", "stroke-7", "stroke-8"],
   plunge: ["plunge-1", "plunge-2", "plunge-3", "plunge-4"],
   bubble: ["bubble-1", "bubble-2", "bubble-3"],

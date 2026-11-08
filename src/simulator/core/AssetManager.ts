@@ -74,6 +74,7 @@ export class AssetManager {
       ASSET_ENTRIES.map(async ([key, definition]) => {
         try {
           const asset = await this.loader.loadAsync(definition.url);
+          if ((TRADER_MODEL_KEYS as readonly string[]).includes(key)) brightenFigure(asset.scene);
           this.assets.set(key, asset);
         } catch (error) {
           if (definition.required) {
@@ -159,6 +160,27 @@ export class AssetManager {
       ready,
     });
   }
+}
+
+/**
+ * The islanders' skin and clothes, as exported, read flat and grey in the
+ * scene's light: a matte surface lit only by the sun and a dim sky. They
+ * take a little more of the sky's light (and a soft sheen on skin) and a
+ * touch more colour, so a figure on the beach looks alive, not dusty.
+ */
+export function brightenFigure(root: THREE.Object3D): void {
+  root.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      if (!(material instanceof THREE.MeshStandardMaterial)) continue;
+      material.envMapIntensity = 1.6;
+      // The texture's roughness (about 0.8) times this: still matte, with a sheen.
+      material.roughness = Math.min(material.roughness, 0.82);
+      material.color.multiplyScalar(1.1);
+      material.needsUpdate = true;
+    }
+  });
 }
 
 /**
