@@ -78,9 +78,23 @@ export class Traders {
   private readonly local = new THREE.Vector3();
   private time = 0;
 
-  constructor(scene: THREE.Scene, private readonly models: TraderModels | null = null) {
+  constructor(scene: THREE.Scene, private models: TraderModels | null = null) {
     this.group.name = "Island_Traders";
     scene.add(this.group);
+  }
+
+  /**
+   * More models have arrived (they load after the first frame): the traders
+   * standing are let go and rebuilt from them on the next frame.
+   */
+  setModels(models: TraderModels): void {
+    this.models = models;
+    for (const trader of this.traders.values()) {
+      this.group.remove(trader.object);
+      trader.figure?.dispose();
+      trader.rig?.dispose();
+    }
+    this.traders.clear();
   }
 
   /** A rigged trader for this spot, or null if the models did not load. */

@@ -81,11 +81,11 @@ test("helm instruments: needles, revolutions, compass and lever", () => {
 test("the helm station stands on the aft deck, not over the water behind the transom", async () => {
   const { readFileSync } = await import("node:fs");
   const THREE = await import("three");
-  const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+  const { createGltfLoader } = await import("../../src/simulator/core/GltfLoading");
   const { HELM_EYE, HELM_SEAT_AFT_Z, HELM_X } = await import("../../src/simulator/vessel/HelmStation");
   const data = readFileSync(new URL("../../public/models/yacht-sailboat-pbr.glb", import.meta.url));
   const gltf = await new Promise<{ scene: import("three").Group }>((resolve, reject) =>
-    new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), "", resolve, reject),
+    createGltfLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), "", resolve, reject),
   );
   // The same placement as `Vessel`: bow to +Z, 9.4 m long, waterline offset.
   const model = gltf.scene;

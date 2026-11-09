@@ -1,5 +1,7 @@
 import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import type { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { assetUrl } from "../core/assetManifest";
+import { createGltfLoader } from "../core/GltfLoading";
 import { batchStaticMeshes } from "../core/StaticBatching";
 import { SHIP_SHADOW_LAYER } from "./ShipShadows";
 import { SHIP_SPECS, type ShipKind } from "./ShipMath";
@@ -48,29 +50,36 @@ export class ShipModels {
 
   private sources: Record<ShipKind, readonly ShipModelSource[]> = SHIP_MODELS;
 
-  /** Starts loading every listed model; resolves when all have settled. */
+  /**
+   * Loads every listed model, one at a time (the first model of each type,
+   * then the second ones…), so on a slow connection they queue behind each
+   * other instead of all crawling in at once, and every type of ship gets a
+   * real model as early as possible. Resolves when all have settled.
+   */
   async load(
-    loader: Pick<GLTFLoader, "loadAsync"> = new GLTFLoader(),
+    loader: Pick<GLTFLoader, "loadAsync"> = createGltfLoader(),
     sources: Record<ShipKind, readonly ShipModelSource[]> = SHIP_MODELS,
   ): Promise<void> {
     this.sources = sources;
-    const jobs: Promise<void>[] = [];
-    (Object.keys(sources) as ShipKind[]).forEach((kind) => {
-      sources[kind].forEach((source, variant) => {
-        jobs.push(
-          loader
-            .loadAsync(source.url)
-            .then((gltf) => {
-              if (this.disposed) return;
-              this.prototypes.set(`${kind}:${variant}`, this.prepare(gltf.scene, kind, source, variant));
-            })
-            .catch((error: unknown) => {
-              console.warn(`Ship model ${source.url} could not be loaded; the procedural ship is used.`, error);
-            }),
-        );
-      });
-    });
-    await Promise.all(jobs);
+    const queue: { kind: ShipKind; variant: number; source: ShipModelSource }[] = [];
+    const kinds = Object.keys(sources) as ShipKind[];
+    const most = Math.max(0, ...kinds.map((kind) => sources[kind].length));
+    for (let variant = 0; variant < most; variant += 1) {
+      for (const kind of kinds) {
+        const source = sources[kind][variant];
+        if (source) queue.push({ kind, variant, source });
+      }
+    }
+    for (const { kind, variant, source } of queue) {
+      if (this.disposed) return;
+      try {
+        const gltf = await loader.loadAsync(assetUrl(source.url));
+        if (this.disposed) return;
+        this.prototypes.set(`${kind}:${variant}`, this.prepare(gltf.scene, kind, source, variant));
+      } catch (error: unknown) {
+        console.warn(`Ship model ${source.url} could not be loaded; the procedural ship is used.`, error);
+      }
+    }
   }
 
   /** How many models a kind has listed (loaded or not). */

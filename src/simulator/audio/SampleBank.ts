@@ -9,6 +9,8 @@
  * twice in a row, a slightly different pitch and level.
  */
 
+import { assetUrl } from "../core/assetManifest";
+
 export type SampleGroup =
   | "ground"
   | "woodStep"
@@ -75,7 +77,7 @@ export class SampleBank {
       void Promise.all(
         SAMPLE_FILES[group].map(async (name) => {
           try {
-            const response = await fetch(`${this.base}${name}.mp3`);
+            const response = await fetch(assetUrl(`${this.base}${name}.mp3`));
             if (!response.ok) return null;
             return await this.context.decodeAudioData(await response.arrayBuffer());
           } catch {

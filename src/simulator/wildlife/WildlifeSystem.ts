@@ -1,5 +1,6 @@
 import { beginPatrol } from "./SharkBehavior";
 import * as THREE from "three";
+import { cachedField } from "../core/FieldCache";
 import type { AssetManager } from "../core/AssetManager";
 import { distanceFromWaterline, waterDepthAt } from "../environment/IslandMath";
 import type { OceanSystem } from "../environment/OceanSystem";
@@ -45,21 +46,24 @@ export const STORM_RETURN_BELOW = 0.45;
  */
 export const MARINE_SHORE_KEEP = 6;
 
-export function marineDepthAt(x: number, z: number): number {
+function marineDepthExact(x: number, z: number): number {
   const depth = waterDepthAt(x, z);
   if (depth > 14) return depth;
   const off = distanceFromWaterline(x, z);
   return off < MARINE_SHORE_KEEP ? Math.min(depth, Math.max(0, off) * 0.3) : depth;
 }
 
+/** {@link marineDepthExact} on a 1 m grid (`cachedField`): asked for hundreds of times a frame by the animals' shore avoidance. */
+export const marineDepthAt = cachedField(marineDepthExact, 1);
+
 export class WildlifeSystem {
   readonly group = new THREE.Group();
   private readonly marineGroup = new THREE.Group();
   private readonly dolphins: DolphinController;
-  private readonly sharks: SharkController[];
-  private readonly whales: WhaleController;
-  private readonly breach: WhaleBreachController;
-  private readonly fish: ReefFishController;
+  private sharks: SharkController[];
+  private whales: WhaleController;
+  private breach: WhaleBreachController;
+  private fish: ReefFishController;
   private readonly gulls: GullFlockController;
   private readonly predators: THREE.Vector3[] = [];
   private readonly vessel: VesselState = { x: 0, z: 0, heading: 0, speed: 0 };
@@ -71,13 +75,16 @@ export class WildlifeSystem {
   private stormAway = 0;
   private stormLeaving = false;
 
+  /** What the late animals are built with (`adoptLateAssets`). */
+  private readonly effects: WaterEffects;
+
   constructor(
     private readonly scene: THREE.Scene,
-    ocean: OceanSystem,
+    private readonly ocean: OceanSystem,
     assets: AssetManager,
-    counts: WildlifeCounts,
-    underwater: UnderwaterLight,
-    surfaceEffects: WaterEffects,
+    private readonly counts: WildlifeCounts,
+    private readonly underwaterLight: UnderwaterLight,
+    private readonly surfaceEffects: WaterEffects,
   ) {
     // Splashes, fin trails and blows stop as soon as the animals start to
     // leave: from then on they are going down, not breaking the surface.
@@ -96,6 +103,7 @@ export class WildlifeSystem {
         if (calm()) surfaceEffects.ripple(position, strength);
       },
     };
+    this.effects = effects;
     this.group.name = "External_GLTF_Wildlife_System";
     this.marineGroup.name = "Marine_Wildlife";
     this.group.add(this.marineGroup);
@@ -106,28 +114,19 @@ export class WildlifeSystem {
       seabedDepth: marineDepthAt,
       shoreDistance: distanceFromWaterline,
     };
+    this.dolphins = new DolphinController(this.marineGroup, ocean, this.world, assets, counts.dolphins, effects);
     this.whales = new WhaleController(this.marineGroup, ocean, this.world, assets, effects);
     this.sharks = Array.from({ length: Math.max(1, counts.sharks ?? 1) }, () => new SharkController(this.marineGroup, ocean, this.world, assets, effects));
-    this.dolphins = new DolphinController(this.marineGroup, ocean, this.world, assets, counts.dolphins, effects);
-    // Everything that swims is seen through water; the reef fish apply the
-    // same treatment to their own instanced material.
-    const treated = new Set<THREE.Material>();
-    this.marineGroup.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) return;
-      const materials = Array.isArray(object.material) ? object.material : [object.material];
-      materials.forEach((material) => {
-        if (treated.has(material)) return;
-        treated.add(material);
-        underwater.apply(material);
-      });
-    });
+    this.treat(this.marineGroup);
     // The distant breacher flies through the air, so it lives outside the
     // underwater group (it shows in the water's mirror); it is still seen
     // through the water whenever it is below the surface.
     // A leap already in the air when a storm comes still lands with its splash.
     this.breach = new WhaleBreachController(this.group, ocean, this.world, assets, surfaceEffects);
-    this.breach.materials.forEach((material) => underwater.apply(material));
-    this.fish = new ReefFishController(this.marineGroup, ocean, assets, underwater, counts.fishDensity);
+    this.breach.materials.forEach((material) => underwaterLight.apply(material));
+    // The reef fish apply the same treatment to their own instanced material.
+    this.fish = new ReefFishController(this.marineGroup, ocean, assets, underwaterLight, counts.fishDensity);
+    this.built = { whale: assets.has("whale"), shark: assets.has("shark"), fish: assets.has("fishSchool") };
     // Gulls rest head to wind; the trade wind's mean direction is enough for that.
     const windLength = Math.hypot(6.8, 4.2);
     this.gulls = new GullFlockController(
@@ -137,6 +136,52 @@ export class WildlifeSystem {
       { surfaceHeight: (x, z) => ocean.sample(x, z).height, windX: 6.8 / windLength, windZ: 4.2 / windLength },
       { splash: (position, intensity, kind, velocity) => surfaceEffects.splash(position, intensity, kind, velocity), ripple: (position, strength) => surfaceEffects.ripple(position, strength) },
     );
+  }
+
+  /** Everything that swims is seen through water (each material treated once). */
+  private readonly treated = new Set<THREE.Material>();
+
+  private treat(root: THREE.Object3D): void {
+    root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((material) => {
+        if (this.treated.has(material)) return;
+        this.treated.add(material);
+        this.underwaterLight.apply(material);
+      });
+    });
+  }
+
+  /** Which of the late animals were built with their model. */
+  private built: { whale: boolean; shark: boolean; fish: boolean };
+
+  /**
+   * The late models have arrived (they load after the first frame, see
+   * `AssetManager.loadLater`): the whale, the sharks, the distant breacher
+   * and the reef fish, built empty until then, are built again with them.
+   */
+  adoptLateAssets(assets: AssetManager): void {
+    const ocean = this.ocean;
+    if (!this.built.whale && assets.has("whale")) {
+      this.built.whale = true;
+      this.whales.dispose();
+      this.whales = new WhaleController(this.marineGroup, ocean, this.world, assets, this.effects);
+      this.breach.dispose();
+      this.breach = new WhaleBreachController(this.group, ocean, this.world, assets, this.surfaceEffects);
+      this.breach.materials.forEach((material) => this.underwaterLight.apply(material));
+    }
+    if (!this.built.shark && assets.has("shark")) {
+      this.built.shark = true;
+      for (const shark of this.sharks) shark.dispose();
+      this.sharks = Array.from({ length: Math.max(1, this.counts.sharks ?? 1) }, () => new SharkController(this.marineGroup, ocean, this.world, assets, this.effects));
+    }
+    if (!this.built.fish && assets.has("fishSchool")) {
+      this.built.fish = true;
+      this.fish.dispose();
+      this.fish = new ReefFishController(this.marineGroup, ocean, assets, this.underwaterLight, this.counts.fishDensity);
+    }
+    this.treat(this.marineGroup);
   }
 
   private readonly swimmerState = { depth: 0 };

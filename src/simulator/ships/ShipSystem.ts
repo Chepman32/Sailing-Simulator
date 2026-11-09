@@ -179,7 +179,7 @@ export class ShipSystem {
     shoreDistance: (x: number, z: number) => number,
     random: () => number = Math.random,
     /** Whether to fetch the imported ship models (about 20 MB; off on the low preset). */
-    loadModels = true,
+    private readonly loadModels = true,
     /** Extra shading for every ship material (the ships' own shadows). */
     private readonly decorate: (material: THREE.Material) => void = () => undefined,
   ) {
@@ -199,7 +199,6 @@ export class ShipSystem {
       applyShipHaze(material);
       this.decorate(material);
     });
-    if (loadModels) void this.models.load();
     const kinds = [...SHIP_KINDS].sort(() => this.random() - 0.5);
     for (let slot = 0; slot < MAX_SHIPS; slot += 1) {
       const ship = createShip(kinds[slot % kinds.length]!, this.random);
@@ -423,6 +422,19 @@ export class ShipSystem {
     this.geometries.clear();
     this.ships.forEach((ship) => (ship.active = false));
     writeShipUniforms(this.ships);
+  }
+
+  private modelsRequested = false;
+
+  /**
+   * Starts loading the imported ship models (once; not on the low preset).
+   * Called once the scene is running and the animals and islanders have
+   * arrived: until then the procedural ships stand in.
+   */
+  loadModelsInBackground(): Promise<void> {
+    if (!this.loadModels || this.modelsRequested) return Promise.resolve();
+    this.modelsRequested = true;
+    return this.models.load();
   }
 
   /** Every ship type, built before the first frame so nothing is built while sailing. */

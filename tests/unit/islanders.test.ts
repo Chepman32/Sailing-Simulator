@@ -93,6 +93,23 @@ test("a rigged trader's arms and legs reach where the poser puts them, elbows an
   assert.ok(figure.root.worldToLocal(world(figure, "LeftHand")).distanceTo(figure.restPoint.get("LeftHand")!) < 1e-6);
 });
 
+test("a dense crab model is simplified to a couple of thousand triangles, its size kept", async () => {
+  const { MeshoptSimplifier } = await import("meshoptimizer");
+  await MeshoptSimplifier.ready;
+  const model = new THREE.Group();
+  // 30 000 triangles of shell.
+  model.add(new THREE.Mesh(new THREE.SphereGeometry(0.2, 150, 100), new THREE.MeshStandardMaterial()));
+  const kit = crabKit(model, 0)!;
+  const triangles = kit.parts.reduce((sum, part) => sum + part.geometry.index!.count / 3, 0);
+  assert.ok(triangles <= 2600 && triangles > 500, `${triangles} triangles`);
+  const box = new THREE.Box3();
+  for (const part of kit.parts) {
+    part.geometry.computeBoundingBox();
+    box.union(part.geometry.boundingBox!);
+  }
+  assert.ok(Math.abs(box.max.x - box.min.x - 1) < 0.02, "still a metre across");
+});
+
 test("crab models are turned legs-sideways, set on the ground and scaled to a body a metre across", () => {
   const model = new THREE.Group();
   // A body long in x (its legs reach along z) and an eye on a separate mesh.

@@ -9,6 +9,7 @@ import { ShipShadows } from "./ships/ShipShadows";
 import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
 import { FlareCamera } from "./camera/FlareCamera";
 import { ScreenLod } from "./core/ScreenLod";
+import { cachedField } from "./core/FieldCache";
 
 import { GpuTimer } from "./core/GpuTimer";
 import { AUTO_GPU_TARGET_MS, FrameRateGovernor, GpuGovernor } from "./core/RenderBudget";
@@ -108,6 +109,17 @@ function setLinearRgb(target: THREE.Color, rgb: readonly number[]): void {
 /** How far aft of the yacht's centre her engines are, metres. */
 const ENGINE_ROOM_AFT = 3.6;
 
+/**
+ * People (`ScreenLod`): the full 110k-triangle figure only within about 4 m
+ * (close enough to look at a face); 40 % out to about 14 m (the skipper seen
+ * from the chase camera), 15 % beyond.
+ */
+const FIGURE_LOD_STEPS = [
+  { ratio: 0.4, below: 0.2 },
+  { ratio: 0.15, below: 0.06 },
+] as const;
+/** The walker's own shadow: a silhouette on the sand needs 12 % of the figure, always. */
+const SHADOW_FIGURE_LOD_STEPS = [{ ratio: 0.12, below: Number.POSITIVE_INFINITY }] as const;
 /** Ships keep half their triangles until small, a quarter only far off (see `ScreenLod`). */
 const SHIP_LOD_STEPS = [
   { ratio: 0.55, below: 0.06 },
@@ -236,7 +248,9 @@ export class Simulator {
     ground: (x, z) => this.groundWalk(x, z),
     allowed: (x, z) => {
       const shore = distanceFromWaterline(x, z);
-      return shore < -0.8 && shore > -8 && this.groundWalk(x, z) > 0.15 && this.islands.wallBlocked(x, z, this.groundWalk(x, z)) === false;
+      if (shore >= -0.8 || shore <= -8) return false;
+      const ground = this.groundWalk(x, z);
+      return ground > 0.15 && this.islands.wallBlocked(x, z, ground) === false;
     },
     seaward: (x, z, out) => {
       const here = distanceFromWaterline(x, z);
@@ -493,8 +507,10 @@ export class Simulator {
       await this.assets.load();
       this.ocean = new OceanSystem(this.scene, this.quality.settings);
       // The storm swell dies out over the island shelves, for the CPU sampler as for the GPU.
-      setShoalField(stormShoalAt);
-      setShoreCalmField(shoreCalmAt);
+      setShoalField(cachedField(stormShoalAt, 4));
+      // Both fixed fields of position, asked for by every wave sample: read
+      // from a lazily filled grid (`cachedField`) instead of walking the coasts.
+      setShoreCalmField(cachedField(shoreCalmAt, 1.5));
       this.environment = new EnvironmentSystem(this.scene, this.renderer, this.ocean);
       this.environment.setMode(this.state.lightingMode);
       this.environment.setAutoCycle(this.state.autoTime);
@@ -635,13 +651,7 @@ export class Simulator {
       });
       this.underwaterWorld = new UnderwaterWorld(this.scene, this.underwater, this.quality.settings.oceanDetail);
       this.diveFish = new DiveFish(this.scene, this.underwater);
-      // The crab models, turned legs-sideways and front-forward (the red crab
-      // is modelled that way; the blue one faces +x).
-      const redCrab = this.assets.animated("crabRed")?.scene;
-      const blueCrab = this.assets.animated("crabBlue")?.scene;
-      const crabKits = [redCrab ? crabKit(redCrab, 0) : null, blueCrab ? crabKit(blueCrab, -Math.PI / 2) : null];
-      this.crabs = new SeabedCrabs(this.scene, this.underwater, "seabed", crabKits);
-      this.beachCrabs = new SeabedCrabs(this.scene, this.underwater, "beach", [crabKits[0] ?? crabKits[1] ?? null]);
+      this.buildCrabs();
       this.seabedLoot = new SeabedLoot(
         this.scene,
         this.underwater,
@@ -653,12 +663,10 @@ export class Simulator {
         },
         this.takenFinds,
       );
-      // The traders are the rigged character models that loaded (the procedural figure if none did).
-      const traderModels = TRADER_MODEL_KEYS.filter((key) => this.assets.has(key));
-      this.traders = new Traders(this.scene, {
-        count: traderModels.length,
-        create: (index) => this.assets.animated(traderModels[index]!)?.scene ?? null,
-      });
+      this.traders = new Traders(this.scene, this.traderModels());
+      // Figures on a beach are lost in the blurred mirror; drawn there they
+      // cost as much as in the view.
+      this.mirrorHidden.push(this.traders.group);
       const shadowModel = this.assets.animated("traderMan");
       if (shadowModel) {
         try {
@@ -748,7 +756,9 @@ export class Simulator {
       this.loop.start();
       // The interface appears with the first frame actually on screen.
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        if (!this.disposed) this.reportLoading(SCENE_LOAD_STEPS, "Scene ready", true);
+        if (this.disposed) return;
+        this.reportLoading(SCENE_LOAD_STEPS, "Scene ready", true);
+        this.loadInBackground();
       }));
     } catch (error) {
       this.status = "error";
@@ -1869,6 +1879,14 @@ export class Simulator {
     this.lodScan -= delta;
     if (this.lodScan <= 0) {
       this.lodScan = 2;
+      // The skipper, the walker's shadow and the islanders first (110k
+      // skinned triangles each, and always near: their levels are built
+      // before any ship's), full only within a few metres; the walker's
+      // shadow always simple.
+      const skipper = this.vessel.skipperFigure;
+      if (skipper) this.lod.register(skipper, 3000, FIGURE_LOD_STEPS);
+      if (this.walkerShadow) this.lod.register(this.walkerShadow.object, 3000, SHADOW_FIGURE_LOD_STEPS);
+      if (this.traders) this.lod.register(this.traders.group, 3000, FIGURE_LOD_STEPS);
       this.lod.register(this.wildlife.group, 2500);
       // A ship is a long, flat-sided landmark: aggressive simplification turns
       // her into a lumpy toy at a kilometre, so her levels are gentler.
@@ -2333,6 +2351,50 @@ export class Simulator {
     } catch (error) {
       console.warn("Shader prewarm skipped; programs will compile on first use.", error);
     }
+  }
+
+  /** The crabs, from whichever crab models have loaded (procedural ones otherwise). */
+  private buildCrabs(): void {
+    // The crab models, turned legs-sideways and front-forward (the red crab
+    // is modelled that way; the blue one faces +x).
+    const redCrab = this.assets.animated("crabRed")?.scene;
+    const blueCrab = this.assets.animated("crabBlue")?.scene;
+    const crabKits = [redCrab ? crabKit(redCrab, 0) : null, blueCrab ? crabKit(blueCrab, -Math.PI / 2) : null];
+    this.crabs?.dispose();
+    this.beachCrabs?.dispose();
+    this.crabs = new SeabedCrabs(this.scene, this.underwater, "seabed", crabKits);
+    this.beachCrabs = new SeabedCrabs(this.scene, this.underwater, "beach", [crabKits[0] ?? crabKits[1] ?? null]);
+  }
+
+  /** The traders are the rigged character models that loaded (the procedural figure if none did). */
+  private traderModels(): { count: number; create: (index: number) => THREE.Object3D | null } {
+    const keys = TRADER_MODEL_KEYS.filter((key) => this.assets.has(key));
+    return { count: keys.length, create: (index) => this.assets.animated(keys[index]!)?.scene ?? null };
+  }
+
+  /**
+   * After the first frame: the models the start did without (sharks, the
+   * whale, crabs, the other islanders, reef fish), one after another, each
+   * joining the scene as it arrives; then the ships' models. On a slow
+   * line the game is playable long before all of it has come.
+   */
+  private loadInBackground(): void {
+    void this.assets
+      .loadLater((key) => {
+        if (this.disposed) return;
+        if (key === "shark" || key === "whale" || key === "fishSchool") this.wildlife.adoptLateAssets(this.assets);
+        else if (key === "crabRed" || key === "crabBlue") this.buildCrabs();
+        else if ((TRADER_MODEL_KEYS as readonly string[]).includes(key)) this.traders?.setModels(this.traderModels());
+        // Their materials compile now (against the target the scene is drawn
+        // into), not on the frame they first come into sight.
+        const previous = this.renderer.getRenderTarget();
+        this.renderer.setRenderTarget(this.post.sceneTarget);
+        void this.renderer.compileAsync(this.scene, this.camera.camera).catch(() => undefined);
+        this.renderer.setRenderTarget(previous);
+      })
+      .then(() => {
+        if (!this.disposed) return this.ships.loadModelsInBackground();
+      });
   }
 
   /** The loading bar beyond the downloads (`step` of `SCENE_LOAD_STEPS`). */

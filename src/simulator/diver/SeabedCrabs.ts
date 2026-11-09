@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
+import { MeshoptSimplifier } from "meshoptimizer";
 import type { UnderwaterLight } from "../environment/UnderwaterLight";
 import { patchMaterialShader } from "../core/ShaderPatch";
 
@@ -44,6 +45,10 @@ type Crab = {
   kind: number;
   /** A beach crab that has fled into the sea: hidden until it is put down again. */
   gone: boolean;
+  /** Where its ground was last judged, and whether it could stand there (see `standsHere`). */
+  okX: number;
+  okZ: number;
+  ok: boolean;
 };
 
 /** A deterministic generator (mulberry32). */
@@ -64,6 +69,52 @@ function random(seed: number): () => number {
  * x and the front faces +z, set on y = 0, scaled to a body 1 m across, and
  * merged per material.
  */
+/**
+ * Triangles a crab model is simplified to (all its parts together). A crab
+ * is a hand or a forearm across: the source's 6–17k triangles, times forty
+ * instances, times the view, its shadow and the mirror, came to over a
+ * million triangles a frame on a beach. A couple of thousand keep every leg
+ * and claw at the size a crab is ever seen.
+ */
+const CRAB_TRIANGLES = 2200;
+
+let simplifierReady = false;
+void MeshoptSimplifier.ready.then(
+  () => {
+    simplifierReady = MeshoptSimplifier.supported;
+  },
+  () => undefined,
+);
+
+/** A copy of `attribute` as plain floats (the packed models store normals as normalised shorts). */
+function floatAttribute(attribute: THREE.BufferAttribute | THREE.InterleavedBufferAttribute): THREE.BufferAttribute {
+  const size = attribute.itemSize;
+  const out = new Float32Array(attribute.count * size);
+  for (let index = 0; index < attribute.count; index += 1) {
+    for (let component = 0; component < size; component += 1) out[index * size + component] = attribute.getComponent(index, component);
+  }
+  return new THREE.BufferAttribute(out, size);
+}
+
+/** `geometry` with about `ratio` of its triangles (meshoptimizer; seams and UVs kept). */
+function simplifyCrab(geometry: THREE.BufferGeometry, ratio: number): void {
+  const index = geometry.index;
+  if (!index || ratio >= 0.95 || !simplifierReady) return;
+  const position = geometry.getAttribute("position");
+  const positions = new Float32Array(position.count * 3);
+  for (let vertex = 0; vertex < position.count; vertex += 1) {
+    positions[vertex * 3] = position.getX(vertex);
+    positions[vertex * 3 + 1] = position.getY(vertex);
+    positions[vertex * 3 + 2] = position.getZ(vertex);
+  }
+  const indices = Uint32Array.from(index.array as ArrayLike<number>);
+  const target = Math.max(3, Math.floor((indices.length * ratio) / 3) * 3);
+  // Permissive: the sources are split along every colour and UV seam (the red
+  // crab into separate triangles), which a strict simplifier may not touch.
+  const [simplified] = MeshoptSimplifier.simplify(indices, positions, 3, target, 0.05, ["Permissive"]);
+  geometry.setIndex(new THREE.BufferAttribute(simplified, 1));
+}
+
 export function crabKit(model: THREE.Object3D, turn: number): CrabKit | null {
   model.updateMatrixWorld(true);
   const rotate = new THREE.Matrix4().makeRotationY(turn);
@@ -72,10 +123,15 @@ export function crabKit(model: THREE.Object3D, turn: number): CrabKit | null {
     const mesh = object as THREE.Mesh;
     if (!mesh.isMesh || !mesh.geometry) return;
     const material = Array.isArray(mesh.material) ? mesh.material[0]! : mesh.material;
-    const geometry = (mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone()).applyMatrix4(mesh.matrixWorld).applyMatrix4(rotate);
-    for (const name of Object.keys(geometry.attributes)) {
-      if (name !== "position" && name !== "normal" && name !== "uv") geometry.deleteAttribute(name);
+    const source = mesh.geometry;
+    let geometry = new THREE.BufferGeometry();
+    for (const name of ["position", "normal", "uv"]) {
+      const attribute = source.getAttribute(name);
+      if (attribute) geometry.setAttribute(name, floatAttribute(attribute));
     }
+    if (source.index) geometry.setIndex(source.index.clone());
+    else geometry = mergeVertices(geometry);
+    geometry.applyMatrix4(mesh.matrixWorld).applyMatrix4(rotate);
     if (!geometry.getAttribute("normal")) geometry.computeVertexNormals();
     if (!geometry.getAttribute("uv")) geometry.setAttribute("uv", new THREE.Float32BufferAttribute(new Float32Array(geometry.getAttribute("position").count * 2), 2));
     const list = groups.get(material) ?? [];
@@ -84,6 +140,8 @@ export function crabKit(model: THREE.Object3D, turn: number): CrabKit | null {
   });
   if (groups.size === 0) return null;
   const merged = [...groups].map(([material, list]) => ({ material, geometry: mergeGeometries(list, false)! }));
+  const triangles = merged.reduce((sum, part) => sum + (part.geometry.index ? part.geometry.index.count / 3 : 0), 0);
+  for (const part of merged) simplifyCrab(part.geometry, CRAB_TRIANGLES / Math.max(1, triangles));
   const box = new THREE.Box3();
   for (const part of merged) {
     part.geometry.computeBoundingBox();
@@ -203,7 +261,7 @@ export class SeabedCrabs {
       this.meshes.push(list);
     });
     for (let index = 0; index < count; index += 1) {
-      this.crabs.push({ x: 0, z: 0, heading: 0, side: 1, speed: 0.12, timer: 0, walking: false, gait: 0, size: 1, alarm: 0, kind: 0, gone: true });
+      this.crabs.push({ x: 0, z: 0, heading: 0, side: 1, speed: 0.12, timer: 0, walking: false, gait: 0, size: 1, alarm: 0, kind: 0, gone: true, okX: Infinity, okZ: Infinity, ok: false });
     }
     this.group.name = `Crabs_${habitat}`;
     this.group.visible = false;
@@ -266,6 +324,21 @@ export class SeabedCrabs {
   }
 
   /**
+   * Whether a crab may stand where it is. The ground is judged again only
+   * once it has moved a hand's breadth (a beach crab's check walks the
+   * coast, the terrain and the walls: a few dozen crabs re-judging it every
+   * frame cost more than all the rest of their animation).
+   */
+  private standsHere(crab: Crab, world: CrabWorld): boolean {
+    if (Math.abs(crab.x - crab.okX) + Math.abs(crab.z - crab.okZ) > 0.12) {
+      crab.okX = crab.x;
+      crab.okZ = crab.z;
+      crab.ok = world.allowed(crab.x, crab.z);
+    }
+    return crab.ok;
+  }
+
+  /**
    * One frame. `active` while someone is there to see them (a diver under
    * the water, a walker on a beach); `eye` the camera; `heading` where the
    * eyes look (crabs are put down ahead).
@@ -290,8 +363,9 @@ export class SeabedCrabs {
       const dz = crab.z - eye.z;
       const distance = Math.hypot(dx, dz);
       // Left behind, fled into the sea, or on ground it cannot stand on: put down again ahead.
-      if (crab.gone || distance > range * 1.3 || !world.allowed(crab.x, crab.z)) {
-        if (!crab.gone && beach && !world.allowed(crab.x, crab.z) && distance < range) {
+      const allowed = this.standsHere(crab, world);
+      if (crab.gone || distance > range * 1.3 || !allowed) {
+        if (!crab.gone && beach && !allowed && distance < range) {
           crab.gone = true;
           crab.timer = 3 + this.random() * 6;
         }

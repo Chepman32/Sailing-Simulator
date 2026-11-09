@@ -3,6 +3,7 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { EMPTY_SNAPSHOT } from "@/src/simulator/state";
 import type { Simulator as SimulatorInstance } from "@/src/simulator/Simulator";
+import { prefetchStartModels } from "@/src/simulator/core/startAssets";
 import type { CameraMode, Discovery, FindEvent, LightingMode, LoadingState, QualityChoice } from "@/src/simulator/types";
 import { WEATHER_KINDS, type WeatherKind, type WeatherMode } from "@/src/simulator/environment/WeatherMath";
 import { SoundPrompt } from "./SoundPrompt";
@@ -292,6 +293,22 @@ function throttleLabel(value: number, messages: Messages): string {
   return messages.neutral;
 }
 
+
+/** The simulator's code (three.js and all), imported once. */
+let simulatorImport: Promise<typeof import("@/src/simulator/Simulator")> | null = null;
+function loadSimulatorModule(): Promise<typeof import("@/src/simulator/Simulator")> {
+  simulatorImport ??= import("@/src/simulator/Simulator");
+  return simulatorImport;
+}
+
+// In the browser, as soon as this script runs: the simulator's code and the
+// models the first frame needs start downloading together, before React has
+// even mounted the page (on the server, where three.js must not run, nothing).
+if (typeof window !== "undefined") {
+  prefetchStartModels();
+  void loadSimulatorModule().catch(() => undefined);
+}
+
 export function SailingSimulator() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const shellRef = useRef<HTMLElement | null>(null);
@@ -363,7 +380,7 @@ export function SailingSimulator() {
   const [radioVolume, setRadioVolume] = useState(0.7);
   const [panelTab, setPanelTab] = useState<"scene" | "yacht">("scene");
   const [confirmRestart, setConfirmRestart] = useState(false);
-  const { canInstall, install: installApp } = usePwaInstall();
+  const { canInstall, install: installApp } = usePwaInstall(loading.ready);
   // The controls card: open by itself on the first visit, and on H or the "?" button.
   const [controlsOpen, setControlsOpen] = useState(false);
   const [shopOpen, setShopOpen] = useState(false);
@@ -714,7 +731,7 @@ export function SailingSimulator() {
         // Three.js initializes a default LoadingManager at module evaluation
         // time. Import it only after the component mounts so the Cloudflare
         // server bundle never executes browser-only Three.js globals.
-        const simulatorModule = await import("@/src/simulator/Simulator");
+        const simulatorModule = await loadSimulatorModule();
         if (disposed) return;
         // Client-only facts, read once the page is in the browser.
         setCoarsePointer(window.matchMedia("(pointer: coarse)").matches);

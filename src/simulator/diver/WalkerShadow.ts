@@ -41,9 +41,34 @@ export class WalkerShadow {
       mesh.castShadow = true;
       mesh.receiveShadow = false;
       mesh.frustumCulled = false;
+      // Drawn into the sun's shadow map only. Writing nothing, the figure
+      // still cost its 110k skinned triangles in the view, the mirror and the
+      // GTAO pass; here every draw but the shadow's has an empty range. The
+      // geometry is its own shell over the shared buffers (the skipper and
+      // the islanders draw the same ones), so its range and its levels of
+      // detail (`ScreenLod`, a permanent 12 %) are its alone.
+      const own = new THREE.BufferGeometry();
+      const shared = mesh.geometry;
+      for (const [name, attribute] of Object.entries(shared.attributes)) own.setAttribute(name, attribute);
+      own.setIndex(shared.index);
+      for (const group of shared.groups) own.addGroup(group.start, group.count, group.materialIndex);
+      own.boundingSphere = shared.boundingSphere?.clone() ?? null;
+      own.boundingBox = shared.boundingBox?.clone() ?? null;
+      mesh.geometry = own;
+      mesh.onBeforeRender = (_renderer, _scene, _camera, geometry) => {
+        geometry.drawRange.count = 0;
+      };
+      mesh.onBeforeShadow = (_renderer, _object, _camera, _shadowCamera, geometry) => {
+        geometry.drawRange.count = Infinity;
+      };
     });
     this.rig.root.visible = false;
     scene.add(this.rig.root);
+  }
+
+  /** The figure (registered for a permanently simplified mesh: a shadow needs no detail). */
+  get object(): THREE.Object3D {
+    return this.rig.root;
   }
 
   /**

@@ -39,7 +39,40 @@ type Entry = {
   steps: readonly LodStep[];
   current: number;
   radius: number;
+  /** `radius` is already in metres of the world (a skinned mesh: see `skinnedWorldRadius`). */
+  worldRadius: boolean;
 };
+
+const skinnedPoint = new THREE.Vector3();
+const skinnedCentre = new THREE.Vector3();
+
+/**
+ * The radius in metres of a skinned mesh as it is drawn. Its geometry's own
+ * bounding sphere is in the space the bones bind it in, and the mesh's
+ * matrix may carry the armature's scale (0.01 for a rig in centimetres)
+ * that the bind matrices undo: radius × that scale made a 1.8 m figure 2 cm
+ * tall, always at its coarsest level. A few hundred vertices, posed by
+ * their bones, give the true size.
+ */
+function skinnedWorldRadius(mesh: THREE.SkinnedMesh): number | null {
+  const position = mesh.geometry.getAttribute("position");
+  if (!position || !mesh.skeleton) return null;
+  mesh.updateMatrixWorld(true);
+  mesh.skeleton.update();
+  const step = Math.max(1, Math.floor(position.count / 400));
+  const points: THREE.Vector3[] = [];
+  skinnedCentre.set(0, 0, 0);
+  for (let index = 0; index < position.count; index += step) {
+    mesh.getVertexPosition(index, skinnedPoint).applyMatrix4(mesh.matrixWorld);
+    points.push(skinnedPoint.clone());
+    skinnedCentre.add(skinnedPoint);
+  }
+  if (points.length === 0) return null;
+  skinnedCentre.divideScalar(points.length);
+  let radius = 0;
+  for (const point of points) radius = Math.max(radius, point.distanceTo(skinnedCentre));
+  return Number.isFinite(radius) && radius > 0 ? radius : null;
+}
 
 /**
  * Index of the level for `size` (radius / distance), given the level in use:
@@ -93,7 +126,16 @@ export class ScreenLod {
       const triangles = (geometry.index ? geometry.index.count : position.count) / 3;
       if (triangles < minTriangles) return;
       if (!geometry.boundingSphere) geometry.computeBoundingSphere();
-      const entry: Entry = { mesh: object, full: geometry, levels: null, steps, current: 0, radius: geometry.boundingSphere?.radius ?? 1 };
+      const skinned = object instanceof THREE.SkinnedMesh ? skinnedWorldRadius(object) : null;
+      const entry: Entry = {
+        mesh: object,
+        full: geometry,
+        levels: null,
+        steps,
+        current: 0,
+        radius: skinned ?? geometry.boundingSphere?.radius ?? 1,
+        worldRadius: skinned !== null,
+      };
       this.entries.push(entry);
       this.waiting.push(entry);
     });
@@ -119,7 +161,7 @@ export class ScreenLod {
       }
       if (!entry.levels) continue;
       this.centre.copy(entry.full.boundingSphere!.center).applyMatrix4(mesh.matrixWorld);
-      const radius = entry.radius * mesh.matrixWorld.getMaxScaleOnAxis();
+      const radius = entry.worldRadius ? entry.radius : entry.radius * mesh.matrixWorld.getMaxScaleOnAxis();
       const distance = Math.max(0.1, this.centre.distanceTo(camera.position));
       // Size relative to the half-height of the view.
       const size = (radius / distance) * focal * 0.5;

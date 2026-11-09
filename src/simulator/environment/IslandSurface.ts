@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { assetUrl } from "../core/assetManifest";
 import { injectAfter, injectBefore, patchMaterialShader } from "../core/ShaderPatch";
 import { ISLAND_SLOT_UNIFORMS, SURF_GLSL } from "./SurfMath";
 import { SKY_FUNCTIONS, SKY_UNIFORM_DECLARATIONS } from "./shaders/skyShader";
@@ -44,7 +45,7 @@ export type IslandSurfaceUniforms = {
   uGrassReady: THREE.IUniform<number>;
 };
 
-/** Mean linear colour of the turf photo (`public/textures/grass.jpg`). */
+/** Mean linear colour of the turf photo (`public/textures/grass.webp`). */
 const GRASS_PHOTO_MEAN = [0.1175, 0.174, 0.0569] as const;
 /** Size on the ground of one tile of the turf photo, metres (and of the second, rotated layer). */
 const GRASS_TILE = 0.72;
@@ -104,12 +105,12 @@ export function loadGrassTextures(surface: IslandSurfaceUniforms, anisotropy: nu
     loaded += 1;
     if (loaded === 2) surface.uGrassReady.value = 1;
   };
-  loader.load("/textures/grass.jpg", (texture) => {
+  loader.load(assetUrl("/textures/grass.webp"), (texture) => {
     setUp(texture, true);
     surface.uGrassMap.value = texture;
     done();
   }, undefined, () => console.warn("The turf texture could not be loaded; the procedural turf stays."));
-  loader.load("/textures/grass-normal.jpg", (texture) => {
+  loader.load(assetUrl("/textures/grass-normal.webp"), (texture) => {
     setUp(texture, false);
     surface.uGrassNormalMap.value = texture;
     done();

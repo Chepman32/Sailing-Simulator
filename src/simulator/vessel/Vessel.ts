@@ -243,6 +243,11 @@ export class Vessel {
     horn.copy(this.hornLocal).applyMatrix4(this.root.matrixWorld);
   }
 
+  /** The rigged skipper's figure, when he is the rigged model (for levels of detail). */
+  get skipperFigure(): THREE.Object3D | null {
+    return this.skipper instanceof RiggedSkipper ? this.skipper.object : null;
+  }
+
   /** The skipper is hidden from his own eyes (the helm camera). */
   setCrewVisible(visible: boolean): void {
     if (this.skipper) this.skipper.visible = visible;

@@ -81,6 +81,11 @@ export class RiggedSkipper {
     vesselRoot.add(this.rig.root);
   }
 
+  /** The figure itself (for the screen-size levels of detail). */
+  get object(): THREE.Object3D {
+    return this.rig.root;
+  }
+
   get visible(): boolean {
     return this.rig.root.visible;
   }

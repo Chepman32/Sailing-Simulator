@@ -308,7 +308,8 @@ export function stepSchool(
     const nextZ = fish.z + Math.cos(fish.heading) * horizontalSpeed * dt;
     // Hard limit: a fish never swims up onto the beach. A step into water too
     // shallow for it is not taken; the steering above is already turning it.
-    const nextWater = world.surfaceAt(nextX, nextZ) - world.bottomAt(nextX, nextZ);
+    // (The surface a few centimetres on is the surface here: one wave sample a fish, not two.)
+    const nextWater = surface - world.bottomAt(nextX, nextZ);
     if (nextWater >= FISH_MIN_WATER_DEPTH * 0.7 || nextWater >= surface - bottom) {
       fish.x = nextX;
       fish.z = nextZ;

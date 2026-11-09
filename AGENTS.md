@@ -274,7 +274,7 @@ When introducing a model, document its native axis, units, expected bounding dim
 `Simulator.init()` currently performs these stages in order:
 
 1. construct and apply `QualityManager`;
-2. load six local GLB definitions through `AssetManager` (the palms are procedural, `PalmModels`);
+2. load the start's GLB models through `AssetManager.load` (`stage: "start"`: the yacht, her skipper, the dolphins and the gulls; the palms are procedural, `PalmModels`), the loading bar following the bytes received (`assetBytes`); every other model (sharks, whale, crabs, the other islanders, reef fish) follows after the first frame, one at a time (`AssetManager.loadLater`), each joining the scene as it arrives (`WildlifeSystem.adoptLateAssets`, `Simulator.buildCrabs`, `Traders.setModels`), and then the ships' models, also one at a time (`ShipSystem.loadModelsInBackground`);
 3. create the GPU ocean;
 4. create the unified environment and current light mode;
 5. create islands and bathymetry;
@@ -866,6 +866,10 @@ Important implementation caveats:
 
 Performance measures in place (keep them when changing these systems):
 
+- loading: the first frame waits only for the yacht, her skipper, the dolphins and the gulls (about 2.7 MB of packed models, fetched from the moment the page's script runs, in parallel with the simulator's code: `startAssets.ts`); everything else follows after the first frame, one model at a time, then the ships one at a time. At 2 Mbit/s the start's downloads take about 21 s instead of 128 s. Every file is fetched by its content hash (`assetUrl`) and kept by the service worker for good (`versionedFirst`): a second visit downloads nothing (the old worker re-downloaded every model in the background on each visit). The worker is registered only once the scene runs, so installing it never competes with the start;
+- fixed fields of position read hundreds of times a frame (the depth the animals steer by, `marineDepthAt`; the beach's calming of the waves, `shoreCalmAt`; the storm's shoaling) are read from lazily filled grids (`core/FieldCache.ts`, bilinear): beside an island this took the simulation from about 14 to 4.4 ms a frame in a headless profile. A beach crab re-judges the ground it stands on only after moving (`SeabedCrabs.standsHere`);
+- the people (islanders and the skipper, 110k skinned triangles each) have screen-size levels (`FIGURE_LOD_STEPS`: full only within a few metres); the walker's shadow is drawn into the sun's shadow map only (an empty draw range elsewhere) at a permanent 12 %; the islanders are left out of the mirror; the crab models are simplified to about 2,200 triangles (`CRAB_TRIANGLES`; forty instances of the 6–17k-triangle sources cost over a million triangles a frame on a beach);
+
 - `ScreenLod` gives the heavy authored meshes (ships, shark, whale, gulls; registered every 2 s, so new ships join) simplified index buffers by screen size; in a typical view about a quarter of their triangles are drawn, with no visible change. The simplification runs in a web worker (`LodWorker`, `LodSimplify`), one source geometry at a time: on the main thread a ship model arriving in the background stalled the game for a long frame;
 - the shore guard's sweeps and the shore contact take one sample at the yacht first and skip the sweep when the nearest shore is far beyond its reach (a 1.3× margin on the first-order clearance), which on open water spares hundreds of coastline evaluations per physics step;
 - the HUD's snapshot reaches React as a transition (`startTransition`), so the interface re-renders in short slices that yield to the next animation frame;
@@ -887,14 +891,19 @@ Before increasing visual cost, measure the current bottleneck (`renderer.info.re
 
 The authoritative license text is `public/models/README.md`. Keep it synchronized with any asset replacement or modification.
 
-| Runtime key | File | Approx. bytes | Approx. geometry | Required | Runtime role |
+Every model is packed for the web by `scripts/pack-models.mjs` (meshopt-compressed geometry with the exponential, octahedral and quaternion filters, vertices in triangle order, redundant keyframes dropped, WebP textures; decoded by `MeshoptDecoder`, `core/GltfLoading.ts`): 50 MB of models became 17 MB with no visible change (positions to 1/65 000 of a model's size, normals to a fraction of a degree, checked vertex by vertex against the originals). A new model is run through it, then `node scripts/asset-manifest.mjs` (content hashes and sizes, `core/assetManifest.ts`; a unit test fails while it is stale). Every model, texture and sound is fetched as `path?v=<hash>` (`assetUrl`): cached for good by the browser, the CDN (`public/_headers`) and the service worker, never revalidated.
+
+| Runtime key | File | Approx. bytes | Approx. geometry | Stage | Runtime role |
 | --- | --- | ---: | ---: | --- | --- |
-| `yacht` | `yacht-sailboat-pbr.glb` | 2,770,696 | 162,913 triangles, 26 meshes | Yes | Primary PBR catamaran |
-| `dolphin` | `dolphin-animated.glb` | 171,552 | 3,728 triangles, rigged | Yes | Swim and breach pod |
-| `shark` | `shark-animated.glb` | 1,739,400 | 51,199 triangles, authored clips | No | Subsurface shark |
-| `whale` | `blue-whale-rigged-pbr-v2.glb` | 1,422,856 | 38,784 triangles, rigged PBR | No | Submerged blue whale tail slap |
-| `fishSchool` | `tropical-fish-school.glb` | 3,277,364 | 8,932 triangles, four species | No | Source of the four instanced reef-fish species |
-| `seagull` | `seagull-animated.glb` | 133,248 | 1,174 triangles, authored clips | No | Aerial flock |
+| `yacht` | `yacht-sailboat-pbr.glb` | 1,030,000 | 165,361 triangles, 26 meshes | start (required) | Primary PBR catamaran |
+| `dolphin` | `dolphin-animated.glb` | 60,000 | 3,728 triangles, rigged | start (required) | Swim and breach pod |
+| `seagull` | `seagull-animated.glb` | 110,000 | 1,174 triangles, authored clips | start | Aerial flock |
+| `traderMan` | `trader-man.glb` | 1,470,000 | 110,000 triangles, rigged | start | The skipper, an islander, the walker's shadow |
+| `shark` | `shark-animated.glb` | 820,000 | 51,199 triangles, authored clips | later | Subsurface shark |
+| `whale` | `blue-whale-rigged-pbr-v2.glb` | 830,000 | 38,784 triangles, rigged PBR | later | Submerged blue whale tail slap |
+| `crabRed`, `crabBlue` | `crab-red.glb`, `crab-blue.glb` | 180,000, 350,000 | 5,988 and 17,004 triangles | later | Seabed and beach crabs |
+| `traderWoman`, `traderPirate` | `trader-woman.glb`, `trader-pirate.glb` | 1,510,000, 2,110,000 | 110,000 triangles each, rigged | later | Islanders |
+| `fishSchool` | `tropical-fish-school.glb` | 1,450,000 | 8,932 triangles, four species | later | Source of the four instanced reef-fish species |
 
 Unused legacy files currently retained for provenance or possible comparison:
 
@@ -1277,7 +1286,7 @@ When uncertain, prefer a smaller coherent system change with an invariant and te
 - Crabs (`SeabedCrabs`, two habitats): the crab models (`crab-red.glb`, CC0 `crab-blue.glb`) turned legs-sideways/front +z by `crabKit`, instanced per material, legs stepping in the vertex shader (lateral vertices are legs; pair from position along the body; alternating sets). Seabed crabs round a diver (rear up when he comes close); beach crabs on the dry sand by the sea round a walker, dashing for the water when he comes within 4.5 m and vanishing into it.
 - Bushes are no longer in the solid furniture: leafy masses (`leafMass`: a shadowed core from the atlas's solid strip and dozens of leaf-clump cards with spherical normals, `leafSway` attribute for the breeze), walked through with a rustle (`IslandSystem.bushAt`). None on a volcano.
 - The crater's lip is rounded on both sides (`volcanoHeight`), and a walker may stand on the crest but not past it (`wallBlocked`, `VOLCANO_RIM * 1.005`). The lava lake is domain-warped convection: black glassy crust rafts, ridged-noise glowing cracks, incandescent lanes (blackbody ramp), a bright margin at the walls, gas bursts.
-- Turf: `public/textures/grass.jpg` (the user's photo, made seamless) and `grass-normal.jpg` (derived), two layers (0.72 m, and 0.97 m turned 36°) blended by noise, structure laid over the island's own greens (`uGrassMap`, `uGrassReady`); the blocky hashed blade cells are gone. Grass blades darker and greener to match.
+- Turf: `public/textures/grass.webp` (the user's photo, made seamless) and `grass-normal.webp` (derived), two layers (0.72 m, and 0.97 m turned 36°) blended by noise, structure laid over the island's own greens (`uGrassMap`, `uGrassReady`); the blocky hashed blade cells are gone. Grass blades darker and greener to match.
 - Footsteps by surface (`BodySounds`, `IslandSystem.groundKind`): dry sand, wet sand, grass, pier planks (hollow knock, creaks), rock (volcano, boulders), deck; wading sloshes; swimming strokes (hand entry, bubble "bloops", pull, falling drops; sprint harder with kick churn); fin kicks under water; leaves rustling in a bush.
 - Underwater: sunlight as a volume (`UnderwaterRaysPass`, half-resolution ray march through the water against the scene's depth, beams decided at the surface along the refracted sun, Henyey-Greenstein phase), replacing the billboard slabs whenever post-processing runs (depth textures are now always kept then). Brighter, bluer water; a diver's view of submerged things is less dimmed than the view from above; stronger caustics. Bigger, more colourful corals (`PALETTES`), coral heads (big reef rock crowned with colonies).
 - Wildlife round a swimmer (`VesselState.swimmer`): dolphins roam ~9 m off and take turns diving to his depth; sharks patrol 9–16 m off at about his depth.
@@ -1315,3 +1324,10 @@ When uncertain, prefer a smaller coherent system change with an invariant and te
 - Lava: a walker is kept off the lava tongues as off the crater (`onLavaFlow`, the same course `VolcanoSystem` drapes its ribbons on: `lavaFlowPoint`).
 - Fireworks: thirteen colours chosen in harmonies (`harmony`: hues at least three steps apart), shells in two and three colours (peonies that change colour or burst in halves, willows with coloured tips, coloured palms and strobes, double rings, pistils in a third colour), new shells (rainbow, dahlia, cluster of blooming bomblets, a heart turned to the onlookers), volleys with a colour per rocket, denser shells (`CAPACITY` 16000), and each burst's smoke lit in its colours (`haze`).
 - Crabs on the seabed are bigger (0.45–0.95 m across); the traders' models were re-simplified from the originals at about 110k triangles with their own normals.
+
+## Round notes (load time and frame rate)
+
+- Models packed (`scripts/pack-models.mjs`): 50 MB → 17 MB, verified vertex by vertex against the originals; textures WebP; icons palette PNGs (580 KB → 130 KB each).
+- Start split from the rest (`AssetManager` stages, `loadLater`, `adoptLateAssets`, `buildCrabs`, `Traders.setModels`, `ShipSystem.loadModelsInBackground`); the start's models prefetched with the page's script (`startAssets.ts`); the loading bar follows bytes.
+- Content-hashed URLs (`scripts/asset-manifest.mjs` → `core/assetManifest.ts`, `assetUrl`), `public/_headers` (a year, immutable), service worker `v2-packed` (cache-first for hashed files, streamed to the page while stored; registered once the scene runs).
+- Frame rate: `cachedField` grids for the animals' depth and the shore calm, crabs judge their ground only after moving, levels of detail for the people, the walker's shadow shadow-only and simple, islanders out of the mirror, crab models simplified.
