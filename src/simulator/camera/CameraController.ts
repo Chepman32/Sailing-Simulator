@@ -5,13 +5,10 @@ import type { CameraMode } from "../types";
 import { isUsablePose } from "../core/RenderHealth";
 import type { PhotoShot } from "./PhotoDirector";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
+import { HEAD_PITCH_SHARE, HEAD_ROLL_SHARE, headSwingRate, helmViewQuaternion, STEADY_PITCH_SHARE, STEADY_ROLL_SHARE } from "./HelmView";
 
 /** The helmsman's eyes: a point in the yacht's frame, carried exactly with her. */
 export type HelmFrame = { root: THREE.Object3D; eye: THREE.Vector3 };
-
-/** Share of the yacht's roll and pitch the helmsman's head goes with (the rest the neck takes out). */
-const HEAD_ROLL_SHARE = 0.3;
-const HEAD_PITCH_SHARE = 0.45;
 
 /**
  * Near plane: inside the helm station things are a hand's breadth from the
@@ -20,11 +17,6 @@ const HEAD_PITCH_SHARE = 0.45;
  * so a ship or an island kilometres off does not shimmer where surfaces meet.
  */
 const NEAR_PLANE_CLOSE = 0.08;
-/**
- * How quickly the helmsman's head follows the yacht's slow pitch and roll
- * (1/s): slower motion than this the neck takes out, quicker the head shares.
- */
-const HEAD_SWING_RATE = 1.6;
 const NEAR_PLANE_OUTSIDE = 0.35;
 
 export class CameraController {
@@ -172,22 +164,26 @@ export class CameraController {
       // own level against her roll and pitch, as a helmsman's does.
       this.camera.position.copy(helm.eye).applyMatrix4(helm.root.matrixWorld);
       // The head is braced against the boat: every quick movement of hers
-      // (slamming through chop at speed, the engines' shudder) it shares in
+      // (slamming through chop at speed, a gust heeling her) it shares in
       // full, so the wheel, the pod and the compass a hand's breadth away
       // stand still in the view. Only her slow swing over the swell is
       // taken out by the neck (in the steady view, nearly all of it), which
-      // keeps the horizon level. (Eyes held still while the deck shook under
-      // them made the whole station judder at speed.)
+      // keeps the horizon level; see `HelmView`.
       const steady = this.steadyHelm;
-      const swing = this.follow(HEAD_SWING_RATE, delta);
+      const swing = this.follow(headSwingRate(physics.telemetry.forwardSpeed), delta);
       const fresh = !Number.isFinite(this.headPitch) || this.snapNext;
       this.headPitch = fresh ? physics.pitch : this.headPitch + (physics.pitch - this.headPitch) * swing;
       this.headRoll = fresh ? physics.roll : this.headRoll + (physics.roll - this.headRoll) * swing;
-      const pitchShare = steady ? HEAD_PITCH_SHARE * 0.15 : HEAD_PITCH_SHARE;
-      const rollShare = steady ? HEAD_ROLL_SHARE * 0.1 : HEAD_ROLL_SHARE;
-      const headPitch = physics.pitch - (1 - pitchShare) * this.headPitch;
-      const headRoll = physics.roll - (1 - rollShare) * this.headRoll;
-      this.camera.rotation.set(-this.pitch - headPitch, physics.heading + this.yawOffset + Math.PI, headRoll, "YXZ");
+      helmViewQuaternion(
+        this.camera.quaternion,
+        helm.root.quaternion,
+        this.headPitch,
+        this.headRoll,
+        steady ? STEADY_PITCH_SHARE : HEAD_PITCH_SHARE,
+        steady ? STEADY_ROLL_SHARE : HEAD_ROLL_SHARE,
+        this.yawOffset,
+        this.pitch,
+      );
       this.camera.fov = damp(this.camera.fov, 66, 2.6, delta);
       this.camera.near = NEAR_PLANE_CLOSE;
       this.camera.updateProjectionMatrix();

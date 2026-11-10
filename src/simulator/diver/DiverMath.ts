@@ -420,6 +420,13 @@ export function createWalkState(x: number, y: number, z: number): WalkState {
   return { x, y, z, vx: 0, vy: 0, vz: 0, grounded: true, landed: 0, airTime: 0, jumped: false };
 }
 
+/**
+ * Water over the foot from which a step is a step in water (a film of it
+ * at the edge: the sound and the little splash grow with the depth), not a
+ * step on wet sand, m.
+ */
+export const WADE_STEP_DEPTH = 0.05;
+
 /** Water over the ground at (x, z), m (0 on dry land). */
 export function wadingDepth(x: number, z: number, world: GroundWorld): number {
   return Math.max(0, world.surface(x, z) - world.ground(x, z));

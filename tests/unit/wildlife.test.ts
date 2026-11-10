@@ -786,3 +786,67 @@ test("now and then the whale passes slowly right under a stopped yacht, deep eno
   assert.ok(closest < 8, `it comes right under her (${closest.toFixed(1)} m)`);
   assert.ok(shallowestUnder >= 4.5, `and clears her keels (${shallowestUnder.toFixed(1)} m down)`);
 });
+
+// --- Five metres off every beach -----------------------------------------------
+
+test("no part of a dolphin or a shark comes within 5 m of the waterline, even round a swimmer by the beach", async () => {
+  const shore = await import("../../src/simulator/wildlife/ShoreAvoidance");
+  const { DOLPHIN_LENGTH } = await import("../../src/simulator/wildlife/DolphinBehavior");
+  const { SHARK_LENGTH } = await import("../../src/simulator/wildlife/SharkBehavior");
+  assert.ok(shore.MARINE_MIN_SHORE >= 5);
+  /** The nearest the body (its centre line, nose to tail) is to the waterline. */
+  const bodyOff = (x: number, z: number, heading: number, length: number): number => {
+    let nearest = Infinity;
+    for (const along of [-0.5, -0.25, 0, 0.25, 0.5]) {
+      nearest = Math.min(nearest, distanceFromWaterline(x + Math.sin(heading) * along * length, z + Math.cos(heading) * along * length));
+    }
+    return nearest;
+  };
+  const island = START_ISLANDS[0];
+  for (const [seed, swimmer, offshore, speed] of [
+    [5, true, 3, 0],
+    [9, true, 7, 0.6],
+    [17, false, 8, 3.5],
+    [23, false, 6, 0],
+  ] as const) {
+    const random = seeded(seed);
+    const { clock, world: sea } = liveWorld();
+    // The sea as the animals see it in the game: squeezed to nothing near a beach.
+    const world: MarineWorld = { ...sea, seabedDepth: shore.marineDepthExact };
+    const vessel: VesselState = { x: 0, z: 0, heading: 0, speed, swimmer: swimmer ? { depth: 1 } : null };
+    skirtIsland(vessel, 0, offshore, speed);
+    const pod = createDolphinPod(4, vessel, world, random);
+    const shark = createSharkAgent(vessel, random);
+    for (const motion of [...pod.agents.map((agent) => agent.motion), shark.motion]) {
+      const dx = motion.x - island.centerX;
+      const dz = motion.z - island.centerZ;
+      const length = Math.hypot(dx, dz) || 1;
+      motion.x = island.centerX + (dx / length) * (island.beachRadius + 35);
+      motion.z = island.centerZ + (dz / length) * (island.beachRadius * island.scaleZ + 35);
+    }
+    const delta = 1 / 30;
+    let dolphinNearest = Infinity;
+    let sharkNearest = Infinity;
+    let fastest = 0;
+    const last = new Map<number, [number, number]>();
+    for (let step = 0; step < 30 * 60 * 5; step += 1) {
+      clock.time += delta;
+      skirtIsland(vessel, clock.time, offshore, speed);
+      stepDolphinPod(pod, world, vessel, [], delta, random);
+      stepShark(shark, world, vessel, [], delta, random);
+      // (The first seconds bring them in from where they were put.)
+      if (step < 60) continue;
+      for (const agent of pod.agents) {
+        dolphinNearest = Math.min(dolphinNearest, bodyOff(agent.motion.x, agent.motion.z, agent.motion.heading, DOLPHIN_LENGTH));
+        const before = last.get(agent.id);
+        if (before) fastest = Math.max(fastest, Math.hypot(agent.motion.x - before[0], agent.motion.z - before[1]) / delta);
+        last.set(agent.id, [agent.motion.x, agent.motion.z]);
+      }
+      sharkNearest = Math.min(sharkNearest, bodyOff(shark.motion.x, shark.motion.z, shark.motion.heading, SHARK_LENGTH));
+    }
+    assert.ok(dolphinNearest >= 5, `seed ${seed}: a dolphin came within ${dolphinNearest.toFixed(2)} m of the beach`);
+    assert.ok(sharkNearest >= 5, `seed ${seed}: the shark came within ${sharkNearest.toFixed(2)} m of the beach`);
+    // Held off the shore by steering, not thrown: nobody is moved faster than an animal swims.
+    assert.ok(fastest < 14, `seed ${seed}: a dolphin was moved at ${fastest.toFixed(1)} m/s`);
+  }
+});

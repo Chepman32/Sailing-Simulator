@@ -9,7 +9,7 @@ import {
   type Swimmer3D,
   type Swimmer3DLimits,
 } from "./SwimmerDynamics";
-import { confineToDeepWater, createShallowsSteering, DOLPHIN_SHORE, freeRun, steerClearOfShallows } from "./ShoreAvoidance";
+import { confineToDeepWater, createShallowsSteering, DOLPHIN_SHORE, freeRun, keepOffShore, MARINE_MIN_SHORE, steerClearOfShallows } from "./ShoreAvoidance";
 import type { MarineWorld, VesselState } from "./WaterContact";
 
 /**
@@ -512,6 +512,8 @@ function stepDolphin(
   // eased back out at swimming speed.
   if (agent.phase !== "leap" && agent.phase !== "airborne") {
     confineToDeepWater(world, motion, DOLPHIN_SHORE.minDepth * 0.8, HULL_ESCAPE_SPEED, dt);
+    // And never, nose to flukes, within five metres of the waterline.
+    keepOffShore(world, motion, MARINE_MIN_SHORE + DOLPHIN_LENGTH / 2);
   }
   // Keep off the sand, but never by lifting the body out of the sea.
   const floor = Math.min(

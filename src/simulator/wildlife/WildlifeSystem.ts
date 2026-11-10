@@ -2,7 +2,10 @@ import { beginPatrol } from "./SharkBehavior";
 import * as THREE from "three";
 import { cachedField } from "../core/FieldCache";
 import type { AssetManager } from "../core/AssetManager";
-import { distanceFromWaterline, waterDepthAt } from "../environment/IslandMath";
+import { distanceFromWaterline } from "../environment/IslandMath";
+import { marineDepthExact } from "./ShoreAvoidance";
+
+export { MARINE_SHORE_KEEP } from "./ShoreAvoidance";
 import type { OceanSystem } from "../environment/OceanSystem";
 import type { UnderwaterLight } from "../environment/UnderwaterLight";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
@@ -38,21 +41,6 @@ export const STORM_RETURN_BELOW = 0.45;
  * rendered wave surface, the bathymetry, the yacht and each other. Larger
  * animals are stepped first so smaller ones can keep clear of them.
  */
-/**
- * Dolphins and sharks keep well off a beach (at least `MARINE_SHORE_KEEP`
- * metres from the waterline, even where the bottom drops steeply): within
- * that band the water counts as shallow for them, so their shore avoidance
- * turns them away before they get there.
- */
-export const MARINE_SHORE_KEEP = 6;
-
-function marineDepthExact(x: number, z: number): number {
-  const depth = waterDepthAt(x, z);
-  if (depth > 14) return depth;
-  const off = distanceFromWaterline(x, z);
-  return off < MARINE_SHORE_KEEP ? Math.min(depth, Math.max(0, off) * 0.3) : depth;
-}
-
 /** {@link marineDepthExact} on a 1 m grid (`cachedField`): asked for hundreds of times a frame by the animals' shore avoidance. */
 export const marineDepthAt = cachedField(marineDepthExact, 1);
 

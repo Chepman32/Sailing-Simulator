@@ -17,7 +17,6 @@ export type SampleGroup =
   | "waterStep"
   | "swimStroke"
   | "sand"
-  | "wet"
   | "stroke"
   | "plunge"
   | "bubble"
@@ -32,9 +31,8 @@ export const SAMPLE_FILES: Readonly<Record<SampleGroup, readonly string[]>> = {
   woodStep: range("step-wood", 8),
   waterStep: range("step-water", 8),
   swimStroke: range("swim-stroke", 8),
-  // Texture laid under them (dry grains, wet sand), and the water sounds of a dive.
+  // Texture laid under them (dry grains), and the water sounds of a dive.
   sand: ["foot-sand-1", "foot-sand-2", "foot-sand-3"],
-  wet: ["foot-wet-1", "foot-wet-2", "foot-wet-3"],
   stroke: ["stroke-1", "stroke-2", "stroke-3", "stroke-4", "stroke-5", "stroke-6", "stroke-7", "stroke-8"],
   plunge: ["plunge-1", "plunge-2", "plunge-3", "plunge-4"],
   bubble: ["bubble-1", "bubble-2", "bubble-3"],

@@ -7,7 +7,7 @@ import {
   type Swimmer3D,
   type Swimmer3DLimits,
 } from "./SwimmerDynamics";
-import { confineToDeepWater, createShallowsSteering, SHARK_SHORE, steerClearOfShallows } from "./ShoreAvoidance";
+import { confineToDeepWater, createShallowsSteering, keepOffShore, MARINE_MIN_SHORE, SHARK_SHORE, steerClearOfShallows } from "./ShoreAvoidance";
 import type { MarineWorld, VesselState } from "./WaterContact";
 
 const shallows = createShallowsSteering();
@@ -501,6 +501,8 @@ export function stepShark(
   stepSwimmerAtDepth(motion, desiredHeading, targetY, desiredSpeed, dt, limits, startled ? STARTLED_DEPTH : CALM_DEPTH);
   // Hard limit: never onto the shelf or the beach, never by a jump.
   confineToDeepWater(world, motion, SHARK_SHORE.minDepth * 0.7, 2, dt);
+  // And never, snout to tail, within five metres of the waterline.
+  keepOffShore(world, motion, MARINE_MIN_SHORE + SHARK_LENGTH / 2);
   // Near the surface the body rides the swell; deep down it barely moves.
   agent.heave = world.orbitalHeight(motion.x, motion.z, Math.max(0, -motion.y));
   // The keels draw about 1.2 m and the fin stands a metre above the body:

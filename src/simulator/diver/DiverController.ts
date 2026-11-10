@@ -22,6 +22,7 @@ import {
   SURFACE_EYE,
   SWIM_START,
   WADE_START,
+  WADE_STEP_DEPTH,
   wadingDepth,
   WALK_SPEED,
   WALK_STRIDE,
@@ -82,6 +83,12 @@ export type LeapView = {
 /** Mouse and touch look sensitivity, radians per pixel. */
 const MOUSE_LOOK = 0.0022;
 const TOUCH_LOOK = 0.0048;
+
+/** Whether an event's target is a control of the interface (its own to handle), not the view. */
+function onControl(target: EventTarget | null): boolean {
+  const element = target as Element | null;
+  return Boolean(element?.closest?.("button, a, input, select, textarea, [role='dialog']"));
+}
 
 /**
  * The skipper in the first person: off the helm, on deck, in the water.
@@ -167,6 +174,7 @@ export class DiverController {
     document.removeEventListener("pointerlockchange", this.onLockChange);
     document.removeEventListener("mousemove", this.onMouseMove);
     this.releasePointer();
+    this.stopRetaking();
   }
 
   get active(): boolean {
@@ -180,6 +188,20 @@ export class DiverController {
   /** Control is the player's (not during the leap and the plunge that ends it). */
   get inControl(): boolean {
     return this.mode !== "leap" && !(this.mode === "swim" && this.leapTime > 0 && this.leapTime < LEAP_SECONDS);
+  }
+
+  /** His feet on the deck, in the world (`root` is the yacht), for the shadow he casts aboard. */
+  deckFeetWorld(root: THREE.Object3D, out: THREE.Vector3): THREE.Vector3 {
+    return out.copy(this.feet).applyMatrix4(root.matrixWorld);
+  }
+
+  /** How fast he walks the deck, m/s, and whether his feet are on it. */
+  get deckSpeed(): number {
+    return Math.hypot(this.deckVelocity.x, this.deckVelocity.z);
+  }
+
+  get onDeckFloor(): boolean {
+    return this.grounded;
   }
 
   /** Water round a wader's legs, m (0 on dry land or when not ashore). */
@@ -240,6 +262,7 @@ export class DiverController {
 
   private setMode(mode: DiverMode): void {
     this.mode = mode;
+    this.syncCursor();
     this.modeTime = 0;
     this.hooks.modeChanged(mode);
   }
@@ -288,6 +311,8 @@ export class DiverController {
 
   releasePointer(): void {
     this.wantLook = false;
+    this.stopRetaking();
+    this.syncCursor();
     if (document.pointerLockElement === this.canvas) {
       this.releasing = true;
       document.exitPointerLock();
@@ -295,26 +320,74 @@ export class DiverController {
   }
 
   /**
-   * A card over the view closed: the mouse is his eyes again. Taken at once
-   * when the browser allows it (the closing click or key was a gesture);
-   * otherwise (closed with Esc, which the browser does not count) at the
-   * very next key or press, without a click on the view first.
+   * A card over the view closed: the mouse is his eyes again, at once and
+   * without a click on the view.
+   *
+   * The browser hands the mouse over (pointer lock) only inside a gesture,
+   * and it does not count Esc as one; Safari wants the request in the very
+   * handler of the click or key. So three things together keep the look:
+   *
+   * 1. the lock is asked for here (the closing click or key, when this is
+   *    called from its handler, is the gesture);
+   * 2. until the browser grants it, the mouse turns his head anyway, from
+   *    its plain movement over the view (`onMouseMove`: no lock needed, the
+   *    pointer hidden), so closing a card with Esc leaves nothing to click;
+   * 3. the lock is asked for again at every key or press that is a gesture,
+   *    and on a short timer while the browser still counts a recent gesture
+   *    (`navigator.userActivation`), so the free look lasts a moment at most.
    */
   resumeLook(): void {
-    if (!this.active || matchMedia("(pointer: coarse)").matches) return;
+    if (!this.active || this.pointerLocked || matchMedia("(pointer: coarse)").matches) return;
     this.wantLook = true;
+    this.syncCursor();
     this.requestPointer();
+    this.startRetaking();
   }
 
   /** Waiting to take the mouse back at the next gesture (see `resumeLook`). */
   private wantLook = false;
+  private retakeTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Whether the mouse is turning his head: held by the browser (pointer
+   * lock), or moving freely over the view while the lock is being taken back.
+   */
+  get looksWithMouse(): boolean {
+    return this.pointerLocked || (this.wantLook && this.active && !this.frozen);
+  }
+
+  private startRetaking(): void {
+    if (this.retakeTimer !== null || typeof setInterval === "undefined") return;
+    this.retakeTimer = setInterval(() => {
+      if (!this.wantLook || this.pointerLocked || !this.active) {
+        this.stopRetaking();
+        return;
+      }
+      if (this.frozen) return;
+      // Only while the browser would grant it: a refused request is an error
+      // in the console and, in some browsers, a longer wait.
+      const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+      if (activation?.isActive) this.requestPointer();
+    }, 250);
+  }
+
+  private stopRetaking(): void {
+    if (this.retakeTimer === null) return;
+    clearInterval(this.retakeTimer);
+    this.retakeTimer = null;
+  }
+
+  /** The pointer is hidden over the view while the mouse turns his head without the lock. */
+  private syncCursor(): void {
+    const hide = this.wantLook && !this.pointerLocked && this.active && !this.frozen;
+    this.canvas.style.cursor = hide ? "none" : "";
+  }
 
   private readonly onAnyPress = (event: PointerEvent): void => {
     if (event.pointerType !== "mouse") return;
     // A press on a control (a button of the interface) is its own; a press
     // on the view or anywhere else takes the look back.
-    const target = event.target as Element | null;
-    if (target?.closest?.("button, a, input, select, textarea, [role='dialog']")) return;
+    if (onControl(event.target)) return;
     this.retakeLook();
   };
 
@@ -342,13 +415,25 @@ export class DiverController {
   private readonly onLockChange = (): void => {
     const was = this.pointerLocked;
     this.pointerLocked = document.pointerLockElement === this.canvas;
-    if (this.pointerLocked) this.wantLook = false;
+    if (this.pointerLocked) {
+      this.wantLook = false;
+      this.stopRetaking();
+    }
     if (was && !this.pointerLocked && !this.releasing && this.active && !this.frozen) this.hooks.pointerLost?.();
     if (!this.pointerLocked) this.releasing = false;
+    this.syncCursor();
   };
 
   private readonly onMouseMove = (event: MouseEvent): void => {
-    if (!this.pointerLocked || !this.active || !this.inControl || this.frozen) return;
+    if (!this.active || !this.inControl || this.frozen) return;
+    if (!this.pointerLocked) {
+      // Without the lock (it is being taken back after a card closed): the
+      // mouse's plain movement over the view turns his head all the same.
+      // A drag is the canvas's own (the orbit handler), a move over a
+      // control belongs to the control.
+      if (!this.wantLook || event.buttons !== 0 || onControl(event.target)) return;
+      if (matchMedia("(pointer: coarse)").matches) return;
+    }
     const look = keyBindings.look;
     this.look(event.movementX * look.sensitivity, event.movementY * look.sensitivity * (look.invertY ? -1 : 1), false);
   };
@@ -359,6 +444,7 @@ export class DiverController {
    */
   setFrozen(frozen: boolean): void {
     this.frozen = frozen;
+    this.syncCursor();
     if (!frozen) return;
     this.keys.clear();
     this.stickX = 0;
@@ -493,7 +579,7 @@ export class DiverController {
     const water = wadingDepth(walk.x, walk.z, this.land);
     if (walk.landed > 0) {
       this.landing = Math.min(1, walk.landed * 0.12);
-      if (water > 0.12) this.hooks.wade?.(this.scratch.set(walk.x, walk.y + water, walk.z), water, true);
+      if (water > WADE_STEP_DEPTH) this.hooks.wade?.(this.scratch.set(walk.x, walk.y + water, walk.z), water, true);
       else this.hooks.footstep(true);
       walk.landed = 0;
     }
@@ -502,7 +588,7 @@ export class DiverController {
       this.stepClock += (dt * moving) / (input.sprint ? RUN_STRIDE : WALK_STRIDE);
       if (this.stepClock >= 1) {
         this.stepClock -= 1;
-        if (water > 0.12) this.hooks.wade?.(this.scratch.set(walk.x, walk.y + water, walk.z), water, input.sprint);
+        if (water > WADE_STEP_DEPTH) this.hooks.wade?.(this.scratch.set(walk.x, walk.y + water, walk.z), water, input.sprint);
         else this.hooks.footstep(input.sprint);
       }
       this.bobClock += (dt * moving * Math.PI * 2) / (input.sprint ? RUN_STRIDE : WALK_STRIDE);

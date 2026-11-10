@@ -128,7 +128,7 @@ test("a saved economy is checked field by field", () => {
   assert.equal(restored.upgrades.sonar, UPGRADES.find((upgrade) => upgrade.id === "sonar")!.max);
   assert.equal(restored.upgrades.flare, 0);
   assert.equal(restored.upgrades.monitor, 0);
-  assert.deepEqual(restored.bag, [{ kind: "shell", value: 22 }]);
+  assert.deepEqual(restored.bag, [{ kind: "shell", value: 20 }]);
   assert.deepEqual(restored.decor, ["flag-jolly"]);
   // Only owned decor, in its own slot, can be up.
   assert.deepEqual(restored.equipped, { flag: "flag-jolly", charm: null, bobble: null });
@@ -194,4 +194,29 @@ test("every price and value is a round sum: a multiple of 5 gold", async () => {
   assert.equal(roundGold(24), 25);
   assert.equal(roundGold(11), 10);
   assert.equal(roundGold(1723), 1725);
+});
+
+test("a save from before prices were round is brought to round sums: the bag find by find, the purse upward", async () => {
+  const { restoreEconomy, roundPurse, bagValue, bagByKind } = await import("../../src/simulator/economy/EconomyMath");
+  const old = [
+    { kind: "shell", value: 11 },
+    { kind: "bottle", value: 24 },
+    { kind: "anchor", value: 37 },
+    { kind: "amphora", value: 183 },
+    { kind: "statuette", value: 341 },
+  ];
+  const restored = restoreEconomy({ bag: old });
+  assert.deepEqual(restored.bag.map((item) => item.value), [10, 25, 35, 185, 340]);
+  for (const row of bagByKind(restored.bag)) assert.equal(row.total % 5, 0);
+  assert.equal(bagValue(restored.bag) % 5, 0);
+  // The bag keeps its worth: rounding to the nearest, not down (596 before, 595 after).
+  assert.ok(Math.abs(bagValue(restored.bag) - 596) <= 5);
+  // The purse is rounded in the player's favour, and a round one is left alone.
+  assert.equal(roundPurse(137), 140);
+  assert.equal(roundPurse(140), 140);
+  assert.equal(roundPurse(0), 0);
+  assert.equal(roundPurse(3.9), 5);
+  assert.equal(roundPurse(Number.NaN), 0);
+  // So what the shop shows a player short of a price is round too.
+  assert.equal((230 - roundPurse(137)) % 5, 0);
 });

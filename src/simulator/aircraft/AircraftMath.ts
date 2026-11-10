@@ -227,7 +227,30 @@ export function lowPassActive(pass: LowPass, time: number): boolean {
   return time >= 0 && time <= pass.duration;
 }
 
+/** `nightFactor` (0 day … 1 night) from which no light plane sets out… */
+export const LOW_PASS_NIGHT_START = 0.3;
+/** …and at which one still in the air (it left at dusk) is gone. */
+export const LOW_PASS_NIGHT_END = 0.6;
+
+/** Whether a floatplane, the banner tug or the stunt plane may set out: by day and at early dusk only. */
+export function lowPassesFly(night: number): boolean {
+  return night < LOW_PASS_NIGHT_START;
+}
+
 // --- Airliners and contrails ----------------------------------------------------
+
+/** What is left of a contrail's daytime opacity in full night (it was 0.35: still a chalk line on a dark sky). */
+export const CONTRAIL_NIGHT_OPACITY = 0.24;
+
+/**
+ * How much of a contrail's daytime opacity is left at `night` (0 day … 1
+ * night): it fades smoothly through dusk to a faint grey thread under the
+ * moon, a little fainter than it used to be, with no step on the way.
+ */
+export function contrailNightDim(night: number): number {
+  const t = Math.min(1, Math.max(0, night));
+  return 1 - (1 - CONTRAIL_NIGHT_OPACITY) * t * t * (3 - 2 * t);
+}
 
 export type Airliner = {
   /** Where it was when it appeared, m (world), and when (s). */

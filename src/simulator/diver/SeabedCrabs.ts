@@ -192,10 +192,12 @@ function proceduralKit(): CrabKit {
 }
 
 /** How many crabs, how far round the eyes they live, how near they let someone come. */
-const SETTINGS: Record<CrabHabitat, { count: number; range: number; near: number; size: [number, number]; speed: [number, number]; shy: number }> = {
-  // Seabed crabs are the big reef crabs (spider and king crabs a forearm to a
-  // metre across), seen from metres away through the water.
-  seabed: { count: 40, range: 24, near: 4, size: [0.45, 0.95], speed: [0.12, 0.26], shy: 2.2 },
+export const CRAB_SETTINGS: Record<CrabHabitat, { count: number; range: number; near: number; size: [number, number]; speed: [number, number]; shy: number }> = {
+  // Seabed crabs are giants of the reef (spider and king crabs a good metre
+  // to over two across, legs and all): seen from metres away through water
+  // that takes the size out of everything, they must read as crabs at once.
+  // Fewer of them, spread wider, so the floor is not paved with shells.
+  seabed: { count: 30, range: 30, near: 5, size: [1.2, 2.2], speed: [0.2, 0.42], shy: 3.4 },
   beach: { count: 34, range: 26, near: 5, size: [0.12, 0.2], speed: [0.25, 0.5], shy: 4.5 },
 };
 
@@ -223,7 +225,7 @@ export class SeabedCrabs {
   private readonly up = new THREE.Vector3(0, 1, 0);
   private readonly across = new THREE.Vector3(1, 0, 0);
   private readonly seaward = { x: 0, z: 0 };
-  private readonly settings: (typeof SETTINGS)[CrabHabitat];
+  private readonly settings: (typeof CRAB_SETTINGS)[CrabHabitat];
   private placed = false;
 
   constructor(
@@ -232,7 +234,7 @@ export class SeabedCrabs {
     readonly habitat: CrabHabitat = "seabed",
     kits: readonly (CrabKit | null)[] = [],
   ) {
-    this.settings = SETTINGS[habitat];
+    this.settings = CRAB_SETTINGS[habitat];
     this.random = random(habitat === "seabed" ? 9137 : 5521);
     const usable = kits.filter((kit): kit is CrabKit => kit !== null);
     this.kits = usable.length > 0 ? usable : [proceduralKit()];
@@ -416,7 +418,7 @@ export class SeabedCrabs {
       // A running crab leans into its stride; an alarmed one on the seabed rears.
       this.tilt.setFromAxisAngle(this.across, -(beach ? 0 : crab.alarm * 0.25));
       this.quaternion.multiply(this.tilt);
-      this.position.set(crab.x, world.ground(crab.x, crab.z) - 0.004, crab.z);
+      this.position.set(crab.x, world.ground(crab.x, crab.z) - 0.004 * crab.size, crab.z);
       this.scale.setScalar(crab.size);
       this.matrix.compose(this.position, this.quaternion, this.scale);
       for (const mesh of this.meshes[crab.kind]!) mesh.setMatrixAt(index, this.matrix);

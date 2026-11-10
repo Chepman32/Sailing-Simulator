@@ -107,6 +107,9 @@ export const ISLAND_RELEASE_RADIUS = ISLAND_BUILD_RADIUS + 500;
 const STREAM_STEP = 90;
 /** Islands built per frame while sailing (all of them while loading). */
 const BUILDS_PER_FRAME = 1;
+/** How near the edge of a lava tongue a walker can come, m. */
+export const LAVA_KEEP_OFF = 0.9;
+
 /** Palms stay inside this fraction of the beach radius, clear of the swash. */
 const PALM_MAX_RADIAL = 0.66;
 const GOLDEN_ANGLE = 2.399963229728653;
@@ -751,8 +754,9 @@ export class IslandSystem {
           // is the crater's inner wall, too steep to climb back out of.
           if (r / (island.beachRadius * islandEdgeNoise(angle, island)) < VOLCANO_RIM * 1.005) return true;
         }
-        // Nor onto the lava tongues creeping down the flanks.
-        if (r < island.beachRadius * 0.7 * MAX_EDGE_NOISE && onLavaFlow(island, x, z)) return true;
+        // Nor onto the lava tongues creeping down the flanks, nor within a
+        // good pace of their glowing edge (the heat alone stops a man there).
+        if (r < island.beachRadius * 0.7 * MAX_EDGE_NOISE + LAVA_KEEP_OFF && onLavaFlow(island, x, z, LAVA_KEEP_OFF)) return true;
       }
       const walls = visual.walls;
       if (!walls) continue;

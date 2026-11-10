@@ -5,9 +5,12 @@ import { smoothstep } from "../math";
 import { islandsWithin } from "../environment/IslandMath";
 import {
   airlinerPosition,
+  contrailNightDim,
   contrailShape,
   FIRST_LOW_PASS,
   LOW_PASS_GAP,
+  LOW_PASS_NIGHT_END,
+  lowPassesFly,
   LOW_PASS_HALF,
   lowPassActive,
   lowPassPose,
@@ -119,6 +122,7 @@ const contrailVertex = /* glsl */ `
 const contrailFragment = /* glsl */ `
   uniform vec3 uLit;
   uniform float uTime;
+  uniform float uDim;
   varying float vAge;
   varying float vAcross;
   varying float vOpacity;
@@ -153,7 +157,8 @@ const contrailFragment = /* glsl */ `
     float crow = mix(1.0, 0.35 + 0.65 * smoothstep(-0.4, 0.75, sin(crowPhase)), smoothstep(25.0, 110.0, vAge));
     // Low over the horizon the air between thickens: the trail fades into the haze.
     float horizon = smoothstep(0.03, 0.2, vElevation);
-    float alpha = body * fibres * crow * vOpacity * horizon;
+    // Under the moon a trail is a faint grey thread, not the day's white chalk line.
+    float alpha = body * fibres * crow * vOpacity * horizon * uDim;
     if (alpha < 0.003) discard;
     // Thick parts are a touch greyer underneath; thin fibres are bright.
     vec3 color = uLit * (0.86 + 0.18 * fibres - 0.1 * body * (1.0 - evolved));
@@ -312,7 +317,7 @@ export class AircraftSystem {
         name: "Contrails",
         vertexShader: contrailVertex,
         fragmentShader: contrailFragment,
-        uniforms: { uLit: { value: new THREE.Color(1, 1, 1) }, uTime: { value: 0 }, uPixelAngle: { value: 0.002 } },
+        uniforms: { uLit: { value: new THREE.Color(1, 1, 1) }, uTime: { value: 0 }, uPixelAngle: { value: 0.002 }, uDim: { value: 1 } },
         transparent: true,
         depthWrite: false,
         side: THREE.DoubleSide,
@@ -377,13 +382,26 @@ export class AircraftSystem {
     this.group.removeFromParent();
   }
 
+  /** No light plane in the sky (between passes, and all night). */
+  private hideLowPass(): void {
+    for (const other of this.planes) other.group.visible = false;
+    this.stunt.group.visible = false;
+    this.banner.visible = false;
+    this.rope.visible = false;
+    this.lowPlane.active = false;
+  }
+
   private updateLowPass(time: number, delta: number, yachtX: number, yachtZ: number, night: number): void {
     if (!this.pass && time >= this.nextPass) {
       // By day the advertising banner tow comes first and every other pass,
-      // the aerobatic display and a sightseeing flight in turn between them;
-      // at night only the sightseeing plane, lights on.
-      const day = night < 0.5;
-      const kind: LowPassKind = !day ? "tour" : DAY_PASSES[this.passes % DAY_PASSES.length]!;
+      // the aerobatic display and a sightseeing flight in turn between them.
+      // Nobody flies a light plane low over the sea in the dark: from dusk
+      // to dawn there are none (the airliners high above fly on).
+      if (!lowPassesFly(night)) {
+        this.nextPass = time + 20;
+        return this.hideLowPass();
+      }
+      const kind: LowPassKind = DAY_PASSES[this.passes % DAY_PASSES.length]!;
       this.pass = planLowPass(yachtX, yachtZ, this.random, kind);
       // A low pass climbs over the islands on its track: twenty metres clear
       // of the highest ground (and the palms on it) under its path.
@@ -406,14 +424,12 @@ export class AircraftSystem {
     }
     const pass = this.pass;
     const plane = this.planes[pass?.kind === "banner" ? 1 : 0]!;
-    for (const other of this.planes) other.group.visible = false;
-    this.stunt.group.visible = false;
-    this.banner.visible = false;
-    this.rope.visible = false;
-    this.lowPlane.active = false;
+    this.hideLowPass();
     if (!pass) return;
     const t = time - this.passStart;
-    if (!lowPassActive(pass, t)) {
+    // A pass still in the air when night has fallen is over (it began at dusk
+    // and is by now a speck leaving; the dark takes it).
+    if (!lowPassActive(pass, t) || night >= LOW_PASS_NIGHT_END) {
       this.pass = null;
       this.smokeNext = 0;
       this.nextPass = time + LOW_PASS_GAP[0] + this.random() * (LOW_PASS_GAP[1] - LOW_PASS_GAP[0]);
@@ -512,6 +528,7 @@ export class AircraftSystem {
       THREE.LinearSRGBColorSpace,
     );
     this.contrails.material.uniforms.uTime!.value = time;
+    this.contrails.material.uniforms.uDim!.value = contrailNightDim(night);
 
     const geometry = this.contrails.geometry;
     const positions = geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -589,7 +606,7 @@ export class AircraftSystem {
             py = point.y - age * 0.4;
             pz = point.z + WIND_ALOFT.z * age + rightZ;
             width = shape.width;
-            opacity = shape.opacity * (engine === 0 ? 1 : 0.92) * (night > 0.6 ? 0.35 : 1);
+            opacity = shape.opacity * (engine === 0 ? 1 : 0.92);
             along = (trail.born[slot]! - plan.startTime) * plan.speed;
           }
           positions.setXYZ(vertex, px, py, pz);

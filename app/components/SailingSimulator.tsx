@@ -634,7 +634,20 @@ export function SailingSimulator() {
   const diverWords = useMemo(() => getDiverMessages(language), [language]);
   const pauseWords = useMemo(() => getPauseMessages(language), [language]);
   const away = snapshot.diver.mode !== "helm";
-  const closeChart = useCallback(() => setChartOpen(false), []);
+  // On foot the chart is a card over his eyes: he stands still and lets the
+  // mouse go while it is open (`chartFroze`), and walks on when it closes.
+  const chartFroze = useRef(false);
+  // Closing the chart gives him his eyes back in the same breath: inside the
+  // click or the key that closed it, which is the gesture a browser wants
+  // before it hands the mouse over (Safari accepts no later moment).
+  const closeChart = useCallback(() => {
+    setChartOpen(false);
+    if (!chartFroze.current) return;
+    chartFroze.current = false;
+    const simulator = simulatorRef.current;
+    simulator?.setDiverFrozen(false);
+    simulator?.resumeDiverLook();
+  }, []);
   // The pause menu holds the world still; it belongs to the skipper's own
   // eyes, so taking the helm (or the helm taking him) closes it.
   const pausedAfoot = pauseOpen && snapshot.diver.mode !== "helm";
@@ -650,9 +663,10 @@ export function SailingSimulator() {
     // (closed with Esc, at his next key or press).
     simulator.resumeDiverLook();
   };
-  // On foot the chart is a card over his eyes: he stands still and lets the
-  // mouse go while it is open, and walks on when it closes.
-  const chartFroze = useRef(false);
+  // The chart opening on foot freezes him; if it was closed by something
+  // other than `closeChart` (another card taking its place), he is given
+  // his eyes back only when no other card is over them.
+  const cardOverView = shopOpen || inventoryOpen || controlsOpen || pausedAfoot;
   useEffect(() => {
     const simulator = simulatorRef.current;
     if (!simulator) return;
@@ -662,11 +676,12 @@ export function SailingSimulator() {
       simulator.setDiverFrozen(true);
     } else if (!chartOpen && chartFroze.current) {
       chartFroze.current = false;
+      if (cardOverView) return;
       simulator.setDiverFrozen(false);
       // Back to his own eyes without a click on the view first.
       simulator.resumeDiverLook();
     }
-  }, [chartOpen, snapshot.diver.mode]);
+  }, [chartOpen, snapshot.diver.mode, cardOverView]);
   // Callbacks the simulator holds for its lifetime reach the current render through this.
   type LatestHandlers = {
     keyAction: (action: string) => void;
@@ -1099,7 +1114,9 @@ export function SailingSimulator() {
     // The chart (Q or N), on foot too.
     if (away ? afootAction("chart") : event.code === "KeyQ" || event.code === "KeyN") {
       if (photoMode) exitPhotoMode();
-      setChartOpen((value) => !value);
+      // Closed with its own key: the key press is the gesture that gives the mouse back.
+      if (chartOpen) closeChart();
+      else setChartOpen(true);
       event.preventDefault();
       return;
     }

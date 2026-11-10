@@ -6,6 +6,7 @@ import {
   DAY_GAP,
   NIGHT_GAP,
   FINALE_LENGTH,
+  groundEffect,
   launchRocket,
   nextCue,
   nextLaunchGap,
@@ -24,7 +25,7 @@ import {
 export type FireworksSource = { x: number; y: number; z: number; heading: number; halfLength: number };
 
 /** Most stars and sparks in the air at once (one instanced draw). */
-const CAPACITY = 16000;
+const CAPACITY = 22000;
 /** Farther than this the liner's show is not fired (nobody would see it). */
 const SHOW_RANGE = 3200;
 /** Bursts remembered for the light they throw (the newest few dominate). */
@@ -86,11 +87,16 @@ const fragmentShader = /* glsl */ `
       float halo = exp(-r * r * 5.0) * (1.0 - smoothstep(0.85, 1.0, r));
       color = vColor * (halo * 0.55 + pow(max(0.0, 1.0 - r * 2.2), 3.0) * 1.6);
     } else {
-      float halfWidth = mix(0.2, 1.0, pow(vUv.x, 0.6));
+      // A streak: a needle at its tail, widening to the burning head, its
+      // light gathered at the head and thinning to nothing along the tail.
+      float halfWidth = mix(0.12, 1.0, pow(vUv.x, 0.7));
       float across = 1.0 - smoothstep(0.0, halfWidth, abs(vUv.y * 2.0 - 1.0));
-      float glow = pow(across, 1.4) * (0.15 + 0.85 * pow(vUv.x, 1.6));
-      // A white-hot core in the brightest stars.
-      color = vColor * glow + vec3(1.0) * pow(across, 6.0) * pow(vUv.x, 4.0) * max(max(vColor.r, vColor.g), vColor.b) * 0.3;
+      float along = 0.03 + 0.97 * pow(vUv.x, 2.2);
+      float glow = pow(across, 1.4) * along;
+      // The head itself: a hot point, a little whiter than its colour (only
+      // a little: a white core in every star washes a shell's colour out).
+      float peak = max(max(vColor.r, vColor.g), vColor.b);
+      color = vColor * glow + vec3(1.0) * pow(across, 6.0) * pow(vUv.x, 9.0) * peak * 0.16;
     }
     gl_FragColor = vec4(color, 1.0);
     #ifdef USE_FOG
@@ -113,7 +119,8 @@ type BurstGlow = { x: number; y: number; z: number; age: number; r: number; g: n
  * The cruise liner's fireworks: shows scheduled and choreographed by
  * `FireworksMath` (every minute or two after dark, now and then by day),
  * rockets, stars and their glitter stepped here and drawn as glowing
- * streaks, added to the scene's light. Each burst is handed to `onBurst`
+ * streaks along each star's own path, added to the scene's light; between
+ * the shells the deck fires fans of comets and mines. Each burst is handed to `onBurst`
  * (the boom, delayed by the distance), and the bursts' light is offered to
  * the scene (`light`), so the sea flickers in their colours.
  */
@@ -131,6 +138,10 @@ export class FireworksSystem {
   private showLength = 1;
   private untilLaunch = 0;
   private clock = 0;
+  /** Cues fired so far (each takes the next colours round the wheel). */
+  private cues = 0;
+  /** Where a mine went off on the deck (its thump). */
+  private readonly thump = new THREE.Vector3();
   /** The last burst, for the camera (photo mode) and tests. */
   readonly lastBurst = new THREE.Vector3();
   bursts = 0;
@@ -235,7 +246,9 @@ export class FireworksSystem {
       this.showLeft -= dt;
       this.untilLaunch -= dt;
       while (inRange && source && this.showLeft > 0 && this.untilLaunch <= 0) {
-        const cue = nextCue(random, this.showLeft, this.showLength);
+        // Each cue a good step on round the colour wheel from the last.
+        this.cues += 1;
+        const cue = nextCue(random, this.showLeft, this.showLength, this.cues);
         const finale = this.showLeft < FINALE_LENGTH;
         for (let index = 0; index < cue.count; index += 1) {
           // A volley is laid out symmetrically along the deck.
@@ -243,6 +256,14 @@ export class FireworksSystem {
           const along = slot * 2 * cue.spread * source.halfLength + between(random, -0.04, 0.04) * source.halfLength;
           const x = source.x + Math.sin(source.heading) * along;
           const z = source.z + Math.cos(source.heading) * along;
+          if (cue.ground) {
+            // The deck itself fires: a fan of comets, or a mine (heard as a thump).
+            groundEffect(cue, index, random, x, source.y, z, Math.sin(source.heading), Math.cos(source.heading), (star) => {
+              if (this.stars.length + this.pending.length < CAPACITY) this.pending.push(star);
+            });
+            if (cue.ground === "mine") this.onBurst(this.thump.set(x, source.y, z), true);
+            continue;
+          }
           // A shaped shell faces the onlookers.
           this.rockets.push(launchRocket(random, x, source.y, z, finale, cue, index, Math.atan2(x - viewer.x, z - viewer.z)));
         }
@@ -361,10 +382,9 @@ export class FireworksSystem {
       const flicker = Math.abs(Math.sin(star.phase * 12.9 + star.x * 3.1 + clock * 31));
       const brightness = starBrightness(star, flicker, clock);
       if (brightness < 0.01) continue;
-      // The streak is the path of the last few hundredths of a second: long while fast.
-      const trail = star.streak;
+      // The streak runs back along the star's own path to the point that follows it.
       this.head.setXYZ(count, star.x, star.y, star.z);
-      this.tail.setXYZ(count, star.x - star.vx * trail, star.y - star.vy * trail, star.z - star.vz * trail);
+      this.tail.setXYZ(count, star.tx, star.ty, star.tz);
       const t = star.age / star.life;
       const later = star.later;
       const mix = later ? Math.min(1, Math.max(0, (t - star.turn) / 0.35)) : 0;

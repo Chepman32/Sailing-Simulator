@@ -28,6 +28,15 @@
  *   its own colour, a bouquet;
  * - **heart**: stars laid out on a heart, turned to face the onlookers.
  *
+ * Between the shells the deck itself fires (`groundEffect`): **fans** of
+ * comets thrown up and out on glittering tails, and **mines**, fountains of
+ * coloured stars and crackle bursting straight from the deck.
+ *
+ * Every star draws its own path behind it (`tx, ty, tz`: a point that
+ * follows the star a moment late), so a fresh shell is a wheel of spokes
+ * from its centre that shorten into drifting embers as the stars slow, the
+ * way a firework looks to the eye and to a camera.
+ *
  * Shells are rarely of one colour: peonies change colour in flight or burst
  * in two halves, willows end in coloured tips, palms throw coloured comets,
  * rings come double, and a volley's rockets can each have their own colour.
@@ -91,30 +100,37 @@ export type Rgb = readonly [number, number, number];
 
 /**
  * Star colours, HDR (scene-linear, the bloom picks up what is over 1), in
- * hue order round the colour wheel: red, orange, amber, lime, green, aqua,
- * azure, blue, violet, purple, magenta, pink, and silver.
+ * hue order round the colour wheel: red, vermilion, orange, amber, lemon,
+ * lime, green, emerald, aqua, azure, blue, indigo, violet, magenta, pink,
+ * and silver. Each is one strong channel with little of the others: a
+ * colour brighter than about 4 in every channel reads as white once the
+ * stars of a shell overlap, and a show of white-gold blobs is what this
+ * palette exists to prevent.
  */
 export const STAR_COLORS: readonly Rgb[] = [
-  [5.8, 0.4, 0.28],
-  [5.8, 1.6, 0.25],
-  [5.6, 3.5, 0.45],
-  [2.6, 5.2, 0.5],
-  [0.5, 4.8, 0.75],
-  [0.5, 4.4, 3.6],
-  [0.55, 2.6, 6.2],
-  [0.55, 1.1, 6.6],
-  [2.4, 0.7, 6.4],
-  [4.2, 0.55, 5.6],
-  [5.8, 0.6, 3.4],
-  [6, 1.9, 3.2],
-  [5.5, 5.3, 5],
+  [4.6, 0.1, 0.07],
+  [4.8, 0.62, 0.05],
+  [4.7, 1.45, 0.06],
+  [4.4, 2.5, 0.1],
+  [3.6, 3.7, 0.14],
+  [1.5, 4.4, 0.12],
+  [0.12, 4.4, 0.3],
+  [0.08, 4.1, 1.7],
+  [0.1, 3.6, 3.7],
+  [0.12, 1.9, 5.2],
+  [0.14, 0.5, 5.8],
+  [0.9, 0.22, 5.8],
+  [2.6, 0.16, 5.4],
+  [4.6, 0.14, 3.6],
+  [4.9, 0.75, 2.1],
+  [4.3, 4.2, 4],
 ];
 /** The silver of the palette (last), told apart from the hues. */
 const SILVER_INDEX = STAR_COLORS.length - 1;
-export const GOLD: Rgb = [5.8, 3.1, 0.75];
+export const GOLD: Rgb = [4.9, 2.5, 0.45];
 /** Charcoal glitter: a deeper, redder gold. */
-export const EMBER: Rgb = [4.6, 1.7, 0.35];
-export const WHITE: Rgb = [6.2, 6, 5.6];
+export const EMBER: Rgb = [3.9, 1.3, 0.2];
+export const WHITE: Rgb = [5.2, 5, 4.7];
 
 /**
  * How a star's light varies: steady, crackling, strobing, fizzing out at the
@@ -180,7 +196,18 @@ export type Star = {
   sparkleClock: number;
   /** Per-star phase for strobes and flicker. */
   phase: number;
+  /**
+   * The end of its drawn streak: a point that follows the star `streak`
+   * seconds behind (`stepStar`). It starts where the star was lit, so a
+   * shell's stars open as spokes from the burst.
+   */
+  tx: number;
+  ty: number;
+  tz: number;
 };
+
+/** A heart's second colour: hot pink. */
+const HEART_PINK: Rgb = [4.9, 0.4, 1.9];
 
 export const GRAVITY = 9.81;
 /** Seconds of a show, and the finale at its end. */
@@ -209,14 +236,17 @@ function pickShell(random: RandomSource, from: readonly ShellKind[] = SHELL_KIND
 }
 
 /**
- * `count` colours that go together and are easy to tell apart: hues at
- * least three steps apart round the wheel (red with blue or green, never
- * red with orange), now and then with silver among them.
+ * `count` colours that go together and are easy to tell apart: hues spread
+ * evenly round the wheel (red with blue or green, never red with orange),
+ * now and then with silver among them. `turn` (a show's cue counter) picks
+ * the first hue instead of chance: each cue then starts a good third of
+ * the wheel on from the last one, so a show walks through every colour and
+ * never fires the same one twice running.
  */
-export function harmony(random: RandomSource, count: number): Rgb[] {
+export function harmony(random: RandomSource, count: number, turn?: number): Rgb[] {
   const hues = SILVER_INDEX;
   const out: Rgb[] = [];
-  const first = Math.floor(random() * hues) % hues;
+  const first = turn === undefined ? Math.floor(random() * hues) % hues : (Math.round(turn * HUE_STEP) + Math.floor(random() * 2)) % hues;
   // Evenly round the wheel from the first, a little irregular.
   const stride = hues / Math.max(2, count);
   for (let index = 0; index < count; index += 1) {
@@ -226,6 +256,9 @@ export function harmony(random: RandomSource, count: number): Rgb[] {
   if (count > 1 && random() < 0.2) out[count - 1] = STAR_COLORS[SILVER_INDEX]!;
   return out;
 }
+
+/** Hues a show moves on between cues: about 0.38 of the wheel (the golden angle), so the colours never settle into a cycle. */
+const HUE_STEP = 5.7;
 
 /** Seconds until the next show, from how dark it is (0 day … 1 night). */
 export function nextShowGap(random: RandomSource, night: number): number {
@@ -253,7 +286,15 @@ export type Cue = {
   colors: readonly Rgb[] | null;
   size: number;
   spread: number;
+  /**
+   * Fired from the deck itself instead of a shell: a fan of comets or a
+   * mine (`groundEffect`); `count` is then how many of them, along the deck.
+   */
+  ground?: GroundKind;
 };
+
+/** What the deck fires between the shells. */
+export type GroundKind = "fan" | "mine";
 
 /** Shells that suit a finale: big, bright, many-coloured, and gold hanging at the end. */
 const FINALE_SHELLS: readonly ShellKind[] = ["crackle", "kamuro", "willow", "peony", "strobe", "chrysanthemum", "palm", "rainbow", "cluster", "dahlia"];
@@ -262,21 +303,105 @@ const FINALE_SHELLS: readonly ShellKind[] = ["crackle", "kamuro", "willow", "peo
  * The next cue, `remaining` seconds before the show ends (of `length`).
  * Mostly single shells, a volley now and then, and a salvo about halfway.
  */
-export function nextCue(random: RandomSource, remaining: number, length: number): Cue {
-  const [color, second, third] = harmony(random, 3) as [Rgb, Rgb, Rgb];
+export function nextCue(random: RandomSource, remaining: number, length: number, turn?: number): Cue {
+  const [color, second, third] = harmony(random, 3, turn) as [Rgb, Rgb, Rgb];
   if (remaining < FINALE_LENGTH) {
+    // The finale: shells in twos, and mines along the whole deck under them.
+    if (random() < 0.16) return { count: 3, shell: "peony", color, second, third, colors: harmony(random, 3, turn), size: 1.15, spread: 0.45, ground: "mine" };
     const count = random() < 0.45 ? 2 : 1;
-    return { count, shell: pickShell(random, FINALE_SHELLS), color, second, third, colors: count > 1 ? harmony(random, count) : null, size: between(random, 1.05, 1.3), spread: 0.4 };
+    return { count, shell: pickShell(random, FINALE_SHELLS), color, second, third, colors: count > 1 ? harmony(random, count, turn) : null, size: between(random, 1.05, 1.3), spread: 0.4 };
   }
   const progress = 1 - remaining / Math.max(1, length);
   const salvo = progress > 0.45 && progress < 0.55;
   const roll = random();
+  // Now and then the deck answers the sky: a fan of comets, or mines.
+  if (!salvo && roll > 0.86) {
+    const fan = roll < 0.94;
+    const count = fan ? (random() < 0.5 ? 1 : 2) : random() < 0.5 ? 2 : 3;
+    return { count, shell: "peony", color, second, third, colors: random() < 0.6 ? harmony(random, 3, turn) : null, size: 1, spread: fan ? 0.3 : 0.4, ground: fan ? "fan" : "mine" };
+  }
   const count = salvo ? 3 : roll < 0.22 ? 2 : roll < 0.3 ? 3 : 1;
   // A volley spreads its rockets symmetrically along the deck; half the
   // time each in its own colour (red, white and blue; green, gold, violet).
   const shell = pickShell(random);
-  const colors = count > 1 && shell !== "rainbow" && random() < 0.5 ? harmony(random, count) : null;
+  const colors = count > 1 && shell !== "rainbow" && random() < 0.5 ? harmony(random, count, turn) : null;
   return { count, shell, color, second, third, colors, size: count > 1 ? between(random, 0.85, 1) : between(random, 0.95, 1.15), spread: count > 1 ? 0.32 : 0.2 };
+}
+
+/** Comets in a fan, and stars in a mine. */
+export const FAN_COMETS = 7;
+export const MINE_STARS = 110;
+
+/**
+ * What the deck fires at (x, y, z) for a ground cue, the `slot`-th of its
+ * `cue.count`; (`axisX`, `axisZ`) is the unit direction along the deck.
+ *
+ * - a **fan**: seven comets thrown up and outward along the deck's length,
+ *   each a thick star in its own colour on a long glittering tail, arcing
+ *   over and burning out as it falls;
+ * - a **mine**: a fountain of stars bursting from the deck in an upward
+ *   cone, the fast inner ones in one colour, the slower outer ones in a
+ *   second, in a cloud of white crackle.
+ *
+ * Returns how many stars it added.
+ */
+export function groundEffect(cue: Cue, slot: number, random: RandomSource, x: number, y: number, z: number, axisX: number, axisZ: number, add: (star: Star) => void): number {
+  const palette = cue.colors ?? [cue.color, cue.second, cue.third];
+  let added = 0;
+  if (cue.ground === "fan") {
+    // Mirrored for the second of a pair, so two fans cross.
+    const lean = cue.count > 1 ? (slot % 2 === 0 ? 0.18 : -0.18) : 0;
+    for (let index = 0; index < FAN_COMETS; index += 1) {
+      const angle = ((index / (FAN_COMETS - 1)) * 2 - 1) * 0.62 + lean + between(random, -0.02, 0.02);
+      const speed = between(random, 60, 66);
+      const out = Math.sin(angle) * speed;
+      const star = makeStar(x, y, z, axisX * out + between(random, -1, 1), Math.cos(angle) * speed, axisZ * out + between(random, -1, 1), between(random, 2.7, 3.2), palette[index % palette.length]!);
+      star.drag = 0.42;
+      star.fall = 0.95;
+      star.size = 3.1;
+      star.streak = 0.5;
+      star.sparkle = 85;
+      star.sparkleColor = index % 2 === 0 ? GOLD : star.color;
+      star.twinkle = "fizz";
+      star.phase = random() * 100;
+      add(star);
+      added += 1;
+    }
+    return added;
+  }
+  // The mine's lift charge: a flash on the deck.
+  const flash = makeStar(x, y + 2, z, 0, 6, 0, BURST_FLASH, WHITE);
+  flash.size = 13;
+  flash.streak = 0;
+  flash.twinkle = "flash";
+  flash.drag = 4;
+  flash.fall = 0;
+  add(flash);
+  added += 1;
+  const inner = palette[slot % palette.length]!;
+  const outer = palette[(slot + 1) % palette.length]!;
+  for (let index = 0; index < MINE_STARS; index += 1) {
+    // An upward cone, denser toward its axis.
+    const off = Math.pow(random(), 0.7) * 0.5;
+    const round = random() * Math.PI * 2;
+    const crackle = index % 4 === 3;
+    const speed = crackle ? between(random, 30, 60) : between(random, 44, 88) * (1 - off * 0.5);
+    const side = Math.sin(off) * speed;
+    const star = makeStar(x, y, z, Math.cos(round) * side, Math.cos(off) * speed, Math.sin(round) * side, crackle ? between(random, 0.9, 1.5) : between(random, 1.7, 2.5), crackle ? WHITE : off < 0.24 ? inner : outer);
+    star.drag = crackle ? 1.6 : 0.95;
+    star.fall = 0.85;
+    star.size = crackle ? 1 : 1.7;
+    star.streak = crackle ? 0.05 : 0.26;
+    star.twinkle = crackle ? "crackle" : random() < 0.5 ? "fizz" : "none";
+    if (!crackle && index % 5 === 0) {
+      star.sparkle = 12;
+      star.sparkleColor = GOLD;
+    }
+    star.phase = random() * 100;
+    add(star);
+    added += 1;
+  }
+  return added;
 }
 
 /**
@@ -284,7 +409,7 @@ export function nextCue(random: RandomSource, remaining: number, length: number)
  * volley; `face` is the yaw toward the onlookers (for a heart).
  */
 export function launchRocket(random: RandomSource, x: number, y: number, z: number, finale = false, cue?: Cue, slot = 0, face?: number): Rocket {
-  const speed = between(random, 62, 76);
+  const speed = between(random, 70, 84);
   const tilt = between(random, 0, 0.12);
   const heading = random() * Math.PI * 2;
   const shell = cue ? cue.shell : finale && random() < 0.4 ? "crackle" : pickShell(random);
@@ -297,7 +422,7 @@ export function launchRocket(random: RandomSource, x: number, y: number, z: numb
     vx: Math.sin(heading) * Math.sin(tilt) * speed,
     vy: Math.cos(tilt) * speed,
     vz: Math.cos(heading) * Math.sin(tilt) * speed,
-    fuse: between(random, 3.1, 4.3),
+    fuse: between(random, 3.2, 4.3),
     shell,
     color,
     second: cue ? (cue.second === color ? cue.third : cue.second) : palette![1]!,
@@ -327,11 +452,14 @@ function makeStar(x: number, y: number, z: number, vx: number, vy: number, vz: n
     split: -1,
     bloom: 0,
     size: 1.9,
-    streak: 0.11,
+    streak: 0.2,
     sparkle: 0,
     sparkleColor: GOLD,
     sparkleClock: 0,
     phase: 0,
+    tx: x,
+    ty: y,
+    tz: z,
   };
 }
 
@@ -437,7 +565,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
   };
   // The flash: a white-hot ball for a moment, haloed by the bloom.
   const flash = makeStar(rocket.x, rocket.y, rocket.z, rocket.vx * 0.3, rocket.vy * 0.3, rocket.vz * 0.3, BURST_FLASH, WHITE);
-  flash.size = 16 * scale;
+  flash.size = 22 * scale;
   flash.streak = 0;
   flash.twinkle = "flash";
   flash.drag = 4;
@@ -448,7 +576,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
   const gold = shell === "willow" || shell === "kamuro" || shell === "palm" || shell === "crackle" || shell === "strobe";
   const smokeColor = gold ? GOLD : rocket.color;
   const haze = makeStar(rocket.x, rocket.y, rocket.z, rocket.vx * 0.15, rocket.vy * 0.15, rocket.vz * 0.15, between(random, 2.6, 3.4), [smokeColor[0] * 0.06, smokeColor[1] * 0.06, smokeColor[2] * 0.06]);
-  haze.size = 34 * scale;
+  haze.size = 48 * scale;
   haze.streak = 0;
   haze.twinkle = "haze";
   haze.drag = 2.5;
@@ -456,18 +584,19 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
   emit(haze);
 
   const count = Math.round(SHELL_STARS[shell] * (shell === "palm" || shell === "cluster" ? 1 : scale));
+  // Big shells: a peony opens to some 70 m across its radius, a willow hangs lower and wider.
   const baseSpeed =
     shell === "willow" || shell === "kamuro"
-      ? between(random, 30, 37)
+      ? between(random, 40, 48)
       : shell === "crackle"
-        ? between(random, 20, 30)
+        ? between(random, 26, 38)
         : shell === "palm" || shell === "dahlia"
-          ? between(random, 34, 40)
+          ? between(random, 46, 54)
           : shell === "cluster"
-            ? between(random, 32, 37)
+            ? between(random, 42, 48)
             : shell === "heart"
-              ? between(random, 38, 42)
-              : between(random, 44, 56);
+              ? between(random, 50, 55)
+              : between(random, 60, 74);
   const speed = baseSpeed * Math.sqrt(scale);
   const tiltA = random() * Math.PI;
   const tiltB = between(random, 0.3, 1.2);
@@ -518,10 +647,12 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
       rocket.vx * 0.3 + direction[0] * s,
       rocket.vy * 0.3 + direction[1] * s,
       rocket.vz * 0.3 + direction[2] * s,
-      between(random, 2, 2.8),
+      between(random, 2.3, 3.1),
       rocket.color,
     );
     star.phase = random() * 100;
+    // Heavy stars carry far: a shell opens wide before the air stops it.
+    star.drag = 0.82;
     switch (shell) {
       case "peony":
         star.twinkle = random() < 0.5 ? "fizz" : "none";
@@ -549,7 +680,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.drag = 0.9;
         star.fall = 0.38;
         star.size = 2.7;
-        star.streak = 0.22;
+        star.streak = 0.42;
         star.sparkle = 7;
         star.sparkleColor = star.color;
         star.twinkle = "fizz";
@@ -567,12 +698,13 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.sparkleColor = GOLD;
         break;
       case "heart":
-        star.color = random() < 0.5 ? rocket.color : [6, 0.9, 2.4];
+        star.color = random() < 0.5 ? rocket.color : HEART_PINK;
         star.life = between(random, 2.1, 2.6);
         // Heavy drag, little fall: it holds its shape a moment.
         star.drag = 1.6;
         star.fall = 0.12;
         star.size = 1.9;
+        star.streak = 0.12;
         break;
       case "chrysanthemum":
         star.color = GOLD;
@@ -580,7 +712,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.sparkle = 16;
         star.sparkleColor = GOLD;
         star.size = 1.45;
-        star.streak = 0.1;
+        star.streak = 0.3;
         break;
       case "willow":
         star.color = EMBER;
@@ -593,7 +725,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.drag = 0.85;
         star.fall = 0.6;
         star.size = 1.15;
-        star.streak = 0.22;
+        star.streak = 0.5;
         star.sparkle = 9;
         star.sparkleColor = EMBER;
         star.twinkle = "fizz";
@@ -624,7 +756,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.drag = 0.55;
         star.fall = 0.75;
         star.size = 3.2;
-        star.streak = 0.3;
+        star.streak = 0.55;
         star.sparkle = 110;
         star.sparkleColor = GOLD;
         break;
@@ -632,7 +764,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.split = between(random, 0.5, 0.8);
         star.sparkle = 10;
         star.sparkleColor = star.color;
-        star.streak = 0.1;
+        star.streak = 0.24;
         // Its pieces flare into the second colour.
         if (variant < 0.5) {
           star.later = rocket.second;
@@ -647,6 +779,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.fall = 0.45;
         star.twinkle = "strobe";
         star.size = 1.3;
+        star.streak = 0.08;
         break;
       case "kamuro":
         star.color = GOLD;
@@ -654,7 +787,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.drag = 1.15;
         star.fall = 0.5;
         star.size = 1.05;
-        star.streak = 0.16;
+        star.streak = 0.45;
         star.sparkle = 14;
         star.sparkleColor = WHITE;
         star.twinkle = "fizz";
@@ -664,6 +797,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.life = between(random, 1.1, 1.8);
         star.twinkle = "crackle";
         star.size = 1.05;
+        star.streak = 0.06;
         break;
     }
     emit(star);
@@ -702,7 +836,7 @@ export function splitStar(star: Star, random: RandomSource, add: (star: Star) =>
   if (star.bloom > 0) {
     const direction: [number, number, number] = [0, 0, 0];
     const color = star.later ?? star.color;
-    const speed = between(random, 13, 17);
+    const speed = between(random, 18, 23);
     for (let index = 0; index < star.bloom; index += 1) {
       sphereDirection(index, star.bloom, direction);
       const s = speed * between(random, 0.9, 1.06);
@@ -721,11 +855,14 @@ export function splitStar(star: Star, random: RandomSource, add: (star: Star) =>
         split: -1,
         bloom: 0,
         size: 1.35,
-        streak: 0.09,
+        streak: 0.16,
         sparkle: 0,
         sparkleClock: 0,
         twinkle: random() < 0.4 ? "fizz" : "none",
         phase: random() * 100,
+        tx: star.x,
+        ty: star.y,
+        tz: star.z,
       });
     }
     return;
@@ -750,6 +887,9 @@ export function splitStar(star: Star, random: RandomSource, add: (star: Star) =>
       sparkleColor: GOLD,
       sparkleClock: 0,
       phase: random() * 100,
+      tx: star.x,
+      ty: star.y,
+      tz: star.z,
     });
   }
 }
@@ -767,6 +907,11 @@ export function stepStar(star: Star, dt: number): boolean {
   star.x += star.vx * dt;
   star.y += star.vy * dt;
   star.z += star.vz * dt;
+  // The streak's end follows `streak` seconds behind (at once, for a spark with none).
+  const follow = star.streak > 1e-3 ? 1 - Math.exp(-dt / star.streak) : 1;
+  star.tx += (star.x - star.tx) * follow;
+  star.ty += (star.y - star.ty) * follow;
+  star.tz += (star.z - star.tz) * follow;
   return star.age < star.life;
 }
 

@@ -3,8 +3,8 @@
  * from noise and a few oscillators (no samples to load):
  *
  * - **footsteps**, by what is underfoot: the soft crunch of dry sand (a
- *   granular hiss of grains over a dull thud, heel then toe), the squelch of
- *   wet sand, the swish of grass, the hollow knock of pier planks (now and
+ *   granular hiss of grains over a dull thud, heel then toe), the dull, soft
+ *   give of wet sand, the swish of grass, the hollow knock of pier planks (now and
  *   then a creak), the gritty click of volcanic rock, bare feet on the deck;
  * - **wading**: the slosh of a shin pushed through the water and the drops
  *   falling back;
@@ -34,6 +34,26 @@ const FOOT_SAMPLES: Record<FootSurface, SampleGroup> = {
 };
 
 type Envelope = { attack: number; decay: number; peak: number };
+
+/** 0 a film of water at the edge … 1 knee-deep: how much of the full slosh a step in `depth` m of water has. */
+export function wadeDepthMix(depth: number): number {
+  const t = Math.min(1, Math.max(0, (depth - 0.06) / (0.45 - 0.06)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * How the recorded wading step is played at `deep` (0…1, `wadeDepthMix`):
+ * its level, how much of its length, and the low-pass over it (null: none,
+ * the recording as it is, from about knee-deep).
+ */
+export function wadeTone(deep: number): { gain: number; length: number; lowpass: number | null } {
+  const d = Math.min(1, Math.max(0, deep));
+  return {
+    gain: 0.13 + 0.39 * d,
+    length: 0.42 + 0.58 * d,
+    lowpass: d > 0.92 ? null : 1300 + 5600 * d * d,
+  };
+}
 
 export class BodySounds {
   private readonly white: AudioBuffer;
@@ -176,11 +196,10 @@ export class BodySounds {
         break;
       }
       case "wetSand": {
-        this.thud(0.12 * force, 260);
-        // Packed and wet: a duller, sucking squelch, few loose grains.
-        this.burst(this.white, "bandpass", 650, 1.4, { attack: 0.015, decay: 0.08, peak: 0.05 * force }, 0, this.output, 1400);
-        this.burst(this.grains, "bandpass", 1700, 0.9, { attack: 0.01, decay: 0.07, peak: 0.05 * force }, roll);
-        if (Math.random() < 0.35) this.tone(900 + Math.random() * 600, 1500 + Math.random() * 600, 0.012, 0.004, 0.03, roll * 1.3);
+        // Packed and wet: a dull footfall and the soft give of the sand (no
+        // loose grains, no ringing drops: by the water nothing clicks).
+        this.thud(0.12 * force, 240);
+        this.squelch(force, roll);
         break;
       }
       case "grass": {
@@ -256,8 +275,12 @@ export class BodySounds {
         samples.play("sand", { gain: 0.1 * force, rate, delay: roll * 0.3 });
         break;
       case "wetSand":
-        samples.play("ground", { gain: 0.42 * force, rate: rate * 0.9, lowpass: 3600 });
-        samples.play("wet", { gain: 0.32 * force, rate });
+        // Packed wet sand by the water: the footfall itself, duller and a
+        // little lower than on dry ground, and the soft give of the sand
+        // under it. Nothing bright: a crisp, crackling layer here sounded
+        // like a walk over ice or broken glass.
+        samples.play("ground", { gain: 0.46 * force, rate: rate * 0.9, lowpass: 2300 });
+        this.squelch(force, roll);
         break;
       case "grass":
         samples.play("ground", { gain: 0.42 * force, rate: rate * 1.02, lowpass: 4200 });
@@ -275,6 +298,16 @@ export class BodySounds {
         break;
     }
     return true;
+  }
+
+  /**
+   * Wet sand giving under a foot: a short, soft, low press (water squeezed
+   * out of the sand and drawn back as the toe lifts). All of it under about
+   * 1 kHz, with slow edges, so it is felt more than heard.
+   */
+  private squelch(force: number, roll: number): void {
+    this.burst(this.brown, "lowpass", 520 + Math.random() * 120, 0.8, { attack: 0.02, decay: 0.1, peak: 0.075 * force });
+    this.burst(this.white, "bandpass", 760 + Math.random() * 140, 1.1, { attack: 0.022, decay: 0.09, peak: 0.016 * force }, roll, this.output, 420);
   }
 
   /** A plank creaking under the weight. */
@@ -357,17 +390,44 @@ export class BodySounds {
     }
   }
 
-  /** A shin pushed through shallow water (one step); `depth` of the water, m. */
+  /**
+   * A step in the water; `depth` of the water at the foot, m. From a film
+   * of water over the sand at the water's edge (the footfall on wet sand
+   * and a small, soft lap of water, no sparkle at all) through ankle-deep
+   * to a shin pushed through knee-deep water (the full slosh and the drops
+   * falling back). The brightness comes in with the depth: at the edge the
+   * recording is heard through a low-pass, short and quiet, because a full,
+   * crisp splash at every step there crackled like ice underfoot.
+   */
   wade(depth: number, running: boolean): void {
-    const force = (running ? 1.5 : 1) * Math.min(1.4, 0.5 + depth * 1.6) * (0.85 + Math.random() * 0.3);
-    if (this.samples.play("waterStep", { gain: 0.5 * force, rate: running ? 1.1 : 1, length: running ? 0.8 : 1.2 })) return;
+    const deep = wadeDepthMix(depth);
+    const force = (running ? 1.4 : 1) * (0.85 + Math.random() * 0.3);
+    // The foot still lands on sand while the water is shallow.
+    if (deep < 0.85) {
+      if (!this.samples.play("ground", { gain: 0.38 * force * (1 - deep), rate: 0.9, lowpass: 2200 })) this.thud(0.1 * force * (1 - deep), 240);
+      if (deep < 0.3) this.squelch(force * (1 - deep), 0.06);
+    }
+    const tone = wadeTone(deep);
+    if (
+      this.samples.play("waterStep", {
+        gain: tone.gain * force,
+        rate: (running ? 1.08 : 1) * (0.93 + 0.07 * deep),
+        length: (running ? 0.8 : 1.2) * tone.length,
+        lowpass: tone.lowpass ?? undefined,
+      })
+    ) {
+      return;
+    }
     // The slosh: water shoved aside and closing again behind the leg.
-    this.burst(this.white, "bandpass", 700 + Math.random() * 300, 0.9, { attack: 0.04, decay: 0.24, peak: 0.1 * force }, 0, this.output, 420);
-    this.burst(this.brown, "lowpass", 380, 0.8, { attack: 0.05, decay: 0.3, peak: 0.12 * force });
-    this.burst(this.white, "highpass", 3500, 0.5, { attack: 0.02, decay: 0.12, peak: 0.02 * force }, 0.03);
-    // Bubbles dragged under and the drops thrown up falling back.
-    this.tone(500 + Math.random() * 300, 800 + Math.random() * 300, 0.03 * force, 0.004, 0.06, 0.05);
-    this.drops(Math.round(3 + force * 3), 0.35, 0.025 * force, 0.12);
+    const level = 0.35 + 0.65 * deep;
+    this.burst(this.white, "bandpass", 620 + Math.random() * 260, 0.9, { attack: 0.04, decay: 0.24, peak: 0.1 * force * level }, 0, this.output, 400);
+    this.burst(this.brown, "lowpass", 380, 0.8, { attack: 0.05, decay: 0.3, peak: 0.12 * force * level });
+    if (deep > 0.35) {
+      this.burst(this.white, "highpass", 3500, 0.5, { attack: 0.02, decay: 0.12, peak: 0.02 * force * deep }, 0.03);
+      // Bubbles dragged under and the drops thrown up falling back.
+      this.tone(500 + Math.random() * 300, 800 + Math.random() * 300, 0.03 * force * deep, 0.004, 0.06, 0.05);
+      this.drops(Math.round((3 + force * 3) * deep), 0.35, 0.025 * force * deep, 0.12);
+    }
   }
 
   /** One arm stroke of the crawl at the surface (sprinting: harder, with the churn of the kick). */

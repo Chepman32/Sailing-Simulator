@@ -2687,7 +2687,8 @@ input[type="range"]:disabled {
 /* A big screen with a mouse: the chart is a framed sheet, the world dimmed round it (a click there closes it). */
 @media (min-width: 760px) and (pointer: fine) {
   .chart-overlay {
-    inset: max(26px, 4vh) max(26px, 4.5vw);
+    /* A clear margin of the dimmed world all round: somewhere obvious to click to put the chart away. */
+    inset: max(36px, 6.5vh) max(44px, 7.5vw);
     border: 1px solid var(--border);
     border-radius: 22px;
     box-shadow: 0 30px 90px rgba(0, 8, 14, 0.6);

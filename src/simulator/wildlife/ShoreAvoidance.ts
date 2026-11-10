@@ -1,6 +1,7 @@
 import { clamp } from "../math";
 import { shortestAngleDifference } from "./SwimmerDynamics";
 import type { MarineWorld } from "./WaterContact";
+import { distanceFromWaterline, waterDepthAt } from "../environment/IslandMath";
 
 /**
  * How swimmers keep off islands.
@@ -182,4 +183,71 @@ export function confineToDeepWater(
   position.x += (gx / length) * move;
   position.z += (gz / length) * move;
   return move;
+}
+
+/**
+ * The nearest any part of a dolphin or a shark comes to the waterline, m.
+ * (Whales keep much farther off by the depth they need.)
+ */
+export const MARINE_MIN_SHORE = 5;
+
+/**
+ * The last word on the shore: a body whose centre is nearer the waterline
+ * than `minDistance` (the 5 m every animal keeps, plus half its length, so
+ * neither its nose nor its flukes come closer) is put back on that line,
+ * straight out to sea. The steering and `confineToDeepWater` turn an animal
+ * away long before; this only holds the line when something (a yacht
+ * pushing it, a slot that fell inshore, a swimmer it circles) would carry it
+ * across, a few centimetres a step, never a jump. Returns the distance moved.
+ */
+export function keepOffShore(world: MarineWorld, position: { x: number; z: number }, minDistance: number): number {
+  const off = world.shoreDistance(position.x, position.z);
+  if (!(off < minDistance)) return 0;
+  const step = 1;
+  const gx = world.shoreDistance(position.x + step, position.z) - world.shoreDistance(position.x - step, position.z);
+  const gz = world.shoreDistance(position.x, position.z + step) - world.shoreDistance(position.x, position.z - step);
+  const length = Math.hypot(gx, gz);
+  if (!(length > 1e-6)) return 0;
+  // The distance field's slope is 1 off a straight coast; round a headland
+  // or in a bay it differs, so the step is repeated until the line is reached.
+  let moved = 0;
+  let dirX = gx / length;
+  let dirZ = gz / length;
+  for (let pass = 0; pass < 4; pass += 1) {
+    const deficit = minDistance - world.shoreDistance(position.x, position.z);
+    if (deficit <= 1e-3) break;
+    position.x += dirX * (deficit + 0.01);
+    position.z += dirZ * (deficit + 0.01);
+    moved += deficit;
+    const nx = world.shoreDistance(position.x + step, position.z) - world.shoreDistance(position.x - step, position.z);
+    const nz = world.shoreDistance(position.x, position.z + step) - world.shoreDistance(position.x, position.z - step);
+    const next = Math.hypot(nx, nz);
+    if (next > 1e-6) {
+      dirX = nx / next;
+      dirZ = nz / next;
+    }
+  }
+  return moved;
+}
+
+/**
+ * Dolphins and sharks keep well off a beach: within `MARINE_SHORE_KEEP`
+ * metres of the waterline the water counts as too shallow for either of
+ * them, even where the bottom drops steeply, so their shore avoidance turns
+ * them away before they get there. The band is the 5 m no part of an animal
+ * may enter (`MARINE_MIN_SHORE`) plus half a shark's length and room to
+ * turn; `keepOffShore` holds the hard line inside it.
+ */
+export const MARINE_SHORE_KEEP = 10;
+/** The deepest the band reads: under what a dolphin (2.1 m) or a shark (3.9 m) will swim in. */
+const MARINE_BAND_DEPTH = 1.6;
+
+/** The depth dolphins and sharks reckon with at (x, z), m: the real one, squeezed to nothing near a beach. */
+export function marineDepthExact(x: number, z: number): number {
+  const depth = waterDepthAt(x, z);
+  // Far from any coast (the open-water floor) there is nothing to ask.
+  if (depth > 16.5) return depth;
+  const off = distanceFromWaterline(x, z);
+  // Still sloping down to seaward inside the band, so "deeper" points out to sea.
+  return off < MARINE_SHORE_KEEP ? Math.min(depth, (Math.max(0, off) / MARINE_SHORE_KEEP) * MARINE_BAND_DEPTH) : depth;
 }

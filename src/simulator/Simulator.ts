@@ -89,9 +89,11 @@ import {
   type FindKind,
   type SeabedFind,
   type UpgradeId,
+  roundPurse,
 } from "./economy/EconomyMath";
 import { SeabedLoot, type SonarContact } from "./economy/SeabedLoot";
 import { Traders, type TraderSpot } from "./economy/Traders";
+import { BlobShadows, type BlobCaster } from "./diver/BlobShadows";
 import { crabKit, SeabedCrabs, type CrabWorld } from "./diver/SeabedCrabs";
 import { DiveFish } from "./diver/DiveFish";
 import { HelmStation, HULL_TRANSOM_Z } from "./vessel/HelmStation";
@@ -110,13 +112,14 @@ function setLinearRgb(target: THREE.Color, rgb: readonly number[]): void {
 const ENGINE_ROOM_AFT = 3.6;
 
 /**
- * People (`ScreenLod`): the full 110k-triangle figure only within about 4 m
- * (close enough to look at a face); 40 % out to about 14 m (the skipper seen
- * from the chase camera), 15 % beyond.
+ * People (`ScreenLod`): the full 110k-triangle figure within about 9 m
+ * (anyone he can walk up to and talk with: simplified, a face and hands
+ * turn angular); 40 % out to about 30 m (the skipper seen from the chase
+ * camera, an islander across the beach), 15 % beyond.
  */
 const FIGURE_LOD_STEPS = [
-  { ratio: 0.4, below: 0.2 },
-  { ratio: 0.15, below: 0.06 },
+  { ratio: 0.4, below: 0.1 },
+  { ratio: 0.15, below: 0.03 },
 ] as const;
 /** The walker's own shadow: a silhouette on the sand needs 12 % of the figure, always. */
 const SHADOW_FIGURE_LOD_STEPS = [{ ratio: 0.12, below: Number.POSITIVE_INFINITY }] as const;
@@ -311,7 +314,7 @@ export class Simulator {
    * so a change of view is never a cut.
    */
   private readonly handoff = { active: false, time: 0, from: new THREE.Vector3(), fromQuaternion: new THREE.Quaternion() };
-  /** Camera shake: the engine's jolt as it starts or dies, its idle tremor, and a volcano's rumble. */
+  /** Camera shake: the engine's jolt as it starts or dies, and a volcano's rumble. */
   private readonly shakeOffset = new THREE.Vector3();
   private shakeClock = 0;
   private engineJolt = 0;
@@ -322,6 +325,9 @@ export class Simulator {
   private autoTimeChosen = false;
   /** The skipper's shadow ashore (an invisible figure that casts one). */
   private walkerShadow: WalkerShadow | null = null;
+  /** Soft shadows under the islanders and the walker where the sun casts no real ones (a phone below "high"). */
+  private blobShadows: BlobShadows | null = null;
+  private readonly blobCasters: BlobCaster[] = [];
   private updateWorldFocus(): THREE.Vector3 {
     const camera = this.camera.camera.position;
     if (this.diver?.active && this.diver.mode !== "leap") this.worldFocus.set(camera.x, 0, camera.z);
@@ -667,6 +673,8 @@ export class Simulator {
       // Figures on a beach are lost in the blurred mirror; drawn there they
       // cost as much as in the view.
       this.mirrorHidden.push(this.traders.group);
+      this.blobShadows = new BlobShadows(this.scene);
+      this.mirrorHidden.push(this.blobShadows.mesh);
       const shadowModel = this.assets.animated("traderMan");
       if (shadowModel) {
         try {
@@ -718,7 +726,8 @@ export class Simulator {
           modeChanged: (mode) => this.onDiverMode(mode),
           pointerLost: () => this.options.onPointerLost?.(),
           wade: (position, depth, running) => {
-            this.wake.splash(position, 0.2, "slap", undefined, false);
+            // A film of water at the edge barely splashes; shin-deep it does.
+            this.wake.splash(position, 0.07 + 0.13 * Math.min(1, depth / 0.4), "slap", undefined, false);
             this.audio.wade(depth, running);
           },
         },
@@ -1745,6 +1754,7 @@ export class Simulator {
     this.canvas.removeEventListener("click", this.onCanvasClick);
     this.diver?.dispose();
     this.walkerShadow?.dispose();
+    this.blobShadows?.dispose();
     this.persistEconomy();
     this.seabedLoot?.dispose();
     this.traders?.dispose();
@@ -2039,7 +2049,7 @@ export class Simulator {
     // key or the button that asked for it is a user gesture, so the mouse
     // is captured for looking round right away, without another click.
     this.diver.startLeap();
-    this.diver.requestPointer();
+    this.diver.resumeLook();
   }
 
   /** Back to the wheel (from anywhere: a quick way home from a dive). */
@@ -2075,7 +2085,7 @@ export class Simulator {
 
   /** Captures the mouse for the skipper's eyes (call inside a click or key press). */
   requestDiverPointer(): void {
-    if (this.diver?.active) this.diver.requestPointer();
+    if (this.diver?.active) this.diver.resumeLook();
   }
 
   /** A card over the skipper's view closed: the mouse looks round again (now, or at the next key or press). */
@@ -2089,7 +2099,7 @@ export class Simulator {
   }
 
   private readonly onCanvasClick = (): void => {
-    if (this.diver?.active) this.diver.requestPointer();
+    if (this.diver?.active) this.diver.resumeLook();
   };
 
   private onDiverMode(mode: DiverMode): void {
@@ -2126,11 +2136,35 @@ export class Simulator {
     if (diver.mode === "swim") this.islands.prepareWalls(diver.swim.x, diver.swim.z);
     else if (diver.mode === "land") this.islands.prepareWalls(diver.walk.x, diver.walk.z);
     diver.update(delta, this.vessel.root, this.physics.velocity, this.physics.heading, this.deckField, HelmStation.STAND_FEET);
-    // His own shadow on the sand as he walks.
+    // His own shadow as he walks: on the sand ashore, and on the deck aboard
+    // (away from the wheel the skipper's figure is not drawn, so without
+    // this nothing of him would fall on the teak).
+    const ashore = diver.active && diver.mode === "land";
     if (this.walkerShadow) {
       const walk = diver.walk;
-      const ashore = diver.active && diver.mode === "land";
-      this.walkerShadow.update(ashore, walk.x, walk.y, walk.z, diver.yaw, Math.hypot(walk.vx, walk.vz), !walk.grounded, delta);
+      if (ashore) {
+        this.walkerShadow.update(true, walk.x, walk.y, walk.z, diver.yaw, Math.hypot(walk.vx, walk.vz), !walk.grounded, delta);
+      } else if (diver.active && diver.mode === "deck") {
+        const feet = diver.deckFeetWorld(this.vessel.root, this.diverScratch);
+        this.walkerShadow.update(true, feet.x, feet.y, feet.z, this.physics.heading + diver.yaw, diver.deckSpeed, !diver.onDeckFloor, delta);
+      } else {
+        this.walkerShadow.update(false, 0, 0, 0, 0, 0, false, delta);
+      }
+    }
+    // Where no shadow map is drawn, the islanders near him and he himself stand on soft blob shadows.
+    if (this.blobShadows) {
+      const casters = this.blobCasters;
+      casters.length = 0;
+      const night = this.environmentState.nightFactor;
+      const strength = this.renderer.shadowMap.enabled || !diver.active ? 0 : 0.58 * (1 - night * 0.55) * (1 - this.environment.currentWeather.overcast * 0.65);
+      if (strength > 0.01) {
+        const eye = this.camera.camera.position;
+        if (ashore) casters.push({ x: diver.walk.x, z: diver.walk.z, height: 1.75 });
+        for (const spot of this.traderSpotList) {
+          if (Math.hypot(spot.x - eye.x, spot.z - eye.z) < 60) casters.push({ x: spot.x, z: spot.z, height: 1.75 });
+        }
+      }
+      this.blobShadows.update(casters, this.environment.lightDirection, strength, this.groundWalk);
     }
     // A find within reach under the water; a trader on the beach.
     this.promptDetail = null;
@@ -2196,8 +2230,8 @@ export class Simulator {
 
   /**
    * The camera's shake for this frame: the engine's jolt as it starts or
-   * dies and its idle tremor (felt at the wheel and on deck, not from a
-   * distance), and a volcano's rumble when it is near.
+   * dies (felt at the wheel and on deck, not from a distance), and a
+   * volcano's rumble when it is near. Never a steady vibration.
    */
   private updateShake(delta: number): void {
     this.shakeClock += delta;
@@ -2206,8 +2240,13 @@ export class Simulator {
     const yacht = this.physics.position;
     const nearYacht = 1 - smoothstep(6, 18, Math.hypot(camera.x - yacht.x, camera.y - yacht.y, camera.z - yacht.z));
     const aboard = this.diver?.mode === "swim" || this.diver?.mode === "land" ? 0 : nearYacht;
-    const revs = this.state.engineRunning ? 0.35 + Math.min(1, Math.abs(this.physics.engineShaft)) * 0.65 : 0;
-    const engine = aboard * (revs * 0.0016 + this.engineJolt * this.engineJolt * 0.014);
+    // Only the jolt of the engine catching or dying moves the eyes. Its
+    // steady running does not: a tremor that grew with the revs shook the
+    // eye a millimetre or two against a wheel and a pod half a metre away,
+    // ten times a second, so at speed the whole helm station jittered in
+    // the view while the sea beyond it stood still. A head rides out that
+    // buzz; it is heard (and seen in the wake), not seen in the instruments.
+    const engine = aboard * this.engineJolt * this.engineJolt * 0.014;
     const volcano = this.volcanoes.shakeAt(camera.x, camera.z) * 0.06;
     const amplitude = engine + volcano;
     if (amplitude < 1e-5) {
@@ -2782,7 +2821,7 @@ export class Simulator {
         promptDetail: this.promptDetail,
         torch: this.diver?.torch ?? false,
         underwater: this.underwaterAmount > 0.5,
-        pointerLocked: this.diver?.pointerLocked ?? false,
+        pointerLocked: this.diver?.looksWithMouse ?? false,
       },
       economy: {
         bagCount: this.economy.bag.length,
@@ -2837,7 +2876,7 @@ export class Simulator {
       const unlocked = strings(saved.unlockedSails, 16).filter(isSailColor);
       base.unlockedSails = Array.from(new Set(["white", ...unlocked]));
       if (isSailColor(saved.sailColor) && base.unlockedSails.includes(saved.sailColor)) base.sailColor = saved.sailColor;
-      if (typeof saved.doubloons === "number" && Number.isFinite(saved.doubloons)) base.doubloons = Math.max(0, Math.floor(saved.doubloons));
+      if (typeof saved.doubloons === "number" && Number.isFinite(saved.doubloons)) base.doubloons = roundPurse(saved.doubloons);
       if (typeof saved.flamingos === "number" && Number.isFinite(saved.flamingos)) base.flamingos = Math.max(0, Math.floor(saved.flamingos));
       base.discoveredPlaces = strings(saved.discoveredPlaces, MAX_DISCOVERIES);
       base.collectedLoot = strings(saved.collectedLoot, MAX_REMEMBERED_LOOT);

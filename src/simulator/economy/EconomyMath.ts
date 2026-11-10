@@ -31,6 +31,15 @@ export function roundGold(value: number): number {
   return Math.max(step, Math.round(value / step) * step);
 }
 
+/**
+ * A purse as it is kept: whole fives. Every sum that goes in or out is a
+ * multiple of 5, so the purse is too; one saved before prices were round
+ * (137 gold) is rounded up, in the player's favour, never down.
+ */
+export function roundPurse(gold: number): number {
+  return Number.isFinite(gold) ? Math.max(0, Math.ceil(Math.floor(gold) / 5) * 5) : 0;
+}
+
 /** Price of the next level when `level` levels are owned: `base × 1.65^level`, rounded as a trader would. */
 export function upgradePrice(base: number, level: number): number {
   return roundGold(base * Math.pow(PRICE_GROWTH, Math.max(0, level)));
@@ -453,7 +462,10 @@ export function restoreEconomy(saved: unknown): EconomyState {
   if (Array.isArray(source.bag)) {
     for (const item of source.bag.slice(-BAG_SLOTS * STACK_SIZE)) {
       if (item && typeof item === "object" && FIND_KINDS.includes((item as CarriedFind).kind) && Number.isFinite((item as CarriedFind).value)) {
-        state.bag.push({ kind: (item as CarriedFind).kind, value: Math.max(0, Math.round((item as CarriedFind).value)) });
+        // A find picked up before values were round (11, 24 gold) is worth
+        // what a trader would say today (10, 25): the same rounding as a
+        // fresh find, so a whole bag keeps its worth on average.
+        state.bag.push({ kind: (item as CarriedFind).kind, value: roundGold(Math.max(0, (item as CarriedFind).value)) });
       }
     }
   }

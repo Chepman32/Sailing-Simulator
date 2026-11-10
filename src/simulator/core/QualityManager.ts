@@ -52,7 +52,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     maxDpr: 1,
     pixelBudget: 1_000_000,
     oceanSegments: 96,
-    shadowMapSize: 512,
+    shadowMapSize: 1024,
     reflectionScale: 0,
     foamDensity: 0.45,
     wildlifeCount: 1,
@@ -158,6 +158,18 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     fullDetail: true,
   },
 };
+
+/**
+ * Whether the sun casts real (shadow-mapped) shadows at a preset. On a
+ * computer always: a beach where neither the palms' neighbours, the
+ * islanders nor the walker himself throw a shadow looks unlit, and the low
+ * preset is where a slow machine ends up by itself, so it keeps them, from
+ * a smaller map. A phone has them from the high preset
+ * only; below it the figures stand on soft blob shadows (`BlobShadows`).
+ */
+export function sunShadowsOn(preset: QualityPreset, coarseDevice: boolean): boolean {
+  return !coarseDevice || preset === "high" || preset === "ultra";
+}
 
 /** The next preset down (the automatic mode's step when frames run slow). */
 export function stepDown(preset: QualityPreset): QualityPreset {
@@ -287,9 +299,11 @@ export class QualityManager {
   private apply(preset: QualityPreset, notify: boolean): void {
     this.preset = preset;
     this.fpsJudge.reset();
-    const shadows = preset !== "low" && (!this.coarseDevice || preset === "high" || preset === "ultra");
+    const shadows = sunShadowsOn(preset, this.coarseDevice);
     this.shadowsChanged = shadows !== this.renderer.shadowMap.enabled;
     this.renderer.shadowMap.enabled = shadows;
+    // The soft filter at every preset: the plain one draws a small map's
+    // texels as a hatched, blocky edge on smooth sand.
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     if (notify) this.onChange?.(preset);
   }

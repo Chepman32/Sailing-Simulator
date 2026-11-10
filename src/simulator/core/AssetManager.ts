@@ -5,6 +5,7 @@ import type { LoadingState } from "../types";
 import { assetBytes, assetUrl } from "./assetManifest";
 import { createGltfLoader } from "./GltfLoading";
 import { takePrefetchedModel } from "./startAssets";
+import { injectAfter, patchMaterialShader } from "./ShaderPatch";
 
 export type AnimatedAssetKey =
   | "dolphin" | "shark" | "whale" | "fishSchool" | "seagull"
@@ -246,24 +247,189 @@ export class AssetManager {
 }
 
 /**
- * The islanders' skin and clothes, as exported, read flat and grey in the
- * scene's light: a matte surface lit only by the sun and a dim sky. They
- * take a little more of the sky's light (and a soft sheen on skin) and a
- * touch more colour, so a figure on the beach looks alive, not dusty.
+ * The islanders as exported look dull and angular in the scene, for two
+ * separate reasons, both put right here once per model:
+ *
+ * - **angular**: the meshes are dense (110 000 triangles) but their surface
+ *   is crumpled at the scale of a triangle: a vertex normal stands 8–15°
+ *   off the faces round it, and the two sides of a texture seam do not
+ *   agree. Lit, a cheek or a shoulder then shows its facets, and worse once
+ *   the mesh is simplified with distance. `smoothFigureNormals` rebuilds
+ *   the normals from the shape itself, welded across seams and relaxed over
+ *   the neighbouring vertices, so skin shades as one smooth surface;
+ * - **dull**: a matte surface lit only by the sun and a dim sky, with
+ *   textures painted grey-pale. They take more of the sky's light, a soft
+ *   sheen, and their colours are graded (`FIGURE_GRADE`): more saturation,
+ *   the darks lifted a little, a touch warmer, so a figure on the beach
+ *   looks alive and sunlit, not dusty.
  */
 export function brightenFigure(root: THREE.Object3D): void {
+  const smoothed = new Set<THREE.BufferGeometry>();
   root.traverse((object) => {
     const mesh = object as THREE.Mesh;
     if (!mesh.isMesh) return;
+    if (!smoothed.has(mesh.geometry)) {
+      smoothed.add(mesh.geometry);
+      smoothFigureNormals(mesh.geometry);
+    }
     for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
       if (!(material instanceof THREE.MeshStandardMaterial)) continue;
-      material.envMapIntensity = 1.6;
+      material.envMapIntensity = 1.9;
       // The texture's roughness (about 0.8) times this: still matte, with a sheen.
-      material.roughness = Math.min(material.roughness, 0.82);
-      material.color.multiplyScalar(1.1);
+      material.roughness = Math.min(material.roughness, 0.74);
+      material.color.multiplyScalar(1.12);
+      // The exported normal maps are all but flat and only add their
+      // compression's grain to the shading.
+      if (material.normalMap) material.normalScale.setScalar(0.35);
+      gradeFigureColor(material);
       material.needsUpdate = true;
     }
   });
+}
+
+/** How a figure's texture colours are graded (see `brightenFigure`). */
+export const FIGURE_GRADE = { saturation: 1.28, lift: 0.86, warmth: 0.035 } as const;
+
+/**
+ * The grade as numbers (the shader does the same): linear RGB in, linear
+ * RGB out. Greys stay grey (a little lighter in the darks), colours gain
+ * saturation, and nothing goes below zero.
+ */
+export function gradeFigureRgb(r: number, g: number, b: number, out: [number, number, number] = [0, 0, 0]): [number, number, number] {
+  const { saturation, lift, warmth } = FIGURE_GRADE;
+  const lifted = [Math.pow(Math.max(r, 0), lift), Math.pow(Math.max(g, 0), lift), Math.pow(Math.max(b, 0), lift)];
+  const luma = lifted[0]! * 0.2126 + lifted[1]! * 0.7152 + lifted[2]! * 0.0722;
+  out[0] = Math.max(0, luma + (lifted[0]! - luma) * saturation) * (1 + warmth);
+  out[1] = Math.max(0, luma + (lifted[1]! - luma) * saturation);
+  out[2] = Math.max(0, luma + (lifted[2]! - luma) * saturation) * (1 - warmth);
+  return out;
+}
+
+function gradeFigureColor(material: THREE.MeshStandardMaterial): void {
+  const { saturation, lift, warmth } = FIGURE_GRADE;
+  patchMaterialShader(material, "figure-grade", (shader) => {
+    shader.fragmentShader = injectAfter(
+      shader.fragmentShader,
+      "map_fragment",
+      /* glsl */ `{
+        vec3 figureLifted = pow(max(diffuseColor.rgb, vec3(0.0)), vec3(${lift.toFixed(3)}));
+        float figureLuma = dot(figureLifted, vec3(0.2126, 0.7152, 0.0722));
+        diffuseColor.rgb = max(vec3(0.0), mix(vec3(figureLuma), figureLifted, ${saturation.toFixed(3)})) * vec3(${(1 + warmth).toFixed(3)}, 1.0, ${(1 - warmth).toFixed(3)});
+      }`,
+    );
+  });
+}
+
+/**
+ * Rebuilds a figure's vertex normals as those of a smooth surface: the
+ * area-weighted normals of the faces round each point (points at the same
+ * place, such as the two sides of a texture seam, counted as one), then
+ * relaxed `passes` times over the neighbouring points, which irons out the
+ * triangle-scale crumple of a scanned or generated mesh without touching
+ * its shape. Works on normals stored as floats or as normalised integers.
+ * Returns the mean angle (radians) the normals were turned by.
+ */
+export function smoothFigureNormals(geometry: THREE.BufferGeometry, passes = 3): number {
+  const position = geometry.getAttribute("position");
+  const normal = geometry.getAttribute("normal");
+  const index = geometry.getIndex();
+  if (!position || !normal || !index) return 0;
+  const count = position.count;
+  // Points at the same place share one normal.
+  const weld = new Int32Array(count);
+  const seen = new Map<string, number>();
+  geometry.computeBoundingBox();
+  const size = geometry.boundingBox!.getSize(new THREE.Vector3());
+  const grid = 1 / (Math.max(size.x, size.y, size.z, 1e-6) * 2e-5);
+  let welded = 0;
+  for (let i = 0; i < count; i += 1) {
+    const key = `${Math.round(position.getX(i) * grid)},${Math.round(position.getY(i) * grid)},${Math.round(position.getZ(i) * grid)}`;
+    let id = seen.get(key);
+    if (id === undefined) {
+      id = welded;
+      welded += 1;
+      seen.set(key, id);
+    }
+    weld[i] = id;
+  }
+  const px = new Float32Array(welded);
+  const py = new Float32Array(welded);
+  const pz = new Float32Array(welded);
+  for (let i = 0; i < count; i += 1) {
+    const id = weld[i]!;
+    px[id] = position.getX(i);
+    py[id] = position.getY(i);
+    pz[id] = position.getZ(i);
+  }
+  // The faces' normals, weighted by their area, gathered at each point.
+  let current = new Float32Array(welded * 3);
+  const triangles = index.count / 3;
+  const corners = new Int32Array(index.count);
+  for (let t = 0; t < triangles; t += 1) {
+    const a = weld[index.getX(t * 3)]!;
+    const b = weld[index.getX(t * 3 + 1)]!;
+    const c = weld[index.getX(t * 3 + 2)]!;
+    corners[t * 3] = a;
+    corners[t * 3 + 1] = b;
+    corners[t * 3 + 2] = c;
+    const e1x = px[b]! - px[a]!;
+    const e1y = py[b]! - py[a]!;
+    const e1z = pz[b]! - pz[a]!;
+    const e2x = px[c]! - px[a]!;
+    const e2y = py[c]! - py[a]!;
+    const e2z = pz[c]! - pz[a]!;
+    const nx = e1y * e2z - e1z * e2y;
+    const ny = e1z * e2x - e1x * e2z;
+    const nz = e1x * e2y - e1y * e2x;
+    for (const corner of [a, b, c]) {
+      current[corner * 3] += nx;
+      current[corner * 3 + 1] += ny;
+      current[corner * 3 + 2] += nz;
+    }
+  }
+  const normalise = (values: Float32Array): void => {
+    for (let i = 0; i < welded; i += 1) {
+      const length = Math.hypot(values[i * 3]!, values[i * 3 + 1]!, values[i * 3 + 2]!) || 1;
+      values[i * 3] /= length;
+      values[i * 3 + 1] /= length;
+      values[i * 3 + 2] /= length;
+    }
+  };
+  normalise(current);
+  // Relaxed over the neighbours along the edges (each point keeps half of its own).
+  let next = new Float32Array(welded * 3);
+  for (let pass = 0; pass < passes; pass += 1) {
+    next.set(current);
+    for (let t = 0; t < triangles; t += 1) {
+      for (let k = 0; k < 3; k += 1) {
+        const from = corners[t * 3 + k]!;
+        const to = corners[t * 3 + ((k + 1) % 3)]!;
+        // (An edge is seen from the triangle on each side: once each way.)
+        next[to * 3] += current[from * 3]! * 0.17;
+        next[to * 3 + 1] += current[from * 3 + 1]! * 0.17;
+        next[to * 3 + 2] += current[from * 3 + 2]! * 0.17;
+        next[from * 3] += current[to * 3]! * 0.17;
+        next[from * 3 + 1] += current[to * 3 + 1]! * 0.17;
+        next[from * 3 + 2] += current[to * 3 + 2]! * 0.17;
+      }
+    }
+    normalise(next);
+    const swap = current;
+    current = next;
+    next = swap;
+  }
+  let turned = 0;
+  for (let i = 0; i < count; i += 1) {
+    const id = weld[i]! * 3;
+    const ox = normal.getX(i);
+    const oy = normal.getY(i);
+    const oz = normal.getZ(i);
+    const length = Math.hypot(ox, oy, oz) || 1;
+    turned += Math.acos(Math.min(1, Math.max(-1, (ox * current[id]! + oy * current[id + 1]! + oz * current[id + 2]!) / length)));
+    normal.setXYZ(i, current[id]!, current[id + 1]!, current[id + 2]!);
+  }
+  normal.needsUpdate = true;
+  return turned / Math.max(1, count);
 }
 
 /**
