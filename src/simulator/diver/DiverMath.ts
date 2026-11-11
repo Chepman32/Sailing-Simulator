@@ -116,6 +116,12 @@ export type SwimWorld = {
    */
   floatLine?: (x: number, z: number) => number;
   /**
+   * The water's own horizontal velocity at (x, z), `depth` m down (the
+   * waves' orbital motion), m/s: a swimmer is carried by it, surged to and
+   * fro under a passing swell. Omitted: still water.
+   */
+  drift?: (x: number, z: number, depth: number, out: { x: number; z: number }) => { x: number; z: number };
+  /**
    * Distance from the eyes at (x, y, z) to the nearest animal's body
    * (negative inside) and the way out of it in `normal` (3D): whales, sharks,
    * dolphins are solid to a swimmer.
@@ -225,6 +231,7 @@ export function isFloating(depth: number, input: SwimInput, ascending: boolean):
  * afterwards (negative above it).
  */
 const obstacleNormal = { x: 0, z: 0 };
+const driftScratch = { x: 0, z: 0 };
 const bodyNormal = { x: 0, y: 0, z: 0 };
 
 export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, dt: number): number {
@@ -300,6 +307,12 @@ export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, d
   state.x += state.vx * step;
   state.y += state.vy * step;
   state.z += state.vz * step;
+  // The water carries him: forward under a crest, back in the trough, less the deeper he is.
+  if (world.drift && !state.airborne) {
+    const carried = world.drift(state.x, state.z, Math.max(0, depthBefore), driftScratch);
+    state.x += carried.x * step;
+    state.z += carried.z * step;
+  }
 
   // Hulls and walls in the water: pushed back out, the speed into them lost.
   if (world.obstacle) {

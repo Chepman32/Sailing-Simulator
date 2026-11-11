@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { cachedField } from "../core/FieldCache";
 import type { AssetManager } from "../core/AssetManager";
 import { distanceFromWaterline } from "../environment/IslandMath";
-import { marineDepthExact } from "./ShoreAvoidance";
+import { marineDepthExact, whaleDepthExact } from "./ShoreAvoidance";
 
 export { MARINE_SHORE_KEEP } from "./ShoreAvoidance";
 import type { OceanSystem } from "../environment/OceanSystem";
@@ -43,6 +43,8 @@ export const STORM_RETURN_BELOW = 0.45;
  */
 /** {@link marineDepthExact} on a 1 m grid (`cachedField`): asked for hundreds of times a frame by the animals' shore avoidance. */
 export const marineDepthAt = cachedField(marineDepthExact, 1);
+/** {@link whaleDepthExact} on a 2 m grid: the whales' own reckoning of the shoals. */
+export const whaleDepthAt = cachedField(whaleDepthExact, 2);
 
 export class WildlifeSystem {
   readonly group = new THREE.Group();
@@ -103,7 +105,8 @@ export class WildlifeSystem {
       shoreDistance: distanceFromWaterline,
     };
     this.dolphins = new DolphinController(this.marineGroup, ocean, this.world, assets, counts.dolphins, effects);
-    this.whales = new WhaleController(this.marineGroup, ocean, this.world, assets, effects);
+    // Whales read the coast's shelf as shallower than it is: they keep twice as far off.
+    this.whales = new WhaleController(this.marineGroup, ocean, { ...this.world, seabedDepth: whaleDepthAt }, assets, effects);
     this.sharks = Array.from({ length: Math.max(1, counts.sharks ?? 1) }, () => new SharkController(this.marineGroup, ocean, this.world, assets, effects));
     this.treat(this.marineGroup);
     // The distant breacher flies through the air, so it lives outside the

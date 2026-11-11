@@ -45,6 +45,32 @@ export const SANE_COLOR_GLSL = /* glsl */ `
   }
 `;
 
+/**
+ * Drawing straight to the screen (no post-processing, the low preset), the
+ * picture would miss the finish's saturation and so look grey beside the
+ * other presets. The finish's own colour (ACES with the same saturation)
+ * is applied in every material's last line instead, through three's custom
+ * tone mapping: the same look at no cost at all, not one extra pass. The
+ * vignette comes from the page (`.scene-vignette`), drawn by the browser.
+ */
+const DIRECT_FINISH_GLSL = /* glsl */ `vec3 CustomToneMapping( vec3 color ) {
+  vec3 mapped = ACESFilmicToneMapping( color );
+  float luminance = dot( mapped, vec3( 0.2126, 0.7152, 0.0722 ) );
+  // Saturation as the finish gives it (applied after the curve here, so a
+  // little more), and a touch of the S-curve the bloom's glow would add.
+  mapped = clamp( mix( vec3( luminance ), mapped, 1.1 ), 0.0, 1.0 );
+  return mix( mapped, mapped * mapped * ( 3.0 - 2.0 * mapped ), 0.14 );
+}`;
+let directFinishInstalled = false;
+function installDirectFinish(): void {
+  if (directFinishInstalled) return;
+  directFinishInstalled = true;
+  THREE.ShaderChunk.tonemapping_pars_fragment = THREE.ShaderChunk.tonemapping_pars_fragment.replace(
+    "vec3 CustomToneMapping( vec3 color ) { return color; }",
+    DIRECT_FINISH_GLSL,
+  );
+}
+
 const FinishShader = {
   name: "LensFinish",
   uniforms: {
@@ -183,6 +209,8 @@ export class PostProcessing {
     this.supported =
       renderer.extensions.has("EXT_color_buffer_half_float") || renderer.extensions.has("EXT_color_buffer_float");
     this.active = quality.postProcessing && this.supported;
+    installDirectFinish();
+    this.applyToneMapping();
     this.samples = this.supportedSamples(quality.msaaSamples);
     const size = renderer.getSize(new THREE.Vector2());
     this.width = Math.max(1, size.x);
@@ -288,8 +316,25 @@ export class PostProcessing {
     this.underwaterRays.camera = camera;
   }
 
+  /**
+   * Straight to the screen, the finish's colour comes from the materials'
+   * custom tone mapping; through the pipeline, ACES (the finish pass adds
+   * the rest). A change recompiles the materials, so it happens only when
+   * the pipeline is switched on or off.
+   */
+  private applyToneMapping(): void {
+    const mapping = this.active ? THREE.ACESFilmicToneMapping : THREE.CustomToneMapping;
+    if (this.renderer.toneMapping !== mapping) this.renderer.toneMapping = mapping;
+  }
+
+  /** Whether frames go straight to the screen (the page then draws the vignette). */
+  get direct(): boolean {
+    return !this.active;
+  }
+
   setQuality(quality: QualitySettings): void {
     this.active = quality.postProcessing && this.supported;
+    this.applyToneMapping();
     this.bloom.strength = quality.bloomStrength;
     this.bloom.enabled = quality.bloomStrength > 0;
     const samples = this.supportedSamples(quality.msaaSamples);

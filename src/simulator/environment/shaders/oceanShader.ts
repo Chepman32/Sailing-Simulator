@@ -732,7 +732,10 @@ ${detailCalls}
     // the many facets of each pixel and the spray above them.
     reflection = mix(reflection, vec3(dot(reflection, vec3(0.3, 0.5, 0.2))), 0.14);
     reflection = mix(reflection, uDeepColor * 1.5 + uAmbientColor * 0.06, mirrorsSea * 0.85);
-    if (uDetail > 0.6) {
+    // From the medium preset (its detail 0.55): the clouds in the water are
+    // much of what makes a sea look like one, and the mirror takes the
+    // cheap cloud (no shading fbm), a few noise taps a pixel.
+    if (uDetail > 0.5) {
       // Clouds are mirrored through a partly calmed normal: the full ripple
       // field would smear them into streaks, where the eye expects shapes.
       vec3 calmNormal = normalize(mix(normal, vec3(0.0, 1.0, 0.0), 0.5));

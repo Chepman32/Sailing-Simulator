@@ -10,7 +10,7 @@ import {
   type FindTier,
   type SeabedFind,
 } from "./EconomyMath";
-import { FIND_HEIGHT, findGeometry } from "./FindModels";
+import { FIND_HEIGHT, FIND_SHOWN_SCALE, findGeometry } from "./FindModels";
 
 /**
  * The finds on the sea floor round a diver: everyday wrack, old things of
@@ -220,17 +220,17 @@ export class SeabedLoot {
           // Settled into the sand, tilted to the lie of the bottom a little.
           this.quaternion.setFromAxisAngle(this.up, find.yaw);
           this.position.set(find.x, y - 0.02, find.z);
-          this.scale.setScalar(0.9 + find.seed * 0.25);
+          this.scale.setScalar((0.9 + find.seed * 0.25) * FIND_SHOWN_SCALE[find.kind]);
           this.matrix.compose(this.position, this.quaternion, this.scale);
           layer.mesh.setMatrixAt(layer.finds.length, this.matrix);
           layer.finds.push({ ...find });
           this.near.push({ find: { ...find }, y });
           if (glints < this.glintPhases.length) {
             const color = GLINT_COLORS[find.tier];
-            this.glintPositions.set([find.x, y + FIND_HEIGHT[find.kind] + 0.08, find.z], glints * 3);
+            this.glintPositions.set([find.x, y + FIND_HEIGHT[find.kind] * FIND_SHOWN_SCALE[find.kind] + 0.1, find.z], glints * 3);
             this.glintColors.set([color.r, color.g, color.b], glints * 3);
             this.glintPhases[glints] = find.seed;
-            this.glintSizes[glints] = find.tier === 3 ? 0.55 : find.tier === 2 ? 0.38 : 0.22;
+            this.glintSizes[glints] = find.tier === 3 ? 0.8 : find.tier === 2 ? 0.58 : 0.4;
             glints += 1;
           }
         }
@@ -251,7 +251,7 @@ export class SeabedLoot {
     let bestDistance = PICKUP_REACH;
     for (const { find, y } of this.near) {
       if (this.taken.has(find.key)) continue;
-      const top = y + FIND_HEIGHT[find.kind] * 0.5;
+      const top = y + FIND_HEIGHT[find.kind] * FIND_SHOWN_SCALE[find.kind] * 0.5;
       const distance = Math.hypot(find.x - eye.x, top - eye.y, find.z - eye.z);
       if (distance < bestDistance) {
         bestDistance = distance;

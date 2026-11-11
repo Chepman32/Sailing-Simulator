@@ -1,4 +1,5 @@
 import { BodySounds, type FootSurface } from "./BodySounds";
+import { synthesizeThunder, thunderReverb } from "./ThunderSynth";
 import { clamp } from "../math";
 import { BoatVoices } from "./BoatVoices";
 import { BELL_RING, ringBell } from "./BellSynth";
@@ -174,6 +175,8 @@ export class AudioSystem {
   private rainHissGain?: GainNode;
   private rainPatterGain?: GainNode;
   private thunderBuffer?: AudioBuffer;
+  /** The echo off the cloud base and the sea that every strike's thunder rolls on in. */
+  private thunderEcho?: ConvolverNode;
   private windGain?: GainNode;
   private windFilter?: BiquadFilterNode;
   /** The storm's layers (see `WindSoundMath`). */
@@ -1025,6 +1028,69 @@ export class AudioSystem {
       }
     }
     window.setTimeout(() => panner.disconnect(), (start - context.currentTime + 3.5) * 1000);
+  }
+
+  /**
+   * The thunder of a lightning strike `distance` metres off (`pan` −1 left …
+   * 1 right), heard from the moment of the flash: synthesised from the bolt
+   * itself (`ThunderSynth`: every few metres of a tortuous channel sending
+   * out its own shock, each arriving from where it is), so it starts when
+   * the nearest part of the channel is heard, cracks when close and only
+   * rolls and grumbles far off, then rolls on in the echo off the clouds.
+   */
+  strikeThunder(distance: number, pan = 0): void {
+    const context = this.context;
+    if (!context || context.state !== "running" || !this.environmentBus) return;
+    const flash = context.currentTime;
+    // Out of the frame being drawn: the synthesis takes a few milliseconds.
+    window.setTimeout(() => {
+      const bus = this.environmentBus;
+      if (!bus || context.state !== "running") return;
+      // A close strike keeps its treble; a far one has none to keep.
+      const rate = distance < 900 ? 32000 : 22050;
+      const sound = synthesizeThunder({ distance: Math.max(20, distance), pan }, rate);
+      const buffer = context.createBuffer(2, sound.left.length, rate);
+      buffer.copyToChannel(sound.left, 0);
+      buffer.copyToChannel(sound.right, 1);
+      if (!this.thunderEcho) {
+        const [left, right] = thunderReverb(22050);
+        const response = context.createBuffer(2, left.length, 22050);
+        response.copyToChannel(left, 0);
+        response.copyToChannel(right, 1);
+        this.thunderEcho = context.createConvolver();
+        this.thunderEcho.buffer = response;
+        const echoLevel = context.createGain();
+        echoLevel.gain.value = 0.42;
+        this.thunderEcho.connect(echoLevel).connect(bus);
+      }
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      // The air takes the treble with distance (on top of what the shocks lost on the way).
+      const air = context.createBiquadFilter();
+      air.type = "lowpass";
+      air.Q.value = 0.5;
+      air.frequency.value = clamp(3.2e6 / (distance + 180), 240, 15000);
+      // And the deepest notes carry: a little body below 120 Hz.
+      const body = context.createBiquadFilter();
+      body.type = "lowshelf";
+      body.frequency.value = 120;
+      body.gain.value = 4 + clamp(distance / 2000, 0, 3);
+      const level = context.createGain();
+      // Loud close by, falling off with distance (but a far roll is still heard).
+      level.gain.value = 1.15 * clamp(Math.pow(500 / (distance + 350), 0.75), 0.12, 1);
+      source.connect(air).connect(body).connect(level);
+      level.connect(bus);
+      // The far strike is mostly echo; a close one mostly direct.
+      const send = context.createGain();
+      send.gain.value = 0.35 + 0.5 * clamp(distance / 5000, 0, 1);
+      level.connect(send).connect(this.thunderEcho);
+      const start = Math.max(context.currentTime + 0.01, flash + sound.arrival);
+      source.start(start);
+      source.onended = () => {
+        level.disconnect();
+        send.disconnect();
+      };
+    }, 0);
   }
 
   thunder(distance: number, delay = 0, pan = 0): void {

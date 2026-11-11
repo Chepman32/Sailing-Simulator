@@ -361,7 +361,7 @@ export function LootChip({ loot, messages }: { loot: SimulationSnapshot["nearest
 export type DiscoveryView = Discovery & { id: number };
 
 const RIDDLES = new Set(["riddle-teeth", "riddle-shadow", "riddle-hole", "riddle-towel"]);
-const PLACE_ICONS: Record<string, string> = { volcano: "🌋", barge: "🪩", wreck: "🏴‍☠️", monolith: "🗿" };
+export const PLACE_ICONS: Record<string, string> = { volcano: "🌋", barge: "🪩", wreck: "🏴‍☠️", monolith: "🗿", trader: "🛖" };
 
 /** A find or a discovery: a card at the top, with its words, for a few seconds. */
 export function DiscoveryCard({
@@ -369,9 +369,12 @@ export function DiscoveryCard({
   messages,
   onClose,
   onHoist,
+  upgradeName,
 }: {
   discovery: DiscoveryView | null;
   messages: FeatureMessages;
+  /** The shop's name for an upgrade (a crate may hold one). */
+  upgradeName: (id: string) => string;
   onClose: () => void;
   onHoist: (color: string) => void;
 }) {
@@ -412,8 +415,13 @@ export function DiscoveryCard({
     }
   } else if (discovery.kind === "crate") {
     icon = <VoyageIcon name="crate" />;
-    title = messages.crateFound;
-    body = `${featureText(messages, `cargo_${discovery.key}`)} ${fill(messages.coins, { n: discovery.coins ?? 0 })}`;
+    if (discovery.key === "upgrade" && discovery.upgrade) {
+      title = messages.crateUpgradeTitle;
+      body = fill(messages.crateUpgrade, { name: upgradeName(discovery.upgrade), level: discovery.level ?? 1 });
+    } else {
+      title = messages.crateFound;
+      body = fill(messages.crateGold, { n: discovery.coins ?? 0 });
+    }
   } else if (discovery.kind === "flamingo") {
     icon = <VoyageIcon name="flamingo" />;
     title = discovery.first ? messages.flamingoFirst : messages.flamingoMore;

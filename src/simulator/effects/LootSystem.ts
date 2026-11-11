@@ -143,7 +143,7 @@ export class LootSystem {
       const px = item.x + visual.driftX;
       const pz = item.z + visual.driftZ;
       const surface = this.ocean.sample(px, pz);
-      const draft = visual.kind === "crate" ? 0.36 : visual.kind === "flamingo" ? 0.08 : 0.06;
+      const draft = visual.kind === "crate" ? 0.58 : visual.kind === "flamingo" ? 0.13 : 0.1;
       const bob = Math.sin(this.clock * 1.7 + item.seed * 40) * 0.04;
       visual.root.position.set(px, surface.height - draft + bob, pz);
       // Rides the slope of the wave, turning slowly.
@@ -157,7 +157,7 @@ export class LootSystem {
         const pulse = 0.75 + 0.25 * Math.sin(this.clock * 2.4 + item.seed * 17);
         const level = (0.18 + 0.82 * this.night) * pulse;
         visual.glow.material.opacity = level;
-        visual.glow.scale.setScalar(1.5 + 2.3 * this.night);
+        visual.glow.scale.setScalar(2.4 + 3 * this.night);
       }
       if (withinReach(x, z, heading, px, pz)) {
         visual.hauled = 0;
@@ -248,18 +248,20 @@ export class LootSystem {
       glassMesh.renderOrder = 2;
       const bottle = new THREE.Group();
       bottle.add(scrollMesh, glassMesh, corkMesh);
-      bottle.scale.setScalar(1.6);
+      // Bigger than life (a bottle half a metre long is a speck at fifty), so it is seen afar.
+      bottle.scale.setScalar(2.7);
       glow = new THREE.Sprite(m.glow);
       glow.renderOrder = 3;
       root.add(bottle, glow);
     } else if (kind === "crate") {
-      const box = new THREE.BoxGeometry(1.15, 0.95, 1.15);
+      const box = new THREE.BoxGeometry(1.85, 1.5, 1.85);
       this.geometries.push(box);
       const crate = new THREE.Mesh(box, m.crate);
       crate.castShadow = true;
       root.add(crate);
     } else {
       const flamingo = createFlamingo(m, this.geometries);
+      flamingo.scale.multiplyScalar(1.65);
       root.add(flamingo);
     }
     this.group.add(root);

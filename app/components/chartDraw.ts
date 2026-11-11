@@ -31,6 +31,8 @@ export type ChartStyle = {
   /** Seconds, for the crater's glow and the fog's drift. */
   time: number;
   labels: ChartLabels;
+  /** A place picked for fast travel: ringed, the ring pulsing. */
+  selected?: { x: number; z: number } | null;
 };
 
 const SEA_DEEP = "#0b344c";
@@ -868,6 +870,22 @@ export function drawChart(context: CanvasRenderingContext2D, camera: ChartCamera
   drawYacht(context, camera, data, style);
   drawWalker(context, camera, data, style);
   drawPins(context, camera, data, style);
+  if (style.selected) drawSelection(context, camera, style.selected, style.time);
+}
+
+/** The place picked for fast travel: a bright ring breathing round it. */
+function drawSelection(context: CanvasRenderingContext2D, camera: ChartCamera, place: { x: number; z: number }, time: number): void {
+  const [x, y] = toScreen(camera, place.x, place.z);
+  const pulse = 0.5 + 0.5 * Math.sin(time * 4);
+  context.save();
+  context.lineWidth = 2.5;
+  context.strokeStyle = `rgba(101, 226, 214, ${0.65 + 0.35 * pulse})`;
+  context.shadowColor = "rgba(101, 226, 214, 0.9)";
+  context.shadowBlur = 10;
+  context.beginPath();
+  context.arc(x, y, 19 + pulse * 4, 0, Math.PI * 2);
+  context.stroke();
+  context.restore();
 }
 
 /** A scale bar's length (CSS px) and label for the chart's current zoom. */

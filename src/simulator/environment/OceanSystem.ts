@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { QualitySettings } from "../core/QualityManager";
 import type { EnvironmentPalette } from "./EnvironmentPalette";
 import { createOceanGrid } from "./OceanGrid";
-import { maximumOceanFold, OCEAN_WAVES, sampleOcean, seaFactors, setSeaScale, type OceanSample } from "./OceanMath";
+import { maximumOceanFold, OCEAN_WAVES, oceanOrbitalVelocity, sampleOcean, seaFactors, setSeaScale, type OceanSample } from "./OceanMath";
 import { createSkyUniforms, setLinearColor, type SkyUniforms } from "./SkyUniforms";
 import { ISLAND_SLOT_UNIFORMS } from "./SurfMath";
 import { emptyWakeSample, sampleShipWakes, SHIP_WAKE_UNIFORMS, type Ship } from "../ships/ShipMath";
@@ -162,6 +162,11 @@ export class OceanSystem {
       sample.normalZ = nz * inverse;
     }
     return sample;
+  }
+
+  /** The water's own horizontal motion at (x, z), `depth` m down (see `oceanOrbitalVelocity`). */
+  orbital(x: number, z: number, depth: number, out: { x: number; z: number }): { x: number; z: number } {
+    return oceanOrbitalVelocity(x, z, this.currentTime, depth, out);
   }
 
   /** The ships whose wakes join the surface (shared by reference). */

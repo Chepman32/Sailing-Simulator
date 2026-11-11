@@ -127,6 +127,9 @@ export class DiverController {
   private readonly normal = { x: 0, z: 0 };
   private readonly swimInput: SwimInput = { moveX: 0, moveY: 0, vertical: 0, sprint: false, yaw: 0, pitch: 0 };
   private bobClock = 0;
+  /** The swimmer's body tilted by the waves under him (roll, pitch), rad. */
+  private waveRoll = 0;
+  private wavePitch = 0;
   private landing = 0;
   /** Seconds into the leap over the side (counted on into the water until control returns). */
   leapTime = 0;
@@ -247,6 +250,37 @@ export class DiverController {
     this.keys.clear();
     this.leapTime = 0;
     this.setMode("helm");
+  }
+
+  /**
+   * Stands him ashore at (x, z) on ground at height `ground`, facing `yaw`
+   * (fast travel to a place found before): from the wheel, the deck or the
+   * water alike, at once.
+   */
+  placeAshore(x: number, z: number, ground: number, yaw: number): void {
+    const walk = this.walk;
+    walk.x = x;
+    walk.z = z;
+    walk.y = ground;
+    walk.vx = 0;
+    walk.vy = 0;
+    walk.vz = 0;
+    walk.grounded = true;
+    walk.landed = 0;
+    walk.airTime = 0;
+    walk.jumped = false;
+    if (this.mode === "swim") this.air = this.swim.air;
+    this.swim.vx = 0;
+    this.swim.vy = 0;
+    this.swim.vz = 0;
+    this.keys.clear();
+    this.jumpRequested = 0;
+    this.leapTime = 0;
+    this.eyeLag = 0;
+    this.landing = 0;
+    this.yaw = yaw;
+    this.pitch = 0;
+    this.setMode("land");
   }
 
   /** Climbs aboard onto `standing` (vessel space), facing forward; `heading` is hers. */
@@ -884,10 +918,22 @@ export class DiverController {
         const line = (this.world.floatLine ?? this.world.surface)(swim.x, swim.z);
         camera.position.y = Math.max(camera.position.y, line + SURFACE_EYE * 0.6);
       }
-      // At the surface the head rolls with the waves.
-      const slopeX = this.world.surface(swim.x + 0.6, swim.z) - this.world.surface(swim.x - 0.6, swim.z);
-      const rollWave = (1 - under) * clamp(slopeX * 0.5, -0.12, 0.12);
-      camera.rotation.set(this.pitch, this.yaw + Math.PI, rollWave + Math.sin(this.bobClock * 0.6) * 0.01 * under, "YXZ");
+      // At the surface the body lies on the water and tilts with its slope
+      // over a body's length, a little behind it (the body answers the
+      // wave, the head steadies itself): in a big swell he is rolled and
+      // pitched as the crests go under him, in a calm barely at all.
+      const waterAt = this.world.surface;
+      const forwardX = Math.sin(this.yaw);
+      const forwardZ = Math.cos(this.yaw);
+      const span = 0.8;
+      const ahead = (waterAt(swim.x + forwardX * span, swim.z + forwardZ * span) - waterAt(swim.x - forwardX * span, swim.z - forwardZ * span)) / (2 * span);
+      // Right of the view is (−cos yaw, sin yaw).
+      const right = (waterAt(swim.x - forwardZ * span, swim.z + forwardX * span) - waterAt(swim.x + forwardZ * span, swim.z - forwardX * span)) / (2 * span);
+      const floating = 1 - under;
+      const follow = 1 - Math.exp(-delta * 2.6);
+      this.waveRoll += (clamp(Math.atan(right) * 0.75, -0.32, 0.32) * floating - this.waveRoll) * follow;
+      this.wavePitch += (clamp(Math.atan(ahead) * 0.55, -0.24, 0.24) * floating - this.wavePitch) * follow;
+      camera.rotation.set(this.pitch + this.wavePitch, this.yaw + Math.PI, this.waveRoll + Math.sin(this.bobClock * 0.6) * 0.01 * under, "YXZ");
     }
     camera.fov += ((this.mode === "swim" && this.cameraDepth > 0 ? 66 : 72) - camera.fov) * (1 - Math.exp(-4 * delta));
     camera.near = 0.04;

@@ -105,6 +105,15 @@ input:focus-visible {
 }
 .simulator-canvas:focus { outline: none; }
 
+/* The lens finish's vignette, for frames drawn straight to the screen. */
+.scene-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(ellipse 72% 72% at 50% 50%, rgba(0, 0, 0, 0) 52%, rgba(2, 10, 16, 0.12) 74%, rgba(2, 10, 16, 0.3) 100%);
+}
+
 .photo-mode-hint {
   position: absolute;
   width: 1px;
@@ -1324,6 +1333,24 @@ input[type="range"]:disabled {
   .notice-stack { top: calc(var(--edge-top) + 54px); }
 
   .rudder-control { width: min(440px, calc(100vw - 3 * var(--gap) - var(--throttle-width) - 16px)); }
+}
+
+/* A row too long for the screen (measured in SailingSimulator: a tablet,
+   a long language) drops its labels; if even the icons do not fit, it
+   wraps into a second row rather than running off the edge. */
+.scene-actions.is-compact .scene-action { width: 44px; padding: 0; }
+.scene-actions.is-compact .scene-action-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.scene-actions.is-wrapped {
+  flex-wrap: wrap;
+  max-width: var(--actions-room, calc(100vw - var(--edge-left) - var(--edge-right) - 12px));
 }
 
 /* Narrow or short screens: reset and photo mode become icon buttons; their

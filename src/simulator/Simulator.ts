@@ -58,6 +58,7 @@ import { VolcanoSystem } from "./effects/VolcanoSystem";
 import { PoiSystem } from "./effects/PoiSystem";
 import { DISCOVERY_RANGE, POI_CLEARANCE } from "./effects/PoiMath";
 import { findOpenWater, RESCUE_CLEARANCE } from "./vessel/RescueMath";
+import { beachLanding, islandById, placeDestination, traderLanding, type TravelDestination } from "./map/TravelMath";
 import { AircraftSystem } from "./aircraft/AircraftSystem";
 import { ExploredSea, Track } from "./map/ChartMath";
 import { poiInCell, poisAround, POI_CELL, type PlaceKind, type Poi } from "./effects/PoiMath";
@@ -290,7 +291,12 @@ export class Simulator {
   private readonly sunDown = new THREE.Vector3();
   private readonly rayWater = new THREE.Color();
   private readonly diverScratch = new THREE.Vector3();
-  private torchOffered = false;
+  /** The torch is on because the dark put it on (not the player). */
+  private torchAuto = false;
+  /** The player has switched the torch himself since he last went under (the dark then leaves it be). */
+  private torchOverride = false;
+  /** The torch as it was last frame (a change not made here is the player's). */
+  private torchSeen = false;
   private readonly swimSurface = (x: number, z: number): number => this.ocean.sample(x, z).height;
   /**
    * The highest the drawn sea comes within a stride of (x, z): the swimmer's
@@ -691,6 +697,7 @@ export class Simulator {
           surface: this.swimSurface,
           seabedDepth: (x, z) => -this.groundBase(x, z),
           floatLine: this.swimFloatLine,
+          drift: (x, z, depth, out) => this.ocean.orbital(x, z, depth, out),
           // A passing ship's side is a wall to a swimmer as much as to the yacht.
           obstacle: (x, z, normal) => nearestHullClearance(this.ships.ships, x, z, normal),
           // A whale, a shark or a dolphin is a body to bump into, not a ghost.
@@ -1041,7 +1048,7 @@ export class Simulator {
     const state = this.state;
     state.collectedLoot.push(pickup.item.key);
     if (state.collectedLoot.length > MAX_REMEMBERED_LOOT) state.collectedLoot.splice(0, state.collectedLoot.length - MAX_REMEMBERED_LOOT);
-    const contents = lootContents(pickup.item, state.unlockedSails.filter(isSailColor));
+    const contents = lootContents(pickup.item, state.unlockedSails.filter(isSailColor), this.economy.upgrades);
     this.audio.chime();
     this.splashPoint.set(pickup.x, pickup.y, pickup.z);
     this.wake.splash(this.splashPoint, 0.6, "slap");
@@ -1054,9 +1061,16 @@ export class Simulator {
       if (this.seenMessages.has(message)) message = BOTTLE_MESSAGES.find((entry) => !this.seenMessages.has(entry)) ?? message;
       this.seenMessages.add(message);
       this.options.onDiscovery?.({ kind: "bottle", key: message });
+    } else if (contents.kind === "crate" && contents.reward === "upgrade") {
+      // A part for the yacht or the kit: fitted at once, as if bought.
+      this.economy.upgrades[contents.upgrade] = Math.max(this.economy.upgrades[contents.upgrade], contents.level);
+      this.applyEconomy();
+      this.persistEconomy();
+      this.options.onDiscovery?.({ kind: "crate", key: "upgrade", upgrade: contents.upgrade, level: contents.level });
     } else if (contents.kind === "crate") {
       state.doubloons += contents.coins;
-      this.options.onDiscovery?.({ kind: "crate", key: contents.cargo, coins: contents.coins });
+      this.audio.coins(contents.coins);
+      this.options.onDiscovery?.({ kind: "crate", key: "gold", coins: contents.coins });
     } else {
       state.flamingos += 1;
       this.options.onDiscovery?.({ kind: "flamingo", key: "flamingo", first: state.flamingos === 1 });
@@ -2047,13 +2061,7 @@ export class Simulator {
   /** Leaves the wheel: first person, on deck beside it. */
   leaveHelm(): void {
     if (!this.initialized || !this.diver || this.diver.active) return;
-    this.deckField ??= new DeckField(this.vessel.root, (object) => {
-      // Moving or overhead parts are not floors (the boom, the sails, the crew).
-      for (let node: THREE.Object3D | null = object; node; node = node.parent) {
-        if (node.name === "MainBoomPivot" || node.name === "Jib" || node.name === "Skipper_At_Helm") return true;
-      }
-      return false;
-    });
+    this.ensureDeckField();
     this.state.controls.throttle = 0;
     this.state.controls.rudder = 0;
     // Over the side: a few seconds through his eyes, then the water. The
@@ -2061,6 +2069,124 @@ export class Simulator {
     // is captured for looking round right away, without another click.
     this.diver.startLeap();
     this.diver.resumeLook();
+  }
+
+  /** The yacht's walkable surfaces, built the first time the skipper leaves the wheel. */
+  private ensureDeckField(): void {
+    this.deckField ??= new DeckField(this.vessel.root, (object) => {
+      // Moving or overhead parts are not floors (the boom, the sails, the crew).
+      for (let node: THREE.Object3D | null = object; node; node = node.parent) {
+        if (node.name === "MainBoomPivot" || node.name === "Jib" || node.name === "Skipper_At_Helm") return true;
+      }
+      return false;
+    });
+  }
+
+  /** Places resolved from their logbook keys (they never move). */
+  private readonly travelCache = new Map<string, TravelDestination | null>();
+
+  /**
+   * Where the skipper can go at once (fast travel), nearest first: every
+   * place in the logbook and every trader the yacht has sailed past. A place
+   * on the water is reached aboard, one ashore on foot.
+   */
+  travelDestinations(): (TravelDestination & { distance: number })[] {
+    if (!this.initialized) return [];
+    const isOpen = (x: number, z: number) => distanceFromWaterline(x, z) > POI_CLEARANCE;
+    const found: TravelDestination[] = [];
+    for (const key of this.state.discoveredPlaces) {
+      let destination = this.travelCache.get(key);
+      if (destination === undefined) {
+        destination = placeDestination(key, isOpen);
+        this.travelCache.set(key, destination);
+      }
+      if (destination) found.push(destination);
+    }
+    for (const id of this.knownTraders) {
+      const key = `trader:${id}`;
+      let destination = this.travelCache.get(key);
+      if (destination === undefined) {
+        const island = islandById(id);
+        const spot = island ? traderSpot(island, this.islands.profile(island)) : null;
+        destination = spot ? { key, kind: "trader", x: spot.x, z: spot.z, by: "foot" } : null;
+        this.travelCache.set(key, destination);
+      }
+      if (destination) found.push(destination);
+    }
+    const here = this.walkerPosition() ?? this.physics.position;
+    return found
+      .map((destination) => ({ ...destination, distance: Math.hypot(destination.x - here.x, destination.z - here.z) }))
+      .sort((a, b) => a.distance - b.distance);
+  }
+
+  /**
+   * Fast travel to a place found before (`travelDestinations`): out at sea,
+   * the yacht comes to lie in open water off it, bow toward it, with the
+   * skipper at the wheel; ashore, he stands on its beach (or before its
+   * trader) and the yacht lies at anchor in the nearest open water off him.
+   * From the wheel, the deck, the water or the land alike. Returns whether
+   * he went.
+   */
+  fastTravel(key: string): boolean {
+    if (!this.initialized || !this.diver) return false;
+    const destination = this.travelDestinations().find((entry) => entry.key === key);
+    if (!destination) return false;
+    const clearance = (x: number, z: number, normal: { x: number; z: number }): number => {
+      let room = this.islands.shoreClearance(x, z, normal);
+      const hull = this.physics.hullClearance?.(x, z, this.obstacleNormal) ?? 1e6;
+      if (hull < room) {
+        normal.x = this.obstacleNormal.x;
+        normal.z = this.obstacleNormal.z;
+        room = hull;
+      }
+      const place = this.places.clearance(x, z, this.obstacleNormal);
+      if (place < room) {
+        normal.x = this.obstacleNormal.x;
+        normal.z = this.obstacleNormal.z;
+        room = place;
+      }
+      return room;
+    };
+    let landing: { x: number; z: number; yaw: number } | null = null;
+    if (destination.by === "foot") {
+      const island = destination.kind === "trader" ? islandById(Number(key.slice(7))) : islandById(Number(key.slice(key.indexOf(":") + 1)));
+      if (!island) return false;
+      if (destination.kind === "trader") {
+        const spot = traderSpot(island, this.islands.profile(island));
+        landing = spot ? traderLanding(spot) : null;
+      } else {
+        landing = beachLanding(island, this.physics.position);
+      }
+      if (!landing) return false;
+    }
+    const target = landing ?? destination;
+    const anchorage = findOpenWater(target.x, target.z, clearance);
+    if (!anchorage) return false;
+    // Her bow toward the place (or the beach he stands on).
+    const heading = Math.atan2(target.x - anchorage.x, target.z - anchorage.z);
+    const diver = this.diver;
+    if (!landing && diver.active) {
+      diver.takeHelm();
+      // No flight of the camera from where he was: he is simply there.
+      this.handoff.active = false;
+    }
+    this.physics.relocate(anchorage.x, anchorage.z, heading);
+    this.state.controls.throttle = 0;
+    this.state.controls.rudder = 0;
+    this.stuckTime = 0;
+    this.wake.reset();
+    if (this.track.points.length >= 2 && Number.isFinite(this.track.points[this.track.points.length - 1]!)) this.track.points.push(Number.NaN, Number.NaN);
+    if (landing) {
+      this.ensureDeckField();
+      diver.placeAshore(landing.x, landing.z, this.groundWalk(landing.x, landing.z), landing.yaw);
+      this.handoff.active = false;
+    } else {
+      this.camera.recenter();
+      this.camera.snap();
+    }
+    this.persistState();
+    this.hud.emit(this.snapshot());
+    return true;
   }
 
   /** Back to the wheel (from anywhere: a quick way home from a dive). */
@@ -2126,7 +2252,12 @@ export class Simulator {
       this.camera.setMode(this.state.cameraMode);
       this.camera.snap();
     }
-    if (mode !== "swim") this.torchOffered = false;
+    // Back at the wheel the torch goes into its pocket.
+    if (!away && this.diver) {
+      this.diver.torch = false;
+      this.torchSeen = false;
+      this.torchAuto = false;
+    }
     this.hud.emit(this.snapshot());
   }
 
@@ -2209,11 +2340,33 @@ export class Simulator {
       diver.board(new THREE.Vector3(x, Number.isFinite(top) ? top : 0.62, z), this.physics.heading);
       this.audio.splash(0.4, "exit", 0);
     }
-    // A night dive: the torch comes on by itself the first time.
-    if (diver.mode === "swim" && !this.torchOffered && diver.cameraDepth > 0.3) {
-      this.torchOffered = true;
-      if (this.environmentState.nightFactor > 0.55) diver.torch = true;
+  }
+
+  /**
+   * The torch (F) at night under the water: it comes on by itself whenever
+   * the skipper goes under in the dark, or the dark falls while he is down;
+   * once the player has switched it himself it is his until the next dive.
+   * At dawn a torch the dark put on goes off again. Ashore and on deck it is
+   * the player's alone.
+   */
+  private autoTorch(wasUnder: boolean): void {
+    const diver = this.diver;
+    if (!diver?.active) return;
+    if (diver.torch !== this.torchSeen) {
+      this.torchOverride = true;
+      this.torchAuto = false;
     }
+    if (this.eyesUnder && !wasUnder) this.torchOverride = false;
+    const night = this.environmentState.nightFactor;
+    if (this.eyesUnder && !this.torchOverride && !diver.torch && night > 0.55) {
+      diver.torch = true;
+      this.torchAuto = true;
+    }
+    if (this.torchAuto && night < 0.3) {
+      diver.torch = false;
+      this.torchAuto = false;
+    }
+    this.torchSeen = diver.torch;
   }
 
   private startHandoff(): void {
@@ -2314,6 +2467,7 @@ export class Simulator {
     if (!diverSwimming) this.eyesUnder = false;
     else if (!wasUnder && depth > 0.06) this.eyesUnder = true;
     else if (wasUnder && depth < -0.04) this.eyesUnder = false;
+    this.autoTorch(wasUnder);
     if (diverSwimming && this.eyesUnder !== wasUnder) {
       const swim = diver!.swim;
       if (this.eyesUnder) {
@@ -2364,6 +2518,7 @@ export class Simulator {
       this.diverWater,
       diver?.torch ?? false,
     );
+    this.underwaterWorld?.updateTorch(delta, camera, Boolean(active && diver?.torch), swimming);
     this.diveFish?.update(delta, swimming, camera.position, seabedHeight, this.swimSurface, this.wildlife.presence);
     this.crabs?.update(delta, swimming, camera.position, diver?.yaw ?? 0, this.seabedCrabWorld);
     // Ghost crabs on the beach, for someone ashore (or wading in).
@@ -2791,11 +2946,11 @@ export class Simulator {
     const forward = this.listenerForward;
     const listenerYaw = Math.atan2(forward.x, forward.z);
     for (const strike of this.environment.consumeStrikes()) {
-      const delay = thunderDelay(strike.distance);
-      if (delay === null) continue;
+      if (thunderDelay(strike.distance) === null) continue;
       // Looking along +Z the camera's right is −X, so a strike turned toward
-      // +X from the view lies to the left.
-      this.audio.thunder(strike.distance, delay, -Math.sin(strike.azimuth - listenerYaw));
+      // +X from the view lies to the left. The thunder is timed from the bolt
+      // itself (its nearest part is heard first).
+      this.audio.strikeThunder(strike.distance, -Math.sin(strike.azimuth - listenerYaw));
     }
   }
 

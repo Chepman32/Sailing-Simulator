@@ -94,7 +94,8 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     rainDrops: 3200,
     skyDetail: 1,
     postProcessing: true,
-    bloomStrength: 0.2,
+    // The bloom's passes run anyway: a stronger glow costs nothing more.
+    bloomStrength: 0.24,
     msaaSamples: 2,
     anisotropy: 4,
     ambientOcclusion: false,

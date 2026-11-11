@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { distanceFromWaterline, islandEdgeNoise, islandsInCell, isVolcanoCell, lavaFlowPoint, LAVA_FLOWS, onLavaFlow, shoreClearance, VOLCANO_FOOT, VOLCANO_RIM, volcanoHeight } from "../../src/simulator/environment/IslandMath";
+import { createUpgradeLevels, UPGRADES } from "../../src/simulator/economy/EconomyMath";
 import {
+  CRATE_GOLD,
   LOOT_RANGE,
   LOOT_SHORE_CLEARANCE,
   lootAround,
@@ -69,8 +71,38 @@ test("bottles hold sail colours until all are found, then messages", () => {
     const contents = lootContents(bottle(index / 50), all);
     assert.ok(contents.kind === "bottle" && "message" in contents, "nothing left to unlock: a message");
   }
-  const crate = lootContents({ key: "c", kind: "crate", x: 0, z: 0, seed: 0.3 }, ["white"]);
-  assert.ok(crate.kind === "crate" && crate.coins >= 5);
+});
+
+test("a crate holds gold or an upgrade not yet at its top", () => {
+  const crate = (seed: number): LootItem => ({ key: `c${seed}`, kind: "crate", x: 0, z: 0, seed });
+  const levels = createUpgradeLevels();
+  let gold = 0;
+  let parts = 0;
+  const kinds = new Set<string>();
+  for (let index = 0; index < 400; index += 1) {
+    const contents = lootContents(crate(index / 400), ["white"], levels);
+    assert.equal(contents.kind, "crate");
+    if (contents.kind !== "crate") continue;
+    if (contents.reward === "gold") {
+      gold += 1;
+      assert.ok(contents.coins >= CRATE_GOLD.min && contents.coins <= CRATE_GOLD.max + 5 && contents.coins % 5 === 0, `round gold (${contents.coins})`);
+    } else {
+      parts += 1;
+      kinds.add(contents.upgrade);
+      assert.equal(contents.level, 1);
+    }
+  }
+  assert.ok(parts > 100 && parts < 220, `about two in five hold an upgrade (${parts} of ${gold + parts})`);
+  assert.ok(kinds.size >= 5, `many kinds of upgrade (${[...kinds].join(", ")})`);
+  // Everything at its top: only gold.
+  for (const upgrade of UPGRADES) levels[upgrade.id] = upgrade.max;
+  for (let index = 0; index < 50; index += 1) {
+    const contents = lootContents(crate(index / 50), ["white"], levels);
+    assert.ok(contents.kind === "crate" && contents.reward === "gold");
+  }
+  // Without the levels (an old caller): gold.
+  const plain = lootContents(crate(0.3), ["white"]);
+  assert.ok(plain.kind === "crate" && plain.reward === "gold");
 });
 
 test("a volcano smokes east of the start; its cone rises to a crater", () => {

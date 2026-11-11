@@ -81,6 +81,11 @@ export class Vessel {
   private readonly navigationLamps = new THREE.Group();
   private readonly hulls: HullProfile[] = [];
   private readonly boomPivot = new THREE.Group();
+  /** The boom as rigged (after `raiseBoom`), for the lantern hung under it. */
+  private boomMesh: THREE.Mesh | null = null;
+  /** The cockpit lantern hung from the boom: it swings a little; its glass glows at night. */
+  private readonly lanternRig = new THREE.Group();
+  private lanternGlow: THREE.Mesh | null = null;
   private readonly helm = new HelmStation();
   /** Flag, charm and bobblehead bought from the traders. */
   private decor?: YachtDecor;
@@ -391,6 +396,9 @@ export class Vessel {
       light.intensity = NAVIGATION_LIGHT_INTENSITY[index] * lit;
     });
     this.navigationLamps.visible = lit > 0.01;
+    if (this.lanternGlow) this.lanternGlow.visible = lit > 0.01;
+    // The lantern swings a little on its lanyard as she moves.
+    this.lanternRig.rotation.set(Math.sin(time * 1.9 + 0.6) * 0.045, 0, Math.sin(time * 1.37) * 0.06);
     if (lighting) {
       this.shading.update(this.root, time, lighting.camera, lighting.lightDirection, lighting.palette);
     }
@@ -493,6 +501,7 @@ export class Vessel {
     this.boomPivot.attach(boomPart.mesh);
     this.boomPivot.attach(sailMesh);
     this.raiseBoom(boomPart.mesh, sailMesh);
+    this.boomMesh = boomPart.mesh;
     this.hasRig = true;
   }
 
@@ -664,6 +673,78 @@ export class Vessel {
     });
   }
 
+  /**
+   * Hangs the cockpit lantern under the boom, a little aft of its middle
+   * (over the cockpit): a lanyard, a brass cap with its ring, glass in a
+   * brass frame and a brass foot, the light inside the glass. Returns
+   * whether there was a boom to hang it from.
+   */
+  private hangLantern(light: THREE.PointLight): boolean {
+    const boom = this.boomMesh;
+    if (!boom) return false;
+    // The boom's line in the pivot's space (the pivot is at the mast's foot).
+    const position = boom.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const point = new THREE.Vector3();
+    let endX = 0;
+    let endZ = 0;
+    let reach = 0;
+    for (let index = 0; index < position.count; index += 1) {
+      point.fromBufferAttribute(position, index).applyMatrix4(boom.matrix);
+      const along = Math.hypot(point.x, point.z);
+      if (along > reach) {
+        reach = along;
+        endX = point.x;
+        endZ = point.z;
+      }
+    }
+    if (reach < 1) return false;
+    const dirX = endX / reach;
+    const dirZ = endZ / reach;
+    const station = reach * 0.56;
+    // The underside of the boom at that station.
+    let underside = Infinity;
+    for (let index = 0; index < position.count; index += 1) {
+      point.fromBufferAttribute(position, index).applyMatrix4(boom.matrix);
+      const along = point.x * dirX + point.z * dirZ;
+      const across = Math.abs(point.x * dirZ - point.z * dirX);
+      if (Math.abs(along - station) < 0.25 && across < 0.4) underside = Math.min(underside, point.y);
+    }
+    if (!Number.isFinite(underside)) return false;
+    const rig = this.lanternRig;
+    rig.name = "BoomLantern";
+    rig.position.set(dirX * station, underside, dirZ * station);
+    const brass = new THREE.MeshStandardMaterial({ color: 0xb08a45, metalness: 0.85, roughness: 0.38 });
+    const rope = new THREE.MeshStandardMaterial({ color: 0x4a3e2c, roughness: 0.95 });
+    const glass = new THREE.MeshStandardMaterial({ color: 0xfff1d8, roughness: 0.08, metalness: 0, transparent: true, opacity: 0.32, depthWrite: false });
+    const part = (geometry: THREE.BufferGeometry, material: THREE.Material, y: number, x = 0, z = 0) => {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(x, y, z);
+      mesh.castShadow = material !== glass;
+      rig.add(mesh);
+      this.generatedMeshes.push(mesh);
+      this.generatedGeometries.push(geometry);
+      return mesh;
+    };
+    // Lanyard from the boom, the ring, the cap.
+    part(new THREE.CylinderGeometry(0.006, 0.006, 0.2, 6), rope, -0.1);
+    const ring = part(new THREE.TorusGeometry(0.026, 0.005, 6, 14), brass, -0.215);
+    ring.rotation.y = Math.PI / 2;
+    part(new THREE.ConeGeometry(0.085, 0.06, 16), brass, -0.27);
+    part(new THREE.CylinderGeometry(0.086, 0.086, 0.012, 16), brass, -0.302);
+    // Glass between four brass posts.
+    part(new THREE.CylinderGeometry(0.066, 0.066, 0.15, 16, 1, true), glass, -0.383);
+    for (let post = 0; post < 4; post += 1) {
+      const angle = (post / 4) * Math.PI * 2 + Math.PI / 4;
+      part(new THREE.CylinderGeometry(0.0055, 0.0055, 0.155, 5), brass, -0.383, Math.cos(angle) * 0.07, Math.sin(angle) * 0.07);
+    }
+    part(new THREE.CylinderGeometry(0.08, 0.07, 0.028, 16), brass, -0.47);
+    // The flame's light in the glass.
+    light.position.set(0, -0.385, 0);
+    rig.add(light);
+    this.boomPivot.add(rig);
+    return true;
+  }
+
   private createNavigationLights(): void {
     const red = new THREE.PointLight(0xff233d, 0, 22, 2);
     // Red to port, green to starboard. As the view shows her, local +X is
@@ -681,20 +762,22 @@ export class Vessel {
     const masthead = new THREE.PointLight(0xfff4e0, 0, 30, 2);
     masthead.position.set(0, 8.3, 1.7);
     this.navigationLights.push(red, green, stern, lantern, masthead);
-    this.root.add(red, green, stern, lantern, masthead);
+    this.root.add(red, green, stern, masthead);
+    // The lantern hangs from the boom over the cockpit on a short lanyard
+    // (a cruising yacht's cockpit lamp), swinging with the boat; without a
+    // boom (a model without one) it is not drawn, only its light kept.
+    const hung = this.hangLantern(lantern);
+    if (!hung) this.root.add(lantern);
 
     // Visible lamp lenses. Their colours are far brighter than white so the
     // bloom pass gives each one a coloured halo.
     const lampGeometry = new THREE.SphereGeometry(0.075, 14, 10);
     const lanternGeometry = new THREE.CylinderGeometry(0.075, 0.09, 0.2, 12);
-    const capGeometry = new THREE.ConeGeometry(0.12, 0.08, 12);
-    capGeometry.translate(0, 0.14, 0);
-    this.generatedGeometries.push(lampGeometry, lanternGeometry, capGeometry);
+    this.generatedGeometries.push(lampGeometry, lanternGeometry);
     const lamps: Array<[THREE.PointLight, THREE.BufferGeometry, number, number, number]> = [
       [red, lampGeometry, 9, 0.35, 0.5],
       [green, lampGeometry, 0.45, 8, 2.6],
       [stern, lampGeometry, 6, 6.6, 7.4],
-      [lantern, lanternGeometry, 9, 5.4, 2.1],
       [masthead, lampGeometry, 8, 7.6, 6.6],
     ];
     lamps.forEach(([light, geometry, r, g, b]) => {
@@ -705,11 +788,17 @@ export class Vessel {
       this.navigationLamps.add(lamp);
       this.generatedMeshes.push(lamp);
     });
-    // The lantern's brass cap stays by day too.
-    const cap = new THREE.Mesh(capGeometry, new THREE.MeshStandardMaterial({ color: 0x9a7a3c, metalness: 1, roughness: 0.35 }));
-    cap.position.copy(lantern.position);
-    this.root.add(cap);
-    this.generatedMeshes.push(cap);
+    // The lantern's glass glows with its flame at night (it is on the boom, see `hangLantern`).
+    if (hung) {
+      const material = new THREE.MeshBasicMaterial({ fog: false });
+      material.color.setRGB(9, 5.4, 2.1, THREE.LinearSRGBColorSpace);
+      this.lanternGlow = new THREE.Mesh(lanternGeometry, material);
+      this.lanternGlow.scale.set(0.72, 0.62, 0.72);
+      this.lanternGlow.position.copy(lantern.position);
+      this.lanternGlow.visible = false;
+      this.lanternRig.add(this.lanternGlow);
+      this.generatedMeshes.push(this.lanternGlow);
+    }
     this.navigationLamps.visible = false;
     this.root.add(this.navigationLamps);
   }

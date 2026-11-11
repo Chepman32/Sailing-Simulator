@@ -4,7 +4,15 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObjec
 import type { Simulator } from "@/src/simulator/Simulator";
 import { FOG_CELL } from "@/src/simulator/map/ChartMath";
 import { drawChart, PIN_COLORS, scaleBar, type ChartCamera, type ChartLabels } from "./chartDraw";
-import { fill, type FeatureMessages } from "./featureMessages";
+import { featureText, fill, type FeatureMessages } from "./featureMessages";
+import { PLACE_ICONS } from "./VoyageUI";
+
+type Destination = ReturnType<Simulator["travelDestinations"]>[number];
+
+/** A distance as the chart says it: metres up to a kilometre, then kilometres. */
+function distanceLabel(metres: number, messages: FeatureMessages): string {
+  return metres < 1000 ? fill(messages.travelMetres, { n: Math.max(10, Math.round(metres / 10) * 10) }) : fill(messages.travelKm, { n: (metres / 1000).toFixed(metres < 10000 ? 1 : 0) });
+}
 
 /**
  * The chart: a round minimap in the corner (north up, the yacht in the
@@ -32,6 +40,8 @@ type Props = {
   /** The skipper is on foot or in the water (the minimap moves clear of his controls). */
   afoot?: boolean;
   ready: boolean;
+  /** Fast travel to a place found before (by its key); the chart closes. */
+  onTravel?: (key: string) => void;
 };
 
 function useCanvasSize(canvas: RefObject<HTMLCanvasElement | null>, active: boolean): { width: number; height: number; dpr: number } {
@@ -51,7 +61,7 @@ function useCanvasSize(canvas: RefObject<HTMLCanvasElement | null>, active: bool
   return size;
 }
 
-export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideMini, afoot = false, ready }: Props) {
+export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideMini, afoot = false, ready, onTravel }: Props) {
   const miniRef = useRef<HTMLCanvasElement | null>(null);
   const fullRef = useRef<HTMLCanvasElement | null>(null);
   const miniSize = useCanvasSize(miniRef, ready && !open && !hideMini);
@@ -72,6 +82,23 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
     query.addEventListener("change", sync);
     return () => query.removeEventListener("change", sync);
   }, []);
+  /** Fast travel: the list of places to go to, and the one picked (on the list or on the chart). */
+  const [travelOpen, setTravelOpen] = useState(false);
+  const [destinations, setDestinations] = useState<Destination[]>([]);
+  const [picked, setPicked] = useState<string | null>(null);
+  const pickedRef = useRef<{ x: number; z: number } | null>(null);
+  useEffect(() => {
+    pickedRef.current = destinations.find((entry) => entry.key === picked) ?? null;
+  }, [picked, destinations]);
+  // Closed, the chart forgets the place picked (and the list is shut).
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (!open) {
+      setTravelOpen(false);
+      setPicked(null);
+    }
+  }
   const pinSlotRef = useRef(0);
   useEffect(() => {
     pinSlotRef.current = pinSlot;
@@ -157,7 +184,7 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
         camera.z + (height / 2) * camera.mpp,
       );
       if (!data) return;
-      drawChart(context, camera, data, { mini: false, time: now / 1000, labels });
+      drawChart(context, camera, data, { mini: false, time: now / 1000, labels, selected: pickedRef.current });
       if (now - lastStats > 500) {
         lastStats = now;
         setStats({
@@ -214,6 +241,23 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
       // The inverse of the chart's projection (screen x toward −X, y toward −Z).
       const x = state.x - (sx - rect.left - rect.width / 2) * state.mpp;
       const z = state.z - (sy - rect.top - rect.height / 2) * state.mpp;
+      // A click on a place one can travel to picks it (and shows it on the list).
+      const list = simulator.travelDestinations();
+      let nearest: Destination | null = null;
+      let nearestDistance = 18 * state.mpp;
+      for (const destination of list) {
+        const distance = Math.hypot(destination.x - x, destination.z - z);
+        if (distance < nearestDistance) {
+          nearest = destination;
+          nearestDistance = distance;
+        }
+      }
+      if (nearest) {
+        setDestinations(list);
+        setPicked(nearest.key);
+        setTravelOpen(true);
+        return;
+      }
       // A click on a pin (its head stands above the spot) lifts it.
       const hit = simulator.chartPinAt(x, z - 12 * state.mpp, 16 * state.mpp);
       if (hit >= 0) {
@@ -358,10 +402,71 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
                 {fill(messages.chartPlaces, { found: stats.found })}
               </span>
             </div>
-            <button type="button" className="chart-close" onClick={onClose} aria-label={messages.chartClose}>
-              ×
-            </button>
+            <div className="chart-header-actions">
+              {onTravel && (
+                <button
+                  type="button"
+                  className={`chart-travel-toggle${travelOpen ? " is-open" : ""}`}
+                  aria-expanded={travelOpen}
+                  aria-controls="chart-travel"
+                  title={messages.travelTitle}
+                  onClick={() => {
+                    setDestinations(simulatorRef.current?.travelDestinations() ?? []);
+                    setTravelOpen((value) => !value);
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 17.5c3.5-1 5.5-4 8-8.5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeDasharray="2.2 3" />
+                    <path d="M13.2 4.6l6.6 1.6-1.6 6.6-1.9-3.1-4.3 2.7-1.4-2.2 4.3-2.7z" fill="currentColor" />
+                    <circle cx="4.5" cy="18" r="2.2" fill="currentColor" />
+                  </svg>
+                  <span>{messages.travelTitle}</span>
+                </button>
+              )}
+              <button type="button" className="chart-close" onClick={onClose} aria-label={messages.chartClose}>
+                ×
+              </button>
+            </div>
           </header>
+          {onTravel && travelOpen && (
+            <section id="chart-travel" className="chart-travel" aria-label={messages.travelTitle}>
+              {destinations.length === 0 ? (
+                <p className="chart-travel-empty">{messages.travelNone}</p>
+              ) : (
+                <ul>
+                  {destinations.map((destination) => (
+                    <li key={destination.key} className={destination.key === picked ? "is-picked" : ""}>
+                      <button
+                        type="button"
+                        className="chart-travel-place"
+                        aria-pressed={destination.key === picked}
+                        onClick={() => {
+                          setPicked(destination.key);
+                          // Show it: the chart turns to the place.
+                          view.current.follow = false;
+                          view.current.x = destination.x;
+                          view.current.z = destination.z;
+                        }}
+                      >
+                        <span className="chart-travel-icon" aria-hidden="true">{PLACE_ICONS[destination.kind] ?? "★"}</span>
+                        <span className="chart-travel-name">
+                          <strong>{destination.kind === "trader" ? messages.travelTrader : featureText(messages, destination.kind)}</strong>
+                          <small>
+                            {distanceLabel(destination.distance, messages)} · {destination.by === "yacht" ? messages.travelByYacht : messages.travelOnFoot}
+                          </small>
+                        </span>
+                      </button>
+                      {destination.key === picked && (
+                        <button type="button" className="chart-travel-go" onClick={() => onTravel(destination.key)}>
+                          {destination.by === "yacht" ? messages.travelGoYacht : messages.travelGoFoot}
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
           <div className="chart-pins" role="radiogroup" aria-label={messages.chartPin}>
             {PIN_COLORS.map((color, slot) => (
               <button

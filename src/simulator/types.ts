@@ -141,6 +141,9 @@ export type Discovery = {
   sailColor?: string;
   /** Doubloons found in a crate. */
   coins?: number;
+  /** An upgrade found in a crate (`key` "upgrade"), and the level it brings. */
+  upgrade?: string;
+  level?: number;
   /** The first time this was found (a place, or a flamingo aboard). */
   first?: boolean;
 };

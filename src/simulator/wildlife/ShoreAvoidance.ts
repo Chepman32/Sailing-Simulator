@@ -251,3 +251,22 @@ export function marineDepthExact(x: number, z: number): number {
   // Still sloping down to seaward inside the band, so "deeper" points out to sea.
   return off < MARINE_SHORE_KEEP ? Math.min(depth, (Math.max(0, off) / MARINE_SHORE_KEEP) * MARINE_BAND_DEPTH) : depth;
 }
+
+/**
+ * Whales keep twice as far off a coast as their depth alone would hold them:
+ * the shelf reaches the 13.5 m a whale steers by about 28 m out, so within
+ * `WHALE_SHORE_KEEP` of the waterline the water reads shallower than that
+ * (still sloping down to seaward). Their steering turns them away at the
+ * band's edge, and `confineToDeepWater` (at three quarters of their depth)
+ * holds a hard line about 43 m out, twice the 21 m it used to be.
+ */
+export const WHALE_SHORE_KEEP = 57;
+/** Just under the depth whales steer by, so the whole band counts as shoal water. */
+const WHALE_BAND_DEPTH = 13.4;
+
+/** The depth whales reckon with at (x, z), m: the real one, squeezed near a coast. */
+export function whaleDepthExact(x: number, z: number): number {
+  const depth = waterDepthAt(x, z);
+  const off = distanceFromWaterline(x, z);
+  return off < WHALE_SHORE_KEEP ? Math.min(depth, (Math.max(0, off) / WHALE_SHORE_KEEP) * WHALE_BAND_DEPTH) : depth;
+}

@@ -14,7 +14,7 @@ import { DiverHud } from "./DiverHud";
 import { ControlsCard } from "./ControlsCard";
 import { ShopModal } from "./ShopModal";
 import { InventoryModal } from "./InventoryModal";
-import { findName, getShopMessages } from "./shopMessages";
+import { findName, getShopMessages, shopText } from "./shopMessages";
 import { DustNotices, type NoticeItem } from "./DustNotice";
 import { getDiverMessages } from "./diverMessages";
 import { ChartView } from "./ChartView";
@@ -634,6 +634,14 @@ export function SailingSimulator() {
   const diverWords = useMemo(() => getDiverMessages(language), [language]);
   const pauseWords = useMemo(() => getPauseMessages(language), [language]);
   const away = snapshot.diver.mode !== "helm";
+  // The cinematic view is the yacht's: leaving the helm by any way (T, a
+  // button, a leap) ends it, so it is never on for a walker or a swimmer.
+  useEffect(() => {
+    if (away && photoModeRef.current) exitPhotoMode();
+  }, [away, exitPhotoMode]);
+  /** Sound is playing at all; the engine is heard only then (its own toggle shows muted under a global mute). */
+  const soundPlaying = snapshot.soundEnabled && snapshot.audioReady;
+  const engineHeard = soundPlaying && !snapshot.engineMuted;
   // On foot the chart is a card over his eyes: he stands still and lets the
   // mouse go while it is open (`chartFroze`), and walks on when it closes.
   const chartFroze = useRef(false);
@@ -831,6 +839,27 @@ export function SailingSimulator() {
     // A few at most: the newest, and the ones before it still turning to dust.
     setNotices((list) => [...list.slice(-3), { id, text }]);
   };
+  // Fast travel from the chart: the view fades to the night of the sea, the
+  // yacht (or the skipper) is moved while it is dark, and the new place
+  // fades in, so the streaming of a far-off world is never seen.
+  const [travelVeil, setTravelVeil] = useState(false);
+  const travelTimer = useRef(0);
+  const travelTo = (key: string) => {
+    const destination = simulatorRef.current?.travelDestinations().find((entry) => entry.key === key);
+    closeChart();
+    setTravelVeil(true);
+    window.clearTimeout(travelTimer.current);
+    travelTimer.current = window.setTimeout(() => {
+      const simulator = simulatorRef.current;
+      const went = simulator?.fastTravel(key) ?? false;
+      if (went) simulator?.resumeDiverLook();
+      const name = !destination ? "" : destination.kind === "trader" ? voyage.travelTrader : featureText(voyage, destination.kind);
+      showNotice(went ? fill(voyage.travelArrived, { place: name }) : voyage.travelFailed);
+      // Let the new place settle a moment before it fades in.
+      travelTimer.current = window.setTimeout(() => setTravelVeil(false), 260);
+    }, 380);
+  };
+  useEffect(() => () => window.clearTimeout(travelTimer.current), []);
   const dropNotice = useCallback((id: number) => setNotices((list) => list.filter((item) => item.id !== id)), []);
   const resetScene = () => {
     if (!loading.ready || error) return;
@@ -856,6 +885,84 @@ export function SailingSimulator() {
   };
 
   const ready = loading.ready && !error;
+  // The row of actions along the top must fit the screen whatever its width
+  // and language (a tablet in landscape showed the labels and ran the row
+  // off the right edge): measured with the labels, it drops them (icons,
+  // names kept as tooltips and for screen readers) when they do not fit,
+  // and wraps into a second row only if even the icons do not.
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const [actionsFit, setActionsFit] = useState<"full" | "compact" | "wrap">("full");
+  const actionsFitRef = useRef(actionsFit);
+  useEffect(() => {
+    actionsFitRef.current = actionsFit;
+  }, [actionsFit]);
+  useEffect(() => {
+    const row = actionsRef.current;
+    const shell = shellRef.current;
+    if (!row || !shell) return;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      // A column (the portrait phone layout) has its own rules.
+      if (getComputedStyle(row).flexDirection === "column") {
+        setActionsFit("full");
+        return;
+      }
+      const rowBox = row.getBoundingClientRect();
+      let room = shell.getBoundingClientRect().right - rowBox.left - 12;
+      // Nor under a card standing on the right at the row's height (the throttle on a short screen).
+      for (const card of shell.querySelectorAll<HTMLElement>(".throttle-control, .control-panel.is-minimized")) {
+        const box = card.getBoundingClientRect();
+        if (box.width > 0 && box.top < rowBox.top + 50 && box.bottom > rowBox.top && box.left > rowBox.left + 60) room = Math.min(room, box.left - rowBox.left - 10);
+      }
+      row.style.setProperty("--actions-room", `${Math.max(44, Math.floor(room))}px`);
+      const natural = (fit: string) => {
+        row.classList.remove("is-compact", "is-wrapped");
+        if (fit !== "full") row.classList.add("is-compact");
+        row.style.flexWrap = "nowrap";
+        row.style.maxWidth = "none";
+        const width = row.scrollWidth;
+        row.style.flexWrap = "";
+        row.style.maxWidth = "";
+        return width;
+      };
+      const next = natural("full") <= room ? "full" : natural("compact") <= room ? "compact" : "wrap";
+      // Back to what React rendered (the state update below sets the classes for good).
+      row.classList.toggle("is-compact", actionsFitRef.current !== "full");
+      row.classList.toggle("is-wrapped", actionsFitRef.current === "wrap");
+      setActionsFit(next);
+    };
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(measure);
+    };
+    schedule();
+    const observer = new ResizeObserver(schedule);
+    observer.observe(shell);
+    window.addEventListener("resize", schedule);
+    // The labels' font may arrive after the first measure.
+    void document.fonts?.ready.then(schedule);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("resize", schedule);
+    };
+  }, [language, ready, snapshot.radioStation]);
+  // Steering by tilting the phone is steering by feel, with the yacht in view:
+  // the camera goes behind her (chase) while tilt steers, and back to the view
+  // the player had when tilt is switched off (unless he changed it meanwhile).
+  const cameraModeRef = useRef(snapshot.cameraMode);
+  useEffect(() => {
+    cameraModeRef.current = snapshot.cameraMode;
+  }, [snapshot.cameraMode]);
+  useEffect(() => {
+    const simulator = simulatorRef.current;
+    if (!tiltSteering || !ready || !simulator) return;
+    const before = cameraModeRef.current;
+    if (before !== "chase") simulator.setCameraMode("chase");
+    return () => {
+      if (before !== "chase" && cameraModeRef.current === "chase") simulatorRef.current?.setCameraMode(before);
+    };
+  }, [tiltSteering, ready]);
   const toggleTilt = async () => {
     if (tiltSteering) {
       setTiltSteering(false);
@@ -1227,6 +1334,9 @@ export function SailingSimulator() {
         tabIndex={photoMode ? 0 : -1}
         aria-label={photoMode ? `${messages.photoMode}. ${messages.photoModeHint}` : messages.sailingControls}
       />
+      {/* Drawn straight to the screen (the low preset) the picture has no
+          lens finish: the page lays its vignette over it, at no cost to the GPU. */}
+      {ready && snapshot.quality === "low" && <div className="scene-vignette" aria-hidden="true" />}
 
       {/* Cinematic mode: black bars close in from above and below, as in a
           cinema; taps pass through them to the picture. */}
@@ -1389,11 +1499,13 @@ export function SailingSimulator() {
             setChartOpen(true);
           }}
           onClose={closeChart}
+          onTravel={travelTo}
           hideMini={(!away && !panelMinimized) || pausedAfoot}
           afoot={away}
           ready={ready}
         />
       )}
+      <div className={`travel-veil${travelVeil ? " is-on" : ""}`} aria-hidden="true" />
 
       <div
         className={`simulator-interface ${photoMode || away ? "photo-hidden" : ""} ${!loading.ready && !error ? "is-loading" : "is-ready"}`}
@@ -1434,7 +1546,7 @@ export function SailingSimulator() {
             onArrived={onSoundPromptArrived}
           />
           {ready && (
-            <DiscoveryCard key={discoveries[0]?.id ?? 0} discovery={discoveries[0] ?? null} messages={voyage} onClose={closeDiscovery} onHoist={(color) => {
+            <DiscoveryCard key={discoveries[0]?.id ?? 0} discovery={discoveries[0] ?? null} messages={voyage} upgradeName={(id) => shopText(shopWords, `up_${id}`)} onClose={closeDiscovery} onHoist={(color) => {
               hoistSail(color);
               closeDiscovery();
             }} />
@@ -1457,7 +1569,7 @@ export function SailingSimulator() {
           <StationBanner station={stations.find((station) => station.id === stationBanner.id) ?? null} keyId={stationBanner.key} />
         )}
 
-        <div className="scene-actions">
+        <div ref={actionsRef} className={`scene-actions${actionsFit === "compact" ? " is-compact" : actionsFit === "wrap" ? " is-compact is-wrapped" : ""}`}>
           {/* Permanent mute/unmute. While the browser still holds sound back it
               pulses; one press both unlocks and plays. */}
           <button
@@ -1722,15 +1834,27 @@ export function SailingSimulator() {
                 <button
                   type="button"
                   className="quiet-button icon-control"
-                  aria-label={`${messages.engineSound}: ${snapshot.engineMuted ? messages.off : messages.on}`}
-                  title={`${messages.engineSound}: ${snapshot.engineMuted ? messages.off : messages.on}`}
-                  aria-pressed={!snapshot.engineMuted}
+                  aria-label={`${messages.engineSound}: ${engineHeard ? messages.on : messages.off}`}
+                  title={`${messages.engineSound}: ${engineHeard ? messages.on : messages.off}`}
+                  aria-pressed={engineHeard}
+                  onPointerDown={() => {
+                    // With all sound off, asking for the engine asks for sound (iOS: inside the press).
+                    if (!soundPlaying) unlockSound();
+                  }}
                   onClick={() => {
                     // Sound only: this never starts, stops or throttles the engine.
-                    simulatorRef.current?.setEngineMuted(!snapshot.engineMuted);
+                    const simulator = simulatorRef.current;
+                    if (!simulator) return;
+                    if (!soundPlaying) {
+                      unlockSound();
+                      simulator.setEngineMuted(false);
+                      showNotice(`${messages.engineSound}: ${messages.on}`);
+                      return;
+                    }
+                    simulator.setEngineMuted(!snapshot.engineMuted);
                     showNotice(`${messages.engineSound}: ${snapshot.engineMuted ? messages.on : messages.off}`);
                   }}
-                ><ControlIcon name={snapshot.engineMuted ? "engine-muted" : "engine-sound"} /></button>
+                ><ControlIcon name={engineHeard ? "engine-sound" : "engine-muted"} /></button>
               </div>
 
               <div className="panel-section panel-camera">

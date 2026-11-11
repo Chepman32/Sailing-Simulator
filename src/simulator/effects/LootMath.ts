@@ -9,6 +9,8 @@
  * been picked up. Pure; `LootSystem` draws and floats them.
  */
 
+import { roundGold, upgradePrice, UPGRADES, type UpgradeId, type UpgradeLevels } from "../economy/EconomyMath";
+
 export type LootKind = "bottle" | "crate" | "flamingo";
 
 export type LootItem = {
@@ -71,15 +73,22 @@ export const BOTTLE_MESSAGES = [
 ] as const;
 export type BottleMessage = (typeof BOTTLE_MESSAGES)[number];
 
-/** What crates carry. */
-export const CRATE_CARGO = ["coconuts", "spices", "ducks", "chart", "doubloons", "lanterns"] as const;
-export type CrateCargo = (typeof CRATE_CARGO)[number];
+/**
+ * What a crate holds: gold, or a part for the yacht or the diving kit (the
+ * next level of one of the upgrades the traders sell, fitted at once).
+ */
+export type CrateReward = { kind: "crate"; reward: "gold"; coins: number } | { kind: "crate"; reward: "upgrade"; upgrade: UpgradeId; level: number };
 
 export type LootContents =
   | { kind: "bottle"; sailColor: SailColor }
   | { kind: "bottle"; message: BottleMessage }
-  | { kind: "crate"; cargo: CrateCargo; coins: number }
+  | CrateReward
   | { kind: "flamingo" };
+
+/** Gold in a crate, before rounding: 40 … 220. */
+export const CRATE_GOLD = { min: 40, max: 220 } as const;
+/** How often a crate holds an upgrade (while any upgrade has a level to go). */
+export const CRATE_UPGRADE_CHANCE = 0.4;
 
 function hash(column: number, row: number, salt: number): number {
   let h = Math.imul((column | 0) ^ 0x1b873593, 0xcc9e2d51) ^ salt;
@@ -154,10 +163,12 @@ export function withinReach(x: number, z: number, heading: number, itemX: number
 
 /**
  * What is inside. A bottle holds a new sail colour (while any is still to
- * be found, about a third of the time) or a message; a crate some cargo and
- * a few doubloons; a flamingo is a flamingo.
+ * be found, about a third of the time) or a message; a crate gold (40–220,
+ * as a trader would count it) or, two times in five, the next level of an
+ * upgrade not yet at its top (cheaper ones a little likelier, so a find is
+ * often something the player could not yet afford); a flamingo is a flamingo.
  */
-export function lootContents(item: LootItem, unlocked: readonly SailColor[]): LootContents {
+export function lootContents(item: LootItem, unlocked: readonly SailColor[], upgrades?: Readonly<UpgradeLevels>): LootContents {
   const pick = <T>(list: readonly T[], value: number): T => list[Math.min(list.length - 1, Math.floor(value * list.length))]!;
   const roll = (item.seed * 9301 + 0.49297) % 1;
   if (item.kind === "bottle") {
@@ -165,6 +176,25 @@ export function lootContents(item: LootItem, unlocked: readonly SailColor[]): Lo
     if (locked.length > 0 && roll < 0.36) return { kind: "bottle", sailColor: pick(locked, (roll / 0.36 + item.seed) % 1) };
     return { kind: "bottle", message: pick(BOTTLE_MESSAGES, item.seed) };
   }
-  if (item.kind === "crate") return { kind: "crate", cargo: pick(CRATE_CARGO, item.seed), coins: 5 + 5 * Math.min(7, Math.floor(roll * 8)) };
+  if (item.kind === "crate") {
+    const open = upgrades ? UPGRADES.filter((upgrade) => upgrades[upgrade.id] < upgrade.max) : [];
+    if (open.length > 0 && roll < CRATE_UPGRADE_CHANCE) {
+      // Weighted by 1 / price of the next level: cheap parts turn up more often than costly ones.
+      const weights = open.map((upgrade) => 1 / upgradePrice(upgrade.base, upgrades![upgrade.id]));
+      const total = weights.reduce((sum, weight) => sum + weight, 0);
+      let target = ((item.seed * 7919 + roll * 13) % 1) * total;
+      let chosen = open[open.length - 1]!;
+      for (let index = 0; index < open.length; index += 1) {
+        target -= weights[index]!;
+        if (target <= 0) {
+          chosen = open[index]!;
+          break;
+        }
+      }
+      return { kind: "crate", reward: "upgrade", upgrade: chosen.id, level: upgrades![chosen.id] + 1 };
+    }
+    const amount = (item.seed * 4271 + 0.318) % 1;
+    return { kind: "crate", reward: "gold", coins: roundGold(CRATE_GOLD.min + amount * (CRATE_GOLD.max - CRATE_GOLD.min)) };
+  }
   return { kind: "flamingo" };
 }

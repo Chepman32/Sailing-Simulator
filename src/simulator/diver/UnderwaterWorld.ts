@@ -594,6 +594,7 @@ type PropLayer = { kind: PropKind; mesh: THREE.InstancedMesh; count: number };
 const scratchMatrix = new THREE.Matrix4();
 const scratchQuaternion = new THREE.Quaternion();
 const scratchScale = new THREE.Vector3();
+const torchShoulder = new THREE.Vector3();
 const scratchPosition = new THREE.Vector3();
 const scratchEuler = new THREE.Euler();
 const scratchColor = new THREE.Color();
@@ -1163,7 +1164,6 @@ export class UnderwaterWorld {
     this.sandOrigin.value.set(Math.floor(centre.x / 2048) * 2048, Math.floor(centre.z / 2048) * 2048);
     this.group.visible = active;
     if (!active) {
-      this.torch.intensity = 0;
       this.bubbleList.length = 0;
       return;
     }
@@ -1232,13 +1232,22 @@ export class UnderwaterWorld {
     }
     this.bubbles.count = count;
     this.bubbles.instanceMatrix.needsUpdate = true;
+  }
 
-    // The torch: from the right shoulder, along the view.
+  /**
+   * The skipper's torch (F), wherever he is: from the right shoulder, along
+   * the view. Under the water it lights the murk and the reef; ashore and on
+   * deck it is a hand torch in the night air (a little weaker, reaching as
+   * far). Call every frame (it fades off when switched off).
+   */
+  updateTorch(delta: number, camera: THREE.Camera, on: boolean, underwater: boolean): void {
     const forward = scratchPosition.set(0, 0, -1).applyQuaternion(camera.quaternion);
-    this.torch.position.copy(camera.position).add(new THREE.Vector3(0.18, -0.15, 0).applyQuaternion(camera.quaternion));
+    this.torch.position.copy(camera.position).add(torchShoulder.set(0.18, -0.15, 0).applyQuaternion(camera.quaternion));
     this.torch.target.position.copy(camera.position).addScaledVector(forward, 10);
     this.torch.target.updateMatrixWorld();
-    this.torch.intensity += ((torchOn ? 55 * this.torchPower : 0) - this.torch.intensity) * (1 - Math.exp(-delta * 12));
+    const wanted = on ? (underwater ? 55 : 38) * this.torchPower : 0;
+    this.torch.intensity += (wanted - this.torch.intensity) * (1 - Math.exp(-delta * 12));
+    if (this.torch.intensity < 0.01 && !on) this.torch.intensity = 0;
   }
 
   private placeSeabed(x: number, z: number): void {

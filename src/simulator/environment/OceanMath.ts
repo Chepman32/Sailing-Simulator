@@ -324,3 +324,33 @@ export function sampleOcean(x: number, z: number, time: number, depth = 0): Ocea
 
 /** Dominant wavenumber of the swell, for quick attenuation estimates. */
 export const SWELL_WAVENUMBER = (Math.PI * 2) / (OCEAN_WAVES[0]?.wavelength ?? 44);
+
+/**
+ * The horizontal velocity of the water at world point (x, z), `depth`
+ * metres under the mean surface (linear wave theory): every component moves
+ * its water along its own direction, forward under a crest and back under a
+ * trough (in phase with the height, `A ω sin`), fading as e^(−k·depth). A
+ * swimmer is carried by it: in a storm the swell surges him metres to and
+ * fro as it lifts and drops him; in fair weather it is a gentle sway.
+ */
+export function oceanOrbitalVelocity(x: number, z: number, time: number, depth: number, out: { x: number; z: number }): { x: number; z: number } {
+  surfaceBasePoint(x, z, time, scratchBase);
+  const baseX = scratchBase.x;
+  const baseZ = scratchBase.z;
+  const submerged = Math.max(0, depth);
+  const shoal = stormFactorsActive() ? shoalField(baseX, baseZ) : 1;
+  const calm = shoreField(baseX, baseZ);
+  let vx = 0;
+  let vz = 0;
+  for (let index = 0; index < WAVE_TERMS.length; index += 1) {
+    const wave = WAVE_TERMS[index]!;
+    const phase = wave.waveNumber * (wave.directionX * baseX + wave.directionZ * baseZ) - wave.angularSpeed * time;
+    const attenuation = submerged > 0 ? Math.exp(-wave.waveNumber * submerged) : 1;
+    const speed = wave.amplitude * seaFactors[index]! * (wave.storm ? shoal : 1) * calm * wave.angularSpeed * attenuation * Math.sin(phase);
+    vx += wave.directionX * speed;
+    vz += wave.directionZ * speed;
+  }
+  out.x = vx;
+  out.z = vz;
+  return out;
+}

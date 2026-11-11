@@ -385,3 +385,23 @@ export const FIND_HEIGHT: Record<FindKind, number> = {
   statuette: 0.28,
   chest: 0.6,
 };
+
+/**
+ * How much bigger than life each kind is laid on the sand, so it is seen
+ * from a swimmer's height through the blue (a real conch is a speck at five
+ * metres): the small things most, a sea chest hardly at all.
+ */
+export const FIND_SHOWN_SCALE: Record<FindKind, number> = {
+  shell: 2.4,
+  fishbones: 2.2,
+  anchor: 1.8,
+  bottle: 2.4,
+  debris: 1.6,
+  can: 1.7,
+  amphora: 1.5,
+  compass: 2.6,
+  sextant: 2.4,
+  coral: 1.45,
+  statuette: 1.7,
+  chest: 1.15,
+};
