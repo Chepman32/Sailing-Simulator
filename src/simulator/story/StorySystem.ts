@@ -4,6 +4,7 @@ import type { Traders, TraderSpot } from "../economy/Traders";
 import { buildAtlas, resolvePlace, sectorAt, seabedNear, toWorld, type Atlas, type Place } from "./AtlasMath";
 import {
   advance,
+  applyToState,
   createCampaign,
   isDone,
   missionById,
@@ -585,9 +586,16 @@ export class StorySystem {
     while (scene.cued < reached) {
       const shot = scene.cutscene.shots[scene.cued]!;
       scene.cued += 1;
-      for (const effect of shot.cue ?? []) this.carryOut(effect);
+      for (const effect of shot.cue ?? []) this.cue(effect);
     }
     if (at.index < 0 && this.scene === scene) this.scene = null;
+  }
+
+  /** A shot's cue: what it changes in the campaign (the rig, the hull, the gear), then in the world. */
+  private cue(effect: Effect): void {
+    applyToState(this.state, effect, this.campaign);
+    this.dirty = true;
+    this.carryOut(effect);
   }
 
   /** The player asked to skip: every cue still to come happens now, and the scene ends (a held one too). */
@@ -597,7 +605,7 @@ export class StorySystem {
     while (scene.cued < scene.cutscene.shots.length) {
       const shot = scene.cutscene.shots[scene.cued]!;
       scene.cued += 1;
-      for (const effect of shot.cue ?? []) this.carryOut(effect);
+      for (const effect of shot.cue ?? []) this.cue(effect);
     }
     // What was being said goes too: it belonged to the scene.
     this.queue.length = 0;

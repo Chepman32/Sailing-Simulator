@@ -227,8 +227,8 @@ const CAMERA_HANDOFF = 0.9;
 
 /** Where "Continue" finds the hour and the weather the campaign was left in. */
 const CAMPAIGN_SKY_KEY = "sailing-campaign-sky-v1";
-/** The main menu's hour: the sun just above the sea. */
-const MENU_CLOCK = cycleTimeForHour(17.82);
+/** The main menu's hour: the sun going down, the sea turning gold. */
+const MENU_CLOCK = cycleTimeForHour(18.45);
 /** Nothing of the quarantine on the chart (before he has the map). */
 const NO_ZONE = new Float64Array(0);
 

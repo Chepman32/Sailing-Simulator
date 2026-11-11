@@ -5576,10 +5576,12 @@ html.rifle-drawn .simulator-canvas {
 }
 
 /* The yacht's electronics dead: the network's alert, and no signal on the instruments. */
+/* In place of the compass, which died with the rest. */
+.simulator-shell.is-blackout .heading-card { visibility: hidden; }
 .story-lockdown {
   position: absolute;
   z-index: 31;
-  top: max(64px, 9vh);
+  top: var(--edge-top, 16px);
   left: 50%;
   display: flex;
   align-items: center;
@@ -5817,7 +5819,6 @@ html.rifle-drawn .simulator-canvas {
   .save-slot { grid-template-columns: 84px minmax(0, 1fr); gap: 10px; }
   .save-thumb { width: 84px; }
   .save-action { display: none; }
-  .story-lockdown { top: max(54px, 14vh); }
   .story-lockdown-head { font-size: 11.5px; }
   .story-lockdown-sub { font-size: 10px; }
   .cinema-skip { font-size: 11px; }

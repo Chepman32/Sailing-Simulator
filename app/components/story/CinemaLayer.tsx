@@ -15,13 +15,15 @@ type Props = {
   view: StoryView;
   language: LanguageCode;
   touch: boolean;
+  /** At the wheel: the alert on her screens is his to see. */
+  atHelm: boolean;
   onSkip: () => void;
 };
 
 /** Seconds to hold for a skip (long enough not to happen by accident). */
 const HOLD = 0.85;
 
-export function CinemaLayer({ view, language, touch, onSkip }: Props) {
+export function CinemaLayer({ view, language, touch, atHelm, onSkip }: Props) {
   const lang = storyLanguage(language);
   const cinematic = view.cinematic;
   const alert = view.alert && view.alert.length > 0 ? view.alert : null;
@@ -41,7 +43,7 @@ export function CinemaLayer({ view, language, touch, onSkip }: Props) {
         </div>
       )}
 
-      {alert && !cinematic && (
+      {alert && !cinematic && atHelm && (
         <div className="story-lockdown" role="alert">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 3 2 20h20L12 3Z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />

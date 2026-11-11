@@ -4,6 +4,7 @@ import { waterDepthAt, distanceFromWaterline } from "../../src/simulator/environ
 import { buildAtlas, insideOutline, resolvePlace, ringPoints, seabedNear, sectorAt, toWorld } from "../../src/simulator/story/AtlasMath";
 import {
   advance,
+  applyToState,
   createCampaign,
   objectiveMet,
   openMissions,
@@ -322,6 +323,7 @@ test("the whole story can be played through, and the engine hands out what the s
   const state = createCampaign();
   const said: string[] = [];
   const gave = new Set<string>();
+  let shotAway = false;
   for (let tick = 0; tick < 400 && !storyComplete(CAMPAIGN, state); tick += 1) {
     const open = openMissions(CAMPAIGN, state).find((mission) => state.missions[mission.id]) ?? openMissions(CAMPAIGN, state)[0]!;
     const step = stepOf(CAMPAIGN, state, open.id);
@@ -333,7 +335,12 @@ test("the whole story can be played through, and the engine hands out what the s
       // A scene's cues are the story too (played out by the story system as each shot begins).
       if (effect.do === "cutscene") {
         for (const shot of CAMPAIGN.cutscenes.find((scene) => scene.id === effect.scene)!.shots) {
-          for (const cue of shot.cue ?? []) if (cue.do === "say") said.push(...cue.lines.map((line) => line.who));
+          for (const cue of shot.cue ?? []) {
+            if (cue.do === "say") said.push(...cue.lines.map((line) => line.who));
+            // As the story system plays it: the cue changes the campaign too.
+            applyToState(state, cue, CAMPAIGN);
+          }
+          if (!state.rig) shotAway = true;
         }
       }
     }
@@ -344,7 +351,8 @@ test("the whole story can be played through, and the engine hands out what the s
     else assert.equal(state.missions[mission.id], undefined, `${mission.id} is not started`);
   }
   for (const what of ["pistol", "knife", "map", "rifle"]) assert.ok(gave.has(what), `the ${what} is handed over`);
-  assert.equal(state.rig, true, "she is rigged again");
+  assert.ok(shotAway, "the prologue shoots her mast away");
+  assert.equal(state.rig, true, "she is rigged again (the prologue's scene shot the mast away, the jury rig put one up)");
   assert.ok(said.includes("holloway") && said.includes("sara") && said.includes("aquilon"));
   assert.equal(state.engine, true, "the engine runs again");
   assert.equal(state.hull, 1, "the hull is whole again");

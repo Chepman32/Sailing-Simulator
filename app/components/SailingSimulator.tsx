@@ -1392,7 +1392,7 @@ export function SailingSimulator() {
   return (
     <main
       ref={shellRef}
-      className={`simulator-shell ${panelMinimized ? "" : "settings-open"}${ready && mainMenu ? " is-main-menu" : ""}${!mainMenu && snapshot.story?.cinematic ? " is-cinematic" : ""}${!mainMenu && snapshot.story?.alert ? " is-blackout" : ""}`}
+      className={`simulator-shell ${panelMinimized ? "" : "settings-open"}${ready && mainMenu ? " is-main-menu" : ""}${!mainMenu && snapshot.story?.cinematic ? " is-cinematic" : ""}${!mainMenu && !away && snapshot.story?.alert ? " is-blackout" : ""}`}
       aria-label={`Sailing Simulator Pro · ${messages.sailingControls}`}
       dir={isRtlLanguage(language) ? "rtl" : "ltr"}
       onPointerDownCapture={() => simulatorRef.current?.resumeAudioFromGesture()}
@@ -1617,7 +1617,7 @@ export function SailingSimulator() {
       {/* The campaign: markers pinned to the scene, the story's screen, its menus. */}
       {ready && !photoMode && <StoryOverlay listenerRef={overlayListener} language={language} active={snapshot.story?.mode === "campaign" && !mainMenu && !snapshot.story.cinematic} />}
       {ready && !photoMode && !mainMenu && snapshot.story?.mode === "campaign" && (
-        <CinemaLayer view={snapshot.story} language={language} touch={coarsePointer} onSkip={() => simulatorRef.current?.skipCutscene()} />
+        <CinemaLayer view={snapshot.story} language={language} touch={coarsePointer} atHelm={!away} onSkip={() => simulatorRef.current?.skipCutscene()} />
       )}
       {ready && !photoMode && !mainMenu && snapshot.story && (
         <StoryHud

@@ -21,8 +21,8 @@ const OPENING: Cutscene = {
     {
       // High and wide over her quarter, the low sun behind: settling down toward her.
       seconds: 8,
-      from: { eye: { anchor: "yacht", offset: [-70, 38, -95] }, look: { anchor: "yacht", offset: [0, 2, 30] }, fov: 42 },
-      to: { eye: { anchor: "yacht", offset: [-34, 13, -40] }, look: { anchor: "yacht", offset: [0, 4, 10] }, fov: 38 },
+      from: { eye: { anchor: "yacht", offset: [-52, 30, -72] }, look: { anchor: "yacht", offset: [0, 2, 26] }, fov: 40 },
+      to: { eye: { anchor: "yacht", offset: [-24, 9, -30] }, look: { anchor: "yacht", offset: [0, 4, 8] }, fov: 36 },
       ease: "inOut",
       cue: [
         { do: "title", style: "chapter", title: { ru: "Пролог", en: "Prologue" }, subtitle: { ru: "Штиль перед обрывом", en: "The Calm Before the Drop" } },
@@ -126,8 +126,8 @@ const CONTACT: Cutscene = {
     {
       // Over its weapon station at her: the turret turns and opens up without a word.
       seconds: 4,
-      from: { eye: { anchor: "drone:ambush", offset: [1.2, 3.4, -7] }, look: { anchor: "yacht", offset: [0, 5, 0] }, fov: 34 },
-      to: { eye: { anchor: "drone:ambush", offset: [0.9, 3.1, -5] }, look: { anchor: "yacht", offset: [0, 5, 0] }, fov: 30 },
+      from: { eye: { anchor: "drone:ambush", offset: [2.2, 2.6, -6] }, look: { anchor: "yacht", offset: [0, 5, 0] }, fov: 16 },
+      to: { eye: { anchor: "drone:ambush", offset: [1.9, 2.4, -4.5] }, look: { anchor: "yacht", offset: [0, 5, 0] }, fov: 11 },
       ease: "linear",
       shake: 0.5,
     },
@@ -211,7 +211,7 @@ export const PROLOGUE: Mission = {
       id: "opening",
       objective: { kind: "watch" },
       onStart: [
-        { do: "time", hour: 17.7 },
+        { do: "time", hour: 18.15 },
         { do: "weather", kind: "clear" },
         { do: "engine", running: false },
         { do: "steer", rudder: 0, throttle: 0 },
@@ -283,6 +283,8 @@ export const PROLOGUE: Mission = {
         // Holed and flooded, but the reef held her up: she lies off the shoal.
         { do: "place", yacht: "wash-up", skipper: "ashore" },
         { do: "repair", hull: 0.25 },
+        // Her electronics drowned with her: the alert is gone with them.
+        { do: "instruments", on: true },
         { do: "freeze", on: false },
         { do: "time", hour: 6.2 },
         { do: "weather", kind: "overcast" },
