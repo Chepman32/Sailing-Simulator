@@ -206,6 +206,8 @@ export class VesselPhysics {
   engineShaft = 0;
   /** The engine upgrade: more thrust, a higher top speed, a quicker answer (see `EconomyMath.engineBoost`). */
   engineBoost = { thrust: 1, fade: 1, response: 1 };
+  /** Water in a holed hull: her resistance is this many times what it was (1 = dry; see `CombatMath.leakSpeedFactor`). */
+  leakDrag = 1;
   /** Collision avoidance near islands and ships; `guard.output` is what the helm actually does. */
   readonly guard: ShoreGuardState = createShoreGuard();
   /** Distance to the nearest ship's hull, if ships exist; the guard avoids it like a shore. */
@@ -324,7 +326,7 @@ export class VesselPhysics {
     // Shallow water does not drag her to a stop: she never runs aground (see
     // the shallows' push below), `grounding` only says how close she came.
     const grounding = smoothstep(GROUNDING_START_DEPTH, GROUNDING_FULL_DEPTH, depth);
-    const hullDrag = -(SURGE_DRAG_QUADRATIC * forwardSpeed * Math.abs(forwardSpeed) + SURGE_DRAG_LINEAR * forwardSpeed);
+    const hullDrag = -(SURGE_DRAG_QUADRATIC * forwardSpeed * Math.abs(forwardSpeed) + SURGE_DRAG_LINEAR * forwardSpeed) * this.leakDrag;
     // The keels are lifting foils: they only resist leeway once water flows
     // along them, and they stall if asked for too much.
     const keelLimit = KEEL_STALL * waterSpeedSquared;

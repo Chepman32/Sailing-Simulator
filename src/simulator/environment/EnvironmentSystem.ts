@@ -223,6 +223,13 @@ export class EnvironmentSystem {
     this.flareRgb = rgb;
   }
 
+  /** Sea fog over a sector (the reef belt's), 0…1: it thickens the haze over everything. */
+  private seaFog = 0;
+
+  setSeaFog(amount: number): void {
+    this.seaFog = Math.max(0, Math.min(1, amount));
+  }
+
   /** The weather the sky is easing toward. */
   setWeatherKind(kind: WeatherKind, immediate = false): void {
     this.weatherKind = kind;
@@ -429,7 +436,7 @@ export class EnvironmentSystem {
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.color.copy(this.fogColor);
       // Sunshine means clean, dry air: the far islands stand out crisply.
-      this.scene.fog.density = (0.0008 + night * 0.0001) * (1 + this.weather.haze * 3.4) * (1 - 0.4 * palette.sunshine);
+      this.scene.fog.density = (0.0008 + night * 0.0001) * (1 + this.weather.haze * 3.4) * (1 - 0.4 * palette.sunshine) * (1 + this.seaFog * 4.5);
     }
     this.scene.background = this.fogColor;
     if (this.underwater > 0 && this.scene.fog instanceof THREE.FogExp2) {

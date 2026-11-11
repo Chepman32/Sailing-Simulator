@@ -38,7 +38,7 @@ import { LEAP_SECONDS, leapVelocity } from "./LeapMath";
 import { keyBindings, type BindingAction } from "../input/KeyBindings";
 
 /** What the player could do right here with the interact key. */
-export type DiverPrompt = "helm" | "board" | "pickup" | "trade" | null;
+export type DiverPrompt = "helm" | "board" | "pickup" | "trade" | "story" | null;
 
 /** The diver's own actions among the bindings (the chart, backpack and helm keys are the interface's). */
 const DIVER_ACTIONS: readonly BindingAction[] = ["forward", "back", "left", "right", "jump", "sprint", "crouch", "interact", "torch"];

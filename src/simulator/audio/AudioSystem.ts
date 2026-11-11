@@ -268,6 +268,22 @@ export class AudioSystem {
     return this.ready && this.context?.state === "running";
   }
 
+  /**
+   * The graph for sounds made outside this class (the fight, the story's
+   * radio): the context, the master mix (not ducked by the engine), the
+   * music bus and the open-sea reverb's input; null until sound is running.
+   */
+  get mixer(): { context: AudioContext; master: AudioNode; music: AudioNode; reverb: AudioNode | null } | null {
+    const context = this.context;
+    if (!this.isReady() || !this.enabled || !context || !this.master || !this.musicBus) return null;
+    return { context, master: this.master, music: this.musicBus, reverb: this.seaReverb ?? null };
+  }
+
+  /** Listener position (the camera), as last set. */
+  get listener(): { x: number; y: number; z: number } {
+    return { x: this.listenerX, y: this.listenerY, z: this.listenerZ };
+  }
+
   /** The player's own request for sound: arms the graph and starts it inside the gesture. */
   startFromUser(): Promise<boolean> {
     this.armed = true;

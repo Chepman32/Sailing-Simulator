@@ -254,6 +254,16 @@ export function advance(campaign: Campaign, state: CampaignState, facts: Facts):
     const step = mission.steps[index];
     if (!step) continue;
     if (step.objective.kind === "disable" && facts.events.has(`destroyed:${step.objective.group}`)) effects.push(...(step.objective.onLost ?? []));
+    // A blinded drone blown up before it was hauled in: back to blinding one.
+    if (step.objective.kind === "salvage" && facts.events.has(`destroyed:${step.objective.group}`)) {
+      const previous = mission.steps[index - 1];
+      if (previous && previous.objective.kind === "disable" && previous.objective.group === step.objective.group) {
+        state.missions[mission.id] = { step: previous.id, done: false };
+        effects.push(...(previous.objective.onLost ?? []));
+        moved.push(mission.id);
+        continue;
+      }
+    }
     if (!objectiveMet(step.objective, state, facts, mission.id)) continue;
     effects.push(...(step.onComplete ?? []));
     const next = mission.steps[index + 1];

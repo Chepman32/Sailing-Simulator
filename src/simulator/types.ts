@@ -1,3 +1,4 @@
+import type { StoryView } from "./story/StorySystem";
 export type CameraMode = "chase" | "helm" | "orbit" | "drone";
 export type QualityPreset = "low" | "medium" | "high" | "ultra";
 /** What the player picked. Only "auto" lets the simulator change the level by itself. */
@@ -83,7 +84,7 @@ export type SimulationSnapshot = {
     /** Air left in the tank, 0…1. */
     air: number;
     /** What the interact key would do here. */
-    prompt: "helm" | "board" | "pickup" | "trade" | null;
+    prompt: "helm" | "board" | "pickup" | "trade" | "story" | null;
     /** What the prompt is about: the kind of find within reach (for "pickup"). */
     promptDetail: string | null;
     torch: boolean;
@@ -106,8 +107,38 @@ export type SimulationSnapshot = {
     /** Contacts the sonar has on the sea floor now. */
     sonarContacts: number;
   };
+  /** The campaign (see `StorySystem.view`). */
+  story: StoryView | null;
+  /** The skipper's rifle and the drones' alarm, in the campaign. */
+  combat: {
+    rifle: boolean;
+    drawn: boolean;
+    ammo: number;
+    reload: number;
+    /** 0 unseen … 1 found; and whether a drone is attacking now. */
+    alarm: number;
+    attacking: boolean;
+  };
   fps: number;
   status: "loading" | "running" | "paused" | "error";
+};
+
+/**
+ * Where things are on the screen this frame, for the waypoint and the drone
+ * markers (handed over every frame, so the interface moves them smoothly
+ * without re-rendering; the object is reused).
+ */
+export type StoryOverlayFrame = {
+  width: number;
+  height: number;
+  /** The waypoint: pixels, whether in front of the camera, and how far it is (m). */
+  marker: { x: number; y: number; front: boolean; distance: number } | null;
+  drones: { x: number; y: number; front: boolean; distance: number; aware: boolean; condition: string; salvage: number; hostile: boolean }[];
+  /** The latest rifle shot's result (`id` grows with each shot). */
+  hit: { id: number; zone: "dome" | "jet" | "hull" | "miss"; armour: boolean; condition: string | null };
+  rifle: boolean;
+  alarm: number;
+  attacking: boolean;
 };
 
 /** Something taken from the sea floor: what, its tier, and gold (paid at once for a chest). */
@@ -131,6 +162,8 @@ export type SimulatorOptions = {
   onTrade?: () => void;
   /** On foot, the browser let go of the mouse by itself (Esc): the pause menu opens. */
   onPointerLost?: () => void;
+  /** Every frame, in the campaign: where the waypoint and the drones are on the screen. */
+  onOverlay?: (frame: StoryOverlayFrame) => void;
 };
 
 export type Discovery = {

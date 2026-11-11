@@ -33,6 +33,7 @@ import { smoothstep } from "./math";
 import { compassBearing } from "./vessel/HelmInstruments";
 import { applyEnginePower, createSimulatorState, type SimulatorState } from "./state";
 import type {
+  StoryOverlayFrame,
   CameraMode,
   LightingMode,
   QualityChoice,
@@ -98,6 +99,14 @@ import { BlobShadows, type BlobCaster } from "./diver/BlobShadows";
 import { crabKit, SeabedCrabs, type CrabWorld } from "./diver/SeabedCrabs";
 import { DiveFish } from "./diver/DiveFish";
 import { HelmStation, HULL_TRANSOM_Z } from "./vessel/HelmStation";
+import { CombatAudio } from "./audio/CombatAudio";
+import { CombatEffects } from "./combat/CombatEffects";
+import { engineKnockedOut, HULL_PER_HIT, leakSpeedFactor, SMOKING_HULL, stepEngineHeat, yachtSignature, DOME_CENTRE, JET_CENTRES, droneToWorld, type HitZone, type DroneCondition } from "./combat/CombatMath";
+import { DroneSystem, type DroneContact } from "./combat/DroneSystem";
+import { Rifle, RIFLE_RANGE, RIFLE_SPREAD } from "./combat/Rifle";
+import type { Place } from "./story/AtlasMath";
+import { StoryProps } from "./story/StoryProps";
+import { StorySystem, type StoryHost, type SkipperPose } from "./story/StorySystem";
 import { HULL_CENTER_Z, HULL_HALF_BEAM, HULL_HALF_LENGTH, HULL_OFFSET_X } from "./environment/shaders/oceanShader";
 
 /**
@@ -277,6 +286,32 @@ export class Simulator {
   private seabedLoot?: SeabedLoot;
   private traders?: Traders;
   private readonly traderSpotList: TraderSpot[] = [];
+  // The campaign and the fight (src/simulator/story, src/simulator/combat).
+  private combatEffects?: CombatEffects;
+  private drones?: DroneSystem;
+  private combatAudio?: CombatAudio;
+  private storyProps?: StoryProps;
+  private storyCast?: Traders;
+  private story?: StorySystem;
+  private readonly rifle = new Rifle();
+  private engineHeat = 0;
+  private combatShake = 0;
+  private damageSmokeClock = 0;
+  private storyWeather: { kind: WeatherKind; until: number } | null = null;
+  private readonly droneContacts: DroneContact[] = [];
+  private readonly droneEngines: { x: number; y: number; z: number; speed: number }[] = [];
+  private readonly storyMarker = new THREE.Vector3();
+  private readonly aimRay = new THREE.Raycaster();
+  private readonly aimNdc = new THREE.Vector2();
+  private readonly muzzlePoint = new THREE.Vector3();
+  private readonly aimPoint = new THREE.Vector3();
+  private readonly shotDirection = new THREE.Vector3();
+  private readonly projectScratch = new THREE.Vector3();
+  private readonly partScratch = { x: 0, y: 0, z: 0 };
+  private lastHit: { id: number; zone: HitZone | "miss"; armour: boolean; condition: DroneCondition | null } = { id: 0, zone: "miss", armour: false, condition: null };
+  private pointerDown: { x: number; y: number; time: number; id: number } | null = null;
+  /** Per-frame screen positions of the waypoint and the drones (see `StoryOverlay`). */
+  private readonly overlay: StoryOverlayFrame = { width: 1, height: 1, marker: null, drones: [], hit: this.lastHit, rifle: false, alarm: 0, attacking: false };
   /** The diver's eyes are under the surface (with a little hysteresis), and seconds since his last splash. */
   private eyesUnder = false;
   private sinceSplash = 10;
@@ -681,6 +716,15 @@ export class Simulator {
       // Figures on a beach are lost in the blurred mirror; drawn there they
       // cost as much as in the view.
       this.mirrorHidden.push(this.traders.group);
+      // The campaign: the fight's effects and sounds, Aquilon's drones, the
+      // story's things and people (all idle in free sailing).
+      this.combatEffects = new CombatEffects(this.scene);
+      this.drones = new DroneSystem(this.scene, this.combatEffects, this.wake);
+      this.combatAudio = new CombatAudio(this.audio);
+      this.storyProps = new StoryProps(this.scene);
+      this.storyCast = new Traders(this.scene, this.traderModels());
+      this.mirrorHidden.push(this.storyCast.group, this.combatEffects.group);
+      this.story = new StorySystem(this.storyHost, this.drones, this.storyProps, this.storyCast);
       this.blobShadows = new BlobShadows(this.scene);
       this.mirrorHidden.push(this.blobShadows.mesh);
       const shadowModel = this.assets.animated("traderMan");
@@ -750,6 +794,8 @@ export class Simulator {
       this.applyEconomy();
       this.applyTextureQuality(true);
       this.canvas.addEventListener("click", this.onCanvasClick);
+      this.canvas.addEventListener("pointerdown", this.onCanvasPointerDown);
+      this.canvas.addEventListener("pointerup", this.onCanvasPointerUp);
       this.resizeObserver = new ResizeObserver(this.requestResize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
       this.resize();
@@ -771,6 +817,8 @@ export class Simulator {
       });
       this.initialized = true;
       this.status = "running";
+      // A campaign under way picks up where it was left.
+      if (this.story?.mode === "campaign") this.story.resume();
       this.hud.emit(this.snapshot());
       this.loop.start();
       // The interface appears with the first frame actually on screen.
@@ -988,6 +1036,11 @@ export class Simulator {
   }
 
   setEngineRunning(running: boolean): void {
+    // In the campaign a dead engine will not start until it is mended.
+    if (running && this.story && !this.story.engineWorks) {
+      this.options.onKeyAction?.("engine-broken");
+      return;
+    }
     // The hull shudders as the engine catches (and once more as it dies).
     if (running !== this.state.engineRunning) this.engineJolt = running ? 1 : 0.6;
     applyEnginePower(this.state, running);
@@ -1518,8 +1571,14 @@ export class Simulator {
     this.seabedLoot?.update(delta, eye, swimming && this.underwaterAmount > 0.05, this.takenVersion);
     if (this.traders) {
       this.islands.traderSpots(this.traderSpotList);
+      // Where a story person stands on a trader's porch (Holloway at his camp), he stands there instead.
+      const cast = this.story?.castIslands();
+      if (cast && cast.size > 0) {
+        for (let index = this.traderSpotList.length - 1; index >= 0; index -= 1) if (cast.has(this.traderSpotList[index]!.id)) this.traderSpotList.splice(index, 1);
+      }
       const ashore = diver?.active && (diver.mode === "land" || (diver.mode === "swim" && diver.wading > 0.2));
       this.traders.update(delta, this.traderSpotList, this.groundWalk, ashore ? eye : null, eye);
+      this.story?.updateCast(delta, this.groundWalk, ashore ? eye : null, eye);
     }
     this.sonarClock -= delta;
     if (this.sonarClock > 0 || !this.seabedLoot) return;
@@ -1776,6 +1835,14 @@ export class Simulator {
     this.touch?.dispose();
     this.input?.dispose();
     this.canvas.removeEventListener("click", this.onCanvasClick);
+    this.canvas.removeEventListener("pointerdown", this.onCanvasPointerDown);
+    this.canvas.removeEventListener("pointerup", this.onCanvasPointerUp);
+    this.story?.dispose();
+    this.drones?.dispose();
+    this.combatEffects?.dispose();
+    this.combatAudio?.dispose();
+    this.storyProps?.dispose();
+    this.storyCast?.dispose();
     this.diver?.dispose();
     this.walkerShadow?.dispose();
     this.blobShadows?.dispose();
@@ -2053,8 +2120,406 @@ export class Simulator {
       // In photo mode a ship sounding her horn is worth turning round for.
       this.photo.offer({ kind: "horn", x: horn.position.x, y: 8, z: horn.position.z, size: horn.length * 0.75 }, this.physics.position.x, this.physics.position.z);
     }
+    this.updateStory(delta);
+    this.updateCombat(delta);
     this.hud.update(delta, () => this.snapshot());
   }
+
+  // --- The campaign and the fight ------------------------------------------------
+
+  /** What the story asks of the simulator (see `StorySystem`). */
+  private readonly storyHost: StoryHost = {
+    yacht: () => {
+      const position = this.physics.position;
+      return { x: position.x, y: position.y, z: position.z, heading: this.physics.heading, speed: Math.abs(this.physics.telemetry.forwardSpeed) };
+    },
+    skipper: () => this.skipperPose(),
+    place: (place, skipper) => this.placeParty(place, skipper),
+    placeYacht: (x, z, heading) => this.placeYacht(x, z, heading),
+    setEngine: (running, throttle) => {
+      this.setEngineRunning(running && (this.story?.engineWorks ?? true));
+      if (throttle !== undefined) this.state.controls.throttle = throttle;
+    },
+    setHour: (hour) => {
+      // The sky keeps no clock: a story hour is day or night, and the cycle runs on from there.
+      const mode: LightingMode = hour >= 5.5 && hour < 19.5 ? "day" : "night";
+      this.state.lightingMode = mode;
+      this.environment.setMode(mode);
+    },
+    setWeather: (kind) => {
+      this.storyWeather = { kind, until: this.elapsed + 300 };
+      this.environment.setWeatherKind(kind, true);
+    },
+    blast: (strength) => this.storyBlast(strength),
+    pay: (coins) => this.payCoins(coins),
+    conditionChanged: () => this.applyCondition(),
+    gearChanged: () => {
+      if (!this.story?.has("rifle")) this.rifle.reset();
+      this.hud.emit(this.snapshot());
+    },
+    ground: (x, z) => this.groundWalk(x, z),
+    seabed: (x, z) => this.groundBase(x, z),
+    radio: (kind) => this.combatAudio?.radio(kind),
+  };
+
+  private skipperPose(): SkipperPose {
+    const diver = this.diver;
+    const mode = diver?.active ? diver.mode : "helm";
+    if (diver?.active && mode === "swim") return { x: diver.swim.x, y: diver.swim.y, z: diver.swim.z, aboard: false, mode };
+    if (diver?.active && mode === "land") return { x: diver.walk.x, y: diver.walk.y, z: diver.walk.z, aboard: false, mode };
+    const yacht = this.physics.position;
+    return { x: yacht.x, y: yacht.y + 1.6, z: yacht.z, aboard: true, mode: mode === "leap" ? "leap" : mode === "deck" ? "deck" : "helm" };
+  }
+
+  /** The clearance a yacht needs where she is set down: shores, hulls, the places' structures. */
+  private readonly anchorClearance = (x: number, z: number, normal: { x: number; z: number }): number => {
+    let room = this.islands.shoreClearance(x, z, normal);
+    const hull = this.physics.hullClearance?.(x, z, this.obstacleNormal) ?? 1e6;
+    if (hull < room) {
+      normal.x = this.obstacleNormal.x;
+      normal.z = this.obstacleNormal.z;
+      room = hull;
+    }
+    const place = this.places.clearance(x, z, this.obstacleNormal);
+    if (place < room) {
+      normal.x = this.obstacleNormal.x;
+      normal.z = this.obstacleNormal.z;
+      room = place;
+    }
+    return room;
+  };
+
+  /** Puts the yacht at (x, z), heading `heading`, with the skipper at her wheel. */
+  private placeYacht(x: number, z: number, heading: number): void {
+    const diver = this.diver;
+    if (diver?.active) {
+      diver.takeHelm();
+      this.handoff.active = false;
+    }
+    this.physics.relocate(x, z, heading);
+    this.state.controls.throttle = 0;
+    this.state.controls.rudder = 0;
+    this.stuckTime = 0;
+    this.wake.reset();
+    if (this.track.points.length >= 2 && Number.isFinite(this.track.points[this.track.points.length - 1]!)) this.track.points.push(Number.NaN, Number.NaN);
+    this.camera.recenter();
+    this.camera.snap();
+  }
+
+  /** The story's "be here now": the yacht anchored off a place, the skipper at her helm or ashore there. */
+  private placeParty(place: Place, skipper: "helm" | "ashore"): void {
+    const landing = skipper === "ashore" ? place.landing : null;
+    const target = landing ?? place;
+    const anchorage = findOpenWater(target.x, target.z, this.anchorClearance) ?? { x: target.x, z: target.z };
+    const heading = Math.atan2(target.x - anchorage.x, target.z - anchorage.z);
+    this.placeYacht(anchorage.x, anchorage.z, heading);
+    if (landing && this.diver) {
+      this.ensureDeckField();
+      this.diver.placeAshore(landing.x, landing.z, this.groundWalk(landing.x, landing.z), landing.yaw);
+      this.handoff.active = false;
+    }
+  }
+
+  private payCoins(coins: number): void {
+    if (coins <= 0) return;
+    this.state.doubloons = roundPurse(this.state.doubloons + coins);
+    this.audio.coins(coins);
+    this.persistState();
+    this.options.onDiscovery?.({ kind: "crate", key: "gold", coins });
+  }
+
+  /** The hull and the engine as the story keeps them: her speed (a leak), and an engine that will not start. */
+  private applyCondition(): void {
+    const hull = this.story?.hull ?? 1;
+    const speed = leakSpeedFactor(hull);
+    this.physics.leakDrag = 1 / (speed * speed);
+    if (!(this.story?.engineWorks ?? true) && this.state.engineRunning) this.setEngineRunning(false);
+    this.hud.emit(this.snapshot());
+  }
+
+  /** A blast the story deals her (the prologue's last hit): fire, a column of water, a jolt. */
+  private storyBlast(strength: number): void {
+    const yacht = this.physics.position;
+    const aft = this.muzzlePoint.set(yacht.x - Math.sin(this.physics.heading) * 4, yacht.y + 1, yacht.z - Math.cos(this.physics.heading) * 4);
+    this.combatEffects?.explosion(aft, 1.2 * strength);
+    this.wake.splash(aft.setY(yacht.y), 5 * strength, "slap");
+    this.combatAudio?.explosion(aft, 1.4 * strength);
+    this.combatShake = Math.max(this.combatShake, strength);
+  }
+
+  // The interface's commands for the campaign.
+
+  /** Starts a new campaign from the prologue. */
+  startCampaign(): void {
+    if (!this.initialized || !this.story) return;
+    this.rifle.reset();
+    this.story.startNew();
+    this.applyCondition();
+    this.hud.emit(this.snapshot());
+  }
+
+  /** Back into the campaign where it was left. */
+  continueCampaign(): void {
+    if (!this.initialized || !this.story) return;
+    this.story.resume();
+    this.applyCondition();
+    this.hud.emit(this.snapshot());
+  }
+
+  /** Free sailing: no story, no drones, the yacht whole. */
+  chooseFreeSail(): void {
+    if (!this.initialized || !this.story) return;
+    this.story.chooseFree();
+    this.rifle.reset();
+    this.applyCondition();
+    this.hud.emit(this.snapshot());
+  }
+
+  /** The story's action key (E): speak, patch the hull, work the winch. */
+  storyAct(): boolean {
+    const acted = this.story?.act() ?? false;
+    if (acted) this.hud.emit(this.snapshot());
+    return acted;
+  }
+
+  skipStoryLine(): void {
+    this.story?.skipLine();
+  }
+
+  /** Draws or puts away the rifle (once Holloway has handed it over). */
+  toggleRifle(): boolean {
+    if (!this.story?.has("rifle")) return false;
+    this.rifle.drawn = !this.rifle.drawn;
+    this.hud.emit(this.snapshot());
+    return true;
+  }
+
+  /**
+   * A shot through the screen point (`ndcX`, `ndcY` in −1…1), or through the
+   * middle of the view on foot. `assist`: a tap on a touch screen, which
+   * finds the dome or a jet within that many pixels of the finger.
+   */
+  fireRifle(ndcX: number, ndcY: number, assist = 0): boolean {
+    const drones = this.drones;
+    if (!this.initialized || !drones || !this.rifle.drawn || !this.story?.has("rifle")) return false;
+    if (!this.rifle.trigger()) return false;
+    const camera = this.camera.camera;
+    this.aimNdc.set(ndcX, ndcY);
+    // A finger is no crosshair: the nearest weak spot under it.
+    if (assist > 0) this.assistAim(assist);
+    this.aimRay.setFromCamera(this.aimNdc, camera);
+    const ray = this.aimRay.ray;
+    // What the camera's line meets: a drone, the sea, or nothing near.
+    let reach = RIFLE_RANGE;
+    const aimed = drones.aimDistance(ray.origin, ray.direction, RIFLE_RANGE + 60);
+    if (aimed !== null) reach = aimed;
+    else if (ray.direction.y < -0.002) reach = Math.min(RIFLE_RANGE, (ray.origin.y - 0) / -ray.direction.y);
+    this.aimPoint.copy(ray.direction).multiplyScalar(reach).add(ray.origin);
+    // The round leaves the rifle, not the camera: from his eyes at the helm or ashore.
+    const firstPerson = this.diver?.active || this.state.cameraMode === "helm";
+    if (firstPerson) this.muzzlePoint.copy(camera.position).addScaledVector(ray.direction, 0.6);
+    else this.vessel.worldPoint(this.vessel.helmEye, this.muzzlePoint);
+    this.shotDirection.copy(this.aimPoint).sub(this.muzzlePoint).normalize();
+    // His own unsteadiness, and the sea's.
+    const sway = RIFLE_SPREAD * (1 + Math.min(2, significantWaveHeight()) * 0.6);
+    this.shotDirection.x += (Math.random() - 0.5) * 2 * sway;
+    this.shotDirection.y += (Math.random() - 0.5) * 2 * sway;
+    this.shotDirection.z += (Math.random() - 0.5) * 2 * sway;
+    this.shotDirection.normalize();
+    const result = drones.shoot(this.muzzlePoint, this.shotDirection, RIFLE_RANGE);
+    const effects = this.combatEffects;
+    this.combatAudio?.rifle();
+    if (effects) {
+      // In his own eyes the flash is out at the muzzle, not in them.
+      this.projectScratch.copy(this.muzzlePoint).addScaledVector(this.shotDirection, firstPerson ? 0.9 : 0.4);
+      effects.flash(this.projectScratch, firstPerson ? 0.35 : 0.6);
+    }
+    this.lastHit = { id: this.lastHit.id + 1, zone: result?.zone ?? "miss", armour: result?.armour ?? false, condition: result?.condition ?? null };
+    if (result) {
+      effects?.tracer(this.muzzlePoint, result.point, false);
+      this.combatAudio?.impact(result.point, result.zone, result.armour);
+    } else {
+      // Into the sea, or away over it.
+      const along = this.shotDirection.y < -0.002 ? Math.min(RIFLE_RANGE, this.muzzlePoint.y / -this.shotDirection.y) : RIFLE_RANGE;
+      this.aimPoint.copy(this.shotDirection).multiplyScalar(along).add(this.muzzlePoint);
+      effects?.tracer(this.muzzlePoint, this.aimPoint, false);
+      if (along < RIFLE_RANGE) this.wake.splash(this.aimPoint.setY(this.ocean.sample(this.aimPoint.x, this.aimPoint.z).height), 0.22, "entry", undefined, false);
+    }
+    return true;
+  }
+
+  /** Moves the aim onto the nearest weak spot of a drone within `pixels` of it. */
+  private assistAim(pixels: number): void {
+    const drones = this.drones;
+    if (!drones) return;
+    const camera = this.camera.camera;
+    const width = this.renderer.domElement.clientWidth || 1;
+    const height = this.renderer.domElement.clientHeight || 1;
+    let best = pixels;
+    let bestX = this.aimNdc.x;
+    let bestY = this.aimNdc.y;
+    for (const pose of drones.poses()) {
+      for (const part of [DOME_CENTRE, ...JET_CENTRES]) {
+        droneToWorld(part, pose, this.partScratch);
+        this.projectScratch.set(this.partScratch.x, this.partScratch.y, this.partScratch.z).project(camera);
+        if (this.projectScratch.z > 1) continue;
+        const dx = ((this.projectScratch.x - this.aimNdc.x) * width) / 2;
+        const dy = ((this.projectScratch.y - this.aimNdc.y) * height) / 2;
+        const distance = Math.hypot(dx, dy);
+        if (distance < best) {
+          best = distance;
+          bestX = this.projectScratch.x;
+          bestY = this.projectScratch.y;
+        }
+      }
+    }
+    this.aimNdc.set(bestX, bestY);
+  }
+
+  /** The fight, each frame: the drones, the rounds that struck her, her smoke, the guns heard. */
+  private updateCombat(delta: number): void {
+    const drones = this.drones;
+    const story = this.story;
+    const effects = this.combatEffects;
+    if (!drones || !story || !effects) return;
+    this.rifle.update(delta);
+    this.engineHeat = stepEngineHeat(this.engineHeat, this.state.engineRunning, delta);
+    this.combatShake = Math.max(0, this.combatShake - delta * 1.6);
+    const weather = this.environment.currentWeather;
+    const fog = this.sectorFog;
+    const telemetry = this.physics.telemetry;
+    const yacht = this.physics.position;
+    const signature = yachtSignature({
+      engineRunning: this.state.engineRunning,
+      shaft: telemetry.engineShaft,
+      speed: Math.abs(telemetry.forwardSpeed),
+      engineHeat: this.engineHeat,
+      night: this.environmentState.nightFactor,
+      haze: Math.min(1, weather.haze + fog),
+      rain: weather.rain,
+      storm: weather.storm,
+    });
+    const wind = this.physics.wind;
+    drones.update(delta, {
+      yacht: { x: yacht.x, y: yacht.y, z: yacht.z, heading: this.physics.heading, speed: Math.abs(telemetry.forwardSpeed) },
+      reach: signature.reach,
+      night: this.environmentState.nightFactor,
+      waves: significantWaveHeight(),
+      rain: weather.rain,
+      haze: Math.min(1, weather.haze + fog),
+      windX: wind.x,
+      windZ: wind.z,
+      sample: this.sampleSurface,
+    });
+    // Rounds that struck her.
+    for (const hit of drones.consumeHits()) {
+      effects.splinters(hit.point);
+      this.combatAudio?.hullHit(hit.point);
+      const fromStern = Math.atan2(hit.fromX - yacht.x, hit.fromZ - yacht.z) - (this.physics.heading + Math.PI);
+      story.damage(HULL_PER_HIT, engineKnockedOut(Math.atan2(Math.sin(fromStern), Math.cos(fromStern)), Math.random()));
+      this.combatShake = Math.max(this.combatShake, 0.25);
+    }
+    for (const shot of drones.consumeShots()) {
+      this.combatAudio?.droneShot(shot);
+      if (shot.near) this.combatAudio?.whiz(shot.near);
+    }
+    // A badly holed yacht smokes from her stern.
+    const hull = story.hull;
+    this.damageSmokeClock -= delta;
+    if (story.active && hull < SMOKING_HULL && this.damageSmokeClock <= 0) {
+      this.damageSmokeClock = 0.14 + hull * 0.6;
+      const stern = this.projectScratch.set(yacht.x - Math.sin(this.physics.heading) * 3.6, yacht.y + 1.1, yacht.z - Math.cos(this.physics.heading) * 3.6);
+      effects.smokeFrom(stern, 0.6 * (1 - hull / SMOKING_HULL) + 0.25, wind.x, wind.z);
+    }
+    {
+      const camera = this.camera.camera;
+      effects.setPixelScale(this.renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)));
+      effects.setAmbient(this.environment.current.palette.ambientColor);
+    }
+    effects.update(delta);
+    this.storyProps?.update(delta);
+    this.combatAudio?.updateEngines(drones.engines(this.droneEngines));
+  }
+
+  /** Extra haze over the sector the yacht is in (the reef belt's fog), eased. */
+  private sectorFog = 0;
+
+  private updateStory(delta: number): void {
+    const story = this.story;
+    if (!story) return;
+    story.update(delta);
+    // The weather: a story's own for a while, else the sector's leaning, else the planner's.
+    if (this.storyWeather && this.elapsed > this.storyWeather.until) this.storyWeather = null;
+    const goal = story.active ? (story.currentSector?.atmosphere?.haze ?? 0) : 0;
+    this.sectorFog += (goal - this.sectorFog) * Math.min(1, delta / 8);
+    this.environment.setSeaFog(this.sectorFog);
+    this.updateOverlay();
+  }
+
+  /** Screen positions for the interface's waypoint and drone markers. */
+  private updateOverlay(): void {
+    const story = this.story;
+    const drones = this.drones;
+    if (!this.options.onOverlay || !story || !drones) return;
+    const frame = this.overlay;
+    const camera = this.camera.camera;
+    const width = this.renderer.domElement.clientWidth || 1;
+    const height = this.renderer.domElement.clientHeight || 1;
+    frame.width = width;
+    frame.height = height;
+    const eye = camera.position;
+    const project = (point: THREE.Vector3) => {
+      this.projectScratch.copy(point).project(camera);
+      const front = this.projectScratch.z < 1;
+      return { x: ((this.projectScratch.x + 1) / 2) * width, y: ((1 - this.projectScratch.y) / 2) * height, front };
+    };
+    const marker = story.active ? story.marker(this.storyMarker) : null;
+    if (marker) {
+      const screen = project(marker);
+      frame.marker = { ...screen, distance: Math.hypot(marker.x - eye.x, marker.z - eye.z) };
+    } else {
+      frame.marker = null;
+    }
+    frame.drones.length = 0;
+    if (story.active) {
+      for (const contact of drones.contacts(this.droneContacts)) {
+        const distance = Math.hypot(contact.x - eye.x, contact.z - eye.z);
+        if (distance > 1600) continue;
+        this.aimPoint.set(contact.x, contact.y + 1.6, contact.z);
+        const screen = project(this.aimPoint);
+        frame.drones.push({ ...screen, distance, aware: contact.aware, condition: contact.condition, salvage: contact.salvage, hostile: contact.hostile });
+      }
+    }
+    frame.hit = this.lastHit;
+    frame.rifle = this.rifle.drawn;
+    const alarm = story.active ? drones.alarm() : { suspicion: 0, attacking: false };
+    frame.alarm = alarm.suspicion;
+    frame.attacking = alarm.attacking;
+    this.options.onOverlay(frame);
+  }
+
+  private readonly onCanvasPointerDown = (event: PointerEvent): void => {
+    this.pointerDown = { x: event.clientX, y: event.clientY, time: performance.now(), id: event.pointerId };
+    // On foot with the mouse held for looking, the button is the trigger.
+    if (this.rifle.drawn && this.diver?.active && this.diver.looksWithMouse && event.button === 0) {
+      this.fireRifle(0, 0);
+      this.hud.emit(this.snapshot());
+    }
+  };
+
+  private readonly onCanvasPointerUp = (event: PointerEvent): void => {
+    const down = this.pointerDown;
+    this.pointerDown = null;
+    if (!down || down.id !== event.pointerId || !this.rifle.drawn) return;
+    if (this.diver?.active && this.diver.looksWithMouse) return;
+    // A click or a tap, not a drag of the view.
+    if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 8 || performance.now() - down.time > 450) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+    this.fireRifle(x, y, event.pointerType === "touch" ? 46 : 14);
+    this.hud.emit(this.snapshot());
+  };
 
   // --- The skipper on foot and in the water --------------------------------------
 
@@ -2324,7 +2789,16 @@ export class Simulator {
         diver.prompt = "trade";
       }
     }
+    // The story's own: a word with someone, patching the hull on deck.
+    if ((!diver.prompt || diver.prompt === "trade") && diver.inControl && diver.mode !== "swim") {
+      const story = this.story?.prompt();
+      if (story && (story.kind === "talk" || (story.kind === "repair" && diver.mode === "deck"))) {
+        diver.prompt = "story";
+        this.promptDetail = story.kind === "talk" ? `talk:${story.character}` : `repair:${story.progress.toFixed(2)}`;
+      }
+    }
     const action: DiverPrompt = diver.consumeInteract();
+    if (action === "story") this.storyAct();
     if (action === "pickup" && this.reachableFind) this.takeFind(this.reachableFind);
     if (action === "trade") {
       diver.releasePointer();
@@ -2412,7 +2886,9 @@ export class Simulator {
     // buzz; it is heard (and seen in the wake), not seen in the instruments.
     const engine = aboard * this.engineJolt * this.engineJolt * 0.014;
     const volcano = this.volcanoes.shakeAt(camera.x, camera.z) * 0.06;
-    const amplitude = engine + volcano;
+    // A blast or a burst striking her: a hard jolt, felt aboard.
+    const combat = (aboard > 0 ? 1 : 0.4) * this.combatShake * this.combatShake * 0.05;
+    const amplitude = engine + volcano + combat;
     if (amplitude < 1e-5) {
       this.shakeOffset.set(0, 0, 0);
       return;
@@ -2589,7 +3065,10 @@ export class Simulator {
         if (this.disposed) return;
         if (key === "shark" || key === "whale" || key === "fishSchool") this.wildlife.adoptLateAssets(this.assets);
         else if (key === "crabRed" || key === "crabBlue") this.buildCrabs();
-        else if ((TRADER_MODEL_KEYS as readonly string[]).includes(key)) this.traders?.setModels(this.traderModels());
+        else if ((TRADER_MODEL_KEYS as readonly string[]).includes(key)) {
+          this.traders?.setModels(this.traderModels());
+          this.storyCast?.setModels(this.traderModels());
+        }
         // Their materials compile now (against the target the scene is drawn
         // into), not on the frame they first come into sight.
         const previous = this.renderer.getRenderTarget();
@@ -2922,7 +3401,14 @@ export class Simulator {
 
   /** The weather the sky should be heading for: the player's choice, or the planner's. */
   private currentWeatherKind(): WeatherKind {
-    return this.state.weatherMode === "manual" ? this.state.weather : autoWeatherKind(this.elapsed);
+    if (this.state.weatherMode === "manual") return this.state.weather;
+    // In the campaign the story sets the weather for a scene, and each sector leans to its own.
+    if (this.story?.active) {
+      if (this.storyWeather) return this.storyWeather.kind;
+      const leaning = this.story.currentSector?.atmosphere?.weather;
+      if (leaning && leaning.length > 0) return leaning[Math.floor(this.elapsed / 420) % leaning.length]!;
+    }
+    return autoWeatherKind(this.elapsed);
   }
 
   /**
@@ -3017,6 +3503,15 @@ export class Simulator {
         decor: [...this.economy.decor],
         equipped: { ...this.economy.equipped },
         sonarContacts: this.sonarContacts.length,
+      },
+      story: this.story?.view() ?? null,
+      combat: {
+        rifle: this.story?.has("rifle") ?? false,
+        drawn: this.rifle.drawn,
+        ammo: this.rifle.ammo,
+        reload: this.rifle.reloadProgress,
+        alarm: this.story?.active ? (this.drones?.alarm().suspicion ?? 0) : 0,
+        attacking: this.story?.active ? (this.drones?.alarm().attacking ?? false) : false,
       },
       fps: this.fps,
       status: this.status,
