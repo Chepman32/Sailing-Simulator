@@ -129,7 +129,7 @@ export const EMPTY_SNAPSHOT: SimulationSnapshot = {
     sonarContacts: 0,
   },
   story: null,
-  combat: { rifle: false, drawn: false, ammo: 0, reload: 1, alarm: 0, attacking: false },
+  combat: { rifle: false, guns: [], weapon: null, drawn: false, ammo: 0, magazine: 0, reload: 1, alarm: 0, attacking: false },
   fps: 60,
   status: "loading",
 };

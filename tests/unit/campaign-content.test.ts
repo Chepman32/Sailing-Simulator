@@ -16,7 +16,9 @@ import {
 } from "../../src/simulator/story/CampaignMath";
 import { OTHER_SPEAKERS } from "../../src/simulator/story/content/cast";
 import { CAMPAIGN } from "../../src/simulator/story/content";
-import type { Effect, Mission, Objective, Presence, Step, Text } from "../../src/simulator/story/StoryTypes";
+import type { Cutscene, Effect, Mission, Objective, Presence, Step, Text } from "../../src/simulator/story/StoryTypes";
+import { cameraFor, ease, sceneLength, shotAt, type AnchorFrame } from "../../src/simulator/story/CutsceneMath";
+import { cycleTimeForHour, dayCycleState, DAY_HOLD_SECONDS } from "../../src/simulator/environment/EnvironmentMath";
 
 /**
  * The campaign's data checked as a whole. These are the tests that catch a
@@ -24,7 +26,7 @@ import type { Effect, Mission, Objective, Presence, Step, Text } from "../../src
  * sector, a mission nobody can reach, a step that can never be done.
  */
 
-const GEAR = new Set(["rifle"]);
+const GEAR = new Set(["rifle", "pistol", "knife", "map"]);
 const ids = <T extends { id: string }>(list: readonly T[]) => new Set(list.map((entry) => entry.id));
 const unique = (label: string, list: readonly { id: string }[]) => assert.equal(ids(list).size, list.length, `${label}: ids are unique`);
 
@@ -90,11 +92,35 @@ test("every id is unique and every reference names something that exists", () =>
     } else if (presence.kind === "item") {
       assert.ok(items.has(presence.item), `${where}: item ${presence.item}`);
       assert.ok(locations.has(presence.at), `${where}: item at ${presence.at}`);
+    } else if (presence.kind === "props") {
+      assert.ok(locations.has(presence.at), `${where}: props at ${presence.at}`);
     } else {
       assert.ok(characters.has(presence.character), `${where}: npc ${presence.character}`);
       assert.ok(locations.has(presence.at), `${where}: npc at ${presence.at}`);
+      if (presence.face) assert.ok(locations.has(presence.face), `${where}: npc faces ${presence.face}`);
     }
   };
+  // The cut scenes: unique, with shots, their anchors naming something real.
+  unique("cutscenes", campaign.cutscenes);
+  const scenes = ids(campaign.cutscenes);
+  const anchorOk = (anchor: string) =>
+    anchor === "yacht" ||
+    anchor === "helm" ||
+    anchor === "skipper" ||
+    (anchor.startsWith("drone:") && groupsEverywhere.has(anchor.slice(6))) ||
+    (anchor.startsWith("npc:") && characters.has(anchor.slice(4))) ||
+    (anchor.startsWith("place:") && locations.has(anchor.slice(6)));
+  for (const scene of campaign.cutscenes) {
+    assert.ok(scene.shots.length > 0, `cutscene ${scene.id}: has shots`);
+    for (const [index, shot] of scene.shots.entries()) {
+      assert.ok(shot.seconds > 0, `cutscene ${scene.id}/${index}: a length`);
+      for (const end of [shot.from, shot.to]) {
+        if (!end) continue;
+        assert.ok(anchorOk(end.eye.anchor), `cutscene ${scene.id}/${index}: eye on ${end.eye.anchor}`);
+        assert.ok(anchorOk(end.look.anchor), `cutscene ${scene.id}/${index}: look at ${end.look.anchor}`);
+      }
+    }
+  }
   for (const rule of campaign.world) {
     assert.ok(missions.has(rule.after), `world ${rule.id}: after ${rule.after}`);
     rule.presence.forEach((presence) => checkPresence(`world ${rule.id}`, presence));
@@ -128,12 +154,16 @@ test("every id is unique and every reference names something that exists", () =>
         else assert.ok(locations.has(step.marker), `${at}: marker ${step.marker}`);
       }
       if (step.checkpoint) assert.ok(locations.has(step.checkpoint.yacht), `${at}: checkpoint`);
+      if (objective.kind === "event" && objective.event.startsWith("rammed:")) assert.ok(groups.has(objective.event.slice(7)), `${at}: the rammer is in the mission`);
+      if (objective.kind === "event") assert.ok(objective.after !== undefined, `${at}: an event step has a way on if the event never comes`);
     }
     for (const effect of effectsOf(mission)) {
       if (effect.do === "say") for (const line of effect.lines) assert.ok(speakers.has(line.who), `${where}: speaker ${line.who}`);
       if (effect.do === "place") assert.ok(locations.has(effect.yacht), `${where}: place ${effect.yacht}`);
       if (effect.do === "give") assert.ok(items.has(effect.what) || GEAR.has(effect.what), `${where}: give ${effect.what}`);
       if (effect.do === "take") assert.ok(items.has(effect.item), `${where}: take ${effect.item}`);
+      if (effect.do === "cutscene") assert.ok(scenes.has(effect.scene), `${where}: cutscene ${effect.scene}`);
+      if (effect.do === "look") assert.ok(effect.at.startsWith("npc:") ? characters.has(effect.at.slice(4)) : locations.has(effect.at), `${where}: look at ${effect.at}`);
     }
   }
 });
@@ -231,17 +261,27 @@ test("the story's places are found in the sea: beaches, a porch, open water, a d
     if (location.snap === "pier") assert.ok(place.porch && place.landing, `${location.id}: a porch`);
     if (location.snap === "water") assert.ok(distanceFromWaterline(place.x, place.z) > 40, `${location.id}: open water`);
   }
-  // The camp lies a sail of a couple of kilometres from the shoal.
-  const shoal = resolvePlace(CAMPAIGN.locations.find((entry) => entry.id === "drowned-shoal")!);
-  const camp = resolvePlace(CAMPAIGN.locations.find((entry) => entry.id === "black-camp")!);
+  // Sato's hideout lies a proper sail from the shoal where she wrecked.
+  const shoal = resolvePlace(CAMPAIGN.locations.find((entry) => entry.id === "wash-up")!);
+  const camp = resolvePlace(CAMPAIGN.locations.find((entry) => entry.id === "sato-hideout")!);
   const leg = Math.hypot(shoal.x - camp.x, shoal.z - camp.z);
-  assert.ok(leg > 1200 && leg < 3200, `shoal to camp ${leg.toFixed(0)} m`);
+  assert.ok(leg > 2000 && leg < 6000, `shoal to the hideout ${leg.toFixed(0)} m`);
+  // The lighthouse, the tracks and Holloway's ambush lie up on the shoal's island, above the tide.
+  for (const id of ["tide-rock", "old-light", "light-tracks", "light-ambush"]) {
+    const place = toWorld(CAMPAIGN.locations.find((entry) => entry.id === id)!.at);
+    assert.ok(distanceFromWaterline(place.x, place.z) < -8, `${id} is well ashore`);
+  }
   // The sunken Zodiac lies on the shelf, a free dive deep.
   const zodiac = toWorld(CAMPAIGN.locations.find((entry) => entry.id === "sunken-zodiac")!.at);
   const bed = seabedNear(zodiac.x, zodiac.z);
   const depth = waterDepthAt(bed.x, bed.z);
   assert.ok(depth > 5 && depth < 12, `the Zodiac lies ${depth.toFixed(1)} m down`);
   assert.ok(Math.hypot(bed.x - shoal.landing!.x, bed.z - shoal.landing!.z) < 260, "near the shoal");
+  // The prologue's run in comes from outside the line with the trade wind behind her.
+  const start = toWorld(CAMPAIGN.start.yacht);
+  const refuge = resolvePlace(CAMPAIGN.locations.find((entry) => entry.id === "reef-refuge")!);
+  const run = Math.hypot(refuge.x - start.x, refuge.z - start.z);
+  assert.ok(run > 900 && run < 2600, `the run to the reefs ${run.toFixed(0)} m`);
 });
 
 /** Facts that do whatever the current step asks. */
@@ -264,6 +304,7 @@ function satisfying(state: CampaignState, mission: Mission, step: Step, time: nu
   if (objective.kind === "repair") events.add("repaired");
   if (objective.kind === "disable") events.add(`disabled:${objective.group}`);
   if (objective.kind === "salvage") events.add(`salvaged:${objective.group}`);
+  if (objective.kind === "event") events.add(objective.event);
   return {
     events,
     dialogueIdle: true,
@@ -272,6 +313,7 @@ function satisfying(state: CampaignState, mission: Mission, step: Step, time: nu
     skipper: at,
     aboard,
     hull: objective.kind === "hull" ? 0.1 : state.hull,
+    cutscene: false,
     place: (id) => placeOf(id),
   };
 }
@@ -279,7 +321,7 @@ function satisfying(state: CampaignState, mission: Mission, step: Step, time: nu
 test("the whole story can be played through, and the engine hands out what the steps promise", () => {
   const state = createCampaign();
   const said: string[] = [];
-  let gaveRifle = false;
+  const gave = new Set<string>();
   for (let tick = 0; tick < 400 && !storyComplete(CAMPAIGN, state); tick += 1) {
     const open = openMissions(CAMPAIGN, state).find((mission) => state.missions[mission.id]) ?? openMissions(CAMPAIGN, state)[0]!;
     const step = stepOf(CAMPAIGN, state, open.id);
@@ -287,7 +329,13 @@ test("the whole story can be played through, and the engine hands out what the s
     const result = advance(CAMPAIGN, state, facts);
     for (const effect of result.effects) {
       if (effect.do === "say") said.push(...effect.lines.map((line) => line.who));
-      if (effect.do === "give" && effect.what === "rifle") gaveRifle = true;
+      if (effect.do === "give") gave.add(effect.what);
+      // A scene's cues are the story too (played out by the story system as each shot begins).
+      if (effect.do === "cutscene") {
+        for (const shot of CAMPAIGN.cutscenes.find((scene) => scene.id === effect.scene)!.shots) {
+          for (const cue of shot.cue ?? []) if (cue.do === "say") said.push(...cue.lines.map((line) => line.who));
+        }
+      }
     }
   }
   assert.ok(storyComplete(CAMPAIGN, state), "the story so far comes to its end");
@@ -295,7 +343,8 @@ test("the whole story can be played through, and the engine hands out what the s
     if (mission.status === "playable") assert.ok(state.missions[mission.id]?.done, `${mission.id} done`);
     else assert.equal(state.missions[mission.id], undefined, `${mission.id} is not started`);
   }
-  assert.ok(gaveRifle, "the rifle is handed over");
+  for (const what of ["pistol", "knife", "map", "rifle"]) assert.ok(gave.has(what), `the ${what} is handed over`);
+  assert.equal(state.rig, true, "she is rigged again");
   assert.ok(said.includes("holloway") && said.includes("sara") && said.includes("aquilon"));
   assert.equal(state.engine, true, "the engine runs again");
   assert.equal(state.hull, 1, "the hull is whole again");
@@ -315,6 +364,7 @@ test("objectives wait for the world, and a beat waits for its own lines", () => 
     skipper: { x: 0, z: 0 },
     aboard: false,
     hull: 1,
+    cutscene: false,
     place: () => ({ x: 100, z: 0, radius: 20 }),
   };
   assert.equal(objectiveMet({ kind: "listen" }, state, facts, "m"), false, "not on the frame it starts");
@@ -324,6 +374,14 @@ test("objectives wait for the world, and a beat waits for its own lines", () => 
   assert.equal(objectiveMet({ kind: "reach", at: "x", by: "yacht" }, state, { ...facts, yacht: { x: 95, z: 0 } }, "m"), false, "the yacht is there but he is not aboard");
   assert.equal(objectiveMet({ kind: "hull", hull: 0.3, after: 60 }, state, { ...facts, hull: 0.25 }, "m"), true);
   assert.equal(objectiveMet({ kind: "hull", hull: 0.3, after: 60 }, state, facts, "m"), false);
+  // A scene is watched to its end (or skipped), never on the frame it starts.
+  assert.equal(objectiveMet({ kind: "watch" }, state, { ...facts, stepTime: () => 5, cutscene: true }, "m"), false);
+  assert.equal(objectiveMet({ kind: "watch" }, state, { ...facts, stepTime: () => 0.1 }, "m"), false);
+  assert.equal(objectiveMet({ kind: "watch" }, state, { ...facts, stepTime: () => 5 }, "m"), true);
+  // An event, or its time running out.
+  assert.equal(objectiveMet({ kind: "event", event: "rammed:x", after: 12 }, state, { ...facts, stepTime: () => 3 }, "m"), false);
+  assert.equal(objectiveMet({ kind: "event", event: "rammed:x", after: 12 }, state, { ...facts, stepTime: () => 3, events: new Set(["rammed:x"]) }, "m"), true);
+  assert.equal(objectiveMet({ kind: "event", event: "rammed:x", after: 12 }, state, { ...facts, stepTime: () => 12.5 }, "m"), true);
 });
 
 test("a saved game survives the story being rewritten under it", () => {
@@ -348,7 +406,7 @@ test("a saved game survives the story being rewritten under it", () => {
     CAMPAIGN,
   );
   assert.equal(state.missions.prologue?.done, true);
-  assert.equal(state.missions.stranded?.step, "wake", "an unknown step starts the mission over");
+  assert.equal(state.missions.stranded?.step, "look", "an unknown step starts the mission over");
   assert.equal(state.missions["a-mission-that-was-cut"], undefined);
   assert.equal(state.missions["rusty-spire"], undefined, "a planned mission is not under way");
   assert.equal(state.checkpoint, null);
@@ -363,4 +421,48 @@ test("a saved game survives the story being rewritten under it", () => {
   // An item picked up is not put back in the world.
   const holding = restoreCampaign({ missions: { prologue: { step: "struck", done: true }, stranded: { step: "kit", done: false } }, collected: ["repair-kit"], items: ["repair-kit"] }, CAMPAIGN);
   assert.ok(!presenceNow(CAMPAIGN, holding).some((entry) => entry.kind === "item"));
+});
+
+test("a cut scene's camera follows its anchors, eases between its ends, and holds when told", () => {
+  const scene: Cutscene = {
+    id: "t",
+    shots: [
+      { seconds: 2, from: { eye: { anchor: "yacht", offset: [0, 5, -10] }, look: { anchor: "yacht" } }, to: { eye: { anchor: "yacht", offset: [10, 5, 0] }, look: { anchor: "yacht" } }, ease: "inOut" },
+      { seconds: 1, from: { eye: { anchor: "helm" }, look: { anchor: "yacht", offset: [0, 0, 20] }, fov: 30 } },
+    ],
+  };
+  assert.equal(sceneLength(scene), 3);
+  assert.deepEqual(shotAt(scene, 0.5), { index: 0, local: 0.5, progress: 0.25 });
+  assert.equal(shotAt(scene, 2.5).index, 1);
+  assert.equal(shotAt(scene, 3.5).index, -1, "a scene runs out");
+  assert.equal(shotAt({ ...scene, hold: true }, 9).index, 1, "a held scene stays on its last shot");
+  // Heading east (π/2): ahead is +x, right is −z.
+  const frames = (anchor: string): AnchorFrame | null =>
+    anchor === "yacht" ? { x: 100, y: 0, z: 50, heading: Math.PI / 2 } : anchor === "helm" ? { x: 98, y: 3, z: 50, heading: Math.PI / 2 } : null;
+  const start = cameraFor(scene.shots[0]!, 0, 0, frames)!;
+  assert.ok(Math.abs(start.eye.x - 90) < 1e-9 && Math.abs(start.eye.z - 50) < 1e-9 && start.eye.y === 5, "ten metres astern, five up");
+  const end = cameraFor(scene.shots[0]!, 1, 0, frames)!;
+  assert.ok(Math.abs(end.eye.x - 100) < 1e-9 && Math.abs(end.eye.z - 40) < 1e-9, "ten metres to starboard");
+  const middle = cameraFor(scene.shots[0]!, 0.5, 0, frames)!;
+  assert.ok(Math.abs(middle.eye.x - 95) < 1e-9, "half way at half time");
+  assert.ok(ease("inOut", 0.25) < 0.25 && ease("out", 0.25) > 0.25 && ease("in", 1) === 1);
+  const helm = cameraFor(scene.shots[1]!, 0, 0, frames)!;
+  assert.equal(helm.fov, 30);
+  assert.ok(Math.abs(helm.look.x - 120) < 1e-9);
+  assert.equal(cameraFor({ seconds: 1, from: { eye: { anchor: "drone:x" }, look: { anchor: "yacht" } } }, 0, 0, frames), null, "no camera on what is not there");
+});
+
+test("a story's hour sets the day cycle's clock: a low sun at either end of the day, night between", () => {
+  assert.equal(cycleTimeForHour(6), 0);
+  assert.equal(cycleTimeForHour(12), DAY_HOLD_SECONDS / 2);
+  const sunset = dayCycleState(cycleTimeForHour(17.7));
+  assert.equal(sunset.progress, 0);
+  assert.ok(sunset.sunArc > 0 && sunset.sunArc < 0.15, "a low evening sun");
+  assert.ok(dayCycleState(cycleTimeForHour(18.75)).progress > 0.3, "dusk");
+  assert.equal(dayCycleState(cycleTimeForHour(0)).progress, 1, "midnight");
+  assert.equal(dayCycleState(cycleTimeForHour(3)).progress, 1);
+  const dawn = dayCycleState(cycleTimeForHour(5.25)).progress;
+  assert.ok(dawn > 0.3 && dawn < 0.7, "dawn");
+  assert.ok(dayCycleState(cycleTimeForHour(6.2)).sunArc < 0.1, "first light on the shoal");
+  for (let hour = 0; hour < 24; hour += 0.25) assert.ok(Number.isFinite(cycleTimeForHour(hour)));
 });

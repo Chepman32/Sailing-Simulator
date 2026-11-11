@@ -16,7 +16,7 @@ import {
   yachtSignature,
   type DronePose,
 } from "../../src/simulator/combat/CombatMath";
-import { MAGAZINE, Rifle, RELOAD_TIME } from "../../src/simulator/combat/Rifle";
+import { Armoury, Firearm, WEAPONS } from "../../src/simulator/combat/Firearms";
 
 const calm = { engineRunning: false, shaft: 0, speed: 5, engineHeat: 0, night: 0, haze: 0, rain: 0, storm: 0 };
 
@@ -91,21 +91,40 @@ test("a drone's aim: good close in, poor far off, worse against a fast yacht at 
   assert.equal(hitChance(600, 0, 0, 0, 0), 0);
 });
 
-test("a holed hull slows her, and the rifle reloads by itself", () => {
+test("a holed hull slows her, and a gun reloads by itself", () => {
   assert.equal(leakSpeedFactor(0.8), 1);
   assert.ok(leakSpeedFactor(0.25) < 0.85 && leakSpeedFactor(0.05) >= 0.58);
-  const rifle = new Rifle();
-  assert.equal(rifle.trigger(), false, "not drawn");
-  rifle.drawn = true;
-  let fired = 0;
-  for (let step = 0; step < 200; step += 1) {
-    if (rifle.trigger()) fired += 1;
-    rifle.update(0.05);
-    if (fired === MAGAZINE) break;
+  for (const spec of [WEAPONS.rifle, WEAPONS.pistol]) {
+    const gun = new Firearm(spec);
+    let fired = 0;
+    for (let step = 0; step < 400; step += 1) {
+      if (gun.trigger()) fired += 1;
+      gun.update(0.05);
+      if (fired === spec.magazine) break;
+    }
+    assert.equal(fired, spec.magazine, spec.id);
+    assert.equal(gun.ammo, 0);
+    assert.equal(gun.trigger(), false, "reloading");
+    for (let t = 0; t < spec.reload + 0.1; t += 0.05) gun.update(0.05);
+    assert.equal(gun.ammo, spec.magazine);
   }
-  assert.equal(fired, MAGAZINE);
-  assert.equal(rifle.ammo, 0);
-  assert.equal(rifle.trigger(), false, "reloading");
-  for (let t = 0; t < RELOAD_TIME + 0.1; t += 0.05) rifle.update(0.05);
-  assert.equal(rifle.ammo, MAGAZINE);
+  // The pistol is for close work, and no use against a drone's armour.
+  assert.ok(WEAPONS.pistol.range < WEAPONS.rifle.range / 3 && WEAPONS.pistol.spread > WEAPONS.rifle.spread * 4);
+  assert.equal(WEAPONS.pistol.power, 0);
+});
+
+test("key 1 runs through the guns he has, then puts them away", () => {
+  const armoury = new Armoury();
+  assert.equal(armoury.cycle(() => false), null, "nothing to draw");
+  const both = () => true;
+  assert.equal(armoury.cycle(both), "pistol");
+  assert.equal(armoury.cycle(both), "rifle");
+  assert.equal(armoury.cycle(both), null);
+  const rifleOnly = (id: string) => id === "rifle";
+  assert.equal(armoury.cycle(rifleOnly), "rifle");
+  assert.equal(armoury.cycle(rifleOnly), null);
+  armoury.cycle(both);
+  armoury.check((id) => id === "rifle");
+  assert.equal(armoury.drawn, null, "a gun he no longer has is put away");
+  assert.equal(armoury.current, null);
 });

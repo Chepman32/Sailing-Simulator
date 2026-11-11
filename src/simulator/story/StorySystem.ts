@@ -17,8 +17,9 @@ import {
   type Facts,
 } from "./CampaignMath";
 import { CAMPAIGN } from "./content";
+import { cameraFor, shotAt, type AnchorFrame, type CameraPose } from "./CutsceneMath";
 import type { StoryProps } from "./StoryProps";
-import type { Campaign, Effect, Line, Presence, Sector, Text } from "./StoryTypes";
+import type { Campaign, Cutscene, Effect, Line, Presence, Sector, StorySound, Text } from "./StoryTypes";
 
 /**
  * The campaign at run time: it keeps the progress, gathers what happens in
@@ -48,7 +49,7 @@ const TALK_REACH = 3.4;
 /** Seconds a group the story needs may be missing before it is put back. */
 const RESPAWN_MISSING = 20;
 
-export type SkipperPose = { x: number; y: number; z: number; aboard: boolean; mode: "helm" | "leap" | "deck" | "swim" | "land" };
+export type SkipperPose = { x: number; y: number; z: number; yaw: number; aboard: boolean; mode: "helm" | "leap" | "deck" | "swim" | "land" };
 
 /** What the story asks of the simulator. */
 export type StoryHost = {
@@ -69,6 +70,19 @@ export type StoryHost = {
   ground(x: number, z: number): number;
   seabed(x: number, z: number): number;
   radio(kind: "radio" | "broadcast"): void;
+  /** The world frame of the yacht's helm (the skipper's eyes at the wheel), for a cut scene's camera. */
+  helm(): AnchorFrame;
+  /** The yacht's displays dark with the alert on them, or back to normal. */
+  instruments(on: boolean, alert: readonly Text[] | null): void;
+  /** Her mast and sail shot away, or rigged again. */
+  rig(broken: boolean): void;
+  sound(sound: StorySound): void;
+  /** Turns the skipper on foot toward (x, z). */
+  look(x: number, z: number): void;
+  /** Holds the player's controls (a scene, a moment of danger) or frees them. */
+  freeze(on: boolean): void;
+  /** Sets the rudder and the throttle. */
+  steer(rudder?: number, throttle?: number): void;
 };
 
 export type StoryLine = { id: number; who: string; via: Line["via"]; text: Text; duration: number; elapsed: number };
@@ -97,6 +111,16 @@ export type StoryView = {
   progress: Record<string, { step: string; done: boolean }>;
   /** Everything the story so far has to offer is done. */
   complete: boolean;
+  /** A cut scene is on (the interface steps aside but for the subtitles, the letterbox and the skip). */
+  cinematic: boolean;
+  /** Grows each time the skipper comes to (the interface's eyes-opening effect). */
+  wake: number;
+  /** The yacht's electronics are dead, with this alert on her screens (null: they work). */
+  alert: readonly Text[] | null;
+  /** She has her mast and sail. */
+  rig: boolean;
+  /** The skipper is held where he is (nothing to steer or walk). */
+  frozen: boolean;
 };
 
 export class StorySystem {
@@ -129,6 +153,11 @@ export class StorySystem {
   private readonly castSpots: TraderSpot[] = [];
   private readonly castWho = new Map<number, string>();
   private readonly scratch = new THREE.Vector3();
+  /** The cut scene running: which, how far in, and how many of its shots have fired their cues. */
+  private scene: { cutscene: Cutscene; time: number; cued: number } | null = null;
+  private wakeSerial = 0;
+  private alert: readonly Text[] | null = null;
+  private frozen = false;
 
   constructor(
     private readonly host: StoryHost,
@@ -189,6 +218,13 @@ export class StorySystem {
 
   // --- Starting, resuming, leaving ----------------------------------------------
 
+  /** The main menu: no story running (what was under way stays saved, to continue). */
+  enterMenu(): void {
+    if (this.active) this.persist();
+    this.mode = null;
+    this.resetRun();
+  }
+
   /** Free sailing: no story, no drones. */
   chooseFree(): void {
     this.mode = "free";
@@ -214,18 +250,42 @@ export class StorySystem {
   resume(): void {
     this.mode = "campaign";
     this.resetRun();
-    // A prologue left half-way starts over: it is one scene.
-    if (!isDone(this.state, "prologue")) {
+    // A prologue left before the wreck starts over: up to there it is one scene.
+    if (!isDone(this.state, "prologue") && !this.state.checkpoint) {
       this.startNew();
       return;
     }
-    this.restorePosition(false);
+    this.restorePosition(!isDone(this.state, "prologue"));
     this.host.conditionChanged();
     this.host.gearChanged();
     this.persist();
     this.reconcile(true);
     this.tick(0);
   }
+
+  /**
+   * A saved game: its campaign, and the yacht where she lay (the caller sets
+   * the skipper down ashore after, if that is where he was). A save from
+   * before the wreck starts the prologue over; false then.
+   */
+  load(state: CampaignState, yacht: { x: number; z: number; heading: number }): boolean {
+    this.mode = "campaign";
+    this.state = state;
+    this.resetRun();
+    if (!isDone(this.state, "prologue") && !this.state.checkpoint) {
+      this.startNew();
+      return false;
+    }
+    this.host.placeYacht(yacht.x, yacht.z, yacht.heading);
+    this.host.conditionChanged();
+    this.host.gearChanged();
+    this.persist();
+    this.reconcile(true);
+    return true;
+  }
+
+  /** Grows each time the story moves on a step (the autosave's cue). */
+  progressSerial = 0;
 
   private resetRun(): void {
     this.clearWorld();
@@ -241,6 +301,11 @@ export class StorySystem {
     this.repairing = -1;
     this.winching = false;
     this.sinking = -1;
+    this.scene = null;
+    if (this.alert) this.host.instruments(true, null);
+    this.alert = null;
+    if (this.frozen) this.host.freeze(false);
+    this.frozen = false;
   }
 
   private clearWorld(): void {
@@ -376,6 +441,7 @@ export class StorySystem {
     if (!this.active) return;
     this.time += delta;
     for (const [mission, clock] of this.stepClocks) this.stepClocks.set(mission, clock + delta);
+    this.updateScene(delta);
     this.updateFade(delta);
     this.updateLines(delta);
     this.updateTitle(delta);
@@ -404,6 +470,7 @@ export class StorySystem {
     const facts: Facts = {
       events: this.events,
       dialogueIdle: !this.line && this.queue.length === 0 && this.lineGap <= 0,
+      cutscene: this.scene !== null,
       stepTime: (mission) => this.stepClocks.get(mission) ?? 0,
       yacht: { x: yacht.x, z: yacht.z },
       skipper: { x: skipper.x, z: skipper.z },
@@ -415,6 +482,7 @@ export class StorySystem {
     this.events.clear();
     for (const mission of result.moved) this.stepClocks.set(mission, 0);
     if (result.moved.length > 0) {
+      this.progressSerial += 1;
       this.repairing = -1;
       this.dirty = true;
       this.reconcile(true);
@@ -466,9 +534,118 @@ export class StorySystem {
       case "blast":
         this.host.blast(effect.strength);
         break;
+      case "cutscene": {
+        const cutscene = this.campaign.cutscenes.find((entry) => entry.id === effect.scene);
+        if (cutscene) this.scene = { cutscene, time: 0, cued: 0 };
+        break;
+      }
+      case "cut":
+        this.scene = null;
+        break;
+      case "instruments":
+        this.alert = effect.on ? null : (effect.alert ?? []);
+        this.host.instruments(effect.on, this.alert);
+        break;
+      case "rig":
+        this.host.rig(effect.broken);
+        this.host.conditionChanged();
+        break;
+      case "sound":
+        this.host.sound(effect.sound);
+        break;
+      case "wake":
+        this.wakeSerial += 1;
+        break;
+      case "look": {
+        const at = this.anchorFrame(effect.at.startsWith("npc:") ? effect.at : `place:${effect.at}`);
+        if (at) this.host.look(at.x, at.z);
+        break;
+      }
+      case "freeze":
+        this.frozen = effect.on;
+        this.host.freeze(effect.on);
+        break;
+      case "steer":
+        this.host.steer(effect.rudder, effect.throttle);
+        break;
       default:
         break;
     }
+  }
+
+  // --- Cut scenes ------------------------------------------------------------------
+
+  /** Moves the scene on, firing each shot's cues as it begins; ends it when it has run (unless it holds). */
+  private updateScene(delta: number): void {
+    const scene = this.scene;
+    if (!scene) return;
+    scene.time += delta;
+    const at = shotAt(scene.cutscene, scene.time);
+    const reached = at.index < 0 ? scene.cutscene.shots.length : at.index + 1;
+    while (scene.cued < reached) {
+      const shot = scene.cutscene.shots[scene.cued]!;
+      scene.cued += 1;
+      for (const effect of shot.cue ?? []) this.carryOut(effect);
+    }
+    if (at.index < 0 && this.scene === scene) this.scene = null;
+  }
+
+  /** The player asked to skip: every cue still to come happens now, and the scene ends (a held one too). */
+  skipCutscene(): void {
+    const scene = this.scene;
+    if (!scene) return;
+    while (scene.cued < scene.cutscene.shots.length) {
+      const shot = scene.cutscene.shots[scene.cued]!;
+      scene.cued += 1;
+      for (const effect of shot.cue ?? []) this.carryOut(effect);
+    }
+    // What was being said goes too: it belonged to the scene.
+    this.queue.length = 0;
+    this.line = null;
+    this.scene = null;
+  }
+
+  get cinematic(): boolean {
+    return this.active && this.scene !== null;
+  }
+
+  /** The camera of the scene running, or null (no scene, or its anchor is not in the world yet). */
+  sceneCamera(): CameraPose | null {
+    const scene = this.scene;
+    if (!scene || !this.active) return null;
+    const at = shotAt(scene.cutscene, scene.time);
+    const shot = scene.cutscene.shots[at.index];
+    if (!shot) return null;
+    return cameraFor(shot, Math.min(1, at.progress), this.time, (anchor) => this.anchorFrame(anchor));
+  }
+
+  /** Where a scene's anchor is: the yacht, her helm, the skipper, a drone, a person, a place. */
+  private anchorFrame(anchor: string): AnchorFrame | null {
+    if (anchor === "yacht") {
+      const yacht = this.host.yacht();
+      return { x: yacht.x, y: yacht.y, z: yacht.z, heading: yacht.heading };
+    }
+    if (anchor === "helm") return this.host.helm();
+    if (anchor === "skipper") {
+      const skipper = this.host.skipper();
+      return { x: skipper.x, y: skipper.mode === "land" ? this.host.ground(skipper.x, skipper.z) : skipper.y, z: skipper.z, heading: skipper.yaw };
+    }
+    if (anchor.startsWith("drone:")) {
+      const drone = this.drones.find(anchor.slice(6));
+      return drone ? { x: drone.x, y: drone.y - 2, z: drone.z, heading: drone.heading } : null;
+    }
+    if (anchor.startsWith("npc:")) {
+      const who = anchor.slice(4);
+      for (const spot of this.castSpots) {
+        if (this.castWho.get(spot.id) === who) return { x: spot.x, y: this.host.ground(spot.x, spot.z), z: spot.z, heading: spot.facing };
+      }
+      return null;
+    }
+    if (anchor.startsWith("place:")) {
+      const place = this.place(anchor.slice(6));
+      return place ? { x: place.x, y: place.island ? this.host.ground(place.x, place.z) : 0, z: place.z, heading: 0 } : null;
+    }
+    return null;
   }
 
   private say(lines: readonly Line[]): void {
@@ -581,6 +758,7 @@ export class StorySystem {
     }
     // What the drones did.
     for (const event of this.drones.consumeEvents()) {
+      if (event.type === "rammed") this.events.add(`rammed:${event.group}`);
       if (event.type === "disabled") this.events.add(`disabled:${event.group}`);
       if (event.type === "destroyed") this.events.add(`destroyed:${event.group}`);
       if (event.type === "salvaged") {
@@ -635,18 +813,46 @@ export class StorySystem {
       if (keys.has(key)) continue;
       this.present.delete(key);
       if (key.startsWith("drones:")) this.drones.remove(key.slice(7));
-      if (key.startsWith("item:")) this.props.remove(key);
+      if (key.startsWith("item:") || key.startsWith("props:")) this.props.remove(key);
     }
     this.castSpots.length = 0;
     this.castWho.clear();
     for (const presence of wanted) {
       const key = presenceKey(presence);
       if (presence.kind === "npc") {
+        // One of each person: a later presence (the step's) wins over the world's.
         const place = this.place(presence.at);
+        for (const [id, who] of this.castWho) {
+          if (who !== presence.character) continue;
+          this.castWho.delete(id);
+          const index = this.castSpots.findIndex((spot) => spot.id === id);
+          if (index >= 0) this.castSpots.splice(index, 1);
+        }
+        // A new id wherever he stands, so a person who moves is built afresh there
+        // (a multiple of three: the first trader model, a man).
+        let hash = 0;
+        for (const char of `${presence.character}@${presence.at}`) hash = (hash * 31 + char.charCodeAt(0)) % 9973;
+        const id = 3000 + hash * 3;
         if (place?.porch) {
-          const id = 3000 + this.castSpots.length * 3;
-          this.castSpots.push({ id, x: place.porch.x, z: place.porch.z, facing: place.porch.facing });
+          this.castSpots.push({ id, x: place.porch.x, z: place.porch.z, facing: place.porch.facing, kit: presence.kit });
           this.castWho.set(id, presence.character);
+        } else if (place) {
+          // On the spot, facing what he watches.
+          const toward = presence.face ? this.place(presence.face) : null;
+          const facing = toward ? Math.atan2(toward.x - place.x, toward.z - place.z) : 0;
+          this.castSpots.push({ id, x: place.x, z: place.z, facing, kit: presence.kit });
+          this.castWho.set(id, presence.character);
+        }
+        this.present.add(key);
+        continue;
+      }
+      if (presence.kind === "props") {
+        if (!this.props.has(key)) {
+          const place = this.place(presence.at);
+          if (place) {
+            const spot = presence.set === "flotsam" ? (place.landing ?? place) : place;
+            this.props.placeSet(key, presence.set, spot.x, spot.z, (x, z) => this.host.ground(x, z));
+          }
         }
         this.present.add(key);
         continue;
@@ -693,8 +899,19 @@ export class StorySystem {
     if (!place) return;
     const yacht = this.host.yacht();
     const line = group.line ? ([toWorld(group.line[0]), toWorld(group.line[1])] as const) : undefined;
+    const start = group.spawn ? toWorld(group.spawn) : undefined;
     this.drones.spawn(
-      { group: group.id, behaviour: group.behaviour, count: group.count, centre: { x: place.x, z: place.z }, beat: group.beat ?? 300, line, respawn: group.respawn },
+      {
+        group: group.id,
+        behaviour: group.behaviour,
+        count: group.count,
+        centre: { x: place.x, z: place.z },
+        beat: group.beat ?? 300,
+        line,
+        respawn: group.respawn,
+        start: start ? { x: start.x, z: start.z, heading: (-(group.heading ?? 0) * Math.PI) / 180 } : undefined,
+        speed: group.speed,
+      },
       yacht,
     );
   }
@@ -771,6 +988,11 @@ export class StorySystem {
       prompt: this.prompt(),
       progress: { ...this.state.missions },
       complete: this.active && openMissions(this.campaign, this.state).length === 0,
+      cinematic: this.cinematic,
+      wake: this.wakeSerial,
+      alert: this.active ? this.alert : null,
+      rig: this.state.rig,
+      frozen: this.active && this.frozen,
     };
   }
 

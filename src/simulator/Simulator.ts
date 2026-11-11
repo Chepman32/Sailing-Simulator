@@ -15,7 +15,7 @@ import { GpuTimer } from "./core/GpuTimer";
 import { AUTO_GPU_TARGET_MS, FrameRateGovernor, GpuGovernor } from "./core/RenderBudget";
 import { RenderLoop } from "./core/RenderLoop";
 import { EnvironmentSystem } from "./environment/EnvironmentSystem";
-import type { TimeOfDayState } from "./environment/EnvironmentMath";
+import { cycleTimeForHour, type TimeOfDayState } from "./environment/EnvironmentMath";
 import { IslandSystem } from "./environment/IslandSystem";
 import { distanceFromWaterline, islandsInCell, worldCell } from "./environment/IslandMath";
 import { traderSpot, type PierFootprint } from "./environment/IslandProps";
@@ -103,10 +103,11 @@ import { CombatAudio } from "./audio/CombatAudio";
 import { CombatEffects } from "./combat/CombatEffects";
 import { engineKnockedOut, HULL_PER_HIT, leakSpeedFactor, SMOKING_HULL, stepEngineHeat, yachtSignature, DOME_CENTRE, JET_CENTRES, droneToWorld, type HitZone, type DroneCondition } from "./combat/CombatMath";
 import { DroneSystem, type DroneContact } from "./combat/DroneSystem";
-import { Rifle, RIFLE_RANGE, RIFLE_SPREAD } from "./combat/Rifle";
+import { Armoury, WEAPON_ORDER, type WeaponId } from "./combat/Firearms";
 import type { Place } from "./story/AtlasMath";
 import { StoryProps } from "./story/StoryProps";
 import { StorySystem, type StoryHost, type SkipperPose } from "./story/StorySystem";
+import { readSave, saveBlock, writeSave, SAVE_VERSION, type SaveBlock, type SaveSlotId } from "./story/SaveGames";
 import { HULL_CENTER_Z, HULL_HALF_BEAM, HULL_HALF_LENGTH, HULL_OFFSET_X } from "./environment/shaders/oceanShader";
 
 /**
@@ -223,6 +224,9 @@ const RESIZE_SETTLE_MS = 140;
 /** Seconds the camera takes to fly between the wheel and the skipper's eyes. */
 const CAMERA_HANDOFF = 0.9;
 
+/** Nothing of the quarantine on the chart (before he has the map). */
+const NO_ZONE = new Float64Array(0);
+
 export class Simulator {
   private readonly scene = new THREE.Scene();
   private readonly renderer: THREE.WebGLRenderer;
@@ -253,6 +257,7 @@ export class Simulator {
   private shipShadows?: ShipShadows;
   private readonly shipImpact = new THREE.Vector3();
   private readonly helmPoint = new THREE.Vector3();
+  private readonly sceneShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 45 };
   /** The skipper on foot and in the water (see `diver/`). */
   private diver?: DiverController;
   private deckField: DeckField | null = null;
@@ -301,7 +306,9 @@ export class Simulator {
   private storyProps?: StoryProps;
   private storyCast?: Traders;
   private story?: StorySystem;
-  private readonly rifle = new Rifle();
+  private readonly armoury = new Armoury();
+  /** Whether he carries a gun (the story's gear). */
+  private readonly owns = (id: WeaponId): boolean => this.story?.has(id) ?? false;
   private engineHeat = 0;
   private combatShake = 0;
   private damageSmokeClock = 0;
@@ -825,8 +832,8 @@ export class Simulator {
       });
       this.initialized = true;
       this.status = "running";
-      // A campaign under way picks up where it was left.
-      if (this.story?.mode === "campaign") this.story.resume();
+      // The game opens on its main menu (a campaign under way is continued from there).
+      this.enterMainMenu();
       this.hud.emit(this.snapshot());
       this.loop.start();
       // The interface appears with the first frame actually on screen.
@@ -1492,7 +1499,13 @@ export class Simulator {
       };
     }
     const marker = story.marker(this.storyMarker);
-    return { ...this.chartStoryCache, marker: marker ? { x: marker.x, z: marker.z } : null };
+    // The sectors and the quarantine line are drawn once he has Holloway's map of them.
+    const charted = story.has("map");
+    return {
+      sectors: charted ? this.chartStoryCache.sectors : [],
+      zone: charted ? this.chartStoryCache.zone : NO_ZONE,
+      marker: marker ? { x: marker.x, z: marker.z } : null,
+    };
   }
 
   // --- Economy: finds, traders, upgrades, decor ------------------------------------------
@@ -2052,6 +2065,16 @@ export class Simulator {
       this.directPhoto(delta);
     }
     this.applyHandoff(delta);
+    // A cut scene has the camera to itself (the main menu's drift before it).
+    this.directMenu(delta);
+    const scene = this.menuView ? null : this.story?.sceneCamera();
+    if (scene) {
+      this.sceneShot.position = scene.eye;
+      this.sceneShot.target = scene.look;
+      this.sceneShot.fov = scene.fov;
+      this.camera.direct(this.sceneShot, 1);
+      this.camera.camera.updateMatrixWorld();
+    }
     this.updateShake(delta);
     this.environment.setWeatherKind(this.currentWeatherKind());
     // The brightest flare in the air lights the scene; failing that, the
@@ -2181,10 +2204,14 @@ export class Simulator {
       if (throttle !== undefined) this.state.controls.throttle = throttle;
     },
     setHour: (hour) => {
-      // The sky keeps no clock: a story hour is day or night, and the cycle runs on from there.
+      // The day cycle jumps to the story's hour (a low sun at sunset, first
+      // light on the shoal) and runs on from there.
+      const time = cycleTimeForHour(hour);
       const mode: LightingMode = hour >= 5.5 && hour < 19.5 ? "day" : "night";
       this.state.lightingMode = mode;
+      this.state.autoTime = true;
       this.environment.setMode(mode);
+      this.environment.setClock(time);
     },
     setWeather: (kind) => {
       this.storyWeather = { kind, until: this.elapsed + 300 };
@@ -2194,21 +2221,77 @@ export class Simulator {
     pay: (coins) => this.payCoins(coins),
     conditionChanged: () => this.applyCondition(),
     gearChanged: () => {
-      if (!this.story?.has("rifle")) this.rifle.reset();
+      this.armoury.check(this.owns);
       this.hud.emit(this.snapshot());
     },
     ground: (x, z) => this.groundWalk(x, z),
     seabed: (x, z) => this.groundBase(x, z),
     radio: (kind) => this.combatAudio?.radio(kind),
+    helm: () => {
+      const eye = this.vessel.worldPoint(this.vessel.helmEye, this.helmPoint);
+      return { x: eye.x, y: eye.y, z: eye.z, heading: this.physics.heading };
+    },
+    instruments: (on, alert) => {
+      this.storyAlert = on ? null : (alert ?? []);
+      this.applyLockdown();
+    },
+    // A stump and rags: she barely sails, and goes where the engine takes her
+    // (applied with her condition, which the story calls for next).
+    rig: () => undefined,
+    sound: (sound) => this.combatAudio?.story(sound),
+    look: (x, z) => {
+      const diver = this.diver;
+      if (!diver?.active || diver.mode !== "land") return;
+      diver.yaw = Math.atan2(x - diver.walk.x, z - diver.walk.z);
+    },
+    freeze: (on) => {
+      this.storyFrozen = on;
+      this.applyStoryHold();
+    },
+    steer: (rudder, throttle) => {
+      if (rudder !== undefined) this.state.controls.rudder = rudder;
+      if (throttle !== undefined) this.state.controls.throttle = throttle;
+    },
   };
+
+  /** The story's alert on her screens (null: they work), in the player's language. */
+  private storyAlert: readonly { ru: string; en: string }[] | null = null;
+  private storyLanguage: "ru" | "en" = "en";
+  /** The story holds the controls (a scene, or a moment it wants him still). */
+  private storyFrozen = false;
+  private storyHeld = false;
+
+  /** The language the story's texts drawn in the world (the alert on her screens) are in. */
+  setStoryLanguage(language: "ru" | "en"): void {
+    if (language === this.storyLanguage) return;
+    this.storyLanguage = language;
+    this.applyLockdown();
+  }
+
+  private applyLockdown(): void {
+    const alert = this.storyAlert;
+    this.vessel?.setLockdown(alert ? alert.map((line) => line[this.storyLanguage]) : null);
+  }
+
+  /** Holds the player's hands off the yacht and his feet still while the story wants it (a scene, an ambush). */
+  private applyStoryHold(): void {
+    const held = this.storyFrozen || (this.story?.cinematic ?? false);
+    if (held === this.storyHeld) return;
+    this.storyHeld = held;
+    const away = this.diver?.active ?? false;
+    this.input.enabled = !held && !away && !this.menuView;
+    if (away) this.setDiverFrozen(held);
+  }
 
   private skipperPose(): SkipperPose {
     const diver = this.diver;
     const mode = diver?.active ? diver.mode : "helm";
-    if (diver?.active && mode === "swim") return { x: diver.swim.x, y: diver.swim.y, z: diver.swim.z, aboard: false, mode };
-    if (diver?.active && mode === "land") return { x: diver.walk.x, y: diver.walk.y, z: diver.walk.z, aboard: false, mode };
+    if (diver?.active && mode === "swim") return { x: diver.swim.x, y: diver.swim.y, z: diver.swim.z, aboard: false, mode, yaw: diver.yaw };
+    if (diver?.active && mode === "land") return { x: diver.walk.x, y: diver.walk.y, z: diver.walk.z, aboard: false, mode, yaw: diver.yaw };
     const yacht = this.physics.position;
-    return { x: yacht.x, y: yacht.y + 1.6, z: yacht.z, aboard: true, mode: mode === "leap" ? "leap" : mode === "deck" ? "deck" : "helm" };
+    // Aboard his view turns with her.
+    const yaw = this.physics.heading + (diver?.active ? diver.yaw : 0);
+    return { x: yacht.x, y: yacht.y + 1.6, z: yacht.z, aboard: true, mode: mode === "leap" ? "leap" : mode === "deck" ? "deck" : "helm", yaw };
   }
 
   /** The clearance a yacht needs where she is set down: shores, hulls, the places' structures. */
@@ -2275,6 +2358,10 @@ export class Simulator {
     const hull = this.story?.hull ?? 1;
     const speed = leakSpeedFactor(hull);
     this.physics.leakDrag = 1 / (speed * speed);
+    // Her rig, as the story has it (shot away in the prologue, jury-rigged after).
+    const rigged = !this.story?.active || this.story.state.rig;
+    this.vessel.setRigBroken(!rigged);
+    this.physics.sailPower = rigged ? 1 : 0.12;
     if (!(this.story?.engineWorks ?? true) && this.state.engineRunning) this.setEngineRunning(false);
     this.hud.emit(this.snapshot());
   }
@@ -2294,7 +2381,9 @@ export class Simulator {
   /** Starts a new campaign from the prologue. */
   startCampaign(): void {
     if (!this.initialized || !this.story) return;
-    this.rifle.reset();
+    this.setMenuView(false);
+    this.menuSky = null;
+    this.armoury.reset();
     this.story.startNew();
     this.applyCondition();
     this.hud.emit(this.snapshot());
@@ -2303,16 +2392,215 @@ export class Simulator {
   /** Back into the campaign where it was left. */
   continueCampaign(): void {
     if (!this.initialized || !this.story) return;
+    this.setMenuView(false);
+    this.menuSky = null;
     this.story.resume();
     this.applyCondition();
     this.hud.emit(this.snapshot());
   }
 
+  /** The player skips the cut scene on (its cues still happen: the story is where it would have been). */
+  skipCutscene(): void {
+    this.story?.skipCutscene();
+  }
+
+  /** Why the game cannot be saved just now (null: it can). */
+  saveBlocked(): SaveBlock | null {
+    const story = this.story;
+    if (!story) return "no-campaign";
+    const view = story.view();
+    return saveBlock({ campaign: story.active, cinematic: view.cinematic, frozen: view.frozen, fade: view.fade, attacking: this.drones?.alarm().attacking ?? false });
+  }
+
+  /**
+   * Saves the campaign to `slot` with a picture of the moment: "saved", or
+   * why not (the store full, or a moment that cannot be saved).
+   */
+  async saveGame(slot: SaveSlotId): Promise<"saved" | "full" | SaveBlock> {
+    const blocked = this.saveBlocked();
+    if (blocked) return blocked;
+    const story = this.story!;
+    const thumbnail = await this.captureThumbnail();
+    const diver = this.diver;
+    const afoot = diver?.active && diver.mode === "land" ? { x: diver.walk.x, z: diver.walk.z, yaw: diver.yaw } : null;
+    const yacht = this.physics.position;
+    const written = writeSave(localStorage, {
+      version: SAVE_VERSION,
+      slot,
+      savedAt: Date.now(),
+      campaign: JSON.parse(JSON.stringify(story.state)),
+      pose: { yacht: { x: yacht.x, z: yacht.z, heading: this.physics.heading }, skipper: afoot },
+      world: { cycleTime: this.environment.clock, weather: this.storyWeather?.kind ?? null },
+      thumbnail,
+    });
+    return written ? "saved" : "full";
+  }
+
+  /** Loads the save in `slot`; false if there is none to load. */
+  loadGame(slot: SaveSlotId): boolean {
+    if (!this.initialized || !this.story) return false;
+    const game = readSave(localStorage, slot, this.story.campaign);
+    if (!game) return false;
+    this.armoury.reset();
+    this.setMenuView(false);
+    this.menuSky = null;
+    const placed = this.story.load(game.campaign, game.pose.yacht);
+    if (placed) {
+      // The sky as it was.
+      this.state.autoTime = true;
+      this.environment.setClock(game.world.cycleTime);
+      if (game.world.weather) {
+        this.storyWeather = { kind: game.world.weather, until: this.elapsed + 300 };
+        this.environment.setWeatherKind(game.world.weather, true);
+      }
+      const afoot = game.pose.skipper;
+      if (afoot && this.diver) {
+        this.ensureDeckField();
+        this.diver.placeAshore(afoot.x, afoot.z, this.groundWalk(afoot.x, afoot.z), afoot.yaw);
+        this.handoff.active = false;
+      }
+    }
+    this.autosaveSerial = this.story.progressSerial;
+    this.applyCondition();
+    this.camera.snap();
+    this.hud.emit(this.snapshot());
+    return true;
+  }
+
+  /** The story's serial at the last autosave, and when it was written. */
+  private autosaveSerial = 0;
+  private autosaveAt = -1e9;
+  private autosaving = false;
+
+  /** Saves to the autosave slot once the story has moved on and the moment is a quiet one. */
+  private updateAutosave(): void {
+    const story = this.story;
+    if (!story?.active || this.autosaving || story.progressSerial === this.autosaveSerial) return;
+    if (this.elapsed - this.autosaveAt < 20 || this.saveBlocked()) return;
+    this.autosaving = true;
+    const serial = story.progressSerial;
+    void this.saveGame("auto").then((result) => {
+      this.autosaving = false;
+      if (result === "saved" || result === "full") {
+        this.autosaveSerial = serial;
+        this.autosaveAt = this.elapsed;
+        if (result === "saved") this.options.onAutosave?.();
+      }
+    });
+  }
+
+  /** A small JPEG of the next frame drawn, for a save's picture. */
+  private captureThumbnail(): Promise<string | null> {
+    if (!this.initialized) return Promise.resolve(null);
+    return new Promise((resolve) => this.pendingThumbnails.push(resolve));
+  }
+
+  private readonly pendingThumbnails: Array<(url: string | null) => void> = [];
+  private thumbnailCanvas: HTMLCanvasElement | null = null;
+
+  /** Right after a draw: the frame, cropped to 16:9 and shrunk, as a data URL. */
+  private takeThumbnails(): void {
+    const resolvers = this.pendingThumbnails.splice(0);
+    let url: string | null = null;
+    try {
+      const source = this.renderer.domElement;
+      const canvas = (this.thumbnailCanvas ??= document.createElement("canvas"));
+      canvas.width = 320;
+      canvas.height = 180;
+      const context = canvas.getContext("2d");
+      if (context && source.width > 0 && source.height > 0) {
+        const aspect = 16 / 9;
+        let width = source.width;
+        let height = width / aspect;
+        if (height > source.height) {
+          height = source.height;
+          width = height * aspect;
+        }
+        context.drawImage(source, (source.width - width) / 2, (source.height - height) / 2, width, height, 0, 0, 320, 180);
+        url = canvas.toDataURL("image/jpeg", 0.72);
+      }
+    } catch {
+      url = null;
+    }
+    resolvers.forEach((resolve) => resolve(url));
+  }
+
+  /**
+   * The main menu's view: the camera drifting slowly round the yacht, low
+   * over the water (and the world in free sailing behind it).
+   */
+  setMenuView(on: boolean): void {
+    if (on === this.menuView) return;
+    this.menuView = on;
+    this.menuClock = 0;
+    if (this.input) this.input.enabled = !on && !this.storyHeld && !(this.diver?.active ?? false);
+    if (!on) this.camera?.snap();
+  }
+
+  private menuView = false;
+  private menuClock = 0;
+  private readonly menuShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 38 };
+
+  private directMenu(delta: number): void {
+    if (!this.menuView) return;
+    this.menuClock += delta;
+    const yacht = this.physics.position;
+    const heading = this.physics.heading;
+    // A slow pass round her quarter, rising and falling a little.
+    const angle = heading + Math.PI * 0.75 + this.menuClock * 0.045;
+    const reach = 26 + Math.sin(this.menuClock * 0.07) * 5;
+    const shot = this.menuShot;
+    shot.position.x = yacht.x + Math.sin(angle) * reach;
+    shot.position.z = yacht.z + Math.cos(angle) * reach;
+    shot.position.y = yacht.y + 5.5 + Math.sin(this.menuClock * 0.05) * 1.5;
+    shot.target.x = yacht.x + Math.sin(heading) * 4;
+    shot.target.y = yacht.y + 4.2;
+    shot.target.z = yacht.z + Math.cos(heading) * 4;
+    this.camera.direct(shot, 1);
+    this.camera.camera.updateMatrixWorld();
+  }
+
+  /**
+   * The main menu: the story stops (saved, to continue), the skipper is back
+   * at the wheel, and the camera drifts round her in the evening light.
+   */
+  enterMainMenu(): void {
+    if (!this.story) return;
+    this.story.enterMenu();
+    this.armoury.reset();
+    if (this.diver?.active) {
+      const yacht = this.physics.position;
+      this.placeYacht(yacht.x, yacht.z, this.physics.heading);
+    }
+    // The player's own sky is kept for free sailing; the menu has the golden hour.
+    this.menuSky ??= { autoTime: this.state.autoTime, mode: this.state.lightingMode };
+    this.state.autoTime = true;
+    this.state.lightingMode = "day";
+    this.environment.setMode("day");
+    this.environment.setClock(cycleTimeForHour(17.3));
+    this.storyWeather = null;
+    this.applyCondition();
+    this.setMenuView(true);
+    this.hud.emit(this.snapshot());
+  }
+
+  /** The sky the player had before the main menu took it (given back for free sailing). */
+  private menuSky: { autoTime: boolean; mode: LightingMode } | null = null;
+
   /** Free sailing: no story, no drones, the yacht whole. */
   chooseFreeSail(): void {
     if (!this.initialized || !this.story) return;
+    this.setMenuView(false);
+    const sky = this.menuSky;
+    this.menuSky = null;
+    if (sky && !sky.autoTime) {
+      this.state.autoTime = false;
+      this.state.lightingMode = sky.mode;
+      this.environment.setAutoCycle(false);
+      this.environment.setMode(sky.mode);
+    }
     this.story.chooseFree();
-    this.rifle.reset();
+    this.armoury.reset();
     this.applyCondition();
     this.hud.emit(this.snapshot());
   }
@@ -2328,10 +2616,10 @@ export class Simulator {
     this.story?.skipLine();
   }
 
-  /** Draws or puts away the rifle (once Holloway has handed it over). */
+  /** Key 1: draws the next gun he carries, or puts it away (false if he has none). */
   toggleRifle(): boolean {
-    if (!this.story?.has("rifle")) return false;
-    this.rifle.drawn = !this.rifle.drawn;
+    if (!WEAPON_ORDER.some(this.owns)) return false;
+    this.armoury.cycle(this.owns);
     this.hud.emit(this.snapshot());
     return true;
   }
@@ -2343,8 +2631,10 @@ export class Simulator {
    */
   fireRifle(ndcX: number, ndcY: number, assist = 0): boolean {
     const drones = this.drones;
-    if (!this.initialized || !drones || !this.rifle.drawn || !this.story?.has("rifle")) return false;
-    if (!this.rifle.trigger()) return false;
+    const gun = this.armoury.current;
+    if (!this.initialized || !drones || !gun || !this.owns(gun.spec.id)) return false;
+    if (!gun.trigger()) return false;
+    const { range, spread, power } = gun.spec;
     const camera = this.camera.camera;
     this.aimNdc.set(ndcX, ndcY);
     // A finger is no crosshair: the nearest weak spot under it.
@@ -2352,25 +2642,25 @@ export class Simulator {
     this.aimRay.setFromCamera(this.aimNdc, camera);
     const ray = this.aimRay.ray;
     // What the camera's line meets: a drone, the sea, or nothing near.
-    let reach = RIFLE_RANGE;
-    const aimed = drones.aimDistance(ray.origin, ray.direction, RIFLE_RANGE + 60);
+    let reach = range;
+    const aimed = drones.aimDistance(ray.origin, ray.direction, range + 60);
     if (aimed !== null) reach = aimed;
-    else if (ray.direction.y < -0.002) reach = Math.min(RIFLE_RANGE, (ray.origin.y - 0) / -ray.direction.y);
+    else if (ray.direction.y < -0.002) reach = Math.min(range, (ray.origin.y - 0) / -ray.direction.y);
     this.aimPoint.copy(ray.direction).multiplyScalar(reach).add(ray.origin);
-    // The round leaves the rifle, not the camera: from his eyes at the helm or ashore.
+    // The round leaves the gun, not the camera: from his eyes at the helm or ashore.
     const firstPerson = this.diver?.active || this.state.cameraMode === "helm";
     if (firstPerson) this.muzzlePoint.copy(camera.position).addScaledVector(ray.direction, 0.6);
     else this.vessel.worldPoint(this.vessel.helmEye, this.muzzlePoint);
     this.shotDirection.copy(this.aimPoint).sub(this.muzzlePoint).normalize();
     // His own unsteadiness, and the sea's.
-    const sway = RIFLE_SPREAD * (1 + Math.min(2, significantWaveHeight()) * 0.6);
+    const sway = spread * (1 + Math.min(2, significantWaveHeight()) * 0.6);
     this.shotDirection.x += (Math.random() - 0.5) * 2 * sway;
     this.shotDirection.y += (Math.random() - 0.5) * 2 * sway;
     this.shotDirection.z += (Math.random() - 0.5) * 2 * sway;
     this.shotDirection.normalize();
-    const result = drones.shoot(this.muzzlePoint, this.shotDirection, RIFLE_RANGE);
+    const result = drones.shoot(this.muzzlePoint, this.shotDirection, range, power);
     const effects = this.combatEffects;
-    this.combatAudio?.rifle();
+    this.combatAudio?.gunshot(gun.spec.id);
     if (effects) {
       // In his own eyes the flash is out at the muzzle, not in them.
       this.projectScratch.copy(this.muzzlePoint).addScaledVector(this.shotDirection, firstPerson ? 0.9 : 0.4);
@@ -2382,10 +2672,10 @@ export class Simulator {
       this.combatAudio?.impact(result.point, result.zone, result.armour);
     } else {
       // Into the sea, or away over it.
-      const along = this.shotDirection.y < -0.002 ? Math.min(RIFLE_RANGE, this.muzzlePoint.y / -this.shotDirection.y) : RIFLE_RANGE;
+      const along = this.shotDirection.y < -0.002 ? Math.min(range, this.muzzlePoint.y / -this.shotDirection.y) : range;
       this.aimPoint.copy(this.shotDirection).multiplyScalar(along).add(this.muzzlePoint);
       effects?.tracer(this.muzzlePoint, this.aimPoint, false);
-      if (along < RIFLE_RANGE) this.wake.splash(this.aimPoint.setY(this.ocean.sample(this.aimPoint.x, this.aimPoint.z).height), 0.22, "entry", undefined, false);
+      if (along < range) this.wake.splash(this.aimPoint.setY(this.ocean.sample(this.aimPoint.x, this.aimPoint.z).height), 0.22, "entry", undefined, false);
     }
     return true;
   }
@@ -2424,7 +2714,7 @@ export class Simulator {
     const story = this.story;
     const effects = this.combatEffects;
     if (!drones || !story || !effects) return;
-    this.rifle.update(delta);
+    this.armoury.update(delta);
     this.engineHeat = stepEngineHeat(this.engineHeat, this.state.engineRunning, delta);
     this.combatShake = Math.max(0, this.combatShake - delta * 1.6);
     const weather = this.environment.currentWeather;
@@ -2492,6 +2782,8 @@ export class Simulator {
     const story = this.story;
     if (!story) return;
     story.update(delta);
+    this.applyStoryHold();
+    this.updateAutosave();
     // The weather: a story's own for a while, else the sector's leaning, else the planner's.
     if (this.storyWeather && this.elapsed > this.storyWeather.until) this.storyWeather = null;
     const goal = story.active ? (story.currentSector?.atmosphere?.haze ?? 0) : 0;
@@ -2540,7 +2832,7 @@ export class Simulator {
       }
     }
     frame.hit = this.lastHit;
-    frame.rifle = this.rifle.drawn;
+    frame.rifle = this.armoury.drawn !== null;
     const alarm = story.active ? drones.alarm() : { suspicion: 0, attacking: false };
     frame.alarm = alarm.suspicion;
     frame.attacking = alarm.attacking;
@@ -2550,7 +2842,7 @@ export class Simulator {
   private readonly onCanvasPointerDown = (event: PointerEvent): void => {
     this.pointerDown = { x: event.clientX, y: event.clientY, time: performance.now(), id: event.pointerId };
     // On foot with the mouse held for looking, the button is the trigger.
-    if (this.rifle.drawn && this.diver?.active && this.diver.looksWithMouse && event.button === 0) {
+    if (this.armoury.drawn && this.diver?.active && this.diver.looksWithMouse && event.button === 0) {
       this.fireRifle(0, 0);
       this.hud.emit(this.snapshot());
     }
@@ -2559,7 +2851,7 @@ export class Simulator {
   private readonly onCanvasPointerUp = (event: PointerEvent): void => {
     const down = this.pointerDown;
     this.pointerDown = null;
-    if (!down || down.id !== event.pointerId || !this.rifle.drawn) return;
+    if (!down || down.id !== event.pointerId || !this.armoury.drawn) return;
     if (this.diver?.active && this.diver.looksWithMouse) return;
     // A click or a tap, not a drag of the view.
     if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 8 || performance.now() - down.time > 450) return;
@@ -2760,7 +3052,7 @@ export class Simulator {
     // drag the surface through the frame).
     if (mode === "leap" || (mode === "helm" && (this.diver?.cameraDepth ?? -1) < 0)) this.startHandoff();
     if (mode !== "leap") this.vessel.setSkipperLeap(null);
-    this.input.enabled = !away;
+    this.input.enabled = !away && !this.storyHeld && !this.menuView;
     this.physics.hoveTo = away;
     if (!away) {
       this.camera.setMode(this.state.cameraMode);
@@ -3166,6 +3458,7 @@ export class Simulator {
       camera.position.sub(this.shakeOffset);
       camera.updateMatrixWorld();
     }
+    if (this.pendingThumbnails.length > 0) this.takeThumbnails();
     if (this.pendingCaptures.length > 0) {
       const resolvers = this.pendingCaptures.splice(0);
       // toBlob copies the drawing buffer synchronously, right after the draw,
@@ -3555,10 +3848,13 @@ export class Simulator {
       },
       story: this.story?.view() ?? null,
       combat: {
-        rifle: this.story?.has("rifle") ?? false,
-        drawn: this.rifle.drawn,
-        ammo: this.rifle.ammo,
-        reload: this.rifle.reloadProgress,
+        rifle: WEAPON_ORDER.some(this.owns),
+        guns: WEAPON_ORDER.filter(this.owns),
+        weapon: this.armoury.drawn,
+        drawn: this.armoury.drawn !== null,
+        ammo: this.armoury.current?.ammo ?? 0,
+        magazine: this.armoury.current?.spec.magazine ?? 0,
+        reload: this.armoury.current?.reloadProgress ?? 1,
         alarm: this.story?.active ? (this.drones?.alarm().suspicion ?? 0) : 0,
         attacking: this.story?.active ? (this.drones?.alarm().attacking ?? false) : false,
       },

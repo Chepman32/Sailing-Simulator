@@ -83,6 +83,14 @@ export class Vessel {
   private readonly boomPivot = new THREE.Group();
   /** The boom as rigged (after `raiseBoom`), for the lantern hung under it. */
   private boomMesh: THREE.Mesh | null = null;
+  /** The mast, the sail and the rigging that runs above head height (hidden when the rig is shot away). */
+  private mastMesh: THREE.Mesh | null = null;
+  private mastBox: THREE.Box3 | null = null;
+  private sailMeshRef: THREE.Mesh | null = null;
+  private readonly rigging: THREE.Mesh[] = [];
+  /** What is left of the rig when it is shot away: the stump, the fallen spar, rags. */
+  private brokenRig: { group: THREE.Group; rags: THREE.Mesh[] } | null = null;
+  private rigBroken = false;
   /** The cockpit lantern hung from the boom: it swings a little; its glass glows at night. */
   private readonly lanternRig = new THREE.Group();
   private lanternGlow: THREE.Mesh | null = null;
@@ -353,6 +361,13 @@ export class Vessel {
     this.rudders.forEach((rudder) => {
       rudder.rotation.y = -controls.rudder * MAX_RUDDER_ANGLE;
     });
+    // Rags flog in the wind.
+    if (this.rigBroken && this.brokenRig) {
+      this.brokenRig.rags.forEach((rag, index) => {
+        rag.rotation.y = Math.sin(time * 6.5 + index * 1.7) * 0.9 + index;
+        rag.rotation.x = 0.25 + Math.sin(time * 9.1 + index) * 0.25;
+      });
+    }
     const telemetry = physics.telemetry;
     this.helm.update(delta, {
       x: physics.position.x,
@@ -460,7 +475,13 @@ export class Vessel {
         }
         return;
       }
-      if (size.y > 6 && size.x < 0.35 && size.z < 0.45) mast = box.clone();
+      if (size.y > 6 && size.x < 0.35 && size.z < 0.45) {
+        mast = box.clone();
+        this.mastMesh = mesh;
+      } else if (box.max.y > 6 && Math.min(size.x, size.z) < 0.12 && size.y > 2.5) {
+        // Shrouds and stays: thin lines up to the masthead.
+        this.rigging.push(mesh);
+      }
       if (size.y < 0.5 && size.z > 3 && box.min.y > 1.2) boom = { mesh, bounds: box.clone() };
 
       const isHull = box.min.y < -0.9 && Math.abs((box.min.x + box.max.x) / 2) > 1 && size.z > 6;
@@ -502,7 +523,73 @@ export class Vessel {
     this.boomPivot.attach(sailMesh);
     this.raiseBoom(boomPart.mesh, sailMesh);
     this.boomMesh = boomPart.mesh;
+    this.sailMeshRef = sailMesh;
+    this.mastBox = mastBounds.clone();
     this.hasRig = true;
+  }
+
+  /** Her displays taken over by the network's alert (null: back to work). */
+  setLockdown(lines: readonly string[] | null): void {
+    this.helm.setLockdown(lines);
+  }
+
+  /**
+   * The rig shot away (a heavy round through the mast): the mast snapped
+   * at a third of its height, its top fallen across the deck, the sail gone
+   * to rags flogging from the stump and the boom, the stays slack and gone.
+   * False puts it all back (a jury rig is as good as a mast to look at).
+   */
+  setRigBroken(broken: boolean): void {
+    if (broken === this.rigBroken) return;
+    this.rigBroken = broken;
+    if (this.mastMesh) this.mastMesh.visible = !broken;
+    if (this.sailMeshRef) this.sailMeshRef.visible = !broken;
+    for (const line of this.rigging) line.visible = !broken;
+    if (broken && !this.brokenRig) this.brokenRig = this.buildBrokenRig();
+    if (this.brokenRig) this.brokenRig.group.visible = broken;
+  }
+
+  private buildBrokenRig(): { group: THREE.Group; rags: THREE.Mesh[] } {
+    const group = new THREE.Group();
+    group.name = "BrokenRig";
+    const box = this.mastBox ?? new THREE.Box3(new THREE.Vector3(-0.08, 1.3, 1.8), new THREE.Vector3(0.08, 13, 2.0));
+    const centre = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(0.06, Math.min(box.max.x - box.min.x, box.max.z - box.min.z) / 2);
+    const height = box.max.y - box.min.y;
+    const breakAt = height * 0.34;
+    const metal = (this.mastMesh?.material as THREE.Material | undefined) ?? new THREE.MeshStandardMaterial({ color: 0xc9cdd2, metalness: 0.8, roughness: 0.35 });
+    // The stump, its top torn.
+    const stump = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.9, radius, breakAt, 10), metal);
+    stump.position.set(centre.x, box.min.y + breakAt / 2, centre.z);
+    stump.castShadow = true;
+    const tear = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.9, radius * 3, 6), metal);
+    tear.position.set(centre.x, box.min.y + breakAt + radius * 1.2, centre.z);
+    tear.rotation.z = 0.5;
+    // The top, fallen aft and to one side, its foot still at the break.
+    const length = height - breakAt;
+    const top = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.7, radius * 0.9, length, 10), metal);
+    const pivot = new THREE.Group();
+    pivot.position.set(centre.x, box.min.y + breakAt, centre.z);
+    pivot.rotation.set(-1.25, 0, 0.42);
+    top.position.y = length / 2;
+    top.castShadow = true;
+    pivot.add(top);
+    group.add(stump, tear, pivot);
+    // Rags of sail, flogging.
+    const cloth = (this.sailMeshRef?.material as THREE.Material | undefined) ?? new THREE.MeshStandardMaterial({ color: 0xf2efe6, side: THREE.DoubleSide });
+    const rags: THREE.Mesh[] = [];
+    const ragGeometry = new THREE.PlaneGeometry(0.55, 1.6, 2, 6);
+    ragGeometry.translate(0, -0.8, 0);
+    for (let index = 0; index < 4; index += 1) {
+      const rag = new THREE.Mesh(ragGeometry, cloth);
+      rag.position.set(centre.x + (index - 1.5) * 0.06, box.min.y + breakAt - 0.1 - index * 0.25, centre.z - 0.12 - index * 0.05);
+      rag.scale.set(0.7 + index * 0.15, 0.6 + (index % 2) * 0.5, 1);
+      rag.castShadow = true;
+      rags.push(rag);
+      group.add(rag);
+    }
+    this.root.add(group);
+    return { group, rags };
   }
 
   /**

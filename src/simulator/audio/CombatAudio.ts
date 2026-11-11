@@ -120,6 +120,34 @@ export class CombatAudio {
   }
 
   /** The skipper's own rifle, right by his ear. */
+  /** A shot from his own gun: the rifle's heavy crack and bolt, or the pistol's sharp snap. */
+  gunshot(weapon: "pistol" | "rifle"): void {
+    if (weapon === "rifle") {
+      this.rifle();
+      return;
+    }
+    const mixer = this.ready();
+    if (!mixer) return;
+    const { context, master } = mixer;
+    const now = context.currentTime + 0.005;
+    const out = context.createGain();
+    out.gain.value = 0.7;
+    out.connect(master);
+    out.connect(this.slapBack(context, master));
+    this.burstOfNoise(context, out, now, 0.025, 0.85, "highpass", 2200, 0.7, 1.6);
+    this.burstOfNoise(context, out, now, 0.09, 0.45, "bandpass", 1300, 1.2);
+    this.thump(context, out, now, 160, 0.08, 0.45);
+    // The slide, and a case ringing on the deck.
+    this.burstOfNoise(context, out, now + 0.05, 0.02, 0.07, "bandpass", 3600, 5);
+    this.burstOfNoise(context, out, now + 0.36, 0.012, 0.035, "bandpass", 5200, 9);
+    if (mixer.reverb) {
+      const wet = context.createGain();
+      wet.gain.value = 0.25;
+      out.connect(wet).connect(mixer.reverb);
+    }
+    window.setTimeout(() => out.disconnect(), 1200);
+  }
+
   rifle(): void {
     const mixer = this.ready();
     if (!mixer) return;
@@ -377,6 +405,116 @@ export class CombatAudio {
       return;
     }
     this.audio.radioStatic();
+  }
+
+  /**
+   * The story's sounds: the shortwave's hiss and flutter under a forecast, a
+   * rifle bolt worked close behind him, the crash of a hull driven onto
+   * rock, water flooding in, a breaker on the shoal, a mast cracking and
+   * coming down.
+   */
+  story(sound: "radio-noise" | "click" | "crash" | "flooding" | "surf" | "mast"): void {
+    const mixer = this.ready();
+    if (!mixer) return;
+    const { context, master, music } = mixer;
+    const now = context.currentTime + 0.01;
+    const out = context.createGain();
+    out.gain.value = 1;
+    out.connect(sound === "radio-noise" ? music : master);
+    const length = { "radio-noise": 9, click: 0.6, crash: 3.5, flooding: 6, surf: 4, mast: 3.2 }[sound];
+    if (sound === "radio-noise") {
+      // Shortwave: a band of hiss, fluttering with the fading.
+      const source = context.createBufferSource();
+      source.buffer = this.noiseBuffer(context);
+      source.loop = true;
+      const band = context.createBiquadFilter();
+      band.type = "bandpass";
+      band.frequency.value = 1800;
+      band.Q.value = 0.7;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.05, now + 0.4);
+      const flutter = context.createOscillator();
+      flutter.frequency.value = 5.5;
+      const depth = context.createGain();
+      depth.gain.value = 0.025;
+      flutter.connect(depth).connect(gain.gain);
+      gain.gain.setValueAtTime(0.05, now + length - 1.2);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + length);
+      source.connect(band).connect(gain).connect(out);
+      source.start(now);
+      source.stop(now + length);
+      flutter.start(now);
+      flutter.stop(now + length);
+    } else if (sound === "click") {
+      // A bolt: back, a beat, home.
+      this.burstOfNoise(context, out, now, 0.03, 0.55, "bandpass", 2600, 3);
+      this.thump(context, out, now, 420, 0.04, 0.25);
+      this.burstOfNoise(context, out, now + 0.16, 0.035, 0.7, "bandpass", 3100, 3);
+      this.thump(context, out, now + 0.16, 380, 0.05, 0.3);
+    } else if (sound === "crash") {
+      this.thump(context, out, now, 48, 1.1, 1.4);
+      this.burstOfNoise(context, out, now, 1.6, 1.3, "lowpass", 900, 0.6, 0.7);
+      for (let index = 0; index < 9; index += 1) {
+        const at = now + 0.05 + Math.random() * 1.2;
+        this.burstOfNoise(context, out, at, 0.08 + Math.random() * 0.1, 0.5 + Math.random() * 0.4, "bandpass", 500 + Math.random() * 1800, 2);
+      }
+    } else if (sound === "flooding") {
+      // Rushing water, swelling, with gulps.
+      const source = context.createBufferSource();
+      source.buffer = this.noiseBuffer(context);
+      source.loop = true;
+      const low = context.createBiquadFilter();
+      low.type = "lowpass";
+      low.frequency.setValueAtTime(400, now);
+      low.frequency.linearRampToValueAtTime(1300, now + 2.5);
+      low.frequency.linearRampToValueAtTime(250, now + length);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.7, now + 1.5);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + length);
+      source.connect(low).connect(gain).connect(out);
+      source.start(now);
+      source.stop(now + length);
+      for (let index = 0; index < 10; index += 1) this.thump(context, out, now + 0.6 + index * 0.45 + Math.random() * 0.2, 90 + Math.random() * 60, 0.18, 0.35);
+    } else if (sound === "surf") {
+      const source = context.createBufferSource();
+      source.buffer = this.noiseBuffer(context);
+      source.loop = true;
+      const low = context.createBiquadFilter();
+      low.type = "lowpass";
+      low.frequency.setValueAtTime(2500, now);
+      low.frequency.exponentialRampToValueAtTime(500, now + length);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.5, now + 0.35);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + length);
+      source.connect(low).connect(gain).connect(out);
+      source.start(now);
+      source.stop(now + length);
+    } else {
+      // The crack, the creak of it going, the fall onto the deck.
+      this.burstOfNoise(context, out, now, 0.09, 1.2, "highpass", 1800, 0.7, 1.6);
+      this.thump(context, out, now, 140, 0.15, 0.8);
+      const creak = context.createOscillator();
+      creak.type = "sawtooth";
+      creak.frequency.setValueAtTime(240, now + 0.2);
+      creak.frequency.exponentialRampToValueAtTime(70, now + 1.6);
+      const band = context.createBiquadFilter();
+      band.type = "bandpass";
+      band.frequency.value = 600;
+      band.Q.value = 4;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now + 0.2);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + 0.4);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.7);
+      creak.connect(band).connect(gain).connect(out);
+      creak.start(now + 0.2);
+      creak.stop(now + 1.8);
+      this.thump(context, out, now + 1.75, 70, 0.6, 1.1);
+      this.burstOfNoise(context, out, now + 1.75, 0.5, 0.6, "lowpass", 1200, 0.6);
+    }
+    window.setTimeout(() => out.disconnect(), (length + 0.5) * 1000);
   }
 
   /** A short warning cue the moment a drone has her (the interface's own sound, not a sound of the world). */

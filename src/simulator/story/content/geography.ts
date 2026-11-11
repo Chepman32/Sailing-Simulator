@@ -108,18 +108,21 @@ export const SECTORS: readonly Sector[] = [
  * open water). The ones not yet in play mark where the planned chapters lie.
  */
 export const LOCATIONS: readonly Location[] = [
-  // The prologue.
-  { id: "north-roads", name: { ru: "Северный рейд", en: "North Roads" }, sector: "open-wedge", at: [-6500, 300], snap: "water", radius: 200 },
-  { id: "breakers", name: { ru: "Буруны у Клина", en: "The Wedge breakers" }, sector: "dead-tide", at: [-9800, -1950], snap: "water", radius: 160 },
+  // The prologue: in from the south-east before the trade wind, to the old light on the outer shoal.
+  { id: "outer-cay", name: { ru: "Мыс у внешней кромки", en: "The outer cape" }, sector: "dead-tide", at: [-4789, -6325], snap: "island", radius: 60 },
+  { id: "reef-refuge", name: { ru: "Рифы у маяка", en: "The reefs off the light" }, sector: "dead-tide", at: [-5688, -5978], snap: "point", radius: 70 },
+  { id: "wash-up", name: { ru: "Внешняя отмель", en: "The outer shoal" }, sector: "dead-tide", at: [-5650, -6010], snap: "island", radius: 60 },
+  { id: "tide-rock", name: { ru: "Скала над линией прилива", en: "The rock above the tide line" }, sector: "dead-tide", at: [-5741, -5877], snap: "point", radius: 9 },
+  { id: "old-light", name: { ru: "Старый маяк", en: "The old lighthouse" }, sector: "dead-tide", at: [-5712, -5876], snap: "point", radius: 8 },
+  { id: "light-tracks", name: { ru: "Следы у маяка", en: "Tracks by the light" }, sector: "dead-tide", at: [-5723, -5878], snap: "point", radius: 4 },
+  { id: "light-ambush", name: { ru: "Тропа на склоне", en: "The path on the slope" }, sector: "dead-tide", at: [-5734, -5881], snap: "point", radius: 4 },
   // Chapter 1.
-  { id: "drowned-shoal", name: { ru: "Отмель Утопленника", en: "Drowned Man's Shoal" }, sector: "dead-tide", at: [-9722, -3339], snap: "island", radius: 140 },
-  { id: "sunken-zodiac", name: { ru: "Затонувший «Зодиак»", en: "The sunken Zodiac" }, sector: "dead-tide", at: [-9500, -3330], snap: "point", radius: 30 },
-  { id: "black-camp", name: { ru: "Лагерь Блэка", en: "Black's camp" }, sector: "dead-tide", at: [-7600, -2582], snap: "pier", radius: 160, charted: false },
+  { id: "sunken-zodiac", name: { ru: "Затонувший «Зодиак»", en: "The sunken Zodiac" }, sector: "dead-tide", at: [-5640, -5925], snap: "point", radius: 30 },
+  { id: "sato-hideout", name: { ru: "Схрон Сато", en: "Sato's hideout" }, sector: "dead-tide", at: [-7600, -2582], snap: "pier", radius: 160, charted: false },
   { id: "broken-ridge", name: { ru: "Сломанная гряда", en: "Broken Ridge" }, sector: "dead-tide", at: [-6500, -2050], snap: "water", radius: 420 },
   { id: "pale-banks", name: { ru: "Бледные банки", en: "The Pale Banks" }, sector: "dead-tide", at: [-5500, -4300], snap: "water", radius: 400 },
   // Planned: the bases of the chapters to come.
   { id: "rusty-spire", name: { ru: "Аванпост-12 «Ржавый шпиль»", en: "Outpost 12, the Rusty Spire" }, sector: "dead-tide", at: [-5200, -3100], snap: "water", radius: 200 },
-  { id: "south-light", name: { ru: "Южный маяк", en: "South Light" }, sector: "dead-tide", at: [-5734, -5896], snap: "island", radius: 160 },
   { id: "pepel-relay", name: { ru: "Узел связи «Пепел»", en: "The Ash relay" }, sector: "green-squall", at: [-4758, 3253], snap: "island", radius: 200 },
   { id: "kenji-den", name: { ru: "Мастерская Рэйна", en: "Rain's workshop" }, sector: "green-squall", at: [-1408, 2735], snap: "island", radius: 160 },
   { id: "object-404", name: { ru: "«Объект-404»", en: "Object 404" }, sector: "sand-teeth", at: [1458, -4996], snap: "island", radius: 200 },

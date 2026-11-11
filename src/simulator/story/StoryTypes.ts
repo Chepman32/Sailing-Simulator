@@ -102,9 +102,15 @@ export type DroneGroup = {
   /**
    * - `patrol`: a real hostile on its beat round `at`: hears and sees the yacht, hunts her, fights;
    * - `pass`: crosses by on a line (a demonstration): never attacks;
-   * - `strike`: the prologue's interceptors: they know where she is and close in shooting, and cannot be stopped.
+   * - `strike`: the prologue's interceptors: they know where she is and close in shooting, and cannot be stopped;
+   * - `ram`: comes in at full speed from her flank and drives into her side (`rammed:<group>` when it strikes).
    */
-  behaviour: "patrol" | "pass" | "strike";
+  behaviour: "patrol" | "pass" | "strike" | "ram";
+  /** Where it starts, exactly (a chart point; behind a cape, say), and its compass heading, degrees; else near `at` or, for a strike or a ram, off the yacht. */
+  spawn?: ChartPoint;
+  heading?: number;
+  /** Top speed, m/s (a drone's own otherwise). */
+  speed?: number;
   /** Patrol radius round `at`, m. */
   beat?: number;
   /** For `pass`: the line crossed, as two chart points. */
@@ -118,8 +124,40 @@ export type Presence =
   | { kind: "drones"; group: DroneGroup }
   /** A story item to be picked up: on the sea floor near the place, or on its beach. */
   | { kind: "item"; item: string; at: string; where: "seabed" | "ashore" }
-  /** A character standing at a place (on its porch). */
-  | { kind: "npc"; character: string; at: string };
+  /** A character standing at a place: on its porch, or (a place without one) on the spot, facing `face` if given. */
+  | { kind: "npc"; character: string; at: string; face?: string; kit?: "armed" }
+  /** Things lying about a place (a wreck's flotsam, footprints and spent cases), for the eye only. */
+  | { kind: "props"; set: "flotsam" | "tracks"; at: string };
+
+/** A point a camera is set from or looks at: an anchor, and an offset in its frame (metres to its right, up, ahead). */
+export type ShotPoint = { anchor: string; offset?: readonly [right: number, up: number, ahead: number] };
+
+/**
+ * One shot of a cut scene: the camera eases from `from` to `to` (or holds
+ * `from`) over `seconds`. Anchors: `yacht` (her frame), `skipper`,
+ * `drone:<group>` (its frame), `place:<location id>` (north-up). `cue` fires
+ * when the shot starts.
+ */
+export type Shot = {
+  seconds: number;
+  from: { eye: ShotPoint; look: ShotPoint; fov?: number };
+  to?: { eye: ShotPoint; look: ShotPoint; fov?: number };
+  ease?: "linear" | "inOut" | "out" | "in";
+  /** A little hand-held unsteadiness, 0…1. */
+  shake?: number;
+  cue?: readonly Effect[];
+};
+
+/** A cut scene: the player's camera and controls are taken while it runs; it can be skipped. */
+export type Cutscene = {
+  id: string;
+  shots: readonly Shot[];
+  /** The last shot is held until the story ends the scene (`{ do: "cut" }`) or another begins. */
+  hold?: boolean;
+};
+
+/** A sound the story calls for. */
+export type StorySound = "radio-noise" | "click" | "crash" | "flooding" | "surf" | "mast";
 
 /** Something that happens once, when a step starts or ends. */
 export type Effect =
@@ -141,7 +179,23 @@ export type Effect =
   | { do: "fade"; seconds: number }
   /** Shakes the camera and plays a blast near the yacht (a hit the story decides). */
   | { do: "blast"; strength: number }
-  | { do: "flag"; flag: string };
+  | { do: "flag"; flag: string }
+  /** Plays a cut scene (by id); `{ do: "cut" }` ends one that holds its last shot. */
+  | { do: "cutscene"; scene: string }
+  | { do: "cut" }
+  /** The yacht's electronics: dark (`on: false`, the red alert on her screens) or back. */
+  | { do: "instruments"; on: boolean; alert?: readonly Text[] }
+  /** Her mast and sail: shot away (`broken: true`) or rigged again. */
+  | { do: "rig"; broken: boolean }
+  | { do: "sound"; sound: StorySound }
+  /** Coming to: the eyes open slowly on the world. */
+  | { do: "wake" }
+  /** Turns the skipper on foot to look at a place or a person (`npc:<id>`). */
+  | { do: "look"; at: string }
+  /** Holds or frees the player's controls (a moment when he must not move). */
+  | { do: "freeze"; on: boolean }
+  /** The rudder and the throttle, set by the story (a scene sailing by itself). */
+  | { do: "steer"; rudder?: number; throttle?: number; heading?: number };
 
 export type Objective =
   /** Everything queued to be said has been said. */
@@ -159,7 +213,11 @@ export type Objective =
   | { kind: "disable"; group: string; onLost?: readonly Effect[] }
   | { kind: "salvage"; group: string }
   /** The hull is under `hull`, or `after` seconds have gone (the prologue's escape that cannot succeed). */
-  | { kind: "hull"; hull: number; after: number; at?: string };
+  | { kind: "hull"; hull: number; after: number; at?: string }
+  /** The cut scene started by this step has run (or been skipped). */
+  | { kind: "watch" }
+  /** Something happened in the world (`rammed:<group>`), or `after` seconds went by. */
+  | { kind: "event"; event: string; after?: number };
 
 export type Step = {
   id: string;
@@ -217,6 +275,7 @@ export type Campaign = {
   items: readonly StoryItem[];
   missions: readonly Mission[];
   world: readonly WorldRule[];
+  cutscenes: readonly Cutscene[];
   /** Where a new campaign begins; `heading` is a compass bearing, degrees. */
   start: { yacht: ChartPoint; heading: number };
 };

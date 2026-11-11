@@ -16,7 +16,7 @@ type Props = {
   view: StoryView;
   language: LanguageCode;
   onClose: () => void;
-  /** To the choice of a new campaign or free sailing. */
+  /** To the main menu (a new game, a saved one, free sailing). */
   onSwitch: () => void;
 };
 
@@ -39,7 +39,7 @@ export function JournalModal({ view, language, onClose, onSwitch }: Props) {
     <div className="journal-scrim" role="dialog" aria-modal="true" aria-labelledby="journal-title" onClick={onClose}>
       <section className="journal" onClick={(event) => event.stopPropagation()}>
         <header className="journal-header">
-          <p className="campaign-menu-eyebrow">{messages.campaignTag}</p>
+          <p className="journal-eyebrow">{messages.campaignTag}</p>
           <h2 id="journal-title">{messages.journal}</h2>
           <button type="button" className="icon-button journal-close" onClick={onClose} aria-label={messages.close} title={messages.close}>
             ×
@@ -118,7 +118,7 @@ export function JournalModal({ view, language, onClose, onSwitch }: Props) {
               ))}
             </ul>
             <button type="button" className="journal-switch" onClick={onSwitch}>
-              {messages.newCampaign} · {messages.freeSail}
+              {messages.menuMain}
             </button>
           </aside>
         </div>

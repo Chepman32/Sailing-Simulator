@@ -43,7 +43,7 @@ import { DroneTemplate, type DroneParts } from "./DroneModel";
  *   firing and nothing the player has can stop them.
  */
 
-export type DroneBehaviour = "patrol" | "pass" | "strike";
+export type DroneBehaviour = "patrol" | "pass" | "strike" | "ram";
 
 export type DroneSpec = {
   group: string;
@@ -54,9 +54,13 @@ export type DroneSpec = {
   line?: readonly [{ x: number; z: number }, { x: number; z: number }];
   /** Seconds before a lost drone of the group comes back (ambient patrols); none: it does not. */
   respawn?: number;
+  /** Where it starts exactly, and heading which way (else on its beat, or for a strike or a ram off the yacht). */
+  start?: { x: number; z: number; heading: number };
+  /** Its top speed, m/s. */
+  speed?: number;
 };
 
-type Mode = "patrol" | "search" | "attack" | "pass" | "disabled" | "sinking";
+type Mode = "patrol" | "search" | "attack" | "pass" | "ram" | "disabled" | "sinking";
 
 type Drone = {
   serial: number;
@@ -91,6 +95,7 @@ type Drone = {
 
 export type DroneEvent =
   | { type: "spotted"; group: string }
+  | { type: "rammed"; group: string }
   | { type: "disabled"; group: string }
   | { type: "stopped"; group: string }
   | { type: "destroyed"; group: string }
@@ -228,8 +233,8 @@ export class DroneSystem {
       number,
       parts,
       pose,
-      speed: spec.behaviour === "strike" ? HUNT_SPEED : 0,
-      mode: spec.behaviour === "pass" ? "pass" : spec.behaviour === "strike" ? "attack" : "patrol",
+      speed: spec.behaviour === "strike" || spec.behaviour === "ram" ? (spec.speed ?? HUNT_SPEED) : 0,
+      mode: spec.behaviour === "pass" ? "pass" : spec.behaviour === "strike" ? "attack" : spec.behaviour === "ram" ? "ram" : "patrol",
       condition: "fighting",
       damage: { dome: 0, jets: 0, hull: 0 },
       suspicion: spec.behaviour === "strike" ? SPOTTED : 0,
@@ -249,7 +254,7 @@ export class DroneSystem {
       sparkClock: 0,
       winched: 0,
       scanPhase: Math.random() * 6,
-      invulnerable: spec.behaviour === "strike",
+      invulnerable: spec.behaviour === "strike" || spec.behaviour === "ram",
     };
     if (drone.mode === "patrol") drone.waypoint = this.patrolPoint(spec, yacht);
     parts.root.position.set(pose.x, 0, pose.z);
@@ -258,6 +263,14 @@ export class DroneSystem {
   }
 
   private startPoint(spec: DroneSpec, index: number, yacht: { x: number; z: number; heading: number }): { x: number; z: number; heading: number } {
+    if (spec.start) return { x: spec.start.x + index * 12, z: spec.start.z + index * 12, heading: spec.start.heading };
+    if (spec.behaviour === "ram") {
+      // Out of the dusk off her beam, a little ahead, coming straight in.
+      const bearing = yacht.heading - Math.PI / 2 + 0.25;
+      const x = yacht.x + Math.sin(bearing) * 230;
+      const z = yacht.z + Math.cos(bearing) * 230;
+      return { x, z, heading: Math.atan2(yacht.x - x, yacht.z - z) };
+    }
     if (spec.behaviour === "pass" && spec.line) {
       const [from, to] = spec.line;
       const offset = index * 60;
@@ -381,9 +394,9 @@ export class DroneSystem {
   }
 
   /** The nearest drone of a group, for the story's waypoint. */
-  find(group: string): { x: number; y: number; z: number } | null {
+  find(group: string): { x: number; y: number; z: number; heading: number } | null {
     const drone = this.drones.find((entry) => entry.spec.group === group && entry.mode !== "sinking");
-    return drone ? { x: drone.pose.x, y: drone.pose.y + 2, z: drone.pose.z } : null;
+    return drone ? { x: drone.pose.x, y: drone.pose.y + 2, z: drone.pose.z, heading: drone.pose.heading } : null;
   }
 
   /** Winches the nearest blinded drone in reach for `delta` seconds; true while there is one to winch. */
@@ -422,10 +435,11 @@ export class DroneSystem {
   }
 
   /**
-   * A rifle round from `origin` along unit `dir`: what it strikes (a drone's
+   * A round from `origin` along unit `dir`: what it strikes (a drone's
    * part, with the point), or null. The shot is heard by the drones near.
+   * `power` 0 (a pistol's) glances off wherever it strikes.
    */
-  shoot(origin: THREE.Vector3, dir: THREE.Vector3, reach = 900): { zone: HitZone; point: THREE.Vector3; armour: boolean; condition: DroneCondition } | null {
+  shoot(origin: THREE.Vector3, dir: THREE.Vector3, reach = 900, power = 1): { zone: HitZone; point: THREE.Vector3; armour: boolean; condition: DroneCondition } | null {
     // Heard: the drones near know where she is.
     for (const drone of this.drones) {
       if (drone.mode === "disabled" || drone.mode === "sinking" || drone.spec.behaviour === "pass") continue;
@@ -448,7 +462,7 @@ export class DroneSystem {
     const point = new THREE.Vector3().copy(dir).multiplyScalar(best.distance).add(origin);
     const before = drone.condition;
     let armour = zone === "hull";
-    if (drone.invulnerable) {
+    if (drone.invulnerable || power <= 0) {
       armour = true;
     } else if (zone === "dome") {
       if (drone.condition !== "blind") drone.damage.dome += 1;
@@ -608,12 +622,27 @@ export class DroneSystem {
         const standoff = drone.spec.behaviour === "strike" ? STRIKE_STANDOFF : STANDOFF;
         if (distance > standoff * 2.2) {
           goal = { x: yacht.x, z: yacht.z };
-          speedGoal = HUNT_SPEED;
+          speedGoal = drone.spec.speed ?? HUNT_SPEED;
           drone.orbit = Math.atan2(pose.x - yacht.x, pose.z - yacht.z);
         } else {
           drone.orbit += (delta * ORBIT_SPEED * drone.orbitTurn) / standoff;
           goal = { x: yacht.x + Math.sin(drone.orbit) * standoff, z: yacht.z + Math.cos(drone.orbit) * standoff };
           speedGoal = ORBIT_SPEED;
+        }
+        break;
+      }
+      case "ram": {
+        // At her, leading her a little, flat out; at her side, the blow.
+        const lead = Math.min(2.5, distance / Math.max(8, drone.speed));
+        goal = { x: yacht.x + Math.sin(yacht.heading) * yacht.speed * lead, z: yacht.z + Math.cos(yacht.heading) * yacht.speed * lead };
+        speedGoal = drone.spec.speed ?? HUNT_SPEED;
+        if (distance < 7) {
+          this.events.push({ type: "rammed", group: drone.spec.group });
+          this.scratchVector.set((pose.x + yacht.x) / 2, yacht.y + 0.8, (pose.z + yacht.z) / 2);
+          this.effects.explosion(this.scratchVector, 0.5);
+          this.wake.splash(this.scratchVector.setY(yacht.y), 4, "slap");
+          drone.mode = "disabled";
+          drone.speed *= 0.2;
         }
         break;
       }
@@ -636,7 +665,7 @@ export class DroneSystem {
     // --- Steering, round the islands ---------------------------------------
     if (goal && mobile) {
       let want = Math.atan2(goal.x - pose.x, goal.z - pose.z);
-      want = this.avoidShore(pose, want);
+      if (drone.mode !== "ram") want = this.avoidShore(pose, want);
       const error = wrapAngle(want - pose.heading);
       const turn = (0.35 + Math.min(0.55, drone.speed / 18)) * delta;
       pose.heading = wrapAngle(pose.heading + Math.max(-turn, Math.min(turn, error)));

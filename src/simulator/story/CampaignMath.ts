@@ -26,9 +26,10 @@ export type CampaignState = {
   /** Story items he holds now, and every one he has ever picked up (so a taken item is not put back). */
   items: string[];
   collected: string[];
-  /** The yacht's hull, 0…1, and whether her engine can run. */
+  /** The yacht's hull, 0…1, whether her engine can run, and whether she has her mast and sail. */
   hull: number;
   engine: boolean;
+  rig: boolean;
   /** Sectors entered at least once (their title card has been shown). */
   sectors: string[];
   /** Where she was last at the helm in open play (null after the story moved her). */
@@ -45,6 +46,7 @@ export function createCampaign(): CampaignState {
     collected: [],
     hull: 1,
     engine: true,
+    rig: true,
     sectors: [],
     position: null,
   };
@@ -81,6 +83,7 @@ export function restoreCampaign(raw: unknown, campaign: Campaign): CampaignState
   state.collected = strings(saved.collected).filter((item) => items.has(item));
   if (typeof saved.hull === "number" && Number.isFinite(saved.hull)) state.hull = Math.min(1, Math.max(0.05, saved.hull));
   if (typeof saved.engine === "boolean") state.engine = saved.engine;
+  if (typeof saved.rig === "boolean") state.rig = saved.rig;
   const sectors = new Set(campaign.sectors.map((sector) => sector.id));
   state.sectors = strings(saved.sectors).filter((sector) => sectors.has(sector));
   const position = saved.position as { x?: unknown; z?: unknown; heading?: unknown } | null | undefined;
@@ -136,6 +139,7 @@ export function presenceNow(campaign: Campaign, state: CampaignState): Presence[
 export function presenceKey(presence: Presence): string {
   if (presence.kind === "drones") return `drones:${presence.group.id}`;
   if (presence.kind === "item") return `item:${presence.item}`;
+  if (presence.kind === "props") return `props:${presence.set}:${presence.at}`;
   return `npc:${presence.character}`;
 }
 
@@ -145,6 +149,8 @@ export type Facts = {
   events: ReadonlySet<string>;
   /** Nothing is waiting to be said. */
   dialogueIdle: boolean;
+  /** A cut scene is running. */
+  cutscene: boolean;
   /** Seconds the mission's current step has been current. */
   stepTime: (mission: string) => number;
   yacht: { x: number; z: number };
@@ -188,6 +194,10 @@ export function objectiveMet(objective: Objective, state: CampaignState, facts: 
       return facts.events.has(`salvaged:${objective.group}`);
     case "hull":
       return facts.hull < objective.hull || time >= objective.after || (objective.at !== undefined && near(facts.yacht, facts.place(objective.at)));
+    case "watch":
+      return !facts.cutscene && time > 0.4;
+    case "event":
+      return facts.events.has(objective.event) || (objective.after !== undefined && time >= objective.after);
   }
 }
 
@@ -212,6 +222,9 @@ export function applyToState(state: CampaignState, effect: Effect, campaign: Cam
     case "repair":
       if (effect.hull !== undefined) state.hull = Math.max(state.hull, Math.min(1, effect.hull));
       if (effect.engine) state.engine = true;
+      break;
+    case "rig":
+      state.rig = !effect.broken;
       break;
     case "place":
       state.position = null;
@@ -246,8 +259,8 @@ export function advance(campaign: Campaign, state: CampaignState, facts: Facts):
   for (const mission of openMissions(campaign, state)) {
     const progress = state.missions[mission.id];
     if (!progress) {
-      // A new mission waits for the last one's words to be heard out.
-      if (!facts.dialogueIdle) continue;
+      // A new mission waits for the last one's words to be heard out (and its scene to end).
+      if (!facts.dialogueIdle || facts.cutscene) continue;
       const first = mission.steps[0];
       if (first) enter(mission, first);
       continue;

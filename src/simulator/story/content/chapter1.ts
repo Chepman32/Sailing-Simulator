@@ -1,9 +1,10 @@
 import type { Mission } from "../StoryTypes";
 
 /**
- * Chapter 1, "Dead Tide" (docs/campaign/campaign.md): stranded on the
- * reef belt, the first ally, the first drone blinded and taken apart, the
- * engine brought back to life. "The Rusty Spire" is planned.
+ * Chapter 1, "Dead Tide" (docs/campaign/campaign.md): the yacht raised off
+ * the reef by the old light, the run to Sato's hideout, the first drone
+ * blinded and taken apart, the engine brought back to life. "The Rusty
+ * Spire" is planned.
  */
 
 const STRANDED: Mission = {
@@ -11,33 +12,49 @@ const STRANDED: Mission = {
   chapter: "chapter-1",
   title: { ru: "На мели", en: "Aground" },
   brief: {
-    ru: "Яхта сидит на Отмели Утопленника с пробоиной ниже ватерлинии. Сначала — снова держаться на воде.",
-    en: "The yacht sits on Drowned Man's Shoal, holed below the waterline. First, stay afloat.",
+    ru: "Яхта не на дне, а на рифе у маяка: пробоина, мачта сломана, мотор мёртв. Поднять её — и до схрона Сато можно дойти по воде.",
+    en: "The yacht is not on the bottom but on the reef by the light: holed, dismasted, the engine dead. Raise her, and Sato's hideout is a sail away.",
   },
+  giver: "holloway",
   sector: "dead-tide",
   requires: ["prologue"],
   status: "playable",
   steps: [
     {
-      id: "wake",
-      goal: { ru: "Доберитесь до яхты", en: "Get back to the yacht" },
-      hint: { ru: "Вброд или вплавь, затем «Подняться на борт»", en: "Wade or swim out, then climb aboard" },
-      objective: { kind: "aboard" },
-      marker: "@yacht",
-      checkpoint: { yacht: "drowned-shoal", skipper: "ashore" },
+      id: "look",
+      objective: { kind: "listen" },
+      presence: [{ kind: "npc", character: "holloway", at: "light-ambush", face: "wash-up", kit: "armed" }],
       onStart: [
         {
           do: "say",
           lines: [
-            { who: "hero", via: "thought", text: { ru: "Жив. В голове звон, во рту соль.", en: "Alive. Ears ringing, mouth full of salt." } },
             {
-              who: "hero",
-              via: "thought",
-              text: { ru: "Яхта… вон она. Сидит на мели, но на плаву.", en: "The yacht… there she is. Hard on the shoal, but afloat." },
+              who: "holloway",
+              via: "voice",
+              text: {
+                ru: "Стой. Глянь-ка с обрыва… Я соврал: твоя посудина не на дне. Сидит на рифе, вода по пояс, но корпус цел.",
+                en: "Hold on. Look down there… I lied: your tub's not on the bottom. She's sitting on the reef, waist-deep in water, but the hull's in one piece.",
+              },
+            },
+            {
+              who: "holloway",
+              via: "voice",
+              text: {
+                ru: "Залатаешь — дойдём до Сато по воде, а не вплавь. Я вперёд, на своём «Зодиаке». Буду на связи.",
+                en: "Patch her up and we go to Sato's by water, not swimming. I'll go ahead in my Zodiac. I'll be on the radio.",
+              },
             },
           ],
         },
       ],
+    },
+    {
+      id: "wade",
+      goal: { ru: "Доберитесь до яхты", en: "Get out to the yacht" },
+      hint: { ru: "Вброд или вплавь, затем «Подняться на борт»", en: "Wade or swim out, then climb aboard" },
+      objective: { kind: "aboard" },
+      marker: "@yacht",
+      checkpoint: { yacht: "wash-up", skipper: "ashore" },
     },
     {
       id: "inspect",
@@ -50,38 +67,16 @@ const STRANDED: Mission = {
               who: "hero",
               via: "voice",
               text: {
-                ru: "Пробоина ниже ватерлинии. Двигатель мёртв: блок управления выгорел подчистую.",
-                en: "Holed below the waterline. Engine's dead: the control unit's burnt clean out.",
+                ru: "Пробоина в корме. Мачта переломлена, от паруса — лохмотья. Двигатель мёртв: блок управления выгорел подчистую.",
+                en: "Holed in the stern. The mast's snapped, the sail's in rags. The engine's dead: the control unit's burnt clean out.",
               },
             },
             {
               who: "holloway",
               via: "radio",
               text: {
-                ru: "…ем, кто на яхте у Отмели Утопленника. Живой? Отзовись.",
-                en: "…anyone on that yacht at Drowned Man's Shoal. You alive? Talk to me.",
-              },
-            },
-            { who: "hero", via: "radio", text: { ru: "Живой. Кто это?", en: "Alive. Who's this?" } },
-            {
-              who: "holloway",
-              via: "radio",
-              text: { ru: "Тот, кто видел, как тебя разделали. Зови меня Блэк.", en: "Someone who watched them carve you up. Call me Black." },
-            },
-            {
-              who: "holloway",
-              via: "radio",
-              text: {
-                ru: "Слушай внимательно. Эти твари слышат дизель за милю и чуют выхлоп. Мотор — только когда без него никак.",
-                en: "Listen up. Those things hear a diesel a mile off and smell the exhaust. Engine only when you've no other choice.",
-              },
-            },
-            {
-              who: "holloway",
-              via: "radio",
-              text: {
-                ru: "А парус они почти не видят. Их учили на винтах. Парусник для них — плавник.",
-                en: "A sail, though, they barely see. They were trained on propellers. A sailboat's driftwood to them.",
+                ru: "Турист, слышишь? Запомни сразу: эти твари слышат дизель за милю и чуют выхлоп. А парус почти не видят — их учили на винтах.",
+                en: "Tourist, you hear me? Learn this now: those things hear a diesel a mile off and smell the exhaust. A sail they barely see — they were trained on propellers.",
               },
             },
           ],
@@ -103,11 +98,10 @@ const STRANDED: Mission = {
               who: "holloway",
               via: "radio",
               text: {
-                ru: "Залатаешь пробоину — уже человек. Вчера мародёры утопили «Зодиак» в кабельтове к востоку от тебя. Ремкомплект у них был, я видел.",
-                en: "Patch that hole and you're in business. Raiders sank a Zodiac a cable east of you yesterday. They had a repair kit aboard — I saw it.",
+                ru: "Мародёры вчера утопили «Зодиак» в кабельтове к востоку от маяка. Ремкомплект у них был, я видел. Там неглубоко, метров восемь.",
+                en: "Raiders sank a Zodiac a cable east of the light yesterday. They had a repair kit, I saw it. It's shallow there, eight metres or so.",
               },
             },
-            { who: "holloway", via: "radio", text: { ru: "Там неглубоко. Метров десять.", en: "It's shallow there. Ten metres, give or take." } },
           ],
         },
       ],
@@ -124,6 +118,26 @@ const STRANDED: Mission = {
         { do: "say", lines: [{ who: "hero", via: "thought", text: { ru: "Держит. Не сухо, но держит.", en: "Holding. Not dry, but holding." } }] },
       ],
     },
+    {
+      id: "jury-rig",
+      goal: { ru: "Поставьте аварийную мачту из обломков", en: "Jury-rig a mast from the wreckage" },
+      hint: { ru: "На борту нажмите E: обломок мачты и запасной стаксель", en: "Aboard, press E: the stump of the mast and the spare jib" },
+      objective: { kind: "repair", seconds: 6 },
+      marker: "@yacht",
+      onComplete: [
+        { do: "rig", broken: false },
+        {
+          do: "say",
+          lines: [
+            {
+              who: "hero",
+              via: "thought",
+              text: { ru: "Не мачта — палка с тряпкой. Но ветер она поймает.", en: "Not a mast — a stick with a rag on it. But it'll catch the wind." },
+            },
+          ],
+        },
+      ],
+    },
   ],
   onComplete: [
     {
@@ -133,8 +147,8 @@ const STRANDED: Mission = {
           who: "holloway",
           via: "radio",
           text: {
-            ru: "Слышу, не тонешь. Теперь ко мне: лагерь на пирсе, остров к северо-востоку от тебя. Под парусом.",
-            en: "Sounds like you're not sinking. Now come to me: camp on the pier, the island north-east of you. Under sail.",
+            ru: "Слышу, не тонешь. Схрон — на пирсе, на северо-запад от маяка. Иди под парусом, турист, мотор всё равно мёртв.",
+            en: "Sounds like you're not sinking. The hideout's on a pier, north-west of the light. Come under sail, tourist — the engine's dead anyway.",
           },
         },
       ],
@@ -142,13 +156,13 @@ const STRANDED: Mission = {
   ],
 };
 
-const BLACK: Mission = {
+const HIDEOUT: Mission = {
   id: "black",
   chapter: "chapter-1",
-  title: { ru: "Блэк", en: "Black" },
+  title: { ru: "Схрон Сато", en: "Sato's Hideout" },
   brief: {
-    ru: "Голос по радио знает, как устроены дроны. Его лагерь — на пирсе к северо-востоку.",
-    en: "The voice on the radio knows how the drones work. His camp is on a pier to the north-east.",
+    ru: "Холлоуэй ждёт в схроне старика Сато, на пирсе к северо-западу. Дойти туда под парусом.",
+    en: "Holloway waits at old Sato's hideout, on a pier to the north-west. Get there under sail.",
   },
   giver: "holloway",
   sector: "dead-tide",
@@ -157,14 +171,14 @@ const BLACK: Mission = {
   steps: [
     {
       id: "sail",
-      goal: { ru: "Под парусом идите к лагерю Блэка", en: "Sail to Black's camp" },
+      goal: { ru: "Под парусом идите к схрону Сато", en: "Sail to Sato's hideout" },
       hint: { ru: "Двигатель не работает: ловите ветер парусом", en: "The engine is dead: let the sail find the wind" },
-      objective: { kind: "reach", at: "black-camp", by: "yacht" },
-      checkpoint: { yacht: "drowned-shoal", skipper: "helm" },
+      objective: { kind: "reach", at: "sato-hideout", by: "yacht" },
+      checkpoint: { yacht: "wash-up", skipper: "helm" },
       presence: [
         {
           kind: "drones",
-          group: { id: "demo-patrol", at: "broken-ridge", count: 1, behaviour: "pass", line: [[-8000, -1500], [-9300, -2800]] },
+          group: { id: "demo-patrol", at: "pale-banks", count: 1, behaviour: "pass", line: [[-5000, -4700], [-6600, -3300]] },
         },
       ],
       onStart: [
@@ -187,16 +201,16 @@ const BLACK: Mission = {
     },
     {
       id: "ashore",
-      goal: { ru: "Сойдите на берег у лагеря", en: "Go ashore at the camp" },
+      goal: { ru: "Сойдите на берег у схрона", en: "Go ashore at the hideout" },
       hint: { ru: "Отойдите от штурвала и прыгайте за борт", en: "Leave the helm and go over the side" },
-      objective: { kind: "reach", at: "black-camp", by: "foot", radius: 40 },
-      checkpoint: { yacht: "black-camp", skipper: "helm" },
+      objective: { kind: "reach", at: "sato-hideout", by: "foot", radius: 40 },
+      checkpoint: { yacht: "sato-hideout", skipper: "helm" },
     },
     {
       id: "talk",
       goal: { ru: "Поговорите с Холлоуэем", en: "Talk to Holloway" },
       objective: { kind: "talk", character: "holloway" },
-      marker: "black-camp",
+      marker: "sato-hideout",
       onComplete: [
         {
           do: "say",
@@ -204,7 +218,7 @@ const BLACK: Mission = {
             {
               who: "holloway",
               via: "voice",
-              text: { ru: "Гидрограф. Живой, мокрый и злой — люблю это сочетание.", en: "Hydrographer. Alive, wet and angry — my favourite combination." },
+              text: { ru: "Доплыл, турист. Живой, мокрый и злой — люблю это сочетание.", en: "Made it, tourist. Alive, wet and angry — my favourite combination." },
             },
             { who: "hero", via: "voice", text: { ru: "Что здесь творится, Блэк?", en: "What's going on here, Black?" } },
             {
@@ -223,29 +237,20 @@ const BLACK: Mission = {
                 en: "Yesterday somebody wrung that head's neck. Now it shoots anything that moves, and the corporation's sending cleaners to tidy up the witnesses. That's us.",
               },
             },
-            { who: "hero", via: "voice", text: { ru: "А ты откуда всё это знаешь?", en: "And how would you know all that?" } },
             {
               who: "holloway",
               via: "voice",
               text: {
-                ru: "Служил у них связистом. Пока мне не приказали открыть огонь по рыбацкой шхуне.",
-                en: "I was their signals man. Till they ordered me to open fire on a fishing schooner.",
+                ru: "Сато колдует над своими кабелями, ему не до гостей. Дело к тебе: дизель твой я подниму, но нужен блок наведения от дрона — там та же начинка, что в твоём сгоревшем блоке.",
+                en: "Sato's busy with his cables, no time for guests. Business: I can raise your diesel, but I need a guidance unit off a drone — same guts as your burnt control box.",
               },
             },
             {
               who: "holloway",
               via: "voice",
               text: {
-                ru: "Ладно, к делу. Дизель твой я подниму, но нужен блок наведения от дрона: там та же начинка, что в твоём сгоревшем блоке.",
-                en: "Right, business. I can raise your diesel, but I need a guidance unit off a drone: same guts as your burnt control box.",
-              },
-            },
-            {
-              who: "holloway",
-              via: "voice",
-              text: {
-                ru: "Держи винтовку. Купол на макушке у дрона — его глаза. Три пули в купол, и он слепой котёнок. По корпусу не трать: броня.",
-                en: "Take this rifle. That dome on top is its eyes. Three rounds in the dome and it's a blind kitten. Don't waste lead on the hull: it's armoured.",
+                ru: "Пистолетом дрон не ослепишь. Держи винтовку. Купол на макушке — его глаза: три пули в купол, и он слепой котёнок. По корпусу не трать — броня.",
+                en: "You won't blind a drone with a pistol. Take this rifle. That dome on top is its eyes: three rounds in the dome and it's a blind kitten. Don't waste lead on the hull — it's armoured.",
               },
             },
           ],
@@ -290,7 +295,7 @@ const EYES: Mission = {
       goal: { ru: "Найдите патрульный дрон у Сломанной гряды", en: "Find the patrol drone at Broken Ridge" },
       hint: { ru: "Под парусом вы заметите его раньше, чем он вас", en: "Under sail you'll see it before it sees you" },
       objective: { kind: "reach", at: "broken-ridge", by: "any" },
-      checkpoint: { yacht: "black-camp", skipper: "helm" },
+      checkpoint: { yacht: "sato-hideout", skipper: "helm" },
     },
     {
       id: "blind",
@@ -358,15 +363,15 @@ const HEART: Mission = {
   steps: [
     {
       id: "return",
-      goal: { ru: "Вернитесь в лагерь Блэка", en: "Return to Black's camp" },
-      objective: { kind: "reach", at: "black-camp", by: "foot", radius: 40 },
-      checkpoint: { yacht: "black-camp", skipper: "helm" },
+      goal: { ru: "Вернитесь в схрон Сато", en: "Return to Sato's hideout" },
+      objective: { kind: "reach", at: "sato-hideout", by: "foot", radius: 40 },
+      checkpoint: { yacht: "sato-hideout", skipper: "helm" },
     },
     {
       id: "deliver",
       goal: { ru: "Отдайте Блэку блок наведения", en: "Give Black the guidance unit" },
       objective: { kind: "talk", character: "holloway" },
-      marker: "black-camp",
+      marker: "sato-hideout",
       onComplete: [
         { do: "take", item: "guidance-unit" },
         {
@@ -406,8 +411,8 @@ const HEART: Mission = {
               who: "sara",
               via: "radio",
               text: {
-                ru: "…судно у лагеря Холлоуэя, говорит Вектор. Не отвечайте. Просто слушайте.",
-                en: "…vessel at Holloway's camp, this is Vector. Don't answer. Just listen.",
+                ru: "…судно у схрона Сато, говорит Вектор. Не отвечайте. Просто слушайте.",
+                en: "…vessel at Sato's hideout, this is Vector. Don't answer. Just listen.",
               },
             },
             {
@@ -467,4 +472,4 @@ const RUSTY_SPIRE: Mission = {
   ],
 };
 
-export const CHAPTER_1: readonly Mission[] = [STRANDED, BLACK, EYES, HEART, RUSTY_SPIRE];
+export const CHAPTER_1: readonly Mission[] = [STRANDED, HIDEOUT, EYES, HEART, RUSTY_SPIRE];

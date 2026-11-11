@@ -111,9 +111,14 @@ export type SimulationSnapshot = {
   story: StoryView | null;
   /** The skipper's rifle and the drones' alarm, in the campaign. */
   combat: {
+    /** He carries a gun. */
     rifle: boolean;
+    /** The guns he carries, and the one in his hands (null: holstered). */
+    guns: ("pistol" | "rifle")[];
+    weapon: "pistol" | "rifle" | null;
     drawn: boolean;
     ammo: number;
+    magazine: number;
     reload: number;
     /** 0 unseen … 1 found; and whether a drone is attacking now. */
     alarm: number;
@@ -164,6 +169,8 @@ export type SimulatorOptions = {
   onPointerLost?: () => void;
   /** Every frame, in the campaign: where the waypoint and the drones are on the screen. */
   onOverlay?: (frame: StoryOverlayFrame) => void;
+  /** The story's autosave was written. */
+  onAutosave?: () => void;
 };
 
 export type Discovery = {

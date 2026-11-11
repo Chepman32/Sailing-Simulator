@@ -208,6 +208,8 @@ export class VesselPhysics {
   engineBoost = { thrust: 1, fade: 1, response: 1 };
   /** Water in a holed hull: her resistance is this many times what it was (1 = dry; see `CombatMath.leakSpeedFactor`). */
   leakDrag = 1;
+  /** What is left of her sail's drive (1 whole; rags after the rig is shot away). */
+  sailPower = 1;
   /** Collision avoidance near islands and ships; `guard.output` is what the helm actually does. */
   readonly guard: ShoreGuardState = createShoreGuard();
   /** Distance to the nearest ship's hull, if ships exist; the guard avoids it like a shore. */
@@ -307,8 +309,8 @@ export class VesselPhysics {
     // Lift acts square to the apparent wind, on the side that drives the bow.
     const liftForward = Math.abs(dragRight);
     const liftRight = -leewardSide * dragForward;
-    const sailDrive = this.sail.lift * liftForward + this.sail.drag * dragForward;
-    const sailSide = this.sail.lift * liftRight + this.sail.drag * dragRight;
+    const sailDrive = (this.sail.lift * liftForward + this.sail.drag * dragForward) * this.sailPower;
+    const sailSide = (this.sail.lift * liftRight + this.sail.drag * dragRight) * this.sailPower;
     const windageForward = WINDAGE_FRONTAL * apparentWindSpeed * airForward;
     const windageRight = WINDAGE_LATERAL * apparentWindSpeed * airRight;
 

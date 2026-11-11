@@ -4,7 +4,6 @@ import type { LanguageCode } from "../i18n";
 import type { SimulationSnapshot } from "@/src/simulator/types";
 import type { StoryView } from "@/src/simulator/story/StorySystem";
 import { CAMPAIGN } from "@/src/simulator/story/content";
-import { MAGAZINE } from "@/src/simulator/combat/Rifle";
 import { fill, storyLanguage, storyMessages, textIn, type StoryMessages } from "./storyMessages";
 
 /**
@@ -166,15 +165,42 @@ export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip,
 
       {combat.rifle && (
         <div className={`story-weapon${combat.drawn ? " is-drawn" : ""}${atHelm ? "" : " is-afoot"}`}>
-          <button type="button" className="story-weapon-toggle" onClick={onToggleRifle} title={messages.rifleDraw} aria-pressed={combat.drawn}>
-            <svg viewBox="0 0 32 16" aria-hidden="true">
-              <path d="M1 9.5h17l2-2h6l5-1.5v3l-4 1.5H20l-3 3h-3l1-3H1z" fill="currentColor" />
-              <path d="M9 6.5h6v2H9z" fill="currentColor" opacity="0.7" />
-            </svg>
-            <span>{combat.drawn ? messages.rifleAway : touch ? messages.rifleDrawTouch : messages.rifleDraw}</span>
+          <button
+            type="button"
+            className="story-weapon-toggle"
+            onClick={onToggleRifle}
+            title={combat.guns.length > 1 ? messages.weaponNext : combat.guns[0] === "pistol" ? messages.pistolDraw : messages.rifleDraw}
+            aria-pressed={combat.drawn}
+          >
+            {(combat.weapon ?? combat.guns[combat.guns.length - 1]) === "pistol" ? (
+              <svg viewBox="0 0 32 16" aria-hidden="true">
+                <path d="M6 4h19l1 1v3h-3l-1 1h-8l-2 6H7l1.6-6H6z" fill="currentColor" />
+                <path d="M14 9h3l-1 3h-2z" fill="currentColor" opacity="0.6" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 32 16" aria-hidden="true">
+                <path d="M1 9.5h17l2-2h6l5-1.5v3l-4 1.5H20l-3 3h-3l1-3H1z" fill="currentColor" />
+                <path d="M9 6.5h6v2H9z" fill="currentColor" opacity="0.7" />
+              </svg>
+            )}
+            <span>
+              {combat.drawn
+                ? `${combat.weapon === "pistol" ? messages.pistol : messages.rifle}${combat.guns.length > 1 ? "" : ` · ${messages.holster}`}`
+                : touch
+                  ? combat.guns.length > 1
+                    ? messages.weaponNext.replace(/\s*\(1\)/, "")
+                    : combat.guns[0] === "pistol"
+                      ? messages.pistol
+                      : messages.rifleDrawTouch
+                  : combat.guns.length > 1
+                    ? messages.weaponNext
+                    : combat.guns[0] === "pistol"
+                      ? messages.pistolDraw
+                      : messages.rifleDraw}
+            </span>
           </button>
           {combat.drawn && (
-            <span className="story-ammo" aria-label={`${combat.ammo}/${MAGAZINE}`}>
+            <span className={`story-ammo${combat.magazine > 8 ? " is-small" : ""}`} aria-label={`${combat.ammo}/${combat.magazine}`}>
               {combat.reload < 1 ? (
                 <span className="story-reload">
                   {messages.reloading}
@@ -183,7 +209,7 @@ export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip,
                   </span>
                 </span>
               ) : (
-                Array.from({ length: MAGAZINE }, (_, index) => <span key={index} className={`story-round${index < combat.ammo ? " is-loaded" : ""}`} aria-hidden="true" />)
+                Array.from({ length: combat.magazine }, (_, index) => <span key={index} className={`story-round${index < combat.ammo ? " is-loaded" : ""}`} aria-hidden="true" />)
               )}
             </span>
           )}

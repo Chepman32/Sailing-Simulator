@@ -246,6 +246,21 @@ export class EnvironmentSystem {
     if (enabled) this.cycleTime = this.transition >= 0.5 ? CYCLE_NIGHT_START : CYCLE_DAY_START;
   }
 
+  /**
+   * Sets the clock of the automatic cycle (and turns the cycle on), the sky
+   * jumping straight there: a story's hour (a sunset, a dawn on the shoal).
+   */
+  setClock(cycleTime: number): void {
+    this.autoCycle = true;
+    this.cycleTime = cycleTime;
+    this.transition = dayCycleState(cycleTime).progress;
+  }
+
+  /** The automatic cycle's clock (seconds into the cycle), for a saved game. */
+  get clock(): number {
+    return this.cycleTime;
+  }
+
   /** Direction toward the dominant light (sun by day, moon by night). */
   get lightDirection(): THREE.Vector3 {
     return this.celestialLightDirection;

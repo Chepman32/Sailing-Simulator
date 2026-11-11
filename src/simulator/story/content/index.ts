@@ -2,10 +2,10 @@ import type { Campaign, Chapter, StoryItem, WorldRule } from "../StoryTypes";
 import { CHARACTERS, FACTIONS } from "./cast";
 import { CHAPTER_1 } from "./chapter1";
 import { BORDERS, LOCATIONS, QUARANTINE, SECTORS } from "./geography";
-import { PROLOGUE } from "./prologue";
+import { PROLOGUE, PROLOGUE_CUTSCENES } from "./prologue";
 
 const CHAPTERS: readonly Chapter[] = [
-  { id: "prologue", title: { ru: "Пролог", en: "Prologue" }, subtitle: { ru: "Карантин", en: "Quarantine" }, sector: "open-wedge" },
+  { id: "prologue", title: { ru: "Пролог", en: "Prologue" }, subtitle: { ru: "Штиль перед обрывом", en: "The Calm Before the Drop" }, sector: "dead-tide" },
   { id: "chapter-1", title: { ru: "Глава 1", en: "Chapter 1" }, subtitle: { ru: "Мёртвый прилив", en: "Dead Tide" }, sector: "dead-tide" },
   { id: "chapter-2", title: { ru: "Глава 2", en: "Chapter 2" }, subtitle: { ru: "Зелёный шквал", en: "Green Squall" }, sector: "green-squall" },
   { id: "chapter-3", title: { ru: "Глава 3", en: "Chapter 3" }, subtitle: { ru: "Песчаные зубья", en: "Sand Teeth" }, sector: "sand-teeth" },
@@ -22,8 +22,8 @@ const ITEMS: readonly StoryItem[] = [
 
 /** What the world holds from a point of the story on. */
 const WORLD: readonly WorldRule[] = [
-  // Holloway is at his camp once he has called her in.
-  { id: "holloway-at-camp", after: "stranded", presence: [{ kind: "npc", character: "holloway", at: "black-camp" }] },
+  // Holloway waits at Sato's hideout once he has gone ahead to it.
+  { id: "holloway-at-hideout", after: "stranded", presence: [{ kind: "npc", character: "holloway", at: "sato-hideout", kit: "armed" }] },
   // Once she can fight back, the reef belt is patrolled: blind them and strip them for money.
   {
     id: "tide-patrols",
@@ -47,6 +47,7 @@ export const CAMPAIGN: Campaign = {
   items: ITEMS,
   missions: [PROLOGUE, ...CHAPTER_1],
   world: WORLD,
-  // Outside the line, west of the reefs, bound east for the North Roads.
-  start: { yacht: [-10950, -250], heading: 84 },
+  cutscenes: PROLOGUE_CUTSCENES,
+  // Outside the line to the south-east of the reef belt, running before the trade wind for the old light.
+  start: { yacht: [-4850, -6900], heading: 318 },
 };
