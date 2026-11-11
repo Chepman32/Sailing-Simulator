@@ -106,6 +106,7 @@ import { DroneSystem, type DroneContact } from "./combat/DroneSystem";
 import { Armoury, WEAPON_ORDER, type WeaponId } from "./combat/Firearms";
 import type { Place } from "./story/AtlasMath";
 import { StoryProps } from "./story/StoryProps";
+import { compileSafely } from "./core/SafeCompile";
 import { StorySystem, type StoryHost, type SkipperPose } from "./story/StorySystem";
 import { readSave, saveBlock, writeSave, SAVE_VERSION, type SaveBlock, type SaveSlotId } from "./story/SaveGames";
 import { HULL_CENTER_Z, HULL_HALF_BEAM, HULL_HALF_LENGTH, HULL_OFFSET_X } from "./environment/shaders/oceanShader";
@@ -224,6 +225,10 @@ const RESIZE_SETTLE_MS = 140;
 /** Seconds the camera takes to fly between the wheel and the skipper's eyes. */
 const CAMERA_HANDOFF = 0.9;
 
+/** Where "Continue" finds the hour and the weather the campaign was left in. */
+const CAMPAIGN_SKY_KEY = "sailing-campaign-sky-v1";
+/** The main menu's hour: the sun just above the sea. */
+const MENU_CLOCK = cycleTimeForHour(17.82);
 /** Nothing of the quarantine on the chart (before he has the map). */
 const NO_ZONE = new Float64Array(0);
 
@@ -2395,6 +2400,21 @@ export class Simulator {
     this.setMenuView(false);
     this.menuSky = null;
     this.story.resume();
+    // The sky it was left under (the menu had its own).
+    try {
+      const sky = JSON.parse(localStorage.getItem(CAMPAIGN_SKY_KEY) ?? "null") as { cycleTime?: unknown; weather?: unknown } | null;
+      if (sky && typeof sky.cycleTime === "number" && Number.isFinite(sky.cycleTime)) {
+        this.state.autoTime = true;
+        this.environment.setClock(sky.cycleTime);
+      }
+      if (sky && isWeatherKind(sky.weather)) {
+        const kind = sky.weather;
+        this.storyWeather = { kind, until: this.elapsed + 300 };
+        this.environment.setWeatherKind(kind, true);
+      }
+    } catch {
+      // The menu's sky, then.
+    }
     this.applyCondition();
     this.hud.emit(this.snapshot());
   }
@@ -2472,9 +2492,20 @@ export class Simulator {
   private autosaveAt = -1e9;
   private autosaving = false;
 
+  private skyClock = 0;
+
   /** Saves to the autosave slot once the story has moved on and the moment is a quiet one. */
   private updateAutosave(): void {
     const story = this.story;
+    // The campaign's sky, every few seconds, for "Continue".
+    if (story?.active && this.elapsed - this.skyClock > 5) {
+      this.skyClock = this.elapsed;
+      try {
+        localStorage.setItem(CAMPAIGN_SKY_KEY, JSON.stringify({ cycleTime: this.environment.clock, weather: this.storyWeather?.kind ?? null }));
+      } catch {
+        // Not kept: "Continue" opens under the menu's sky.
+      }
+    }
     if (!story?.active || this.autosaving || story.progressSerial === this.autosaveSerial) return;
     if (this.elapsed - this.autosaveAt < 20 || this.saveBlocked()) return;
     this.autosaving = true;
@@ -2544,6 +2575,8 @@ export class Simulator {
   private directMenu(delta: number): void {
     if (!this.menuView) return;
     this.menuClock += delta;
+    // The sun held low over the sea for as long as the menu is up.
+    this.environment.setClock(MENU_CLOCK);
     const yacht = this.physics.position;
     const heading = this.physics.heading;
     // A slow pass round her quarter, rising and falling a little.
@@ -2577,7 +2610,7 @@ export class Simulator {
     this.state.autoTime = true;
     this.state.lightingMode = "day";
     this.environment.setMode("day");
-    this.environment.setClock(cycleTimeForHour(17.3));
+    this.environment.setClock(MENU_CLOCK);
     this.storyWeather = null;
     this.applyCondition();
     this.setMenuView(true);
@@ -3363,7 +3396,7 @@ export class Simulator {
       // loading bar moves while a tablet compiles for several seconds.
       const parts = [...this.scene.children];
       for (let index = 0; index < parts.length; index += 1) {
-        await this.renderer.compileAsync(parts[index]!, this.camera.camera, this.scene);
+        await compileSafely(this.renderer, parts[index]!, this.camera.camera, this.scene);
         this.reportLoading(1 + Math.round(((index + 1) / parts.length) * (SCENE_LOAD_STEPS - 2)), "Preparing the graphics");
         await new Promise((resolve) => requestAnimationFrame(resolve));
         if (this.disposed) return;
@@ -3414,7 +3447,7 @@ export class Simulator {
         // into), not on the frame they first come into sight.
         const previous = this.renderer.getRenderTarget();
         this.renderer.setRenderTarget(this.post.sceneTarget);
-        void this.renderer.compileAsync(this.scene, this.camera.camera).catch(() => undefined);
+        void compileSafely(this.renderer, this.scene, this.camera.camera).catch(() => undefined);
         this.renderer.setRenderTarget(previous);
       })
       .then(() => {
