@@ -35,7 +35,13 @@ export class TouchControls {
 
   private readonly onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0) return;
-    this.canvas.setPointerCapture(event.pointerId);
+    // (While the browser holds the mouse for the skipper's eyes there is no
+    // pointer to capture, and asking throws.)
+    try {
+      this.canvas.setPointerCapture(event.pointerId);
+    } catch {
+      // The press still orbits; only moves outside the canvas are missed.
+    }
     this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (this.pointers.size === 1) {
       this.doubleTap.down(event.pointerId, event.clientX, event.clientY, performance.now());

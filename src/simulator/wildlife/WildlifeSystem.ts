@@ -1,53 +1,434 @@
+import { beginPatrol } from "./SharkBehavior";
 import * as THREE from "three";
+import { cachedField } from "../core/FieldCache";
 import type { AssetManager } from "../core/AssetManager";
+import { distanceFromWaterline } from "../environment/IslandMath";
+import { marineDepthExact, whaleDepthExact } from "./ShoreAvoidance";
+
+export { MARINE_SHORE_KEEP } from "./ShoreAvoidance";
 import type { OceanSystem } from "../environment/OceanSystem";
+import type { UnderwaterLight } from "../environment/UnderwaterLight";
 import type { VesselPhysics } from "../vessel/VesselPhysics";
+import type { DolphinObstacle } from "./DolphinBehavior";
 import { DolphinController } from "./DolphinController";
-import { FishSchoolController } from "./FishSchoolController";
 import { GullFlockController } from "./GullFlockController";
+import { ReefFishController } from "./ReefFishController";
 import { SharkController } from "./SharkController";
+import type { MarineWorld, VesselState, WaterEffects } from "./WaterContact";
+import { WhaleBreachController } from "./WhaleBreachController";
 import { WhaleController } from "./WhaleController";
+import type { PhotoSubject } from "../camera/PhotoDirector";
+
+export type WildlifeCounts = {
+  dolphins: number;
+  /** Sharks, each patrolling on its own (default 1). */
+  sharks?: number;
+  gulls: number;
+  fishDensity: number;
+};
+
+/** Seconds the sea's animals take to go deep before a storm (and to come back). */
+export const STORM_LEAVE = 12;
+/** How deep they go: well past what the water lets anyone see. */
+const STORM_DEPTH = 60;
+/** `WeatherSample.storm` above which they leave (a storm is 0.82, a downpour 0.38)… */
+export const STORM_LEAVE_ABOVE = 0.55;
+/** …and below which they come back. */
+export const STORM_RETURN_BELOW = 0.45;
+
+/**
+ * Owns every animal and the shared view of the world they live in: the
+ * rendered wave surface, the bathymetry, the yacht and each other. Larger
+ * animals are stepped first so smaller ones can keep clear of them.
+ */
+/** {@link marineDepthExact} on a 1 m grid (`cachedField`): asked for hundreds of times a frame by the animals' shore avoidance. */
+export const marineDepthAt = cachedField(marineDepthExact, 1);
+/** {@link whaleDepthExact} on a 2 m grid: the whales' own reckoning of the shoals. */
+export const whaleDepthAt = cachedField(whaleDepthExact, 2);
 
 export class WildlifeSystem {
-  private readonly group = new THREE.Group();
+  readonly group = new THREE.Group();
+  private readonly marineGroup = new THREE.Group();
   private readonly dolphins: DolphinController;
-  private readonly sharks: SharkController;
-  private readonly whales: WhaleController;
-  private readonly fish: FishSchoolController;
+  private sharks: SharkController[];
+  private whales: WhaleController;
+  private breach: WhaleBreachController;
+  private fish: ReefFishController;
   private readonly gulls: GullFlockController;
-  private animationAccumulator = 0;
+  private readonly predators: THREE.Vector3[] = [];
+  private readonly vessel: VesselState = { x: 0, z: 0, heading: 0, speed: 0 };
+  private readonly dolphinObstacles: DolphinObstacle[] = [];
+  private readonly sharkObstacles: { x: number; z: number; radius: number }[] = [];
+  private readonly world: MarineWorld;
+  private gullClock = 0;
+  /** 0 … 1: how far the sea's animals have gone from a storm (see `setStorm`). */
+  private stormAway = 0;
+  private stormLeaving = false;
+
+  /** What the late animals are built with (`adoptLateAssets`). */
+  private readonly effects: WaterEffects;
 
   constructor(
     private readonly scene: THREE.Scene,
-    ocean: OceanSystem,
+    private readonly ocean: OceanSystem,
     assets: AssetManager,
-    count: number,
-    onSplash: (position: THREE.Vector3, intensity: number) => void,
+    private readonly counts: WildlifeCounts,
+    private readonly underwaterLight: UnderwaterLight,
+    private readonly surfaceEffects: WaterEffects,
   ) {
+    // Splashes, fin trails and blows stop as soon as the animals start to
+    // leave: from then on they are going down, not breaking the surface.
+    const calm = () => this.stormAway < 0.02;
+    const effects: WaterEffects = {
+      splash: (position, intensity, kind, velocity) => {
+        if (calm()) surfaceEffects.splash(position, intensity, kind, velocity);
+      },
+      trail: (position, heading, strength, width) => {
+        if (calm()) surfaceEffects.trail(position, heading, strength, width);
+      },
+      shed: (position, velocity, count, size) => {
+        if (calm()) surfaceEffects.shed(position, velocity, count, size);
+      },
+      ripple: (position, strength) => {
+        if (calm()) surfaceEffects.ripple(position, strength);
+      },
+    };
+    this.effects = effects;
     this.group.name = "External_GLTF_Wildlife_System";
+    this.marineGroup.name = "Marine_Wildlife";
+    this.group.add(this.marineGroup);
     scene.add(this.group);
-    this.dolphins = new DolphinController(this.group, ocean, assets, count, onSplash);
-    this.sharks = new SharkController(this.group, ocean, assets);
-    this.whales = new WhaleController(this.group, ocean, assets, onSplash);
-    this.fish = new FishSchoolController(this.group, ocean, assets, count);
-    this.gulls = new GullFlockController(this.group, assets, count);
+    this.world = {
+      surfaceHeight: (x, z) => ocean.sample(x, z).height,
+      orbitalHeight: (x, z, depth) => ocean.sample(x, z, depth).height,
+      seabedDepth: marineDepthAt,
+      shoreDistance: distanceFromWaterline,
+    };
+    this.dolphins = new DolphinController(this.marineGroup, ocean, this.world, assets, counts.dolphins, effects);
+    // Whales read the coast's shelf as shallower than it is: they keep twice as far off.
+    this.whales = new WhaleController(this.marineGroup, ocean, { ...this.world, seabedDepth: whaleDepthAt }, assets, effects);
+    this.sharks = Array.from({ length: Math.max(1, counts.sharks ?? 1) }, () => new SharkController(this.marineGroup, ocean, this.world, assets, effects));
+    this.treat(this.marineGroup);
+    // The distant breacher flies through the air, so it lives outside the
+    // underwater group (it shows in the water's mirror); it is still seen
+    // through the water whenever it is below the surface.
+    // A leap already in the air when a storm comes still lands with its splash.
+    this.breach = new WhaleBreachController(this.group, ocean, this.world, assets, surfaceEffects);
+    this.breach.materials.forEach((material) => underwaterLight.apply(material));
+    // The reef fish apply the same treatment to their own instanced material.
+    this.fish = new ReefFishController(this.marineGroup, ocean, assets, underwaterLight, counts.fishDensity);
+    this.built = { whale: assets.has("whale"), shark: assets.has("shark"), fish: assets.has("fishSchool") };
+    // Gulls rest head to wind; the trade wind's mean direction is enough for that.
+    const windLength = Math.hypot(6.8, 4.2);
+    this.gulls = new GullFlockController(
+      this.group,
+      assets,
+      counts.gulls,
+      { surfaceHeight: (x, z) => ocean.sample(x, z).height, windX: 6.8 / windLength, windZ: 4.2 / windLength },
+      { splash: (position, intensity, kind, velocity) => surfaceEffects.splash(position, intensity, kind, velocity), ripple: (position, strength) => surfaceEffects.ripple(position, strength) },
+    );
   }
 
-  update(delta: number, physics: VesselPhysics): void {
-    this.animationAccumulator = Math.min(0.12, this.animationAccumulator + delta);
-    const animationDelta = this.animationAccumulator >= 1 / 30 ? this.animationAccumulator : 0;
-    if (animationDelta > 0) this.animationAccumulator = 0;
-    this.dolphins.update(delta, physics, animationDelta);
-    this.sharks.update(delta, physics, animationDelta);
-    this.whales.update(delta, physics, animationDelta);
-    this.fish.update(delta, physics, animationDelta);
-    this.gulls.update(delta, physics, animationDelta);
+  /** Everything that swims is seen through water (each material treated once). */
+  private readonly treated = new Set<THREE.Material>();
+
+  private treat(root: THREE.Object3D): void {
+    root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((material) => {
+        if (this.treated.has(material)) return;
+        this.treated.add(material);
+        this.underwaterLight.apply(material);
+      });
+    });
+  }
+
+  /** Which of the late animals were built with their model. */
+  private built: { whale: boolean; shark: boolean; fish: boolean };
+
+  /**
+   * The late models have arrived (they load after the first frame, see
+   * `AssetManager.loadLater`): the whale, the sharks, the distant breacher
+   * and the reef fish, built empty until then, are built again with them.
+   */
+  adoptLateAssets(assets: AssetManager): void {
+    const ocean = this.ocean;
+    if (!this.built.whale && assets.has("whale")) {
+      this.built.whale = true;
+      this.whales.dispose();
+      this.whales = new WhaleController(this.marineGroup, ocean, this.world, assets, this.effects);
+      this.breach.dispose();
+      this.breach = new WhaleBreachController(this.group, ocean, this.world, assets, this.surfaceEffects);
+      this.breach.materials.forEach((material) => this.underwaterLight.apply(material));
+    }
+    if (!this.built.shark && assets.has("shark")) {
+      this.built.shark = true;
+      for (const shark of this.sharks) shark.dispose();
+      this.sharks = Array.from({ length: Math.max(1, this.counts.sharks ?? 1) }, () => new SharkController(this.marineGroup, ocean, this.world, assets, this.effects));
+    }
+    if (!this.built.fish && assets.has("fishSchool")) {
+      this.built.fish = true;
+      this.fish.dispose();
+      this.fish = new ReefFishController(this.marineGroup, ocean, assets, this.underwaterLight, this.counts.fishDensity);
+    }
+    this.treat(this.marineGroup);
+  }
+
+  private readonly swimmerState = { depth: 0 };
+
+  /**
+   * Brings the pod and the sharks that are far from (x, z) to the edge of a
+   * swimmer's sight (about 22 and 30 m off), so within a few seconds of
+   * going in he sees them come out of the blue to look at him.
+   */
+  private gatherRound(x: number, z: number, depth: number): void {
+    const place = (fromX: number, fromZ: number, distance: number): { x: number; z: number } | null => {
+      const base = Math.atan2(fromX - x, fromZ - z);
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const angle = base + (attempt % 2 === 0 ? 1 : -1) * Math.ceil(attempt / 2) * 0.6;
+        const px = x + Math.sin(angle) * distance;
+        const pz = z + Math.cos(angle) * distance;
+        if (this.world.seabedDepth(px, pz) > 4) return { x: px, z: pz };
+      }
+      return null;
+    };
+    const pod = this.dolphins.pod;
+    if (pod && Math.hypot(pod.centreX - x, pod.centreZ - z) > 30) {
+      const spot = place(pod.centreX, pod.centreZ, 22);
+      if (spot) {
+        const dx = spot.x - pod.centreX;
+        const dz = spot.z - pod.centreZ;
+        pod.centreX += dx;
+        pod.centreZ += dz;
+        for (const agent of pod.agents) {
+          agent.motion.x += dx;
+          agent.motion.z += dz;
+        }
+      }
+    }
+    for (const shark of this.sharks) {
+      const agent = shark.state;
+      if (!agent || Math.hypot(agent.motion.x - x, agent.motion.z - z) < 36) continue;
+      const spot = place(agent.motion.x, agent.motion.z, 26 + Math.random() * 8);
+      if (!spot) continue;
+      agent.motion.x = spot.x;
+      agent.motion.z = spot.z;
+      agent.motion.y = -Math.min(this.world.seabedDepth(spot.x, spot.z) - 1.5, Math.max(1.5, depth + 1));
+      agent.motion.heading = Math.atan2(x - spot.x, z - spot.z);
+      beginPatrol(agent, { x, z, heading: 0, speed: 0, swimmer: { depth } }, Math.random);
+    }
+  }
+
+  /** Everything that lives under the surface (left out of the water's mirror). */
+  get underwater(): THREE.Object3D {
+    return this.marineGroup;
+  }
+
+  /**
+   * @param swimmer the skipper while he is in the water (where, how deep,
+   *   which way he looks): the whale, the sharks and the dolphins then keep
+   *   round him, within sight through the water, instead of round the yacht.
+   */
+  update(delta: number, physics: VesselPhysics, camera: THREE.Camera, swimmer: { x: number; z: number; depth: number; heading: number } | null = null): void {
+    const vessel = this.vessel;
+    if (swimmer) {
+      // Just gone into the water: animals far off are brought in, out of his
+      // sight, to come and look at him (they would take minutes otherwise).
+      if (!vessel.swimmer) this.gatherRound(swimmer.x, swimmer.z, swimmer.depth);
+      vessel.x = swimmer.x;
+      vessel.z = swimmer.z;
+      vessel.heading = swimmer.heading;
+      vessel.speed = 0;
+      this.swimmerState.depth = swimmer.depth;
+      vessel.swimmer = this.swimmerState;
+    } else {
+      vessel.x = physics.position.x;
+      vessel.z = physics.position.z;
+      vessel.heading = physics.heading;
+      vessel.speed = Math.max(0, physics.telemetry.forwardSpeed);
+      vessel.swimmer = null;
+    }
+
+    // In a storm the whales, sharks, dolphins and fish go deep and stay
+    // there: they sink out of sight over STORM_LEAVE seconds, and come
+    // back up the same way once it has blown over.
+    const step = Math.min(Math.max(delta, 0), 0.1) / STORM_LEAVE;
+    this.stormAway = this.stormLeaving ? Math.min(1, this.stormAway + step) : Math.max(0, this.stormAway - step);
+    const sink = this.stormAway * this.stormAway * (3 - 2 * this.stormAway);
+    this.marineGroup.position.y = -sink * STORM_DEPTH;
+    this.marineGroup.visible = this.stormAway < 1;
+    if (this.stormAway < 1) this.updateMarine(delta, physics, camera);
+
+    // Gull clips are sampled at about 30 Hz; their flight is integrated every frame.
+    this.gullClock = Math.min(0.12, this.gullClock + delta);
+    const gullAnimation = this.gullClock >= 1 / 30 ? this.gullClock : 0;
+    if (gullAnimation > 0) this.gullClock = 0;
+    this.gulls.update(delta, physics, gullAnimation);
+  }
+
+  /**
+   * Storm strength from the weather (`WeatherSample.storm`): from a storm on
+   * (with some hysteresis, so a squall on the edge does not send them up and
+   * down) the sea is left to the waves.
+   */
+  setStorm(storm: number): void {
+    if (storm > STORM_LEAVE_ABOVE) this.stormLeaving = true;
+    else if (storm < STORM_RETURN_BELOW) this.stormLeaving = false;
+  }
+
+  /** 1 when the sea's animals are about, 0 when a storm has sent them all deep. */
+  get presence(): number {
+    return 1 - this.stormAway;
+  }
+
+  private updateMarine(delta: number, physics: VesselPhysics, camera: THREE.Camera): void {
+    const vessel = this.vessel;
+    this.whales.update(delta, vessel, camera);
+    // A breach is a leap into the air: none once the animals are leaving
+    // (one already in the air is let finish).
+    if (this.stormAway === 0 || this.breach.breaching) this.breach.update(delta, vessel, camera);
+    const whale = this.whales.obstacle();
+    this.sharkObstacles.length = 0;
+    if (whale) this.sharkObstacles.push({ x: whale.position.x, z: whale.position.z, radius: whale.radius });
+    // Each shark gives way to the whale and to the sharks updated before it.
+    for (const shark of this.sharks) {
+      shark.update(delta, vessel, this.sharkObstacles, camera);
+      const body = shark.obstacle();
+      if (body) this.sharkObstacles.push({ x: body.position.x, z: body.position.z, radius: body.radius * 2 });
+    }
+
+    this.dolphinObstacles.length = 0;
+    if (whale) {
+      this.dolphinObstacles.push({ x: whale.position.x, y: whale.position.y, z: whale.position.z, radius: whale.radius });
+    }
+    for (const controller of this.sharks) {
+      const shark = controller.obstacle();
+      if (shark) this.dolphinObstacles.push({ x: shark.position.x, y: shark.position.y, z: shark.position.z, radius: shark.radius });
+    }
+    this.dolphins.update(delta, vessel, this.dolphinObstacles, camera);
+
+    this.predators.length = 0;
+    this.dolphins.collectPositions(this.predators);
+    for (const shark of this.sharks) shark.collectPositions(this.predators);
+    this.fish.update(delta, physics, camera, this.predators);
+  }
+
+  /** Calls given by gulls disturbed on the water or taking off, since the last call. */
+  consumeGullCalls(): { position: THREE.Vector3; variant: number }[] {
+    return this.gulls.calls.splice(0);
+  }
+
+  /**
+   * 0 by day … 1 at night: the shows (a shark's fin, a breach) come a little
+   * less often after dark, but still come, since at night the fin and its
+   * wake are all that can be seen of a shark.
+   */
+  setNight(night: number): void {
+    this.world.rarity = 1 + Math.min(1, Math.max(0, night)) * 0.3;
+  }
+
+  /** Direction toward the dominant light, for the sun through the gulls' wings. */
+  setLightDirection(direction: THREE.Vector3): void {
+    this.gulls.setLightDirection(direction);
+  }
+
+  /** Where each gull is flying, for their calls. */
+  get gullPositions(): readonly THREE.Vector3[] {
+    return this.gulls.positions;
+  }
+
+  /**
+   * What is worth a picture right now (photo mode, see `PhotoDirector`): a
+   * breach, a whale at the surface, leaping dolphins, a shark's fin.
+   */
+  collectPhotoSubjects(out: PhotoSubject[]): PhotoSubject[] {
+    out.length = 0;
+    if (this.stormAway > 0) return out;
+    const breach = this.breach.breaching;
+    if (breach) out.push({ kind: "breach", x: breach.x, y: Math.max(0, breach.y), z: breach.z, size: 34 });
+    const whale = this.whales.obstacle();
+    const phase = this.whales.phase;
+    if (whale && (phase === "surface" || phase === "prepare_tail_slap" || phase === "tail_slap" || phase === "pass_under")) {
+      out.push({ kind: "whale", x: whale.position.x, y: 0, z: whale.position.z, size: 26 });
+    }
+    for (const controller of this.sharks) {
+      const shark = controller.obstacle();
+      if (shark && controller.state?.phase === "fin_show") {
+        out.push({ kind: "shark", x: shark.position.x, y: 0, z: shark.position.z, size: 9 });
+        break;
+      }
+    }
+    let leaping = 0;
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    for (const agent of this.dolphins.agents) {
+      if (agent.phase !== "leap" && agent.phase !== "airborne" && agent.phase !== "reentry") continue;
+      leaping += 1;
+      x += agent.motion.x;
+      y += agent.motion.y;
+      z += agent.motion.z;
+    }
+    if (leaping > 0) out.push({ kind: "dolphins", x: x / leaping, y: Math.max(0, y / leaping), z: z / leaping, size: 9 + leaping * 1.5 });
+    return out;
+  }
+
+  /**
+   * Distance from (x, y, z) to the nearest large animal's body (negative
+   * inside) and the direction out of it in `normal`: a whale, a shark or a
+   * dolphin, each a capsule along its spine. A swimmer is pushed off them.
+   */
+  bodyClearance(x: number, y: number, z: number, normal: { x: number; y: number; z: number }): number {
+    let best = Number.POSITIVE_INFINITY;
+    const consider = (cx: number, cy: number, cz: number, fx: number, fy: number, fz: number, half: number, radius: number) => {
+      // Quick reject before the segment test.
+      if (Math.abs(x - cx) > half + radius + 2 || Math.abs(z - cz) > half + radius + 2 || Math.abs(y - cy) > half + radius + 2) return;
+      const t = Math.max(-half, Math.min(half, (x - cx) * fx + (y - cy) * fy + (z - cz) * fz));
+      const px = x - (cx + fx * t);
+      const py = y - (cy + fy * t);
+      const pz = z - (cz + fz * t);
+      const length = Math.hypot(px, py, pz);
+      const distance = length - radius;
+      if (distance >= best) return;
+      best = distance;
+      if (length > 1e-6) {
+        normal.x = px / length;
+        normal.y = py / length;
+        normal.z = pz / length;
+      } else {
+        normal.x = 0;
+        normal.y = 1;
+        normal.z = 0;
+      }
+    };
+    const fromRoot = (root: THREE.Object3D | undefined, half: number, radius: number) => {
+      if (!root || !root.visible) return;
+      const e = root.matrixWorld.elements;
+      const length = Math.hypot(e[8]!, e[9]!, e[10]!) || 1;
+      consider(e[12]!, e[13]!, e[14]!, e[8]! / length, e[9]! / length, e[10]! / length, half, radius);
+    };
+    // Lengths as the models are sized (`WHALE_LENGTH`, `SHARK_LENGTH`, `DOLPHIN_LENGTH`), the girth tapered in.
+    fromRoot(this.whales.body, 7.6, 2.1);
+    for (const shark of this.sharks) fromRoot(shark.body, 2.2, 0.5);
+    for (const agent of this.dolphins.agents) {
+      const m = agent.motion;
+      const c = Math.cos(m.pitch);
+      consider(m.x, m.y, m.z, Math.sin(m.heading) * c, Math.sin(m.pitch), Math.cos(m.heading) * c, 1.05, 0.32);
+    }
+    return best;
+  }
+
+  /** Current whale phase, for diagnostics. */
+  get whalePhase(): string | undefined {
+    return this.whales.phase;
   }
 
   dispose(): void {
     this.dolphins.dispose();
-    this.sharks.dispose();
+    for (const shark of this.sharks) shark.dispose();
     this.whales.dispose();
+    this.breach.dispose();
     this.fish.dispose();
     this.gulls.dispose();
     this.scene.remove(this.group);

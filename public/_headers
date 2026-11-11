@@ -1,0 +1,9 @@
+# The game asks for models, textures and sounds with their content hash
+# (`/models/x.glb?v=<hash>`, src/simulator/core/assetManifest.ts): a changed
+# file gets a new URL, so a copy may be kept for a year without asking again.
+/models/*
+  Cache-Control: public, max-age=31536000, immutable
+/textures/*
+  Cache-Control: public, max-age=31536000, immutable
+/audio/*
+  Cache-Control: public, max-age=31536000, immutable

@@ -65,3 +65,45 @@ test("whale asset stays detailed, rigged, animated, textured, and mobile-safe", 
 test("visible island geometry no longer contains the giant submerged shelf", () => {
   assert.ok(MAX_VISIBLE_TERRAIN_RADIUS_SCALE <= 1.06);
 });
+
+test("every model is packed for the web: meshopt-compressed geometry, WebP textures", async () => {
+  const { readdirSync } = await import("node:fs");
+  const walk = (directory: string): string[] =>
+    readdirSync(directory, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory() ? walk(`${directory}/${entry.name}`) : entry.name.endsWith(".glb") ? [`${directory}/${entry.name}`] : [],
+    );
+  const files = walk("public/models");
+  assert.ok(files.length >= 15);
+  for (const file of files) {
+    const { json } = readGlbJson(file);
+    const raw = json as GlbJson & { extensionsUsed?: string[]; images?: Array<{ mimeType?: string }> };
+    assert.ok(raw.extensionsUsed?.includes("EXT_meshopt_compression"), `${file} is not packed (node scripts/pack-models.mjs)`);
+    for (const image of raw.images ?? []) assert.equal(image.mimeType, "image/webp", `${file} has a ${image.mimeType} texture`);
+  }
+});
+
+test("the asset manifest matches the files (hashes for the URLs, sizes for the loading bar)", async () => {
+  const { ASSET_MANIFEST } = await import("../../src/simulator/core/assetManifest");
+  const { listAssets } = (await import("../../scripts/asset-manifest.mjs")) as { listAssets: () => { url: string; v: string; bytes: number }[] };
+  const files = listAssets();
+  assert.deepEqual(
+    Object.fromEntries(files.map((file) => [file.url, { v: file.v, bytes: file.bytes }])),
+    ASSET_MANIFEST,
+    "stale manifest: run node scripts/asset-manifest.mjs",
+  );
+});
+
+test("the start downloads little: the first frame waits only for the yacht, her skipper, dolphins and gulls", async () => {
+  const { START_ASSET_KEYS, LATER_ASSET_KEYS } = await import("../../src/simulator/core/AssetManager");
+  const { ASSET_MANIFEST } = await import("../../src/simulator/core/assetManifest");
+  assert.deepEqual([...START_ASSET_KEYS].sort(), ["dolphin", "seagull", "traderMan", "yacht"]);
+  // The page prefetches exactly these (startAssets.ts, kept free of three.js).
+  const { START_MODEL_URLS } = await import("../../src/simulator/core/startAssets");
+  const { START_ASSET_URLS } = await import("../../src/simulator/core/AssetManager");
+  assert.deepEqual([...START_MODEL_URLS].sort(), [...START_ASSET_URLS].sort());
+  assert.ok(LATER_ASSET_KEYS.includes("shark") && LATER_ASSET_KEYS.includes("fishSchool"));
+  const startBytes = Object.entries(ASSET_MANIFEST)
+    .filter(([url]) => /yacht-sailboat-pbr|dolphin-animated\.glb|seagull|trader-man/u.test(url))
+    .reduce((sum, [, entry]) => sum + entry.bytes, 0);
+  assert.ok(startBytes < 3_200_000, `${startBytes} bytes before the first frame`);
+});

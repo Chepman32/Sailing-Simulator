@@ -1,0 +1,416 @@
+import * as THREE from "three";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { Pass } from "three/addons/postprocessing/Pass.js";
+import { AmbientOcclusionPass } from "./AmbientOcclusion";
+import type { QualitySettings } from "./QualityManager";
+import { UnderwaterRaysPass } from "./UnderwaterRays";
+import { SunShaftsPass } from "./SunShafts";
+
+/**
+ * HDR presentation pipeline.
+ *
+ * The scene is rendered into a multisampled half-float target in scene-linear
+ * light, so the sun, its glitter on the water and the navigation lights keep
+ * their true brightness. Bloom then spreads only what is genuinely brighter
+ * than white, and one final pass applies the lens treatment, the renderer's
+ * filmic tone curve and the display transfer.
+ *
+ * On the low preset the pipeline is bypassed and the scene renders directly;
+ * every material tone-maps itself in that path, so both look consistent.
+ */
+
+/** Luminance above which a pixel is treated as a light source. */
+export const BLOOM_THRESHOLD = 1.35;
+const BLOOM_RADIUS = 0.62;
+/**
+ * Brightest value a pixel may carry into bloom and the finish. The half-float
+ * target overflows to infinity above 65504, and one infinite or NaN pixel is
+ * smeared by the blur over the whole frame: the screen blinks or goes black
+ * until the next clean frame. Nothing real is brighter than this (the sun
+ * disc is about 9, a lightning core a few tens).
+ */
+export const HDR_CEILING = 96;
+
+/** GLSL: a colour made finite and non-negative (a NaN fails every comparison, so becomes 0). */
+export const SANE_COLOR_GLSL = /* glsl */ `
+  vec3 saneColor(vec3 c) {
+    return vec3(
+      c.r >= 0.0 ? min(c.r, ${HDR_CEILING.toFixed(1)}) : 0.0,
+      c.g >= 0.0 ? min(c.g, ${HDR_CEILING.toFixed(1)}) : 0.0,
+      c.b >= 0.0 ? min(c.b, ${HDR_CEILING.toFixed(1)}) : 0.0
+    );
+  }
+`;
+
+/**
+ * Drawing straight to the screen (no post-processing, the low preset), the
+ * picture would miss the finish's saturation and so look grey beside the
+ * other presets. The finish's own colour (ACES with the same saturation)
+ * is applied in every material's last line instead, through three's custom
+ * tone mapping: the same look at no cost at all, not one extra pass. The
+ * vignette comes from the page (`.scene-vignette`), drawn by the browser.
+ */
+const DIRECT_FINISH_GLSL = /* glsl */ `vec3 CustomToneMapping( vec3 color ) {
+  vec3 mapped = ACESFilmicToneMapping( color );
+  float luminance = dot( mapped, vec3( 0.2126, 0.7152, 0.0722 ) );
+  // Saturation as the finish gives it (applied after the curve here, so a
+  // little more), and a touch of the S-curve the bloom's glow would add.
+  mapped = clamp( mix( vec3( luminance ), mapped, 1.1 ), 0.0, 1.0 );
+  return mix( mapped, mapped * mapped * ( 3.0 - 2.0 * mapped ), 0.14 );
+}`;
+let directFinishInstalled = false;
+function installDirectFinish(): void {
+  if (directFinishInstalled) return;
+  directFinishInstalled = true;
+  THREE.ShaderChunk.tonemapping_pars_fragment = THREE.ShaderChunk.tonemapping_pars_fragment.replace(
+    "vec3 CustomToneMapping( vec3 color ) { return color; }",
+    DIRECT_FINISH_GLSL,
+  );
+}
+
+const FinishShader = {
+  name: "LensFinish",
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    uTime: { value: 0 },
+    uVignette: { value: 0.3 },
+    uGrain: { value: 0.012 },
+    uAberration: { value: 0.0035 },
+    uSaturation: { value: 1.07 },
+    // The mood of the radio station (see RadioSystem): neutral by default.
+    uGradeGain: { value: new THREE.Vector3(1, 1, 1) },
+    uGradeShadows: { value: new THREE.Vector3(0, 0, 0) },
+    uGradeSaturation: { value: 1 },
+    uGradeVignette: { value: 0 },
+    // A diver's view: the mask's edge, the water's wobble, 0 in air … 1 under.
+    uUnderwater: { value: 0 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float uTime;
+    uniform float uVignette;
+    uniform float uGrain;
+    uniform float uAberration;
+    uniform float uSaturation;
+    uniform vec3 uGradeGain;
+    uniform vec3 uGradeShadows;
+    uniform float uGradeSaturation;
+    uniform float uGradeVignette;
+    uniform float uUnderwater;
+    varying vec2 vUv;
+
+    ${SANE_COLOR_GLSL}
+
+    float grainHash(vec2 p) {
+      vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+      p3 += dot(p3, p3.yzx + 33.33);
+      return fract((p3.x + p3.y) * p3.z);
+    }
+
+    void main() {
+      vec2 uv = vUv;
+      // Under water the image swims a little (the water's own density
+      // ripples), most toward the edges of the mask.
+      if (uUnderwater > 0.0) {
+        vec2 c = uv - 0.5;
+        float edge = 0.35 + dot(c, c) * 2.6;
+        uv += vec2(
+          sin(uv.y * 23.0 + uTime * 1.6) + sin(uv.y * 41.0 - uTime * 2.3) * 0.5,
+          cos(uv.x * 19.0 + uTime * 1.3) + cos(uv.x * 37.0 + uTime * 2.1) * 0.5
+        ) * 0.0011 * edge * uUnderwater;
+      }
+      vec2 centred = uv - 0.5;
+      float radius2 = dot(centred, centred);
+      // A real lens focuses red and blue at slightly different magnifications
+      // toward the corners; the centre of the frame stays untouched.
+      vec2 fringe = centred * radius2 * (uAberration + uUnderwater * 0.012);
+      vec3 color = vec3(
+        texture2D(tDiffuse, uv - fringe).r,
+        texture2D(tDiffuse, uv).g,
+        texture2D(tDiffuse, uv + fringe).b
+      );
+      color = saneColor(color);
+      float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      color = max(mix(vec3(luminance), color, uSaturation * uGradeSaturation), 0.0);
+      // Mood: a tint over the whole image and a lift of the shadows' colour.
+      color = color * uGradeGain + uGradeShadows * (1.0 - smoothstep(0.0, 0.6, luminance));
+      color *= 1.0 - smoothstep(0.1, 0.52, radius2) * (uVignette + uGradeVignette);
+      // The dive mask: its rim darkens the corners of the view.
+      color *= 1.0 - smoothstep(0.16, 0.42, radius2 * vec2(1.0, 1.0).x) * 0.55 * uUnderwater;
+      gl_FragColor = vec4(color, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+      // Grain is added in display space, where it also hides 8-bit banding.
+      float grain = grainHash(gl_FragCoord.xy + fract(uTime) * 61.7) - 0.5;
+      gl_FragColor.rgb += grain * uGrain;
+    }
+  `,
+};
+
+/**
+ * Notes which of the composer's two targets the scene was just drawn into,
+ * and so whose depth texture holds this frame's depth (the targets swap
+ * every frame), for the passes that read depth.
+ */
+class DepthTap extends Pass {
+  constructor(private readonly consumers: readonly { depth: THREE.Texture | null }[]) {
+    super();
+    this.needsSwap = false;
+  }
+  override render(_renderer: THREE.WebGLRenderer, _writeBuffer: THREE.WebGLRenderTarget, readBuffer: THREE.WebGLRenderTarget): void {
+    for (const consumer of this.consumers) consumer.depth = readBuffer.depthTexture;
+  }
+}
+
+/** The bloom bright-pass shader with its input made finite (see `HDR_CEILING`). */
+export function hardenBrightPass(source: string): string {
+  const read = "vec4 texel = texture2D( tDiffuse, vUv );";
+  if (!source.includes(read)) return source;
+  return `${SANE_COLOR_GLSL}\n${source.replace(read, "vec4 texel = texture2D( tDiffuse, vUv ); texel.rgb = saneColor(texel.rgb);")}`;
+}
+
+export class PostProcessing {
+  private readonly composer: EffectComposer;
+  private readonly renderPass: RenderPass;
+  private readonly bloom: UnrealBloomPass;
+  private readonly finish: ShaderPass;
+  private readonly tap: DepthTap;
+  private readonly occlusion: AmbientOcclusionPass;
+  private readonly shafts: SunShaftsPass;
+  /** Sunlight in the water as a volume, for a diver (needs the scene's depth). */
+  readonly underwaterRays: UnderwaterRaysPass;
+  /** Whether the scene targets carry depth textures (ambient occlusion or sun shafts on). */
+  private depthTextures = false;
+  /** Sun shafts are on in this preset (the pass itself is off while the sun is hidden). */
+  private godRays = false;
+  /** False on the rare GPU that cannot render to a half-float target. */
+  private readonly supported: boolean;
+  private active: boolean;
+  private samples: number;
+  private width = 1;
+  private height = 1;
+
+  constructor(
+    private readonly renderer: THREE.WebGLRenderer,
+    private readonly scene: THREE.Scene,
+    private camera: THREE.Camera,
+    quality: QualitySettings,
+  ) {
+    this.supported =
+      renderer.extensions.has("EXT_color_buffer_half_float") || renderer.extensions.has("EXT_color_buffer_float");
+    this.active = quality.postProcessing && this.supported;
+    installDirectFinish();
+    this.applyToneMapping();
+    this.samples = this.supportedSamples(quality.msaaSamples);
+    const size = renderer.getSize(new THREE.Vector2());
+    this.width = Math.max(1, size.x);
+    this.height = Math.max(1, size.y);
+    const pixelRatio = renderer.getPixelRatio();
+    const target = new THREE.WebGLRenderTarget(this.width * pixelRatio, this.height * pixelRatio, {
+      type: THREE.HalfFloatType,
+      samples: this.samples,
+      depthBuffer: true,
+      stencilBuffer: false,
+    });
+    target.texture.name = "HdrScene";
+    this.composer = new EffectComposer(renderer, target);
+    this.composer.setPixelRatio(pixelRatio);
+    this.composer.setSize(this.width, this.height);
+    this.renderPass = new RenderPass(scene, camera);
+    this.bloom = new UnrealBloomPass(
+      new THREE.Vector2(this.width * pixelRatio, this.height * pixelRatio),
+      quality.bloomStrength,
+      BLOOM_RADIUS,
+      BLOOM_THRESHOLD,
+    );
+    this.bloom.enabled = quality.bloomStrength > 0;
+    // The bright-pass is where an overflowed pixel would enter the blur.
+    this.bloom.materialHighPassFilter.fragmentShader = hardenBrightPass(this.bloom.materialHighPassFilter.fragmentShader);
+    this.bloom.materialHighPassFilter.needsUpdate = true;
+    this.finish = new ShaderPass(FinishShader);
+    this.occlusion = new AmbientOcclusionPass(scene, camera, this.width * pixelRatio, this.height * pixelRatio);
+    this.shafts = new SunShaftsPass(this.width * pixelRatio, this.height * pixelRatio);
+    this.shafts.camera = camera;
+    this.underwaterRays = new UnderwaterRaysPass(this.width * pixelRatio, this.height * pixelRatio);
+    this.underwaterRays.camera = camera;
+    this.underwaterRays.enabled = false;
+    this.tap = new DepthTap([this.occlusion, this.shafts, this.underwaterRays]);
+    this.composer.addPass(this.renderPass);
+    this.composer.addPass(this.tap);
+    this.composer.addPass(this.occlusion);
+    this.composer.addPass(this.shafts);
+    this.composer.addPass(this.underwaterRays);
+    this.composer.addPass(this.bloom);
+    this.composer.addPass(this.finish);
+    this.applyDepthPasses(quality);
+  }
+
+  /**
+   * Ambient occlusion and sun shafts read the scene's depth: the targets
+   * then carry depth textures (resolved from the multisampled buffer)
+   * instead of plain depth buffers. Changing that needs new GPU storage.
+   */
+  private applyDepthPasses(quality: QualitySettings): void {
+    this.occlusion.enabled = quality.ambientOcclusion;
+    this.godRays = quality.godRays;
+    this.shafts.enabled = quality.godRays;
+    // The scene's depth is kept whenever post-processing runs: the diver's
+    // light shafts need it, as do ambient occlusion and the sun shafts.
+    const wanted = true;
+    if (wanted === this.depthTextures) return;
+    this.depthTextures = wanted;
+    for (const target of [this.composer.renderTarget1, this.composer.renderTarget2]) {
+      target.depthTexture?.dispose();
+      if (wanted) {
+        const depth = new THREE.DepthTexture(target.width, target.height);
+        depth.type = THREE.UnsignedIntType;
+        depth.name = "SceneDepth";
+        target.depthTexture = depth;
+      } else {
+        target.depthTexture = null;
+      }
+      target.dispose();
+    }
+  }
+
+  /**
+   * The sun for the shafts: its place on screen (uv), how much of it shines
+   * (0 below the horizon, behind the camera or at night … 1) and its colour.
+   */
+  setSun(x: number, y: number, visibility: number, color: THREE.Color): void {
+    this.shafts.sun.set(x, y);
+    this.shafts.visibility = visibility;
+    // No sun to stream: the pass (and its full-screen copy) is skipped altogether.
+    this.shafts.enabled = this.godRays && visibility > 0.002;
+    this.shafts.tint.copy(color);
+  }
+
+  get enabled(): boolean {
+    return this.active;
+  }
+
+  /**
+   * The target the scene is drawn into. Shader programs differ between a
+   * render target (linear, no tone mapping) and the screen, so prewarming
+   * must compile against the same one.
+   */
+  get sceneTarget(): THREE.WebGLRenderTarget | null {
+    return this.active ? this.composer.renderTarget1 : null;
+  }
+
+  setCamera(camera: THREE.Camera): void {
+    this.camera = camera;
+    this.renderPass.camera = camera;
+    this.occlusion.setCamera(camera);
+    this.shafts.camera = camera;
+    this.underwaterRays.camera = camera;
+  }
+
+  /**
+   * Straight to the screen, the finish's colour comes from the materials'
+   * custom tone mapping; through the pipeline, ACES (the finish pass adds
+   * the rest). A change recompiles the materials, so it happens only when
+   * the pipeline is switched on or off.
+   */
+  private applyToneMapping(): void {
+    const mapping = this.active ? THREE.ACESFilmicToneMapping : THREE.CustomToneMapping;
+    if (this.renderer.toneMapping !== mapping) this.renderer.toneMapping = mapping;
+  }
+
+  /** Whether frames go straight to the screen (the page then draws the vignette). */
+  get direct(): boolean {
+    return !this.active;
+  }
+
+  setQuality(quality: QualitySettings): void {
+    this.active = quality.postProcessing && this.supported;
+    this.applyToneMapping();
+    this.bloom.strength = quality.bloomStrength;
+    this.bloom.enabled = quality.bloomStrength > 0;
+    const samples = this.supportedSamples(quality.msaaSamples);
+    if (samples !== this.samples) {
+      this.samples = samples;
+      this.composer.renderTarget1.samples = samples;
+      this.composer.renderTarget2.samples = samples;
+      // Changing the sample count requires new GPU storage.
+      this.composer.renderTarget1.dispose();
+      this.composer.renderTarget2.dispose();
+    }
+    this.applyDepthPasses(quality);
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
+  }
+
+  /**
+   * Frees every GPU target of the pipeline. three.js allocates them again on
+   * the next frame, so a poisoned or forgotten buffer starts from nothing.
+   */
+  rebuild(): void {
+    this.composer.renderTarget1.dispose();
+    this.composer.renderTarget2.dispose();
+    this.bloom.dispose();
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
+    this.composer.setSize(this.width, this.height);
+  }
+
+  setSize(width: number, height: number): void {
+    this.width = Math.max(1, width);
+    this.height = Math.max(1, height);
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
+    this.composer.setSize(this.width, this.height);
+  }
+
+  /** The radio's mood grade (already eased by the caller). */
+  setGrade(gain: readonly number[], shadows: readonly number[], saturation: number, vignette: number): void {
+    const uniforms = this.finish.uniforms;
+    (uniforms.uGradeGain!.value as THREE.Vector3).set(gain[0]!, gain[1]!, gain[2]!);
+    (uniforms.uGradeShadows!.value as THREE.Vector3).set(shadows[0]!, shadows[1]!, shadows[2]!);
+    uniforms.uGradeSaturation!.value = saturation;
+    uniforms.uGradeVignette!.value = vignette;
+  }
+
+  /** A diver's view under the water (0 … 1). */
+  setUnderwater(amount: number): void {
+    this.finish.uniforms.uUnderwater!.value = amount;
+    this.occlusion.underwater = amount > 0.5 ? 1 : 0;
+    this.underwaterRays.amount = amount;
+    this.underwaterRays.enabled = amount > 0.01;
+  }
+
+  /** Whether the diver's light shafts are drawn as a volume (post-processing on). */
+  get volumetricUnderwater(): boolean {
+    return this.active && this.depthTextures;
+  }
+
+  render(delta: number, time: number): void {
+    if (!this.active) {
+      this.renderer.setRenderTarget(null);
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+    this.finish.uniforms.uTime.value = time;
+    this.composer.render(delta);
+  }
+
+  dispose(): void {
+    this.bloom.dispose();
+    this.finish.dispose();
+    this.occlusion.dispose();
+    this.shafts.dispose();
+    this.underwaterRays.dispose();
+    this.composer.dispose();
+  }
+
+  private supportedSamples(requested: number): number {
+    return Math.max(0, Math.min(requested, this.renderer.capabilities.maxSamples));
+  }
+}
