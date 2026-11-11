@@ -671,3 +671,28 @@ test("the photographer films a long event once, and a kind of subject at most on
   quick.offer(horn, 0, 0);
   assert.equal((quick.subject as { kind: string } | null)?.kind, "horn");
 });
+
+test("the canvas is only resized in the task that goes on to draw it (never left empty on screen)", async () => {
+  const { CanvasSizeGate } = await import("../../src/simulator/core/RenderHealth");
+  const gate = new CanvasSizeGate();
+  // Loading: nothing on the canvas yet, every resize is applied at once.
+  assert.equal(gate.request(), true);
+  assert.equal(gate.waiting, false);
+  gate.goLive();
+  // Between frames (the governor after a draw, a preset change, the watchdog): kept.
+  assert.equal(gate.request(), false);
+  assert.equal(gate.request(), false);
+  assert.equal(gate.waiting, true);
+  // The next frame applies it once, before drawing…
+  assert.equal(gate.beginFrame(), true);
+  assert.equal(gate.waiting, false);
+  // …and a resize asked for before the draw (the GPU governor at the frame's start) goes straight through.
+  assert.equal(gate.request(), true);
+  gate.drawn();
+  // After the draw it waits again; a frame with nothing asked resizes nothing.
+  assert.equal(gate.request(), false);
+  assert.equal(gate.beginFrame(), true);
+  gate.drawn();
+  assert.equal(gate.beginFrame(), false);
+  gate.drawn();
+});

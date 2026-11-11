@@ -71,3 +71,58 @@ export class FlatFrameWatch {
 export function isUsablePose(values: readonly number[]): boolean {
   return values.every((value) => Number.isFinite(value) && Math.abs(value) < 1e7);
 }
+
+/**
+ * When the canvas may be resized.
+ *
+ * Giving a canvas a size (even the size it has) empties it. If that happens
+ * after the frame's draw, the browser shows the emptied canvas: the page's
+ * dark background with the interface over it, until the next frame is
+ * drawn. That is one frame when all is well, but seconds when the next
+ * frame has work to do first: a quality preset just changed (every shader
+ * compiles again), the view was rebuilt, or the loop is being paced. And
+ * resizes used to come exactly then, after the draw: the frame-rate
+ * governor changing the resolution, the automatic quality changing the
+ * preset, the watchdog rebuilding the view.
+ *
+ * So the canvas is only ever resized in the task that goes on to draw it:
+ * a request made between the start of a frame and its draw is applied at
+ * once; one made at any other time waits for the start of the next frame.
+ * Before the first frame (loading, nothing on the canvas yet) every request
+ * is applied at once.
+ */
+export class CanvasSizeGate {
+  private live = false;
+  private beforeDraw = false;
+  private pending = false;
+
+  /** The loop is about to start: from now on the canvas has a picture to keep. */
+  goLive(): void {
+    this.live = true;
+  }
+
+  /** A resize is wanted. True: apply it now. False: it is kept for the start of the next frame. */
+  request(): boolean {
+    if (!this.live || this.beforeDraw) return true;
+    this.pending = true;
+    return false;
+  }
+
+  /** A frame begins. True if a resize was kept for it (apply it now, before drawing). */
+  beginFrame(): boolean {
+    this.beforeDraw = true;
+    const pending = this.pending;
+    this.pending = false;
+    return pending;
+  }
+
+  /** The frame's picture is on the canvas: no more resizing until the next frame. */
+  drawn(): void {
+    this.beforeDraw = false;
+  }
+
+  get waiting(): boolean {
+    return this.pending;
+  }
+}
+

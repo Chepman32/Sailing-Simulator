@@ -4,7 +4,7 @@ import { CameraController } from "./camera/CameraController";
 import { AssetManager, ASSET_LOAD_TOTAL, LOAD_STEPS_TOTAL, SCENE_LOAD_STEPS, TRADER_MODEL_KEYS } from "./core/AssetManager";
 import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
-import { contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
+import { CanvasSizeGate, contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
 import { ShipShadows } from "./ships/ShipShadows";
 import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
 import { FlareCamera } from "./camera/FlareCamera";
@@ -748,6 +748,7 @@ export class Simulator {
       this.resize();
       this.reportLoading(1, "Preparing the graphics");
       await this.prewarmShaders();
+      this.sizeGate.goLive();
       this.loop = new RenderLoop({
         fixedUpdate: this.fixedUpdate,
         update: this.update,
@@ -2452,10 +2453,13 @@ export class Simulator {
   }
 
   private readonly render = (): void => {
+    // Resizes asked for since the last draw are applied now, in the task that draws.
+    let resize = this.sizeGate.beginFrame();
     if (this.resizeRequestedAt > 0 && performance.now() - this.resizeRequestedAt > RESIZE_SETTLE_MS) {
       this.resizeRequestedAt = 0;
-      this.resize();
+      resize = true;
     }
+    if (resize) this.applySize();
     const timer = this.gpuTimer;
     if (timer?.available) {
       const gpuMs = timer.poll();
@@ -2474,6 +2478,7 @@ export class Simulator {
     if (this.underwaterAmount < 0.5) this.renderReflection();
     if (this.quality.settings.godRays) this.aimSunShafts(camera);
     this.post.render(this.frameDelta, this.elapsed);
+    this.sizeGate.drawn();
     if (shaken) {
       camera.position.sub(this.shakeOffset);
       camera.updateMatrixWorld();
@@ -2730,7 +2735,22 @@ export class Simulator {
     this.frameGovernor.pause(2);
   };
 
+  /** The canvas is resized only in the task that goes on to draw it (`CanvasSizeGate`): never left empty on screen. */
+  private readonly sizeGate = new CanvasSizeGate();
+
+  /**
+   * The canvas and every render target to the container's size and the
+   * current render scale. Asked for after a frame has been drawn (by the
+   * frame-rate governor, a preset change, the view's rebuild), it waits for
+   * the start of the next frame: a canvas resized after its draw is shown
+   * empty (the black screen behind the interface) until something is drawn
+   * again, which after a preset change is seconds of shader compiling.
+   */
   private readonly resize = (): void => {
+    if (this.sizeGate.request()) this.applySize();
+  };
+
+  private applySize(): void {
     const parent = this.canvas.parentElement;
     const width = Math.max(1, parent?.clientWidth ?? window.innerWidth);
     const height = Math.max(1, parent?.clientHeight ?? window.innerHeight);
@@ -2743,7 +2763,7 @@ export class Simulator {
     this.reflection?.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
     this.ships?.setPixelRatio(this.renderer.getPixelRatio());
     this.mirrorStale = true;
-  };
+  }
 
   /** The weather the sky should be heading for: the player's choice, or the planner's. */
   private currentWeatherKind(): WeatherKind {
