@@ -260,7 +260,8 @@ export class Traders {
     const close = distance < 5.5;
     if (noticed && !trader.greeted && distance < 12) {
       trader.greeted = true;
-      trader.wave = 0;
+      // An armed man on watch nods; he does not wave.
+      if (trader.spot.kit !== "armed") trader.wave = 0;
       trader.nod = 0;
     } else if (distance > 26) {
       trader.greeted = false;
@@ -416,7 +417,7 @@ export class Traders {
         lookPitch = Math.atan2(visitor.y - (trader.ground + 1.6), Math.max(distance, 0.5)) * 0.7;
         if (!trader.greeted && distance < 9) {
           trader.greeted = true;
-          trader.wave = 0;
+          if (trader.spot.kit !== "armed") trader.wave = 0;
         }
       } else if (distance > 24) {
         trader.greeted = false;

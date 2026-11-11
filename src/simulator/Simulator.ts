@@ -2248,6 +2248,8 @@ export class Simulator {
       const diver = this.diver;
       if (!diver?.active || diver.mode !== "land") return;
       diver.yaw = Math.atan2(x - diver.walk.x, z - diver.walk.z);
+      // Level with a face across the way.
+      diver.pitch = 0;
     },
     freeze: (on) => {
       this.storyFrozen = on;
@@ -2429,7 +2431,7 @@ export class Simulator {
     const story = this.story;
     if (!story) return "no-campaign";
     const view = story.view();
-    return saveBlock({ campaign: story.active, cinematic: view.cinematic, frozen: view.frozen, fade: view.fade, attacking: this.drones?.alarm().attacking ?? false });
+    return saveBlock({ campaign: story.active, cinematic: view.cinematic, frozen: view.frozen, fade: view.fade, attacking: this.drones?.alarm().attacking ?? false, anchored: view.anchored });
   }
 
   /**

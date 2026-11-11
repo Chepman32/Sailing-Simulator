@@ -122,6 +122,8 @@ export type StoryView = {
   rig: boolean;
   /** The skipper is held where he is (nothing to steer or walk). */
   frozen: boolean;
+  /** A save now would resume here (past the prologue's opening run, or at a checkpoint). */
+  anchored: boolean;
 };
 
 export class StorySystem {
@@ -607,9 +609,11 @@ export class StorySystem {
       scene.cued += 1;
       for (const effect of shot.cue ?? []) this.cue(effect);
     }
-    // What was being said goes too: it belonged to the scene.
+    // What was being said and shown goes too: it belonged to the scene.
     this.queue.length = 0;
     this.line = null;
+    this.titles.length = 0;
+    this.title = null;
     this.scene = null;
   }
 
@@ -1001,6 +1005,7 @@ export class StorySystem {
       alert: this.active ? this.alert : null,
       rig: this.state.rig,
       frozen: this.active && this.frozen,
+      anchored: isDone(this.state, "prologue") || this.state.checkpoint !== null,
     };
   }
 

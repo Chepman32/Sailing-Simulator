@@ -120,11 +120,12 @@ test("the load menu shows the newest save first and says where in the story each
 });
 
 test("a game is saved only at a quiet moment of a campaign", () => {
-  const calm = { campaign: true, cinematic: false, frozen: false, fade: 0, attacking: false };
+  const calm = { campaign: true, cinematic: false, frozen: false, fade: 0, attacking: false, anchored: true };
   assert.equal(saveBlock(calm), null);
   assert.equal(saveBlock({ ...calm, campaign: false }), "no-campaign");
   assert.equal(saveBlock({ ...calm, cinematic: true }), "cutscene");
   assert.equal(saveBlock({ ...calm, frozen: true }), "cutscene");
   assert.equal(saveBlock({ ...calm, attacking: true }), "combat");
   assert.equal(saveBlock({ ...calm, fade: 0.8 }), "danger");
+  assert.equal(saveBlock({ ...calm, anchored: false }), "danger", "the prologue's opening run cannot be saved into");
 });

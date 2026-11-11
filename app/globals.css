@@ -5819,7 +5819,11 @@ html.rifle-drawn .simulator-canvas {
   .save-slot { grid-template-columns: 84px minmax(0, 1fr); gap: 10px; }
   .save-thumb { width: 84px; }
   .save-action { display: none; }
+  /* Clear of the instruments on the left: towards the right, short of the menu button. */
+  .story-lockdown { left: auto; right: calc(var(--edge-right, 12px) + 72px); max-width: min(360px, calc(100vw - 360px)); transform: none; padding: 7px 12px 7px 10px; }
+  .story-lockdown svg { width: 20px; height: 20px; }
   .story-lockdown-head { font-size: 11.5px; }
+  .story-title.is-place { top: 34%; }
   .story-lockdown-sub { font-size: 10px; }
   .cinema-skip { font-size: 11px; }
 }

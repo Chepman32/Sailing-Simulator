@@ -4,7 +4,7 @@ import * as THREE from "three";
  * A story person's kit, worn over a trader model (`TraderSpot.kit`): for
  * Holloway an unbuttoned plate carrier — two front panels hanging apart,
  * the back panel, shoulder straps, magazine pouches — and a heavy assault
- * rifle slung across the chest, muzzle down to his left. In the figure's
+ * rifle slung across the body, muzzle down past his right thigh. In the figure's
  * own frame: +Z forward, +Y up, metres from the soles (a figure some
  * 1.8 m tall). Shared geometry and materials, built once.
  */
@@ -39,7 +39,7 @@ function shared() {
     magazine: new THREE.BoxGeometry(0.04, 0.17, 0.07),
     rail: new THREE.BoxGeometry(0.055, 0.06, 0.26),
     sight: new THREE.BoxGeometry(0.04, 0.05, 0.09),
-    sling: new THREE.BoxGeometry(0.035, 0.012, 0.8),
+    sling: new THREE.BoxGeometry(0.035, 0.62, 0.012),
     cloth: new THREE.MeshStandardMaterial({ color: 0x4b5138, roughness: 0.92 }),
     webbing: new THREE.MeshStandardMaterial({ color: 0x3a3f2c, roughness: 0.95 }),
     metal: new THREE.MeshStandardMaterial({ color: 0x1b1d20, roughness: 0.45, metalness: 0.7 }),
@@ -73,11 +73,13 @@ export function armedKit(): THREE.Group {
   back.position.set(0, 1.27, -0.13);
   back.castShadow = true;
   kit.add(back);
-  // The rifle, slung across the chest: butt by the right shoulder, muzzle down to the left hip.
+  // The rifle, slung across the body: butt up by the left shoulder, muzzle
+  // down past the right thigh, lying against the carrier's front.
   const rifle = new THREE.Group();
-  rifle.position.set(0.02, 1.13, 0.24);
-  rifle.rotation.set(0, Math.PI / 2, 0);
-  rifle.rotateX(0.62);
+  rifle.position.set(0.05, 1.2, 0.25);
+  rifle.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(-0.45, -0.89, 0).normalize());
+  // The magazine out from the chest, not into it.
+  rifle.rotateZ(Math.PI / 2);
   const receiver = new THREE.Mesh(p.receiver, p.metal);
   const rail = new THREE.Mesh(p.rail, p.polymer);
   rail.position.set(0, 0.0, 0.32);
@@ -96,10 +98,10 @@ export function armedKit(): THREE.Group {
     rifle.add(mesh);
   }
   kit.add(rifle);
-  // The sling over the left shoulder.
+  // The sling, from the left shoulder across the chest to the right hip.
   const sling = new THREE.Mesh(p.sling, p.webbing);
-  sling.position.set(-0.05, 1.33, 0.05);
-  sling.rotation.set(-0.9, 0.35, 0.5);
+  sling.position.set(0, 1.24, 0.185);
+  sling.rotation.z = -Math.atan2(0.3, 0.48);
   kit.add(sling);
   return kit;
 }

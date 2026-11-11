@@ -1554,6 +1554,7 @@ export function SailingSimulator() {
                   frozen: snapshot.story.frozen,
                   fade: snapshot.story.fade,
                   attacking: snapshot.combat.attacking,
+                  anchored: snapshot.story.anchored,
                 })
               : "no-campaign"
           }

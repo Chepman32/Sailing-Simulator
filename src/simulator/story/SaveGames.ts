@@ -157,8 +157,10 @@ export function describeSave(game: SaveGame, campaign: Campaign): { chapter: Tex
 /** Why the game cannot be saved just now (null: it can). */
 export type SaveBlock = "no-campaign" | "cutscene" | "combat" | "danger";
 
-export function saveBlock(facts: { campaign: boolean; cinematic: boolean; frozen: boolean; fade: number; attacking: boolean }): SaveBlock | null {
+export function saveBlock(facts: { campaign: boolean; cinematic: boolean; frozen: boolean; fade: number; attacking: boolean; anchored: boolean }): SaveBlock | null {
   if (!facts.campaign) return "no-campaign";
+  // The prologue's opening run is one scene: a save in it would only start it over.
+  if (!facts.anchored) return "danger";
   if (facts.cinematic || facts.frozen) return "cutscene";
   if (facts.attacking) return "combat";
   if (facts.fade > 0.05) return "danger";
