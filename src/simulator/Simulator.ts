@@ -1846,6 +1846,14 @@ export class Simulator {
   /** Starts the voyage again from the start, as on arrival (what was found stays found). */
   reset(): void {
     if (!this.initialized) return;
+    // In the campaign a fresh start is the last checkpoint, not the free-sailing start.
+    if (this.story?.active) {
+      this.story.state.position = null;
+      this.story.resume();
+      this.applyCondition();
+      this.hud.emit(this.snapshot());
+      return;
+    }
     this.physics.reset();
     this.flares.clear();
     this.fireworks.clear();
@@ -2247,7 +2255,9 @@ export class Simulator {
     this.placeYacht(anchorage.x, anchorage.z, heading);
     if (landing && this.diver) {
       this.ensureDeckField();
-      this.diver.placeAshore(landing.x, landing.z, this.groundWalk(landing.x, landing.z), landing.yaw);
+      // Set down looking out at his yacht, so the first thing he sees is where to go.
+      const yaw = Math.atan2(anchorage.x - landing.x, anchorage.z - landing.z);
+      this.diver.placeAshore(landing.x, landing.z, this.groundWalk(landing.x, landing.z), place.porch ? landing.yaw : yaw);
       this.handoff.active = false;
     }
   }
@@ -2434,6 +2444,8 @@ export class Simulator {
     const wind = this.physics.wind;
     drones.update(delta, {
       yacht: { x: yacht.x, y: yacht.y, z: yacht.z, heading: this.physics.heading, speed: Math.abs(telemetry.forwardSpeed) },
+      // A yacht left at anchor with nobody aboard is no one's target: the drones hunt the skipper's boat, not a hull.
+      crewed: !this.diver?.active || this.diver.mode === "deck" || this.diver.mode === "leap",
       reach: signature.reach,
       night: this.environmentState.nightFactor,
       waves: significantWaveHeight(),
@@ -2511,7 +2523,9 @@ export class Simulator {
     const marker = story.active ? story.marker(this.storyMarker) : null;
     if (marker) {
       const screen = project(marker);
-      frame.marker = { ...screen, distance: Math.hypot(marker.x - eye.x, marker.z - eye.z) };
+      // Which side of the view it lies on (+ right), for an arrow when it is behind.
+      const side = -(marker.x - eye.x) * look.z + (marker.z - eye.z) * look.x;
+      frame.marker = { ...screen, distance: Math.hypot(marker.x - eye.x, marker.z - eye.z), side };
     } else {
       frame.marker = null;
     }
@@ -2827,9 +2841,9 @@ export class Simulator {
     // The story's own: a word with someone, patching the hull on deck.
     if ((!diver.prompt || diver.prompt === "trade") && diver.inControl && diver.mode !== "swim") {
       const story = this.story?.prompt();
-      if (story && (story.kind === "talk" || (story.kind === "repair" && diver.mode === "deck"))) {
+      if (story && (story.kind === "talk" || diver.mode === "deck")) {
         diver.prompt = "story";
-        this.promptDetail = story.kind === "talk" ? `talk:${story.character}` : `repair:${story.progress.toFixed(2)}`;
+        this.promptDetail = story.kind === "talk" ? `talk:${story.character}` : `${story.kind}:${story.progress.toFixed(2)}`;
       }
     }
     const action: DiverPrompt = diver.consumeInteract();

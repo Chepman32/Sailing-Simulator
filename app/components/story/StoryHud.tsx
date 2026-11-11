@@ -165,7 +165,7 @@ export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip,
       )}
 
       {combat.rifle && (
-        <div className={`story-weapon${combat.drawn ? " is-drawn" : ""}`}>
+        <div className={`story-weapon${combat.drawn ? " is-drawn" : ""}${atHelm ? "" : " is-afoot"}`}>
           <button type="button" className="story-weapon-toggle" onClick={onToggleRifle} title={messages.rifleDraw} aria-pressed={combat.drawn}>
             <svg viewBox="0 0 32 16" aria-hidden="true">
               <path d="M1 9.5h17l2-2h6l5-1.5v3l-4 1.5H20l-3 3h-3l1-3H1z" fill="currentColor" />
@@ -200,5 +200,6 @@ export function storyPromptText(detail: string | null, language: LanguageCode): 
   const lang = storyLanguage(language);
   if (detail.startsWith("talk:")) return fill(messages.talk, { name: speakerOf(detail.slice(5), messages, lang).name });
   if (detail.startsWith("repair:")) return Number(detail.slice(7)) > 0.001 ? messages.repairing : messages.repair;
+  if (detail.startsWith("winch:")) return Number(detail.slice(6)) > 0.001 ? messages.winching : messages.winch;
   return null;
 }

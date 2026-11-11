@@ -918,6 +918,7 @@ function drawStoryOverlay(context: CanvasRenderingContext2D, camera: ChartCamera
       const text = sector.name[language].toUpperCase().split("").join("\u2009");
       context.globalAlpha = sector.planned ? 0.45 : 0.78;
       context.lineWidth = 4;
+      context.lineJoin = "round";
       context.strokeStyle = "rgba(4, 20, 30, 0.75)";
       context.strokeText(text, x, y);
       context.fillStyle = "#f4efe2";

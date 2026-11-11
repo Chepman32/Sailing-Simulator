@@ -246,6 +246,8 @@ export function advance(campaign: Campaign, state: CampaignState, facts: Facts):
   for (const mission of openMissions(campaign, state)) {
     const progress = state.missions[mission.id];
     if (!progress) {
+      // A new mission waits for the last one's words to be heard out.
+      if (!facts.dialogueIdle) continue;
       const first = mission.steps[0];
       if (first) enter(mission, first);
       continue;

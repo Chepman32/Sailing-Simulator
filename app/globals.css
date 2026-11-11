@@ -4742,6 +4742,11 @@ input[type="range"]:disabled {
 /* Ashore and in the water the column sits under the walker's own status line. */
 .story-left.is-afoot { top: calc(var(--edge-top) + 58px); }
 
+/* Touch, on foot: the minimap has moved up under the gauges; the column stands beside it. */
+@media (pointer: coarse) {
+  .story-left.is-afoot { left: calc(var(--edge-left) + var(--minimap-size, clamp(118px, 22vh, 164px)) + 12px); }
+}
+
 /* The objective. */
 .story-tracker {
   position: relative;
@@ -4896,16 +4901,16 @@ input[type="range"]:disabled {
   backdrop-filter: blur(14px) saturate(1.1);
   font: inherit;
   text-align: left;
-  transform: translateX(-50%);
+  transform: translateX(var(--line-shift, -50%));
   cursor: pointer;
   animation: story-line-in 240ms var(--spring-soft) both;
 }
 
-.story-line:active { transform: translateX(-50%) scale(0.99); }
+.story-line:active { transform: translateX(var(--line-shift, -50%)) scale(0.99); }
 
 @keyframes story-line-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  from { opacity: 0; transform: translateX(var(--line-shift, -50%)) translateY(10px); }
+  to { opacity: 1; transform: translateX(var(--line-shift, -50%)) translateY(0); }
 }
 
 .story-line-badge {
@@ -4999,7 +5004,8 @@ input[type="range"]:disabled {
   position: absolute;
   z-index: 31;
   left: 50%;
-  bottom: calc(clamp(150px, 27vh, 260px) + 108px);
+  /* Just under where a voice is shown, clear of the yacht in the middle of the view. */
+  bottom: calc(clamp(150px, 27vh, 260px) - 60px);
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -5053,18 +5059,20 @@ input[type="range"]:disabled {
 }
 
 /* The rifle: drawn or not, the rounds in the magazine. */
+/* At the helm under the world controls, clear of the throttle; ashore lower, under the walker's buttons. */
 .story-weapon {
   position: absolute;
   z-index: 21;
   right: var(--edge-right);
-  top: 50%;
+  top: calc(var(--edge-top) + var(--top-bar) + 10px);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
-  transform: translateY(-50%);
   pointer-events: none;
 }
+
+.story-weapon.is-afoot { top: calc(var(--edge-top) + 172px); }
 
 .story-weapon-toggle {
   display: inline-flex;
@@ -5491,10 +5499,31 @@ html.rifle-drawn .simulator-canvas {
   .story-tracker { padding: 8px 40px 9px 11px; }
   .story-tracker-goal { font-size: 13px; }
   .story-tracker-hint { display: none; }
-  .story-line { bottom: clamp(118px, 34vh, 180px); padding: 9px 12px 11px 9px; gap: 9px; }
+  /* The voice beside the story's column, not over it: between it and the throttle. */
+  .story-line {
+    --line-shift: 0px;
+    left: calc(var(--edge-left) + min(260px, calc(100vw - 2 * var(--gap) - 96px)) + 10px);
+    right: calc(var(--edge-right) + var(--throttle-width) + 10px);
+    width: auto;
+    bottom: clamp(118px, 34vh, 180px);
+    padding: 9px 12px 11px 9px;
+    gap: 9px;
+  }
+  .story-status > * { min-height: 25px; padding: 0 8px; }
+  /* One row for the hull and the alarm: the bar says "hull" well enough. */
+  .story-hull .story-status-label { display: none; }
+  .story-hull-bar { width: 40px; }
+  /* The rifle beside the throttle, under the scene actions, in a row. */
+  .story-weapon {
+    top: calc(var(--edge-top) + var(--top-bar) + 8px + 44px + 8px);
+    right: calc(var(--edge-right) + var(--throttle-width) + 10px);
+    flex-direction: row;
+    align-items: center;
+  }
+  .story-weapon.is-afoot { top: calc(var(--edge-top) + 58px); right: calc(var(--edge-right) + 62px); }
   .story-line-badge { width: 32px; height: 32px; font-size: 11px; }
   .story-line-text { font-size: 13.5px; }
-  .story-prompt { bottom: calc(clamp(118px, 34vh, 180px) + 86px); }
+  .story-prompt { bottom: calc(clamp(118px, 34vh, 180px) - 52px); }
   .campaign-menu-options { grid-template-columns: 1fr; }
   .journal-body { grid-template-columns: 1fr; }
   .campaign-menu, .journal { padding: 20px 16px 18px; }

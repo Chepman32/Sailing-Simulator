@@ -91,7 +91,13 @@ export function StoryOverlay({ listenerRef, language, active }: Props) {
           }
           const bounds = arrowBounds(frame.width, frame.height);
           const inside = target.front && x > EDGE && x < frame.width - EDGE && y > EDGE && y < frame.height - EDGE;
-          if (!inside) {
+          if (!inside && !target.front) {
+            // Behind him: low on the side to turn to, pointing back and out.
+            const right = target.side >= 0;
+            x = right ? bounds.right : bounds.left;
+            y = bounds.bottom;
+            marker.style.setProperty("--turn", `${right ? Math.PI / 4 : (3 * Math.PI) / 4}rad`);
+          } else if (!inside) {
             // Pinned to the edge of the clear part of the screen, along the way to it.
             const midX = (bounds.left + bounds.right) / 2;
             const midY = (bounds.top + bounds.bottom) / 2;

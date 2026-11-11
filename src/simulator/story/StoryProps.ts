@@ -25,7 +25,7 @@ export class StoryProps {
   private readonly motorGeometry = new THREE.BoxGeometry(0.36, 0.6, 0.42);
   private readonly caseMaterial = new THREE.MeshStandardMaterial({ color: CASE_COLOR, roughness: 0.45, metalness: 0.05, emissive: new THREE.Color(0x401600) });
   private readonly darkMaterial = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.4 });
-  private readonly rubberMaterial = new THREE.MeshStandardMaterial({ color: 0x3b3f44, roughness: 0.9, metalness: 0 });
+  private readonly rubberMaterial = new THREE.MeshStandardMaterial({ color: 0x555b62, roughness: 0.85, metalness: 0 });
   private readonly floorMaterial = new THREE.MeshStandardMaterial({ color: 0x55504a, roughness: 0.95 });
   private readonly beaconMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.5, 1.6, 0.4), toneMapped: false });
   private readonly ringMaterial = new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
@@ -66,12 +66,13 @@ export class StoryProps {
     if (wreck) {
       // The raiders' boat, holed and deflated, half buried in the sand.
       const boat = new THREE.Group();
-      boat.position.set(1.9, 0.05, 0.6);
-      boat.rotation.set(0.05, 0.9, 0.18);
+      // Beside the case, not under it: the case was thrown clear as she went down.
+      boat.position.set(3.1, 0.02, 1.6);
+      boat.rotation.set(0.04, 0.55, 0.12);
       for (const side of [-0.62, 0.62]) {
         const tube = new THREE.Mesh(this.tubeGeometry, this.rubberMaterial);
         tube.rotation.x = Math.PI / 2;
-        tube.scale.set(1, 1, side < 0 ? 0.55 : 0.85);
+        tube.scale.set(1, 1, side < 0 ? 0.42 : 0.68);
         tube.position.set(side, 0.12, -0.2);
         boat.add(tube);
       }

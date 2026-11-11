@@ -132,7 +132,7 @@ export type StoryOverlayFrame = {
   width: number;
   height: number;
   /** The waypoint: pixels, whether in front of the camera, and how far it is (m). */
-  marker: { x: number; y: number; front: boolean; distance: number } | null;
+  marker: { x: number; y: number; front: boolean; distance: number; side: number } | null;
   drones: { x: number; y: number; front: boolean; distance: number; aware: boolean; condition: string; salvage: number; hostile: boolean }[];
   /** The latest rifle shot's result (`id` grows with each shot). */
   hit: { id: number; zone: "dome" | "jet" | "hull" | "miss"; armour: boolean; condition: string | null };

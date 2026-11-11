@@ -100,6 +100,8 @@ export type DroneEvent =
 /** What the world tells the drones each frame. */
 export type DroneWorld = {
   yacht: { x: number; y: number; z: number; heading: number; speed: number };
+  /** The skipper is aboard her (a yacht left at anchor is left alone). */
+  crewed: boolean;
   /** How far off the yacht can be picked up now (`yachtSignature().reach`). */
   reach: number;
   night: number;
@@ -551,7 +553,8 @@ export class DroneSystem {
   private updateDrone(drone: Drone, delta: number, world: DroneWorld): void {
     const yacht = world.yacht;
     const pose = drone.pose;
-    const distance = Math.hypot(yacht.x - pose.x, yacht.z - pose.z);
+    // An empty yacht is not sensed at all; the prologue's interceptors know where she is regardless.
+    const distance = world.crewed || drone.spec.behaviour === "strike" ? Math.hypot(yacht.x - pose.x, yacht.z - pose.z) : Infinity;
     let goal: { x: number; z: number } | null = null;
     let speedGoal = 0;
 
