@@ -33,13 +33,36 @@ export const HULL_CENTER_Z = 0.34;
 export const HULL_HALF_LENGTH = 4.32;
 export const HULL_HALF_BEAM = 0.46;
 
-/** Distance from the camera at which the surface has fully become horizon. */
-export const HORIZON_FADE_START = 640;
-export const HORIZON_FADE_END = 1250;
+/**
+ * Distance from the camera over which the last of the surface becomes
+ * horizon. The sea stays visibly sea (darker than the sky over it) out to
+ * here: ships sail two and three kilometres off, and one standing on water
+ * that had already melted into the sky's colour (it used to, from 1250 m)
+ * hung in the air above the visible edge of the sea.
+ */
+export const HORIZON_FADE_START = 2500;
+export const HORIZON_FADE_END = 3250;
 
 function glsl(value: number): string {
   return Number.isInteger(value) ? `${value}.0` : value.toFixed(6);
 }
+
+/**
+ * GLSL: how much of the sea at `viewDistance` m is the air's colour (0…1),
+ * `haze` the weather's (0 clear … 1 thick). The air thickens steadily with
+ * range and the last stretch before the grid's edge fades out entirely, so
+ * the surface meets the sky without a line. Shared with whatever stands in
+ * the water far off (`ShipSystem`): a hull is veiled at its waterline
+ * exactly as the water it floats in, so it never stands crisp on a sea that
+ * has faded away under it.
+ */
+export const SEA_HAZE_GLSL = /* glsl */ `
+  float seaHazeAmount(float viewDistance, float haze) {
+    float reach = 1.0 - 0.5 * haze;
+    float air = 1.0 - exp(-pow(viewDistance * 0.00056 * (1.0 + haze * 7.5), 1.6));
+    return max(air * 0.9, smoothstep(${glsl(HORIZON_FADE_START)} * reach, ${glsl(HORIZON_FADE_END)} * reach, viewDistance));
+  }
+`;
 
 const STORM_INDEX = OCEAN_WAVES.findIndex((wave) => wave.storm);
 
@@ -245,6 +268,7 @@ export const oceanFragmentShader = /* glsl */ `
   uniform vec4 uFlare;
   uniform vec3 uFlareColor;
   uniform float uHaze;
+  ${SEA_HAZE_GLSL}
   // Seen from below (a diver): 1 while the camera is under the surface, the
   // water's colour and the haze of the water between.
   uniform float uCameraUnder;
@@ -1017,9 +1041,7 @@ ${detailCalls}
     float alpha = clamp(1.0 - clarity + foam * 0.5 + hullShadow * 0.12, 0.3, 1.0);
 
     // --- Aerial perspective -------------------------------------------------
-    float hazeReach = 1.0 - 0.5 * uHaze;
-    float haze = 1.0 - exp(-pow(viewDistance * 0.00085 * (1.0 + uHaze * 5.0), 1.6));
-    haze = max(haze * 0.9, smoothstep(${glsl(HORIZON_FADE_START)} * hazeReach, ${glsl(HORIZON_FADE_END)} * hazeReach, viewDistance));
+    float haze = seaHazeAmount(viewDistance, uHaze);
     // Within a few tens of metres the haze is far below one part in a thousand.
     if (haze > 0.0015) {
       vec3 horizonDirection = normalize(vec3(-viewDirection.x, 0.0, -viewDirection.z) + vec3(0.0, 1.0e-4, 0.0));

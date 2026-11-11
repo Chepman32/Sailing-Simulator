@@ -23,6 +23,8 @@ import {
   SHOCK_PUFFS,
   shockPuff,
   SPARKS,
+  sparkCount,
+  sparkLife,
   type AshPoint,
   type Ember,
   type Eruption,
@@ -44,7 +46,7 @@ import {
  * sea; its meshes are built once when it comes in range.
  */
 
-/** There is a single volcano in the sea (`isVolcanoCell`). */
+/** Volcanoes stand so far apart (`VOLCANO_MIN_SPACING`) that only one is ever within drawing range. */
 const MAX_VOLCANOES = 1;
 /** Plumes are kept to the distance at which the cones themselves are drawn (`VOLCANO_DRAW_DISTANCE`). */
 const VOLCANO_RANGE = VOLCANO_DRAW_DISTANCE;
@@ -279,6 +281,8 @@ function eruptionHashWidth(index: number, slot: number): number {
 
 export class VolcanoSystem {
   readonly group = new THREE.Group();
+  /** 0…1: the share of the fountain's cinders drawn (the quality preset's; a phone draws fewer). */
+  detail = 1;
   private readonly visuals: Visual[] = [];
   private readonly glowMap = glowTexture();
   private readonly lavaTime = { value: 0 };
@@ -556,13 +560,17 @@ export class VolcanoSystem {
         }
         // The fountain: bombs streaking up and tumbling down the cone; sparks.
         if (visual.landingSlot !== eruption.slot) this.planLandings(visual, island, eruption);
-        for (let index = 0; index < BOMBS + SPARKS; index += 1) {
+        const drawn = BOMBS + sparkCount(this.detail);
+        for (let index = 0; index < drawn; index += 1) {
           const sparks = index >= BOMBS;
           const id = sparks ? index - BOMBS : index;
           if (!bombFlight(eruption.age, id, eruption.slot, this.ember, sparks)) continue;
           const e = this.ember;
-          const width = sparks ? 1.4 : 2.6 + 2.6 * eruptionHashWidth(id, eruption.slot);
-          let heat = emberHeat(e.t, sparks);
+          // Thin streaks: a bomb about a metre across, a cinder a hand's breadth
+          // (the shader keeps each at least a pixel and a half wide far off).
+          const shade = eruptionHashWidth(id, eruption.slot);
+          const width = sparks ? 0.26 + 0.34 * shade : 0.8 + 1.3 * shade;
+          let heat = sparks ? Math.max(0, 1 - e.t / sparkLife(id, eruption.slot)) : emberHeat(e.t, false);
           const land = visual.landing[index]!;
           let hx = crater.x + e.x;
           let hy = crater.y + 3 + e.y;
@@ -592,7 +600,7 @@ export class VolcanoSystem {
             if (sparks) heat = 0;
           } else {
             // In flight: a streak back along its velocity (a short exposure).
-            const blur = 0.2;
+            const blur = sparks ? 0.09 : 0.14;
             tx = hx - e.vx * blur;
             ty = hy - (e.vy + GRAVITY * blur * 0.5) * blur;
             tz = hz - e.vz * blur;
@@ -609,9 +617,11 @@ export class VolcanoSystem {
   private planLandings(visual: Visual, island: IslandDefinition, eruption: Eruption): void {
     visual.landingSlot = eruption.slot;
     const probe: Ember = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, t: 0 };
-    for (let index = 0; index < BOMBS + SPARKS; index += 1) {
-      const sparks = index >= BOMBS;
-      const id = sparks ? index - BOMBS : index;
+    // Cinders have cooled to nothing long before they come down: only the bombs' landings are worked out.
+    visual.landing.fill(Number.POSITIVE_INFINITY, BOMBS);
+    for (let index = 0; index < BOMBS; index += 1) {
+      const sparks = false;
+      const id = index;
       const above = (t: number): boolean => {
         // Launch time does not matter: evaluate the flight at time t after launch.
         bombFlight(1e3, id, eruption.slot, probe, sparks);

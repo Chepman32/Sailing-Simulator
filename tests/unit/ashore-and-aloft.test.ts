@@ -78,3 +78,88 @@ test("the crabs of the seabed are far bigger than those of the beach", () => {
   // A big crab's walk covers ground in proportion (it is not a giant creeping at a small crab's pace).
   assert.ok(seabed.speed[1] >= 0.4);
 });
+
+test("an eruption is a spray of thousands of fine cinders, and a shell a cloud of hundreds of fine stars", async () => {
+  const { BOMBS, SPARKS, sparkCount, sparkLife, bombFlight } = await import("../../src/simulator/effects/VolcanoMath");
+  const { SHELL_STARS, STAR_FINENESS, starKindle, STAR_KINDLE } = await import("../../src/simulator/effects/FireworksMath");
+  // Cinders outnumber the bombs forty to one; a phone still draws over a thousand.
+  assert.ok(SPARKS >= 4000 && SPARKS > BOMBS * 40);
+  assert.equal(sparkCount(1), SPARKS);
+  assert.ok(sparkCount(0.35) > 1500 && sparkCount(0.35) < SPARKS * 0.4);
+  assert.equal(sparkCount(0), sparkCount(0.2));
+  // They glow two to five seconds, and are thrown from a few tens of metres to as high as the bombs.
+  const ember = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, t: 0 };
+  let low = 0;
+  let high = 0;
+  for (let index = 0; index < 600; index += 1) {
+    const life = sparkLife(index, 3);
+    assert.ok(life >= 2.2 && life <= 5);
+    assert.ok(bombFlight(1e3, index, 3, ember, true));
+    const speed = Math.hypot(ember.vx, ember.vy + 9.81 * ember.t, ember.vz);
+    assert.ok(speed >= 16 && speed <= 86.5);
+    if (speed < 35) low += 1;
+    if (speed > 60) high += 1;
+  }
+  assert.ok(low > 300 && high > 30, `${low} low, ${high} high of 600`);
+  // Shells: several hundred stars each, each drawn well under a metre wide.
+  assert.ok(SHELL_STARS.peony >= 600 && SHELL_STARS.rainbow >= 600 && SHELL_STARS.willow >= 300);
+  assert.ok(1.9 * STAR_FINENESS < 0.9);
+  // A fresh star kindles (so a shell's stars, all on one spot at the burst, are not a white ball); glitter is lit at once.
+  assert.ok(starKindle(0, 2.5) <= 0.12 && starKindle(STAR_KINDLE, 2.5) === 1 && starKindle(STAR_KINDLE / 2, 2.5) < 0.6);
+  assert.equal(starKindle(0, 0.6), 1);
+});
+
+test("a ship far off is veiled at her waterline exactly as the sea she floats in, which stays sea out to her", async () => {
+  const { HORIZON_FADE_START, HORIZON_FADE_END, SEA_HAZE_GLSL } = await import("../../src/simulator/environment/shaders/oceanShader");
+  const { SPAWN_MAX_RUN } = await import("../../src/simulator/ships/ShipMath");
+  const { OCEAN_SIZE } = await import("../../src/simulator/environment/OceanGrid");
+  // The sea does not melt into the sky's colour before the farthest ship (it used to, from 1250 m).
+  assert.ok(HORIZON_FADE_START > SPAWN_MAX_RUN + 400, `the last fade starts at ${HORIZON_FADE_START} m`);
+  assert.ok(HORIZON_FADE_END <= OCEAN_SIZE / 2 && HORIZON_FADE_END > HORIZON_FADE_START);
+  // The same function as the ocean's, in numbers: on a clear day the water two kilometres off is still a third itself.
+  const seaHaze = (distance: number, haze: number): number => {
+    const reach = 1 - 0.5 * haze;
+    const air = 1 - Math.exp(-Math.pow(distance * 0.00056 * (1 + haze * 7.5), 1.6));
+    const t = Math.min(1, Math.max(0, (distance - HORIZON_FADE_START * reach) / ((HORIZON_FADE_END - HORIZON_FADE_START) * reach)));
+    return Math.max(air * 0.9, t * t * (3 - 2 * t));
+  };
+  assert.match(SEA_HAZE_GLSL, /0\.00056/);
+  assert.match(SEA_HAZE_GLSL, /7\.5/);
+  assert.ok(seaHaze(300, 0) < 0.06);
+  assert.ok(seaHaze(2000, 0) < 0.68, `${seaHaze(2000, 0).toFixed(2)} of the sea at 2 km is haze`);
+  assert.ok(seaHaze(HORIZON_FADE_END, 0) === 1);
+  // In thick weather it closes in, as it did.
+  assert.ok(seaHaze(600, 1) > 0.85 && seaHaze(1700, 1) === 1);
+  let last = 0;
+  for (let distance = 0; distance <= 3400; distance += 25) {
+    const value = seaHaze(distance, 0);
+    assert.ok(value >= last - 1e-9);
+    last = value;
+  }
+});
+
+test("a handheld draws at 1.5 device pixels at least; a touch-screen laptop is a computer", async () => {
+  const { maxDprFor, HANDHELD_MIN_DPR, isHandheld } = await import("../../src/simulator/core/QualityManager");
+  const { budgetPixelRatio } = await import("../../src/simulator/core/RenderBudget");
+  assert.equal(maxDprFor(QUALITY_SETTINGS.low, false), QUALITY_SETTINGS.low.maxDpr);
+  assert.equal(maxDprFor(QUALITY_SETTINGS.low, true), HANDHELD_MIN_DPR);
+  assert.equal(maxDprFor(QUALITY_SETTINGS.high, true), Math.max(HANDHELD_MIN_DPR, QUALITY_SETTINGS.high.maxDpr));
+  // A phone (390 × 844, three device pixels) at the low preset: 1.5, within the budget; it was 1.
+  const phone = budgetPixelRatio(3, maxDprFor(QUALITY_SETTINGS.low, true), QUALITY_SETTINGS.low.pixelBudget, 390, 844);
+  assert.equal(phone, 1.5);
+  assert.ok(390 * 844 * phone * phone <= QUALITY_SETTINGS.low.pixelBudget);
+  // A tablet's bigger screen is held by the budget, not by the ratio.
+  const tablet = budgetPixelRatio(2, maxDprFor(QUALITY_SETTINGS.low, true), QUALITY_SETTINGS.low.pixelBudget, 1180, 820);
+  assert.ok(tablet < 1.1 && 1180 * 820 * tablet * tablet <= QUALITY_SETTINGS.low.pixelBudget * 1.001);
+  // Handheld is decided by the main pointer alone (touch points on a laptop's screen do not count).
+  const globals = globalThis as unknown as { window?: unknown };
+  const previous = globals.window;
+  try {
+    globals.window = { matchMedia: (query: string) => ({ matches: query === "(pointer: coarse)" }) };
+    assert.equal(isHandheld(), true);
+    globals.window = { matchMedia: () => ({ matches: false }), navigator: { maxTouchPoints: 10 } };
+    assert.equal(isHandheld(), false);
+  } finally {
+    globals.window = previous;
+  }
+});

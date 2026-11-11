@@ -31,13 +31,39 @@ export type IslandDefinition = {
 };
 
 /**
- * The cell whose primary island is a volcano: the one east of the start,
- * seen smoking on the horizon from the first moment. There is no other.
+ * Volcanoes are rare landmarks: one to every `VOLCANO_BLOCK` × `VOLCANO_BLOCK`
+ * cells of the sea (9.6 km square), in one of the four cells at a corner of
+ * its block. The first is the one east of the start, seen smoking on the
+ * horizon from the first moment; whichever way she sails, the next lies
+ * some eight to twelve kilometres on.
+ *
+ * Two are therefore never nearer than `VOLCANO_MIN_SPACING` (7 cells less
+ * the play of an island within its cell: about 7.7 km), more than three
+ * times as far as a volcano or its plume is drawn (`VOLCANO_DRAW_DISTANCE`):
+ * with one in sight, the next is far below the horizon, and there is never
+ * a second cone or a second plume in the same view.
  */
+export const VOLCANO_BLOCK = 8;
+/** The least distance between two volcanoes, metres (see `isVolcanoCell`; `WORLD_CELL` is 1200). */
+export const VOLCANO_MIN_SPACING = (VOLCANO_BLOCK - 1) * 1200 - 700;
+
 export function isVolcanoCell(column: number, row: number): boolean {
-  // One volcano in the whole sea: the cell east of the start. A landmark
-  // stays one when there is only one of it.
-  return column === 1 && row === 0;
+  // The lattice is laid so that block (0, 0)'s volcano is cell (1, 0).
+  const blockX = Math.floor((column - 1) / VOLCANO_BLOCK);
+  const blockY = Math.floor(row / VOLCANO_BLOCK);
+  const inX = column - 1 - blockX * VOLCANO_BLOCK;
+  const inY = row - blockY * VOLCANO_BLOCK;
+  if (inX > 1 || inY > 1) return false;
+  if (blockX === 0 && blockY === 0) return inX === 0 && inY === 0;
+  const hash = hashVolcanoBlock(blockX, blockY);
+  return inX === (hash & 1) && inY === ((hash >>> 1) & 1);
+}
+
+function hashVolcanoBlock(blockX: number, blockY: number): number {
+  let h = Math.imul((blockX | 0) ^ 0x1b873593, 0x85ebca6b);
+  h = Math.imul((h ^ (h >>> 15)) + (blockY | 0) * 0x27d4eb2d, 0xc2b2ae35);
+  h = Math.imul(h ^ (h >>> 13), 0x165667b1);
+  return (h ^ (h >>> 16)) >>> 0;
 }
 
 /** Radial position (fraction of the beach radius) of the crater rim and the foot of the cone. */

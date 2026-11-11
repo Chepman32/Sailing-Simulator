@@ -217,8 +217,8 @@ export const FINALE_LENGTH = 6;
 export const NIGHT_GAP = { min: 55, max: 95 } as const;
 // By day a show is a rare treat: ten times rarer than it used to be.
 export const DAY_GAP = { min: 1500, max: 2400 } as const;
-/** Seconds the white flash of a burst lasts. */
-export const BURST_FLASH = 0.16;
+/** Seconds the white flash of a burst lasts (a blink: the shell is its stars, not a ball of light). */
+export const BURST_FLASH = 0.11;
 
 export function between(random: RandomSource, low: number, high: number): number {
   return low + (high - low) * random();
@@ -330,7 +330,7 @@ export function nextCue(random: RandomSource, remaining: number, length: number,
 
 /** Comets in a fan, and stars in a mine. */
 export const FAN_COMETS = 7;
-export const MINE_STARS = 110;
+export const MINE_STARS = 260;
 
 /**
  * What the deck fires at (x, y, z) for a ground cue, the `slot`-th of its
@@ -360,7 +360,7 @@ export function groundEffect(cue: Cue, slot: number, random: RandomSource, x: nu
       star.fall = 0.95;
       star.size = 3.1;
       star.streak = 0.5;
-      star.sparkle = 85;
+      star.sparkle = 220;
       star.sparkleColor = index % 2 === 0 ? GOLD : star.color;
       star.twinkle = "fizz";
       star.phase = random() * 100;
@@ -371,7 +371,7 @@ export function groundEffect(cue: Cue, slot: number, random: RandomSource, x: nu
   }
   // The mine's lift charge: a flash on the deck.
   const flash = makeStar(x, y + 2, z, 0, 6, 0, BURST_FLASH, WHITE);
-  flash.size = 13;
+  flash.size = 5;
   flash.streak = 0;
   flash.twinkle = "flash";
   flash.drag = 4;
@@ -479,7 +479,7 @@ export function stepRocket(rocket: Rocket, dt: number, random: RandomSource, spa
   rocket.fuse -= dt;
   rocket.trailClock -= dt;
   while (rocket.trailClock <= 0) {
-    rocket.trailClock += 0.022;
+    rocket.trailClock += 0.012;
     // Sparks are laid along the last step, so the trail is continuous at any frame rate.
     const back = random() * dt;
     const star = makeStar(
@@ -526,23 +526,33 @@ function ringDirection(angle: number, tiltA: number, tiltB: number, out: [number
   return out;
 }
 
-/** Stars of each shell (before the scale of a large shell). */
+/**
+ * Stars of each shell (before the scale of a large shell and the preset's
+ * `density`). Many and fine: a shell is a cloud of hundreds of points of
+ * light, each a thin spark, not a few dozen fat ones.
+ */
 export const SHELL_STARS: Readonly<Record<ShellKind, number>> = {
-  peony: 320,
-  chrysanthemum: 260,
-  willow: 190,
-  ring: 140,
-  saturn: 270,
-  palm: 11,
-  crossette: 72,
-  strobe: 180,
-  kamuro: 220,
-  crackle: 200,
-  rainbow: 340,
-  dahlia: 84,
-  cluster: 11,
-  heart: 130,
+  peony: 640,
+  chrysanthemum: 460,
+  willow: 340,
+  ring: 230,
+  saturn: 500,
+  palm: 13,
+  crossette: 110,
+  strobe: 330,
+  kamuro: 430,
+  crackle: 430,
+  rainbow: 660,
+  dahlia: 130,
+  cluster: 14,
+  heart: 210,
 };
+
+/**
+ * Every star's drawn width is its `size` times this, metres: a spark some
+ * 0.7 m across, a pixel or two at the range a show is watched from.
+ */
+export const STAR_FINENESS = 0.42;
 
 /** A point on a heart (unit size, centred), at parameter `t` (0…2π). */
 export function heartPoint(t: number): [number, number] {
@@ -552,9 +562,10 @@ export function heartPoint(t: number): [number, number] {
 
 /**
  * The stars of a shell bursting where the rocket is, and its white flash.
- * Returns how many stars it added.
+ * `density` (the quality preset's, 0.35…1) thins the shell on a slow
+ * device. Returns how many stars it added.
  */
-export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) => void): number {
+export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) => void, density = 1): number {
   const direction: [number, number, number] = [0, 0, 0];
   const shell = rocket.shell;
   const scale = rocket.size;
@@ -565,7 +576,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
   };
   // The flash: a white-hot ball for a moment, haloed by the bloom.
   const flash = makeStar(rocket.x, rocket.y, rocket.z, rocket.vx * 0.3, rocket.vy * 0.3, rocket.vz * 0.3, BURST_FLASH, WHITE);
-  flash.size = 22 * scale;
+  flash.size = 7 * scale;
   flash.streak = 0;
   flash.twinkle = "flash";
   flash.drag = 4;
@@ -575,15 +586,16 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
   // soft glow that swells, drifts and dims as the stars burn out.
   const gold = shell === "willow" || shell === "kamuro" || shell === "palm" || shell === "crackle" || shell === "strobe";
   const smokeColor = gold ? GOLD : rocket.color;
-  const haze = makeStar(rocket.x, rocket.y, rocket.z, rocket.vx * 0.15, rocket.vy * 0.15, rocket.vz * 0.15, between(random, 2.6, 3.4), [smokeColor[0] * 0.06, smokeColor[1] * 0.06, smokeColor[2] * 0.06]);
-  haze.size = 48 * scale;
+  const haze = makeStar(rocket.x, rocket.y, rocket.z, rocket.vx * 0.15, rocket.vy * 0.15, rocket.vz * 0.15, between(random, 2.6, 3.4), [smokeColor[0] * 0.022, smokeColor[1] * 0.022, smokeColor[2] * 0.022]);
+  // (Faint: the light of a shell is its stars; a bright ball of lit smoke read as a blob.)
+  haze.size = 44 * scale;
   haze.streak = 0;
   haze.twinkle = "haze";
   haze.drag = 2.5;
   haze.fall = -0.04;
   emit(haze);
 
-  const count = Math.round(SHELL_STARS[shell] * (shell === "palm" || shell === "cluster" ? 1 : scale));
+  const count = Math.round(SHELL_STARS[shell] * (shell === "palm" || shell === "cluster" ? 1 : scale * Math.min(1, Math.max(0.3, density))));
   // Big shells: a peony opens to some 70 m across its radius, a willow hangs lower and wider.
   const baseSpeed =
     shell === "willow" || shell === "kamuro"
@@ -692,7 +704,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.turn = 0.99;
         star.life = between(random, 0.9, 1.1);
         star.split = between(random, 0.5, 0.85);
-        star.bloom = 46;
+        star.bloom = Math.round(90 * Math.min(1, Math.max(0.3, density)));
         star.size = 1.1;
         star.sparkle = 30;
         star.sparkleColor = GOLD;
@@ -709,7 +721,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
       case "chrysanthemum":
         star.color = GOLD;
         star.later = rocket.color;
-        star.sparkle = 16;
+        star.sparkle = 20;
         star.sparkleColor = GOLD;
         star.size = 1.45;
         star.streak = 0.3;
@@ -757,7 +769,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
         star.fall = 0.75;
         star.size = 3.2;
         star.streak = 0.55;
-        star.sparkle = 110;
+        star.sparkle = 260;
         star.sparkleColor = GOLD;
         break;
       case "crossette":
@@ -806,7 +818,7 @@ export function burst(rocket: Rocket, random: RandomSource, add: (star: Star) =>
   // A pistil: a smaller, slower inner sphere in a second colour (a third
   // where the shell already uses two).
   const pistil =
-    shell === "ring" ? 50 : shell === "peony" && random() < 0.6 ? 90 : shell === "rainbow" ? 70 : shell === "chrysanthemum" || (shell === "kamuro" && variant < 0.45) ? 80 : 0;
+    Math.round((shell === "ring" ? 90 : shell === "peony" && random() < 0.6 ? 170 : shell === "rainbow" ? 130 : shell === "chrysanthemum" || (shell === "kamuro" && variant < 0.45) ? 150 : 0) * Math.min(1, Math.max(0.3, density)));
   const pistilColor = shell === "rainbow" ? WHITE : shell === "peony" && variant < 0.65 ? rocket.third : shell === "kamuro" ? rocket.color : rocket.second;
   for (let index = 0; index < pistil; index += 1) {
     sphereDirection(index, pistil, direction);
@@ -983,4 +995,19 @@ export function burstLight(age: number): number {
   const flash = Math.exp(-age / 0.09);
   const glow = age < 2.4 ? 0.35 * (1 - age / 2.4) : 0;
   return flash + glow;
+}
+
+/**
+ * A star just lit is not yet at its full light (0.1 rising smoothly to 1
+ * over its first `STAR_KINDLE` seconds). At the instant of a burst hundreds
+ * of stars lie on top of one another: at full light they summed to a solid
+ * white ball for the first third of a second; kindling as it spreads, the
+ * shell is seen opening as separate points from the first frame. (Glitter
+ * and crackle, which live half a second, are at full light at once.)
+ */
+export const STAR_KINDLE = 0.5;
+export function starKindle(age: number, life: number): number {
+  if (life < 1.6) return 1;
+  const t = Math.min(1, Math.max(0, age) / STAR_KINDLE);
+  return 0.1 + 0.9 * t * t * (3 - 2 * t);
 }

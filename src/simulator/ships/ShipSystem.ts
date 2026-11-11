@@ -3,6 +3,7 @@ import { smoothstep } from "../math";
 import { SHIP_SHADOW_LAYER } from "./ShipShadows";
 import { injectAfter, patchMaterialShader } from "../core/ShaderPatch";
 import type { OceanSample } from "../environment/OceanMath";
+import { SEA_HAZE_GLSL } from "../environment/shaders/oceanShader";
 import type { UnderwaterLight } from "../environment/UnderwaterLight";
 import { buildShipGeometry } from "./ShipGeometry";
 import { ShipModels } from "./ShipModels";
@@ -77,19 +78,32 @@ const YACHT_OUTLINE: readonly [number, number][] = [
 /**
  * A ship is a landmark: the sea haze (tuned for the water and the islands)
  * would melt a vessel three kilometres off into the horizon, so it veils her
- * at a little over half strength: her silhouette stays readable, but a far
- * ship takes the air's colour like everything else instead of standing out
- * crisp and saturated as a toy would.
+ * upperworks at a little over half strength: her silhouette stays readable,
+ * but a far ship takes the air's colour like everything else instead of
+ * standing out crisp and saturated as a toy would.
+ *
+ * At her waterline she is veiled exactly as the sea she floats in
+ * (`seaHazeAmount`, the ocean's own function and the weather's haze), the
+ * veil thinning up her side over some ten metres. Without it a hull two
+ * kilometres off stood sharp and dark on water that had already faded to
+ * the sky's colour, and seemed to hang in the air over the sea's visible
+ * edge; with it her foot is lost in the same haze as the water, the way a
+ * ship's hull is on a hazy horizon.
  */
-function applyShipHaze(material: THREE.Material): void {
-  patchMaterialShader(material, "ship-haze-v1", (shader) => {
-    shader.fragmentShader = shader.fragmentShader.replace(
-      "#include <fog_fragment>",
-      `#ifdef USE_FOG
+function applyShipHaze(material: THREE.Material, seaHaze: THREE.IUniform<number>): void {
+  patchMaterialShader(material, "ship-haze-v2", (shader) => {
+    shader.uniforms.uSeaHaze = seaHaze;
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", `#include <common>\nuniform float uSeaHaze;\n${SEA_HAZE_GLSL}`)
+      .replace(
+        "#include <fog_fragment>",
+        `#ifdef USE_FOG
         float shipFog = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth * 0.4 );
+        float shipSea = seaHazeAmount( length( vUnderwaterWorld - cameraPosition ), uSeaHaze );
+        shipFog = max( shipFog, shipSea * ( 1.0 - smoothstep( 0.5, 11.0, vUnderwaterWorld.y ) ) );
         gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, shipFog );
       #endif`,
-    );
+      );
   });
 }
 
@@ -158,6 +172,8 @@ export class ShipSystem {
   readonly group = new THREE.Group();
   private readonly night = { value: 0 };
   private readonly pixelRatio = { value: 1 };
+  /** The weather's haze (0 clear … 1 thick), as the ocean has it: hulls are veiled at the waterline like the sea. */
+  private readonly seaHaze = { value: 0 };
   private readonly normal = { x: 0, z: 0 };
   private readonly world: ShipWorld;
   private readonly horns: ShipHornEvent[] = [];
@@ -196,7 +212,7 @@ export class ShipSystem {
       }
       applyShipWindows(material, this.night, windows);
       this.underwater.apply(material);
-      applyShipHaze(material);
+      applyShipHaze(material, this.seaHaze);
       this.decorate(material);
     });
     const kinds = [...SHIP_KINDS].sort(() => this.random() - 0.5);
@@ -209,6 +225,11 @@ export class ShipSystem {
   }
 
   /** Brightness of the ships' lights, 0 by day … 1 at night. */
+  /** The weather's haze, as given to the ocean (`OceanSystem`). */
+  setSeaHaze(haze: number): void {
+    this.seaHaze.value = haze;
+  }
+
   setNight(nightFactor: number): void {
     this.night.value = THREE.MathUtils.smoothstep(nightFactor, 0.25, 0.75);
   }
@@ -567,7 +588,7 @@ export class ShipSystem {
     });
     // Below the waterline the hull is veiled by the sea like everything else.
     this.underwater.apply(material);
-    applyShipHaze(material);
+    applyShipHaze(material, this.seaHaze);
     this.decorate(material);
     const placeholder = new THREE.BufferGeometry();
     const hull = new THREE.Mesh(placeholder, material);

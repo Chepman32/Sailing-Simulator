@@ -1932,7 +1932,7 @@ export function SailingSimulator() {
         </section>
 
         <div className="primary-controls">
-          <section ref={rudderRef} className={`rudder-control${tiltSteering ? " is-tilt" : ""}`} aria-label={messages.rudder}>
+          <section ref={rudderRef} className={`rudder-control${tiltSteering ? " is-tilt" : ""}${coarsePointer ? "" : " no-slider"}`} aria-label={messages.rudder}>
             <div
               className="helm-wheel"
               role="presentation"
@@ -1963,6 +1963,11 @@ export function SailingSimulator() {
                 <strong>{displayedRudderDegrees < -0.5 ? messages.port : displayedRudderDegrees > 0.5 ? messages.starboard : messages.center} {Math.abs(displayedRudderDegrees).toFixed(0)}°</strong>
               )}
             </div>
+            {/* The slider is for fingers: a phone or a tablet steers with it (or by
+                swiping the wheel, or by tilt). At a desk the helm is the keyboard
+                (and the wheel can still be dragged with the mouse), so a computer
+                gets no slider: the card is just the wheel, the angle and "centre". */}
+            {coarsePointer && (
             <div className="rudder-track-wrap">
               <span>{messages.port}</span>
               <input
@@ -2027,6 +2032,7 @@ export function SailingSimulator() {
                 />
               )}
             </div>
+            )}
             <div className="rudder-buttons">
               <button
                 type="button"

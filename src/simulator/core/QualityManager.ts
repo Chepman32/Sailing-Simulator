@@ -25,6 +25,8 @@ export type QualitySettings = {
   skyDetail: number;
   /** Fraction of the full reef-fish school sizes. */
   fishDensity: number;
+  /** 0…1: how many of the fine particles of an eruption and of a firework are drawn. */
+  particleDetail: number;
   /** Streaks in the rain pool; one draw call at any count. */
   rainDrops: number;
   /** HDR pipeline with bloom, grading and vignette. */
@@ -60,6 +62,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     sharkCount: 1,
     oceanDetail: 0.3,
     fishDensity: 0.75,
+    particleDetail: 0.35,
     rainDrops: 1600,
     skyDetail: 0,
     postProcessing: false,
@@ -87,6 +90,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     sharkCount: 2,
     oceanDetail: 0.55,
     fishDensity: 1.25,
+    particleDetail: 0.6,
     rainDrops: 3200,
     skyDetail: 1,
     postProcessing: true,
@@ -112,6 +116,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     sharkCount: 3,
     oceanDetail: 1,
     fishDensity: 1.8,
+    particleDetail: 1,
     rainDrops: 5600,
     skyDetail: 1,
     postProcessing: true,
@@ -144,6 +149,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     sharkCount: 3,
     oceanDetail: 1,
     fishDensity: 2.2,
+    particleDetail: 1,
     rainDrops: 8000,
     skyDetail: 1,
     postProcessing: true,
@@ -171,6 +177,25 @@ export function sunShadowsOn(preset: QualityPreset, coarseDevice: boolean): bool
   return !coarseDevice || preset === "high" || preset === "ultra";
 }
 
+/** Whether this is a handheld device (its main pointer is a finger), not a computer that also has a touch screen. */
+export function isHandheld(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia("(pointer: coarse)").matches;
+}
+
+/**
+ * The most device pixels per CSS pixel a preset draws. A phone's screen has
+ * three: drawn at one (the low preset's) the whole picture is a blur of
+ * fat pixels, on a screen held a hand's breadth from the eyes. A handheld
+ * therefore draws at least 1.5 at any preset; its small screen keeps that
+ * within the preset's pixel budget, and the frame governor still lowers
+ * the resolution by itself whenever the GPU cannot keep up.
+ */
+export function maxDprFor(settings: QualitySettings, handheld: boolean): number {
+  return handheld ? Math.max(settings.maxDpr, HANDHELD_MIN_DPR) : settings.maxDpr;
+}
+export const HANDHELD_MIN_DPR = 1.5;
+
 /** The next preset down (the automatic mode's step when frames run slow). */
 export function stepDown(preset: QualityPreset): QualityPreset {
   return preset === "ultra" ? "high" : preset === "high" ? "medium" : "low";
@@ -183,7 +208,12 @@ export class QualityManager {
   private fastWindows = 0;
   /** Whether automatic mode has lowered the preset in this session. */
   private steppedDown = false;
-  private readonly coarseDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+  /**
+   * A phone or a tablet: its *main* pointer is a finger. (A laptop with a
+   * touch screen is a computer: it used to count as a phone here, which
+   * took its shadows away and held it to the medium preset.)
+   */
+  private readonly coarseDevice = isHandheld();
   private readonly fpsJudge = new FpsJudge(AUTO_SLOW_FPS);
   /** Only automatic mode changes the level by itself; a chosen preset is never lowered or raised. */
   private adaptive = true;
@@ -227,7 +257,7 @@ export class QualityManager {
   /** Pixel ratio for a canvas of this CSS size at the governor's render scale. */
   pixelRatioFor(cssWidth: number, cssHeight: number, scale = 1): number {
     const settings = QUALITY_SETTINGS[this.preset];
-    return budgetPixelRatio(window.devicePixelRatio || 1, settings.maxDpr, settings.pixelBudget, cssWidth, cssHeight, scale);
+    return budgetPixelRatio(window.devicePixelRatio || 1, maxDprFor(settings, this.coarseDevice), settings.pixelBudget, cssWidth, cssHeight, scale);
   }
 
   /**

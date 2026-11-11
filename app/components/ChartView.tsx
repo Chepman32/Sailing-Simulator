@@ -63,6 +63,15 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
   const [pinSlot, setPinSlot] = useState(0);
   const [pinsOut, setPinsOut] = useState<boolean[]>([false, false, false]);
   const [pinNote, setPinNote] = useState(0);
+  // A finger has no wheel, no click and no Esc: the hint speaks its language.
+  const [touch, setTouch] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(pointer: coarse)");
+    const sync = () => setTouch(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
   const pinSlotRef = useRef(0);
   useEffect(() => {
     pinSlotRef.current = pinSlot;
@@ -436,7 +445,7 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
               {scale.label}
             </div>
           </footer>
-          <p className="chart-hint">{messages.chartHint}</p>
+          <p className="chart-hint">{touch ? messages.chartHintTouch : messages.chartHint}</p>
         </div>
         </div>
       )}

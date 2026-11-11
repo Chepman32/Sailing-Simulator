@@ -24,10 +24,13 @@ const vertexShader = /* glsl */ `
     float length = max(length(along), 1.0e-3);
     vec3 axis = along / length;
     vec3 across = normalize(cross(axis, normalize(head.xyz + tail.xyz)));
+    // A fine spark keeps about a pixel and a half at any range (thinner, it
+    // would flicker in and out between pixels).
+    float width = max(aShape.x, -head.z * 0.0016);
     // position.x: 0 tail … 1 head; position.y: −0.5 … 0.5 across.
-    vec3 point = mix(tail.xyz, head.xyz, position.x) + across * position.y * aShape.x;
+    vec3 point = mix(tail.xyz, head.xyz, position.x) + across * position.y * width;
     // A little beyond the head, round.
-    point += axis * (position.x - 0.5) * aShape.x * 0.5;
+    point += axis * (position.x - 0.5) * width * 0.5;
     vec4 mvPosition = vec4(point, 1.0);
     gl_Position = projectionMatrix * mvPosition;
     vUv = position.xy + vec2(0.0, 0.5);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { STICK_REACH, stickDeflection } from "./steering";
 import type { SimulationSnapshot } from "@/src/simulator/types";
 import type { DiverMessages } from "./diverMessages";
 import { fill } from "./featureMessages";
@@ -182,47 +183,63 @@ function HoldButton({ label, glyph, onHold }: { label: string; glyph: string; on
 }
 
 /** A virtual thumb-stick: drag from its centre; up is forward. */
+/**
+ * The walking stick of a touch screen. It floats: the whole lower-left
+ * corner of the screen is its pad, and it appears under the thumb wherever
+ * the thumb comes down (a fixed stick has to be found by feel, and a thumb
+ * that lands a little off it does nothing). The knob follows the thumb to
+ * the rim; pushed all the way it is a run. At rest the stick waits, faint,
+ * in its corner, to show where the pad is.
+ */
 function Stick({ onMove }: { onMove: (x: number, y: number) => void }) {
-  const baseRef = useRef<HTMLDivElement>(null);
+  const padRef = useRef<HTMLDivElement>(null);
   const [knob, setKnob] = useState({ x: 0, y: 0 });
+  /** Where the thumb landed, in the pad's own pixels (null: at rest in the corner). */
+  const [origin, setOrigin] = useState<{ x: number; y: number } | null>(null);
   const pointer = useRef<number | null>(null);
+  const start = useRef({ x: 0, y: 0 });
   const update = (clientX: number, clientY: number) => {
-    const base = baseRef.current;
-    if (!base) return;
-    const rect = base.getBoundingClientRect();
-    const radius = rect.width / 2;
-    let dx = (clientX - (rect.left + radius)) / radius;
-    let dy = (clientY - (rect.top + radius)) / radius;
-    const length = Math.hypot(dx, dy);
-    if (length > 1) {
-      dx /= length;
-      dy /= length;
-    }
-    setKnob({ x: dx, y: dy });
-    onMove(dx, -dy);
+    const next = stickDeflection(clientX - start.current.x, clientY - start.current.y);
+    setKnob(next);
+    onMove(next.x, -next.y);
   };
-  const release = () => {
+  const release = (pointerId: number) => {
+    if (pointer.current !== pointerId) return;
     pointer.current = null;
+    setOrigin(null);
     setKnob({ x: 0, y: 0 });
     onMove(0, 0);
   };
   return (
     <div
-      ref={baseRef}
-      className="diver-stick"
+      ref={padRef}
+      className={`diver-stick-pad${origin ? " is-held" : ""}`}
       aria-hidden="true"
       onPointerDown={(event) => {
+        if (pointer.current !== null) return;
+        const pad = padRef.current;
+        if (!pad) return;
         pointer.current = event.pointerId;
         event.currentTarget.setPointerCapture(event.pointerId);
+        const rect = pad.getBoundingClientRect();
+        // The stick is drawn whole: never closer to the pad's edge than its own radius.
+        const half = 60;
+        const x = Math.min(Math.max(event.clientX - rect.left, half), Math.max(half, rect.width - half));
+        const y = Math.min(Math.max(event.clientY - rect.top, half), Math.max(half, rect.height - half));
+        start.current = { x: rect.left + x, y: rect.top + y };
+        setOrigin({ x, y });
         update(event.clientX, event.clientY);
       }}
       onPointerMove={(event) => {
         if (pointer.current === event.pointerId) update(event.clientX, event.clientY);
       }}
-      onPointerUp={release}
-      onPointerCancel={release}
+      onPointerUp={(event) => release(event.pointerId)}
+      onPointerCancel={(event) => release(event.pointerId)}
+      onLostPointerCapture={(event) => release(event.pointerId)}
     >
-      <span className="diver-stick-knob" style={{ transform: `translate(${knob.x * 34}px, ${knob.y * 34}px)` }} />
+      <div className="diver-stick" style={origin ? { left: origin.x, top: origin.y, bottom: "auto", transform: "translate(-50%, -50%)" } : undefined}>
+        <span className="diver-stick-knob" style={{ transform: `translate(${knob.x * STICK_REACH}px, ${knob.y * STICK_REACH}px)` }} />
+      </div>
     </div>
   );
 }

@@ -75,9 +75,9 @@ test("bottles hold sail colours until all are found, then messages", () => {
 
 test("a volcano smokes east of the start; its cone rises to a crater", () => {
   assert.ok(isVolcanoCell(1, 0) && !isVolcanoCell(0, 0));
-  // The only one in the sea.
-  for (let column = -12; column <= 12; column += 1) {
-    for (let row = -12; row <= 12; row += 1) assert.equal(isVolcanoCell(column, row), column === 1 && row === 0);
+  // The only one anywhere near the start.
+  for (let column = -5; column <= 8; column += 1) {
+    for (let row = -6; row <= 7; row += 1) assert.equal(isVolcanoCell(column, row), column === 1 && row === 0);
   }
   const volcano = islandsInCell(1, 0).find((island) => island.volcano);
   assert.ok(volcano, "the cell east of the start holds a volcano");
@@ -194,4 +194,35 @@ test("the lava tongues down a volcano's flank are no path: the walker is kept of
   assert.equal(onLavaFlow(volcano, volcano.centerX + volcano.beachRadius * 0.98, volcano.centerZ), false);
   const plain = islandsInCell(0, 0).find((island) => !island.volcano)!;
   assert.equal(onLavaFlow(plain, plain.centerX, plain.centerZ), false);
+});
+
+test("volcanoes stand so far apart that two are never in sight at once", async () => {
+  const { VOLCANO_DRAW_DISTANCE, VOLCANO_MIN_SPACING, VOLCANO_BLOCK, WORLD_CELL } = await import("../../src/simulator/environment/IslandMath");
+  const volcanoes: { x: number; z: number }[] = [];
+  const span = VOLCANO_BLOCK * 5;
+  for (let column = -span; column <= span; column += 1) {
+    for (let row = -span; row <= span; row += 1) {
+      if (!isVolcanoCell(column, row)) continue;
+      const found = islandsInCell(column, row).filter((island) => island.volcano);
+      assert.equal(found.length, 1, `cell ${column}, ${row} holds one volcano`);
+      volcanoes.push({ x: found[0]!.centerX, z: found[0]!.centerZ });
+    }
+  }
+  // One to every block: the sea has them all over, a long sail apart.
+  assert.ok(volcanoes.length >= 90 && volcanoes.length <= 125, `${volcanoes.length} volcanoes in ${2 * span + 1}² cells`);
+  let nearest = Infinity;
+  for (let a = 0; a < volcanoes.length; a += 1) {
+    for (let b = a + 1; b < volcanoes.length; b += 1) nearest = Math.min(nearest, Math.hypot(volcanoes[a]!.x - volcanoes[b]!.x, volcanoes[a]!.z - volcanoes[b]!.z));
+  }
+  assert.ok(nearest >= VOLCANO_MIN_SPACING, `two volcanoes ${nearest.toFixed(0)} m apart`);
+  // An eye that sees one (it and its plume are drawn to VOLCANO_DRAW_DISTANCE) cannot see another:
+  // even standing between two, both would have to be within the drawing range.
+  assert.ok(VOLCANO_MIN_SPACING > VOLCANO_DRAW_DISTANCE * 3);
+  assert.ok(VOLCANO_MIN_SPACING > 6 * WORLD_CELL);
+  // No other island of any cell is a volcano.
+  for (let column = -20; column <= 20; column += 1) {
+    for (let row = -20; row <= 20; row += 1) {
+      if (!isVolcanoCell(column, row)) assert.ok(islandsInCell(column, row).every((island) => !island.volcano));
+    }
+  }
 });

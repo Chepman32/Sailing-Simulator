@@ -36,10 +36,26 @@ export const PLUME_TOP = 230;
 /** Seconds a plume puff lives. */
 export const PLUME_LIFE = 70;
 /** Lava bombs in one fountain, and small sparks. */
-export const BOMBS = 150;
-export const SPARKS = 200;
+export const BOMBS = 110;
+/**
+ * Cinders: the fine, incandescent spray that makes up most of a fountain.
+ * Thousands of them, each a thin spark (`VolcanoSystem` draws as many as
+ * the quality preset allows: `sparkCount`). A fountain is a spray of fire,
+ * not a few dozen lumps.
+ */
+export const SPARKS = 5200;
+
+/** How many of the cinders are drawn at a `detail` of 0…1 (a phone draws a third). */
+export function sparkCount(detail: number): number {
+  return Math.round(SPARKS * clamp(detail, 0.2, 1));
+}
+
+/** Seconds cinder `index` glows before it has cooled to nothing (2.2…5 s: small ones go out first). */
+export function sparkLife(index: number, slot: number): number {
+  return 2.2 + 2.8 * hash(index * 23 + 9, slot);
+}
 /** Puffs in an ash column, a collapse and the shock ring. */
-export const ASH_PUFFS = 260;
+export const ASH_PUFFS = 400;
 export const COLLAPSE_PUFFS = 64;
 export const SHOCK_PUFFS = 20;
 export const GRAVITY = 9.81;
@@ -238,7 +254,9 @@ export function ashPuff(age: number, index: number, slot: number, strength: numb
   out.z = Math.sin(azimuth) * columnRadius + windZ * drift + windDirZ * along + windDirX * across + Math.cos(index * 2.3 + a * 0.27) * wander;
   // The umbrella is flatter than the column under it.
   out.y = height - umbrella * hash(index * 17 + 6, slot) * 38;
-  out.radius = 9 + height * 0.075 + Math.sqrt(a) * 2.6 + umbrella * 8;
+  // Many billows a good deal smaller than the column is wide: a finely
+  // curdled column, not a stack of a few great lumps.
+  out.radius = 6.5 + height * 0.056 + Math.sqrt(a) * 2.1 + umbrella * 7;
   // Dense near the vent, diluting as it spreads and ages.
   const dilution = 1 - 0.45 * smoothstep(0, COLUMN_LIFE, a) - 0.25 * umbrella * smoothstep(10, 40, a);
   out.opacity = smoothstep(0, 0.6, a) * (1 - smoothstep(COLUMN_LIFE * 0.45, COLUMN_LIFE, age)) * dilution;
@@ -279,7 +297,7 @@ export type Ember = { x: number; y: number; z: number; vx: number; vy: number; v
 /**
  * Bomb `index` of the fountain, `age` s after the blast: launched at some
  * moment of the fountain at 30–90 m/s in a cone up to ~25° off vertical,
- * then ballistic. Returns false before launch; `out.t` is its flight time.
+ * then ballistic (with `sparks`, cinder `index`: 16–86 m/s, a wider cone). Returns false before launch; `out.t` is its flight time.
  * (Where it lands is up to the caller, who knows the cone.)
  */
 export function bombFlight(age: number, index: number, slot: number, out: Ember, sparks = false): boolean {
@@ -287,8 +305,10 @@ export function bombFlight(age: number, index: number, slot: number, out: Ember,
   const t = age - launch;
   if (t < 0) return false;
   const azimuth = hash(index * 3 + 1, slot) * Math.PI * 2;
-  const tilt = (sparks ? 0.55 : 0.42) * Math.sqrt(hash(index * 5 + 2, slot));
-  const speed = sparks ? 14 + hash(index * 7 + 3, slot) * 26 : 32 + hash(index * 7 + 3, slot) * 58;
+  const tilt = (sparks ? 0.62 : 0.42) * Math.sqrt(hash(index * 5 + 2, slot));
+  // Cinders: most are thrown a few tens of metres, a few as high as the bombs.
+  const roll = hash(index * 7 + 3, slot);
+  const speed = sparks ? 16 + roll * roll * 70 : 32 + roll * 58;
   const horizontal = Math.sin(tilt) * speed;
   const vertical = Math.cos(tilt) * speed;
   out.vx = Math.cos(azimuth) * horizontal;

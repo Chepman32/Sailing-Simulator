@@ -14,6 +14,8 @@ import {
   shedSparks,
   SHOW_LENGTH,
   splitStar,
+  STAR_FINENESS,
+  starKindle,
   starBrightness,
   stepRocket,
   stepStar,
@@ -25,7 +27,7 @@ import {
 export type FireworksSource = { x: number; y: number; z: number; heading: number; halfLength: number };
 
 /** Most stars and sparks in the air at once (one instanced draw). */
-const CAPACITY = 22000;
+const CAPACITY = 48000;
 /** Farther than this the liner's show is not fired (nobody would see it). */
 const SHOW_RANGE = 3200;
 /** Bursts remembered for the light they throw (the newest few dominate). */
@@ -51,8 +53,8 @@ const vertexShader = /* glsl */ `
     // Negative width: a round glow (the flash), not a streak; below −1000
     // the soft, wide glow of lit smoke (width −w − 1000).
     float roundGlow = aColor.w < -999.0 ? 2.0 : aColor.w < 0.0 ? 1.0 : 0.0;
-    // A spark keeps about two pixels at any range.
-    float width = max(roundGlow > 1.5 ? -aColor.w - 1000.0 : abs(aColor.w), -head.z * 0.0021);
+    // A spark keeps about a pixel and a half at any range.
+    float width = max(roundGlow > 1.5 ? -aColor.w - 1000.0 : abs(aColor.w), -head.z * 0.0015);
     vec3 point;
     if (roundGlow > 0.5) {
       vec3 up = normalize(cross(across, normalize(head.xyz)));
@@ -85,13 +87,15 @@ const fragmentShader = /* glsl */ `
       // The flash: a white-hot core in a soft halo.
       float r = length(vUv - 0.5) * 2.0;
       float halo = exp(-r * r * 5.0) * (1.0 - smoothstep(0.85, 1.0, r));
-      color = vColor * (halo * 0.55 + pow(max(0.0, 1.0 - r * 2.2), 3.0) * 1.6);
+      color = vColor * (halo * 0.3 + pow(max(0.0, 1.0 - r * 2.2), 3.0) * 0.8);
     } else {
       // A streak: a needle at its tail, widening to the burning head, its
       // light gathered at the head and thinning to nothing along the tail.
       float halfWidth = mix(0.12, 1.0, pow(vUv.x, 0.7));
       float across = 1.0 - smoothstep(0.0, halfWidth, abs(vUv.y * 2.0 - 1.0));
-      float along = 0.03 + 0.97 * pow(vUv.x, 2.2);
+      // (Nothing at the tail's very end: the tails of a fresh shell all meet at
+      // the burst, and hundreds of faint ends there summed to a white ball.)
+      float along = pow(vUv.x, 3.0);
       float glow = pow(across, 1.4) * along;
       // The head itself: a hot point, a little whiter than its colour (only
       // a little: a white core in every star washes a shell's colour out).
@@ -142,6 +146,8 @@ export class FireworksSystem {
   private cues = 0;
   /** Where a mine went off on the deck (its thump). */
   private readonly thump = new THREE.Vector3();
+  /** 0.35…1: how dense the shells are (the quality preset's; a phone fires thinner ones). */
+  detail = 1;
   /** The last burst, for the camera (photo mode) and tests. */
   readonly lastBurst = new THREE.Vector3();
   bursts = 0;
@@ -281,7 +287,7 @@ export class FireworksSystem {
     for (let index = this.rockets.length - 1; index >= 0; index -= 1) {
       const rocket = this.rockets[index]!;
       if (stepRocket(rocket, dt, random, addSpark)) {
-        burst(rocket, random, add);
+        burst(rocket, random, add, this.detail);
         this.lastBurst.set(rocket.x, rocket.y, rocket.z);
         this.bursts += 1;
         this.onBurst(this.lastBurst, rocket.shell === "crackle");
@@ -373,14 +379,15 @@ export class FireworksSystem {
       if (count >= CAPACITY) break;
       this.head.setXYZ(count, rocket.x, rocket.y, rocket.z);
       this.tail.setXYZ(count, rocket.x - rocket.vx * 0.07, rocket.y - rocket.vy * 0.07, rocket.z - rocket.vz * 0.07);
-      this.color.setXYZW(count, 7, 4.8, 2.2, 0.75);
+      this.color.setXYZW(count, 7, 4.8, 2.2, 0.5);
       count += 1;
     }
     const clock = this.clock;
     for (const star of this.stars) {
       if (count >= CAPACITY) break;
       const flicker = Math.abs(Math.sin(star.phase * 12.9 + star.x * 3.1 + clock * 31));
-      const brightness = starBrightness(star, flicker, clock);
+      const point = star.twinkle !== "flash" && star.twinkle !== "haze";
+      const brightness = starBrightness(star, flicker, clock) * (point ? starKindle(star.age, star.life) : 1);
       if (brightness < 0.01) continue;
       // The streak runs back along the star's own path to the point that follows it.
       this.head.setXYZ(count, star.x, star.y, star.z);
@@ -397,7 +404,7 @@ export class FireworksSystem {
           ? -star.size * (0.6 + 0.6 * t)
           : star.twinkle === "haze"
             ? -1000 - star.size * (0.7 + 0.6 * Math.sqrt(t))
-            : star.size * (1 - 0.35 * t);
+            : star.size * STAR_FINENESS * (1 - 0.35 * t);
       this.color.setXYZW(count, r * brightness, g * brightness, b * brightness, size);
       count += 1;
     }

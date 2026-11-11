@@ -43,3 +43,20 @@ test("multi-touch and cancelled pointers clear pending taps", () => {
   assert.equal(tap(gesture, 200), false);
   assert.equal(tap(gesture, 300), true);
 });
+
+test("the walking stick has a dead centre, reaches full speed at its rim, and keeps its direction", async () => {
+  const { stickDeflection, STICK_REACH, STICK_DEAD } = await import("../../app/components/steering");
+  // A thumb resting where it landed moves nothing.
+  assert.deepEqual(stickDeflection(0, 0), { x: 0, y: 0 });
+  assert.deepEqual(stickDeflection(STICK_REACH * STICK_DEAD * 0.9, 0), { x: 0, y: 0 });
+  // Out of the dead centre the speed starts from nothing (no jump), and is full at the rim and beyond.
+  const just = stickDeflection(STICK_REACH * (STICK_DEAD + 0.01), 0);
+  assert.ok(just.x > 0 && just.x < 0.03);
+  assert.ok(Math.abs(stickDeflection(STICK_REACH, 0).x - 1) < 1e-9);
+  assert.ok(Math.abs(Math.hypot(stickDeflection(300, -400).x, stickDeflection(300, -400).y) - 1) < 1e-9, "never past the rim");
+  // The direction is the thumb's.
+  const diagonal = stickDeflection(30, -30);
+  assert.ok(Math.abs(diagonal.x + diagonal.y) < 1e-9 && diagonal.x > 0.5);
+  // Pushed to the rim it is a run (the controller sprints past 0.97).
+  assert.ok(Math.hypot(stickDeflection(0, -STICK_REACH).x, stickDeflection(0, -STICK_REACH).y) > 0.97);
+});

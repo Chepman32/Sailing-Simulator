@@ -497,6 +497,7 @@ export class Simulator {
         this.applyTextureQuality(true);
         this.islands?.setDrawScale(preset === "low" ? 0.7 : 1);
         this.rain?.setDrops(this.quality.settings.rainDrops);
+        this.applyParticleDetail();
         this.post?.setQuality(this.quality.settings);
         this.shipShadows?.setSize(shipShadowSize(preset));
         this.governor.reset();
@@ -609,6 +610,7 @@ export class Simulator {
       this.fireworks = new FireworksSystem(this.scene, (position, crackle) =>
         this.audio.fireworkBoom(position, this.camera.camera.position.distanceTo(position), crackle),
       );
+      this.applyParticleDetail();
       this.aircraft = new AircraftSystem(this.scene);
       this.loot = new LootSystem(
         this.scene,
@@ -866,6 +868,13 @@ export class Simulator {
   }
 
   /** Automatic mode holds ~30 fps; a chosen preset is left exactly as chosen. */
+  /** The eruption's cinders and the fireworks' stars are as many as the preset allows. */
+  private applyParticleDetail(): void {
+    const detail = this.quality?.settings.particleDetail ?? 1;
+    if (this.volcanoes) this.volcanoes.detail = detail;
+    if (this.fireworks) this.fireworks.detail = detail;
+  }
+
   private applyQualityMode(): void {
     const automatic = this.chosenQuality === null;
     this.quality?.setAdaptive(automatic);
@@ -1989,6 +1998,7 @@ export class Simulator {
     );
     this.underwater.setPalette(this.environment.current.palette);
     this.ships.setNight(this.environmentState.nightFactor);
+    this.ships.setSeaHaze(this.environment.currentWeather.haze);
     this.wildlife.setLightDirection(this.environment.lightDirection);
     this.wildlife.setNight(this.environmentState.nightFactor);
     this.wildlife.setStorm(this.environment.currentWeather.storm);

@@ -109,3 +109,18 @@ export async function requestTiltPermission(): Promise<boolean> {
   const answers = await Promise.all(requests);
   return answers.some(Boolean);
 }
+
+// --- The walking stick (touch) ---------------------------------------------------
+
+/** Radius of the stick's travel, px: the thumb at this distance from where it landed is full speed. */
+export const STICK_REACH = 46;
+/** A thumb resting on the glass trembles: this much of the travel moves nothing. */
+export const STICK_DEAD = 0.12;
+
+/** The stick's deflection for a thumb `dx`, `dy` px from where it landed: a dead centre, then 0…1 to the rim. */
+export function stickDeflection(dx: number, dy: number, reach = STICK_REACH): { x: number; y: number } {
+  const length = Math.hypot(dx, dy) / reach;
+  if (length <= STICK_DEAD) return { x: 0, y: 0 };
+  const amount = Math.min(1, (length - STICK_DEAD) / (1 - STICK_DEAD));
+  return { x: (dx / (length * reach)) * amount, y: (dy / (length * reach)) * amount };
+}
