@@ -33,6 +33,8 @@ export type ChartStyle = {
   labels: ChartLabels;
   /** A place picked for fast travel: ringed, the ring pulsing. */
   selected?: { x: number; z: number } | null;
+  /** The campaign's language for the sectors' names. */
+  storyLanguage?: "ru" | "en";
 };
 
 const SEA_DEEP = "#0b344c";
@@ -851,6 +853,7 @@ export function drawChart(context: CanvasRenderingContext2D, camera: ChartCamera
     context.globalAlpha = 1;
   }
   if (!style.mini) drawGrid(context, camera);
+  if (data.story) drawSectors(context, camera, data.story, style);
   for (const island of data.islands) drawIsland(context, camera, island, style);
   drawTrack(context, camera, data.track.points, style.mini);
   drawLoot(context, camera, data, style);
@@ -870,7 +873,85 @@ export function drawChart(context: CanvasRenderingContext2D, camera: ChartCamera
   drawYacht(context, camera, data, style);
   drawWalker(context, camera, data, style);
   drawPins(context, camera, data, style);
+  if (data.story) drawStoryOverlay(context, camera, data.story, style);
   if (style.selected) drawSelection(context, camera, style.selected, style.time);
+}
+
+/** The campaign's sectors under the islands: a wash of each one's colour, its borders. */
+function drawSectors(context: CanvasRenderingContext2D, camera: ChartCamera, story: NonNullable<ChartFeatures["story"]>, style: ChartStyle): void {
+  context.save();
+  for (const sector of story.sectors) {
+    const path = outlinePath(camera, sector.outline);
+    context.globalAlpha = style.mini ? 0.1 : 0.13;
+    context.fillStyle = sector.color;
+    context.fill(path);
+    context.globalAlpha = sector.planned ? 0.35 : 0.6;
+    context.strokeStyle = sector.color;
+    context.lineWidth = style.mini ? 1 : 1.5;
+    context.setLineDash(sector.planned ? [3, 5] : []);
+    context.stroke(path);
+  }
+  context.restore();
+}
+
+/** Over everything: the quarantine line, the sectors' names (zoomed out), and the story's waypoint. */
+function drawStoryOverlay(context: CanvasRenderingContext2D, camera: ChartCamera, story: NonNullable<ChartFeatures["story"]>, style: ChartStyle): void {
+  context.save();
+  const zone = outlinePath(camera, story.zone);
+  context.setLineDash(style.mini ? [5, 4] : [12, 7]);
+  context.lineWidth = style.mini ? 1.5 : 2.5;
+  context.strokeStyle = "rgba(229, 72, 77, 0.9)";
+  context.shadowColor = "rgba(229, 72, 77, 0.6)";
+  context.shadowBlur = style.mini ? 0 : 6;
+  context.stroke(zone);
+  context.setLineDash([]);
+  context.shadowBlur = 0;
+  // The names only when a sector fills a good part of the view.
+  if (!style.mini && camera.mpp > 5) {
+    const language = style.storyLanguage ?? "en";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = `700 ${Math.round(Math.max(12, Math.min(18, 140 / camera.mpp)))}px Inter, ui-sans-serif, system-ui, sans-serif`;
+    for (const sector of story.sectors) {
+      const [x, y] = toScreen(camera, sector.label.x, sector.label.z);
+      if (x < -200 || x > camera.width + 200 || y < -40 || y > camera.height + 40) continue;
+      const text = sector.name[language].toUpperCase().split("").join("\u2009");
+      context.globalAlpha = sector.planned ? 0.45 : 0.78;
+      context.lineWidth = 4;
+      context.strokeStyle = "rgba(4, 20, 30, 0.75)";
+      context.strokeText(text, x, y);
+      context.fillStyle = "#f4efe2";
+      context.fillText(text, x, y);
+    }
+    context.globalAlpha = 1;
+  }
+  // The waypoint: a gold diamond breathing.
+  if (story.marker) {
+    const [x, y] = toScreen(camera, story.marker.x, story.marker.z);
+    const pulse = 0.5 + 0.5 * Math.sin(style.time * 3.2);
+    const size = style.mini ? 5 : 8;
+    context.translate(x, y);
+    context.rotate(Math.PI / 4);
+    context.shadowColor = "rgba(255, 209, 102, 0.9)";
+    context.shadowBlur = 6 + pulse * 10;
+    context.fillStyle = "rgba(255, 209, 102, 0.35)";
+    context.strokeStyle = "#ffd166";
+    context.lineWidth = 2;
+    context.fillRect(-size, -size, size * 2, size * 2);
+    context.strokeRect(-size, -size, size * 2, size * 2);
+  }
+  context.restore();
+}
+
+function outlinePath(camera: ChartCamera, points: Float64Array): Path2D {
+  const path = new Path2D();
+  for (let index = 0; index < points.length; index += 2) {
+    const [x, y] = toScreen(camera, points[index]!, points[index + 1]!);
+    if (index === 0) path.moveTo(x, y);
+    else path.lineTo(x, y);
+  }
+  path.closePath();
+  return path;
 }
 
 /** The place picked for fast travel: a bright ring breathing round it. */

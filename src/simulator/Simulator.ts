@@ -177,6 +177,14 @@ export type ChartFeatures = {
   explored: ExploredSea;
   track: Track;
   night: number;
+  /** The campaign's map over the sea: the sectors, the quarantine line, the waypoint (null in free sailing). */
+  story: ChartStory | null;
+};
+
+export type ChartStory = {
+  sectors: { id: string; name: { ru: string; en: string }; color: string; planned: boolean; outline: Float64Array; label: { x: number; z: number } }[];
+  zone: Float64Array;
+  marker: { x: number; z: number } | null;
 };
 /** Where the economy (gold aside: the bag, upgrades, decor, finds taken) is kept. */
 const ECONOMY_KEY = "sailing-simulator-economy-v1";
@@ -1460,7 +1468,31 @@ export class Simulator {
       explored: this.explored,
       track: this.track,
       night: this.environmentState.nightFactor,
+      story: this.chartStory(),
     };
+  }
+
+  private chartStoryCache: Omit<ChartStory, "marker"> | null = null;
+
+  /** The campaign's sectors and line, in world terms (built once), and where the waypoint is now. */
+  private chartStory(): ChartStory | null {
+    const story = this.story;
+    if (!story?.active) return null;
+    if (!this.chartStoryCache) {
+      this.chartStoryCache = {
+        sectors: story.atlas.sectors.map(({ sector, outline }) => ({
+          id: sector.id,
+          name: sector.name,
+          color: sector.color,
+          planned: sector.status === "planned",
+          outline: outline.points,
+          label: { x: -sector.label[0], z: sector.label[1] },
+        })),
+        zone: story.atlas.zone.points,
+      };
+    }
+    const marker = story.marker(this.storyMarker);
+    return { ...this.chartStoryCache, marker: marker ? { x: marker.x, z: marker.z } : null };
   }
 
   // --- Economy: finds, traders, upgrades, decor ------------------------------------------

@@ -23,6 +23,10 @@ export const PROLOGUE: Mission = {
       objective: { kind: "wait", seconds: 22 },
       marker: "north-roads",
       onStart: [
+        // An ordinary afternoon, under power, bound in.
+        { do: "time", hour: 16.5 },
+        { do: "weather", kind: "cloudy" },
+        { do: "engine", running: true, throttle: 0.6 },
         { do: "title", style: "chapter", title: { ru: "Пролог", en: "Prologue" }, subtitle: { ru: "Карантин", en: "Quarantine" } },
         {
           do: "say",

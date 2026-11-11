@@ -32,6 +32,9 @@ type Props = {
   onQuality: (choice: QualityChoice) => void;
   onLanguage: (language: LanguageCode) => void;
   onSound: () => void;
+  /** The campaign's entry: the journal in a campaign, the choice of one in free sailing. */
+  campaignLabel?: string;
+  onCampaign?: () => void;
 };
 
 const QUALITY_ORDER: QualityChoice[] = ["auto", "low", "medium", "high", "ultra"];
@@ -56,7 +59,7 @@ function useBindings() {
  * stands still behind it. Resume, graphics, key bindings and the mouse,
  * the language, sound, and the way back to the helm.
  */
-export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, language, soundOn, touch, onResume, onBackToHelm, onQuality, onLanguage, onSound }: Props) {
+export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, language, soundOn, touch, onResume, onBackToHelm, onQuality, onLanguage, onSound, campaignLabel, onCampaign }: Props) {
   const [page, setPage] = useState<Page>("main");
   const [listening, setListening] = useState<BindingAction | null>(null);
   const { keys, look } = useBindings();
@@ -126,6 +129,11 @@ export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, lan
               <span>{messages.resume}</span>
               <kbd>Esc</kbd>
             </button>
+            {onCampaign && campaignLabel && (
+              <button type="button" className="pause-item" onClick={onCampaign}>
+                <span>{campaignLabel}</span>
+              </button>
+            )}
             <button type="button" className="pause-item" onClick={() => setPage("graphics")}>
               <span>{messages.graphics}</span>
               <small>{qualityLabels[quality]}</small>

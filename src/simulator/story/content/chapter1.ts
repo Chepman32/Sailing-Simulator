@@ -115,7 +115,7 @@ const STRANDED: Mission = {
     {
       id: "patch",
       goal: { ru: "Залатайте пробоину", en: "Patch the hull" },
-      hint: { ru: "На палубе удерживайте клавишу действия", en: "On deck, hold the action key" },
+      hint: { ru: "На борту нажмите E (или кнопку «Залатать пробоину»)", en: "Aboard, press E (or the patch button)" },
       objective: { kind: "repair", seconds: 4 },
       marker: "@yacht",
       onComplete: [
@@ -295,7 +295,7 @@ const EYES: Mission = {
     {
       id: "blind",
       goal: { ru: "Ослепите дрон: стреляйте в купол сенсора", en: "Blind the drone: shoot its sensor dome" },
-      hint: { ru: "X — винтовка, щелчок или касание — выстрел. Корпус бронирован", en: "X draws the rifle; click or tap to fire. The hull is armoured" },
+      hint: { ru: "1 — винтовка, щелчок или касание по цели — выстрел. Корпус бронирован", en: "1 draws the rifle; click or tap the target to fire. The hull is armoured" },
       objective: {
         kind: "disable",
         group: "ridge-patrol",
@@ -320,7 +320,7 @@ const EYES: Mission = {
     {
       id: "salvage",
       goal: { ru: "Подтяните дрон лебёдкой", en: "Winch the drone alongside" },
-      hint: { ru: "Подойдите вплотную и удерживайте клавишу действия (E)", en: "Come alongside and hold the action key (E)" },
+      hint: { ru: "Подойдите вплотную и нажмите E (или кнопку «Подтянуть лебёдкой»)", en: "Come alongside and press E (or the winch button)" },
       objective: { kind: "salvage", group: "ridge-patrol" },
       marker: "@drone:ridge-patrol",
       onComplete: [

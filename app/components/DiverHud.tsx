@@ -28,6 +28,8 @@ type Props = {
   wallet: { gold: number; bag: number };
   touch: boolean;
   actions: DiverActions;
+  /** The story's words for its own prompt ("Talk to Holloway", "Patch the hull"). */
+  storyPrompt?: string | null;
 };
 
 /** Seconds the controls hint stays up after leaving the helm. */
@@ -38,7 +40,7 @@ const HINT_SECONDS = 9;
  * interact key would do here, the way back to the helm, and on a touch
  * screen a movement stick and buttons to rise, dive and use.
  */
-export function DiverHud({ diver, messages, shop, wallet, touch, actions }: Props) {
+export function DiverHud({ diver, messages, shop, wallet, touch, actions, storyPrompt = null }: Props) {
   const [hint, setHint] = useState(true);
   const leaping = diver.mode === "leap";
   useEffect(() => {
@@ -60,7 +62,9 @@ export function DiverHud({ diver, messages, shop, wallet, touch, actions }: Prop
         ? diver.wading > 0.15 ? messages.wading : messages.ashore
         : diving ? messages.diving : messages.swimming;
   const promptText =
-    diver.prompt === "helm"
+    diver.prompt === "story"
+      ? storyPrompt
+      : diver.prompt === "helm"
       ? messages.takeHelm
       : diver.prompt === "board"
         ? messages.board

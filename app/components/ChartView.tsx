@@ -42,6 +42,8 @@ type Props = {
   ready: boolean;
   /** Fast travel to a place found before (by its key); the chart closes. */
   onTravel?: (key: string) => void;
+  /** The campaign's language, for the sectors' names. */
+  storyLanguage?: "ru" | "en";
 };
 
 function useCanvasSize(canvas: RefObject<HTMLCanvasElement | null>, active: boolean): { width: number; height: number; dpr: number } {
@@ -61,8 +63,12 @@ function useCanvasSize(canvas: RefObject<HTMLCanvasElement | null>, active: bool
   return size;
 }
 
-export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideMini, afoot = false, ready, onTravel }: Props) {
+export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideMini, afoot = false, ready, onTravel, storyLanguage = "en" }: Props) {
   const miniRef = useRef<HTMLCanvasElement | null>(null);
+  const storyLanguageRef = useRef(storyLanguage);
+  useEffect(() => {
+    storyLanguageRef.current = storyLanguage;
+  }, [storyLanguage]);
   const fullRef = useRef<HTMLCanvasElement | null>(null);
   const miniSize = useCanvasSize(miniRef, ready && !open && !hideMini);
   const fullSize = useCanvasSize(fullRef, ready && open);
@@ -147,7 +153,7 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
         camera.x + (width / 2) * mpp,
         camera.z + (height / 2) * mpp,
       );
-      if (data) drawChart(context, camera, data, { mini: true, time: now / 1000, labels });
+      if (data) drawChart(context, camera, data, { mini: true, time: now / 1000, labels, storyLanguage: storyLanguageRef.current });
     };
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
@@ -184,7 +190,7 @@ export function ChartView({ simulatorRef, messages, open, onOpen, onClose, hideM
         camera.z + (height / 2) * camera.mpp,
       );
       if (!data) return;
-      drawChart(context, camera, data, { mini: false, time: now / 1000, labels, selected: pickedRef.current });
+      drawChart(context, camera, data, { mini: false, time: now / 1000, labels, selected: pickedRef.current, storyLanguage: storyLanguageRef.current });
       if (now - lastStats > 500) {
         lastStats = now;
         setStats({

@@ -20,6 +20,12 @@ import { getDiverMessages } from "./diverMessages";
 import { ChartView } from "./ChartView";
 import { PauseMenu } from "./PauseMenu";
 import { getPauseMessages } from "./pauseMessages";
+import { StoryHud, storyPromptText } from "./story/StoryHud";
+import { StoryOverlay } from "./story/StoryOverlay";
+import { CampaignMenu } from "./story/CampaignMenu";
+import { JournalModal } from "./story/JournalModal";
+import { storyMessages } from "./story/storyMessages";
+import type { StoryOverlayFrame } from "@/src/simulator/types";
 import { keyBindings, type BindingAction } from "@/src/simulator/input/KeyBindings";
 import {
   DiscoveryCard,
@@ -387,6 +393,10 @@ export function SailingSimulator() {
   const [inventoryOpen, setInventoryOpen] = useState(false);
   const [controlsFirst, setControlsFirst] = useState(false);
   const [coarsePointer, setCoarsePointer] = useState(false);
+  // The campaign: its journal, the choice of campaign or free sailing (from the menus), and the per-frame overlay.
+  const [journalOpen, setJournalOpen] = useState(false);
+  const [campaignMenu, setCampaignMenu] = useState(false);
+  const overlayListener = useRef<((frame: StoryOverlayFrame) => void) | null>(null);
   const closeControls = useCallback(() => {
     setControlsOpen(false);
     setControlsFirst(false);
@@ -701,6 +711,7 @@ export function SailingSimulator() {
   };
   const latest = useRef<LatestHandlers>({ keyAction: () => {}, discovery: () => {}, radioFailed: () => {}, find: () => {}, trade: () => {}, pointerLost: () => {} });
   const shopWords = useMemo(() => getShopMessages(language), [language]);
+  const storyWords = useMemo(() => storyMessages(language), [language]);
   const cameraLabels = useMemo<Record<CameraMode, string>>(() => ({
     chase: messages.chase,
     helm: messages.helm,
@@ -788,6 +799,7 @@ export function SailingSimulator() {
           onFind: (find) => latest.current.find(find),
           onTrade: () => latest.current.trade(),
           onPointerLost: () => latest.current.pointerLost(),
+          onOverlay: (frame) => overlayListener.current?.(frame),
         });
         simulatorRef.current = simulator;
         // Development builds only: lets visual checks drive the scene from a
@@ -1018,6 +1030,7 @@ export function SailingSimulator() {
       else if (action === "engine-off-space") showNotice(voyage.engineOffSpace);
       else if (action === "trader-charted") showNotice(voyage.traderCharted);
       else if (action === "bag-full") showNotice(shopWords.bagFull);
+      else if (action === "engine-broken") showNotice(storyWords.engineBroken);
     },
     discovery: (discovery) => {
       discoveryId.current += 1;
@@ -1199,6 +1212,23 @@ export function SailingSimulator() {
         closeControls();
         event.preventDefault();
       }
+      return;
+    }
+    // The campaign's keys: the journal (L), the rifle (1), and at the helm the story's action (E).
+    const campaign = snapshot.story?.mode === "campaign";
+    if (campaign && event.code === "KeyL") {
+      if (photoMode) exitPhotoMode();
+      simulatorRef.current?.releaseDiverPointer();
+      setJournalOpen((open) => !open);
+      event.preventDefault();
+      return;
+    }
+    if (campaign && (event.code === "Digit1" || event.code === "Numpad1") && !photoMode) {
+      if (simulatorRef.current?.toggleRifle()) event.preventDefault();
+      return;
+    }
+    if (campaign && !away && event.code === "KeyE" && !photoMode) {
+      if (simulatorRef.current?.storyAct()) event.preventDefault();
       return;
     }
     // Sound on and off from anywhere, the skipper's own eyes and the cinematic view included.
@@ -1438,6 +1468,7 @@ export function SailingSimulator() {
       {ready && away && !photoMode && (
         <DiverHud
           diver={snapshot.diver}
+          storyPrompt={snapshot.diver.prompt === "story" ? storyPromptText(snapshot.diver.promptDetail, language) : null}
           messages={diverWords}
           shop={shopWords}
           wallet={{ gold: snapshot.doubloons, bag: snapshot.economy.bagCount }}
@@ -1482,6 +1513,64 @@ export function SailingSimulator() {
           onQuality={setQuality}
           onLanguage={changeLanguage}
           onSound={toggleSoundKey}
+          campaignLabel={snapshot.story?.mode === "campaign" ? storyWords.journal : storyWords.campaign}
+          onCampaign={() => {
+            setPauseOpen(false);
+            simulatorRef.current?.setPaused(false);
+            if (snapshot.story?.mode === "campaign") setJournalOpen(true);
+            else setCampaignMenu(true);
+          }}
+        />
+      )}
+
+      {/* The campaign: markers pinned to the scene, the story's screen, its menus. */}
+      {ready && !photoMode && <StoryOverlay listenerRef={overlayListener} language={language} active={snapshot.story?.mode === "campaign"} />}
+      {ready && !photoMode && snapshot.story && (
+        <StoryHud
+          view={snapshot.story}
+          combat={snapshot.combat}
+          language={language}
+          touch={coarsePointer}
+          atHelm={!away}
+          onAct={() => simulatorRef.current?.storyAct()}
+          onSkip={() => simulatorRef.current?.skipStoryLine()}
+          onToggleRifle={() => simulatorRef.current?.toggleRifle()}
+          onJournal={() => {
+            simulatorRef.current?.releaseDiverPointer();
+            setJournalOpen(true);
+          }}
+        />
+      )}
+      {ready && snapshot.story && ((snapshot.story.mode === null && !controlsOpen) || campaignMenu) && (
+        <CampaignMenu
+          language={language}
+          saved={snapshot.story.saved}
+          onContinue={() => {
+            setCampaignMenu(false);
+            simulatorRef.current?.continueCampaign();
+          }}
+          onNew={() => {
+            setCampaignMenu(false);
+            setJournalOpen(false);
+            simulatorRef.current?.startCampaign();
+          }}
+          onFree={() => {
+            setCampaignMenu(false);
+            setJournalOpen(false);
+            simulatorRef.current?.chooseFreeSail();
+          }}
+          onClose={snapshot.story.mode !== null ? () => setCampaignMenu(false) : undefined}
+        />
+      )}
+      {journalOpen && snapshot.story && (
+        <JournalModal
+          view={snapshot.story}
+          language={language}
+          onClose={() => setJournalOpen(false)}
+          onSwitch={() => {
+            setJournalOpen(false);
+            setCampaignMenu(true);
+          }}
         />
       )}
 
@@ -1492,6 +1581,7 @@ export function SailingSimulator() {
         <ChartView
           simulatorRef={simulatorRef}
           messages={voyage}
+          storyLanguage={language === "ru" ? "ru" : "en"}
           open={chartOpen}
           onOpen={() => {
             setPanelMinimized(true);
@@ -1653,6 +1743,22 @@ export function SailingSimulator() {
           >
             <ControlIcon name="map" />
             <span className="scene-action-label">{messages.map}</span>
+          </button>
+          <button
+            type="button"
+            className="scene-action"
+            disabled={!ready}
+            aria-haspopup="dialog"
+            title={snapshot.story?.mode === "campaign" ? storyWords.journalKey : storyWords.campaign}
+            onClick={() => (snapshot.story?.mode === "campaign" ? setJournalOpen(true) : setCampaignMenu(true))}
+          >
+            <span className="journal-glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M6 4h10a2 2 0 0 1 2 2v14H8a2 2 0 0 1-2-2V4Z M6 18a2 2 0 0 1 2-2h10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                <path d="M10 8h5M10 11h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            </span>
+            <span className="scene-action-label">{snapshot.story?.mode === "campaign" ? storyWords.journal : storyWords.campaign}</span>
           </button>
           <button
             type="button"
