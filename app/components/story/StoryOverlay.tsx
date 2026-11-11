@@ -23,6 +23,20 @@ type Props = {
 const DRONE_SLOTS = 6;
 const EDGE = 46;
 
+/**
+ * The part of the screen an edge arrow may sit in: clear of the throttle on
+ * the right, the instruments and the scene actions above, the helm below.
+ */
+function arrowBounds(width: number, height: number): { left: number; right: number; top: number; bottom: number } {
+  const narrow = width < 760 || height < 520;
+  return {
+    left: narrow ? 30 : 40,
+    right: width - (narrow ? 120 : 190),
+    top: narrow ? 120 : 170,
+    bottom: height - (narrow ? 120 : 150),
+  };
+}
+
 export function StoryOverlay({ listenerRef, language, active }: Props) {
   const markerRef = useRef<HTMLDivElement>(null);
   const markerLabel = useRef<HTMLSpanElement>(null);
@@ -75,18 +89,21 @@ export function StoryOverlay({ listenerRef, language, active }: Props) {
             x = cx - (x - cx);
             y = cy - (y - cy);
           }
+          const bounds = arrowBounds(frame.width, frame.height);
           const inside = target.front && x > EDGE && x < frame.width - EDGE && y > EDGE && y < frame.height - EDGE;
           if (!inside) {
-            // Pinned to the screen's edge along the way to it.
-            let dx = x - cx;
-            let dy = y - cy;
+            // Pinned to the edge of the clear part of the screen, along the way to it.
+            const midX = (bounds.left + bounds.right) / 2;
+            const midY = (bounds.top + bounds.bottom) / 2;
+            let dx = x - midX;
+            let dy = y - midY;
             if (!target.front && Math.abs(dy) < 1) dy = 1;
             const length = Math.hypot(dx, dy) || 1;
             dx /= length;
             dy /= length;
-            const reach = Math.min((cx - EDGE) / Math.max(1e-3, Math.abs(dx)), (cy - EDGE) / Math.max(1e-3, Math.abs(dy)));
-            x = cx + dx * reach;
-            y = cy + dy * reach;
+            const reach = Math.min((bounds.right - midX) / Math.max(1e-3, Math.abs(dx)), (bounds.bottom - midY) / Math.max(1e-3, Math.abs(dy)));
+            x = midX + dx * reach;
+            y = midY + dy * reach;
             marker.style.setProperty("--turn", `${Math.atan2(dy, dx)}rad`);
           }
           marker.classList.toggle("is-edge", !inside);

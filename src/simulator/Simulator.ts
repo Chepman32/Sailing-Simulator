@@ -2500,9 +2500,12 @@ export class Simulator {
     frame.width = width;
     frame.height = height;
     const eye = camera.position;
+    camera.getWorldDirection(this.aimRay.ray.direction);
+    const look = this.aimRay.ray.direction;
     const project = (point: THREE.Vector3) => {
+      // In front by the line of sight, not the depth range: a place beyond the far plane is still ahead.
+      const front = (point.x - eye.x) * look.x + (point.y - eye.y) * look.y + (point.z - eye.z) * look.z > 0;
       this.projectScratch.copy(point).project(camera);
-      const front = this.projectScratch.z < 1;
       return { x: ((this.projectScratch.x + 1) / 2) * width, y: ((1 - this.projectScratch.y) / 2) * height, front };
     };
     const marker = story.active ? story.marker(this.storyMarker) : null;

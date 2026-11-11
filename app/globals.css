@@ -4657,8 +4657,6 @@ input[type="range"]:disabled {
   --story-gold: #ffd166;
   --story-red: #e5484d;
   --story-amber: #ffb547;
-  /* The story's column on the left: under the scene actions at the helm, under the walker's status ashore. */
-  --story-top: calc(var(--edge-top) + var(--top-bar) + 10px + 44px + 12px);
 }
 
 .story-fade {
@@ -4730,7 +4728,8 @@ input[type="range"]:disabled {
 .story-left {
   position: absolute;
   z-index: 18;
-  top: var(--story-top);
+  /* Under the scene actions at the helm (the shell's own spacing, so it follows every layout). */
+  top: calc(var(--edge-top) + var(--top-bar) + 10px + 44px + 12px);
   left: var(--edge-left);
   display: flex;
   flex-direction: column;
@@ -5488,7 +5487,6 @@ html.rifle-drawn .simulator-canvas {
 
 /* Phones and short screens: a slimmer objective, the voice lower, the menus stacked. */
 @media (max-width: 760px), (max-height: 520px) {
-  :root { --story-top: calc(var(--edge-top) + var(--top-bar) + 8px + 44px + 8px); }
   .story-left { width: min(260px, calc(100vw - 2 * var(--gap) - 96px)); gap: 5px; }
   .story-tracker { padding: 8px 40px 9px 11px; }
   .story-tracker-goal { font-size: 13px; }

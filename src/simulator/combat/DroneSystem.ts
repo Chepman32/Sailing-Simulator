@@ -179,12 +179,13 @@ export class DroneSystem {
     return this.drones.some((drone) => drone.spec.group === group) || this.pending.some((entry) => entry.spec.group === group);
   }
 
-  /** Takes a drone's model out of the scene and frees what was its own. */
+  /** Takes a drone's model out of the scene (its geometry and materials are the template's, kept). */
   private discard(drone: Drone): void {
     drone.parts.root.removeFromParent();
-    drone.parts.hullMaterial.dispose();
-    drone.parts.domeMaterial.dispose();
-    drone.parts.ledMaterial.dispose();
+  }
+
+  private setLeds(drone: Drone, material: THREE.Material): void {
+    for (const mesh of drone.parts.ledMeshes) if (mesh.material !== material) mesh.material = material;
   }
 
   /** Takes a group off the water at once (the story has moved on). */
@@ -474,9 +475,8 @@ export class DroneSystem {
     if (drone.condition === "blind") {
       drone.mode = "disabled";
       drone.suspicion = 0;
-      drone.parts.ledMaterial.color.setRGB(0.05, 0.02, 0.02);
-      drone.parts.domeMaterial.roughness = 0.6;
-      drone.parts.domeMaterial.color.setHex(0x1a1c1e);
+      this.setLeds(drone, this.template.ledDead);
+      drone.parts.domeMesh.material = this.template.domeBroken;
       this.effects.explosion(at, 0.18);
       this.events.push({ type: "disabled", group: drone.spec.group });
     } else if (drone.condition === "stopped") {
@@ -486,8 +486,8 @@ export class DroneSystem {
       void before;
       drone.mode = "sinking";
       drone.sinkTime = 0;
-      drone.parts.ledMaterial.color.setRGB(0, 0, 0);
-      drone.parts.hullMaterial.color.setHex(0x16181a);
+      this.setLeds(drone, this.template.ledDead);
+      drone.parts.hullMesh.material = this.template.hullBurnt;
       this.scratchVector.set(drone.pose.x, drone.pose.y + 1, drone.pose.z);
       this.effects.explosion(this.scratchVector, 1);
       this.wake.splash(this.scratchVector.setY(drone.pose.y), 4, "slap");
@@ -515,6 +515,11 @@ export class DroneSystem {
 
   update(delta: number, world: DroneWorld): void {
     this.time += delta;
+    // The diodes breathe at rest and flicker in a fight (shared by every drone).
+    const calm = 1.6 + Math.sin(this.time * 2.4) * 0.5;
+    const alert = 1.6 + Math.sin(this.time * 14) * 0.9;
+    this.template.ledCalm.color.setRGB(calm, 0.12, 0.1);
+    this.template.ledAlert.color.setRGB(alert, 0.12, 0.1);
     const yacht = world.yacht;
     // Ambient patrols come back after a while, out of sight.
     for (let index = this.pending.length - 1; index >= 0; index -= 1) {
@@ -674,10 +679,7 @@ export class DroneSystem {
     drone.scanPhase += delta * (drone.mode === "attack" ? 5.5 : 2.2);
     drone.parts.scanner.rotation.y = drone.scanPhase;
     drone.parts.lights.visible = world.night > 0.35 && drone.condition !== "wrecked";
-    if (drone.condition === "fighting" || drone.condition === "stopped") {
-      const pulse = drone.mode === "attack" ? 1.6 + Math.sin(this.time * 14) * 0.9 : 1.6 + Math.sin(this.time * 2.4) * 0.5;
-      drone.parts.ledMaterial.color.setRGB(pulse, 0.12, 0.1);
-    }
+    if (drone.condition === "fighting" || drone.condition === "stopped") this.setLeds(drone, drone.mode === "attack" ? this.template.ledAlert : this.template.ledCalm);
 
     // --- Its wake ----------------------------------------------------------
     drone.trailOdometer += step;

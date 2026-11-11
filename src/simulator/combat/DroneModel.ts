@@ -20,10 +20,15 @@ export type DroneParts = {
   /** The diodes and the scanning bar (dark once blinded). */
   eye: THREE.Group;
   scanner: THREE.Object3D;
-  /** Materials of this one drone that change with its state. */
-  domeMaterial: THREE.MeshStandardMaterial;
-  ledMaterial: THREE.MeshBasicMaterial;
-  hullMaterial: THREE.MeshStandardMaterial;
+  /**
+   * The meshes whose look changes with the drone's state. Their materials are
+   * the template's shared ones, swapped, never this drone's own: a material
+   * disposed while the renderer compiles the scene in the background breaks
+   * that compile, and drones come and go.
+   */
+  hullMesh: THREE.Mesh;
+  domeMesh: THREE.Mesh;
+  ledMeshes: THREE.Mesh[];
   /** World-frame points the effects come from: the muzzle, the dome, the jets. */
   muzzle: THREE.Object3D;
   /** Navigation lights (shown at night). */
@@ -179,7 +184,12 @@ export class DroneTemplate {
   private readonly darkMetal = new THREE.MeshStandardMaterial({ color: 0x3a4047, roughness: 0.45, metalness: 0.7 });
   private readonly gunMetal = new THREE.MeshStandardMaterial({ color: 0x15181b, roughness: 0.4, metalness: 0.8 });
   private readonly domeMaterial = new THREE.MeshStandardMaterial({ color: 0x07090c, roughness: 0.08, metalness: 0.65, envMapIntensity: 1.4 });
-  private readonly ledMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 0.18, 0.16), toneMapped: false });
+  /** The diodes: glowing at rest, pulsing fast in a fight, dark once blinded (colours set each frame by `DroneSystem`). */
+  readonly ledCalm = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 0.18, 0.16), toneMapped: false });
+  readonly ledAlert = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 0.18, 0.16), toneMapped: false });
+  readonly ledDead = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.05, 0.02, 0.02) });
+  readonly domeBroken = new THREE.MeshStandardMaterial({ color: 0x1a1c1e, roughness: 0.6, metalness: 0.5 });
+  readonly hullBurnt = new THREE.MeshStandardMaterial({ color: 0x16181a, roughness: 0.8, metalness: 0.2, flatShading: true, side: THREE.DoubleSide });
   private readonly portLamp = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 0.1, 0.1), toneMapped: false });
   private readonly starboardLamp = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.1, 2.2, 0.4), toneMapped: false });
   private readonly whiteLamp = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 2.2, 2), toneMapped: false });
@@ -188,8 +198,7 @@ export class DroneTemplate {
   build(number: string): DroneParts {
     const root = new THREE.Group();
     root.name = `AquilonDrone ${number}`;
-    const hullMaterial = this.hullMaterial.clone();
-    const hull = new THREE.Mesh(this.hull, hullMaterial);
+    const hull = new THREE.Mesh(this.hull, this.hullMaterial);
     hull.castShadow = true;
     root.add(hull);
     const cabin = new THREE.Mesh(this.cabin, this.cabinMaterial);
@@ -205,18 +214,16 @@ export class DroneTemplate {
     const mast = new THREE.Mesh(this.mast, this.darkMetal);
     mast.position.set(DOME_CENTRE.x, 1.62 + 0.21 - 0.1, DOME_CENTRE.z);
     root.add(mast);
-    const domeMaterial = this.domeMaterial.clone();
-    const dome = new THREE.Mesh(this.dome, domeMaterial);
+    const dome = new THREE.Mesh(this.dome, this.domeMaterial);
     dome.position.set(DOME_CENTRE.x, DOME_CENTRE.y - DOME_RADIUS * 0.35, DOME_CENTRE.z);
     root.add(dome);
     const eye = new THREE.Group();
     eye.position.copy(dome.position);
-    const ledMaterial = this.ledMaterial.clone();
-    const ring = new THREE.Mesh(this.ring, ledMaterial);
+    const ring = new THREE.Mesh(this.ring, this.ledCalm);
     ring.rotation.x = Math.PI / 2;
     ring.position.y = 0.05;
     eye.add(ring);
-    const scanner = new THREE.Mesh(this.bar, ledMaterial);
+    const scanner = new THREE.Mesh(this.bar, this.ledCalm);
     scanner.position.y = DOME_RADIUS * 0.45;
     eye.add(scanner);
     root.add(eye);
@@ -288,12 +295,12 @@ export class DroneTemplate {
     lights.add(port, starboard, mastLamp);
     lights.visible = false;
     root.add(lights);
-    return { root, turret, eye, scanner, domeMaterial, ledMaterial, hullMaterial, muzzle, lights };
+    return { root, turret, eye, scanner, hullMesh: hull, domeMesh: dome, ledMeshes: [ring, scanner], muzzle, lights };
   }
 
   dispose(): void {
     for (const geometry of [this.hull, this.cabin, this.dome, this.ring, this.bar, this.mast, this.turretBase, this.barrel, this.ammo, this.nozzle, this.nozzleCap, this.aerial, this.lamp, this.decal, this.rail]) geometry.dispose();
-    for (const material of [this.hullMaterial, this.cabinMaterial, this.darkMetal, this.gunMetal, this.domeMaterial, this.ledMaterial, this.portLamp, this.starboardLamp, this.whiteLamp]) material.dispose();
+    for (const material of [this.hullMaterial, this.cabinMaterial, this.darkMetal, this.gunMetal, this.domeMaterial, this.ledCalm, this.ledAlert, this.ledDead, this.domeBroken, this.hullBurnt, this.portLamp, this.starboardLamp, this.whiteLamp]) material.dispose();
     for (const material of this.decals.values()) {
       material.map?.dispose();
       material.dispose();
