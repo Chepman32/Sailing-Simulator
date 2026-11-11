@@ -701,15 +701,34 @@ export class Vessel {
     const dirX = endX / reach;
     const dirZ = endZ / reach;
     const station = reach * 0.56;
-    // The underside of the boom at that station.
-    let underside = Infinity;
+    // The underside of the boom at that station: a spar may have vertices
+    // only at its ends, so the underside is taken at both ends (the lowest
+    // points of the first and the last fifth of its length) and drawn
+    // straight between them (it is straight, raised evenly toward its end).
+    let near = Infinity;
+    let far = Infinity;
+    let nearAt = 0;
+    let farAt = reach;
+    let start = Infinity;
+    for (let index = 0; index < position.count; index += 1) {
+      point.fromBufferAttribute(position, index).applyMatrix4(boom.matrix);
+      start = Math.min(start, point.x * dirX + point.z * dirZ);
+    }
+    const span = reach - start;
     for (let index = 0; index < position.count; index += 1) {
       point.fromBufferAttribute(position, index).applyMatrix4(boom.matrix);
       const along = point.x * dirX + point.z * dirZ;
-      const across = Math.abs(point.x * dirZ - point.z * dirX);
-      if (Math.abs(along - station) < 0.25 && across < 0.4) underside = Math.min(underside, point.y);
+      if (along < start + span * 0.2 && point.y < near) {
+        near = point.y;
+        nearAt = along;
+      }
+      if (along > reach - span * 0.2 && point.y < far) {
+        far = point.y;
+        farAt = along;
+      }
     }
-    if (!Number.isFinite(underside)) return false;
+    if (!Number.isFinite(near) || !Number.isFinite(far) || farAt - nearAt < 0.5) return false;
+    const underside = near + ((far - near) * (station - nearAt)) / (farAt - nearAt);
     const rig = this.lanternRig;
     rig.name = "BoomLantern";
     rig.position.set(dirX * station, underside, dirZ * station);
