@@ -349,29 +349,24 @@
 <text x="1039.5" y="646.0" fill="#f4efe2" fill-opacity="0.7" font-size="11" text-anchor="middle">Выжженный атолл · в разработке</text>
 <text x="787.5" y="437.5" fill="#f4efe2" font-size="15" font-weight="700" text-anchor="middle" letter-spacing="1.5">ЧЁРНАЯ КАЛЬДЕРА</text>
 <text x="787.5" y="453.5" fill="#f4efe2" fill-opacity="0.7" font-size="11" text-anchor="middle">Вулканический узел · в разработке</text>
-<rect x="511.3" y="935.8" width="8" height="8" fill="none" stroke="#f4efe2" stroke-width="1.4" transform="rotate(45 515.3 939.8)"/>
-<text x="523.3" y="943.8" fill="#f4efe2" font-size="10.5">Мыс у внешней кромки</text>
-<circle cx="452.3" cy="915.5" r="4.5" fill="#ffd166" stroke="#0e2a3a" stroke-width="1.5"/>
-<circle cx="313.6" cy="678.4" r="4.5" fill="#ffd166" stroke="#0e2a3a" stroke-width="1.5"/>
-<text x="321.6" y="682.4" fill="#ffd166" font-size="10.5">Схрон Сато</text>
-<circle cx="395.5" cy="640.5" r="4.5" fill="#ffd166" stroke="#0e2a3a" stroke-width="1.5"/>
-<text x="403.5" y="644.5" fill="#ffd166" font-size="10.5">Сломанная гряда</text>
-<circle cx="465.5" cy="798.0" r="4.5" fill="#ffd166" stroke="#0e2a3a" stroke-width="1.5"/>
-<text x="473.5" y="802.0" fill="#ffd166" font-size="10.5">Бледные банки</text>
-<rect x="482.5" y="710.0" width="8" height="8" fill="none" stroke="#f4efe2" stroke-width="1.4" transform="rotate(45 486.5 714.0)"/>
-<text x="494.5" y="718.0" fill="#f4efe2" font-size="10.5">Аванпост-12 «Ржавый шпиль»</text>
+<circle cx="352.0" cy="868.0" r="4.5" fill="#ffd166" stroke="#0e2a3a" stroke-width="1.5"/>
+<text x="360.0" y="872.0" fill="#ffd166" font-size="10.5">Точка передачи груза</text>
+<rect x="411.4" y="889.5" width="8" height="8" fill="none" stroke="#f4efe2" stroke-width="1.4" transform="rotate(45 415.4 893.5)"/>
+<circle cx="385.5" cy="830.9" r="4.5" fill="#ffd166" stroke="#0e2a3a" stroke-width="1.5"/>
+<text x="393.5" y="834.9" fill="#ffd166" font-size="10.5">Два белых камня</text>
+<circle cx="412.2" cy="819.8" r="4.5" fill="#ffd166" stroke="#0e2a3a" stroke-width="1.5"/>
+<rect x="392.0" y="770.4" width="8" height="8" fill="none" stroke="#f4efe2" stroke-width="1.4" transform="rotate(45 396.0 774.4)"/>
+<rect x="458.3" y="753.4" width="8" height="8" fill="none" stroke="#f4efe2" stroke-width="1.4" transform="rotate(45 462.3 757.4)"/>
 <rect x="513.4" y="265.3" width="8" height="8" fill="none" stroke="#f4efe2" stroke-width="1.4" transform="rotate(45 517.4 269.3)"/>
 <text x="525.4" y="273.3" fill="#f4efe2" font-size="10.5">Узел связи «Пепел»</text>
-<rect x="747.9" y="301.5" width="8" height="8" fill="none" stroke="#f4efe2" stroke-width="1.4" transform="rotate(45 751.9 305.5)"/>
-<text x="759.9" y="309.5" fill="#f4efe2" font-size="10.5">Мастерская Рэйна</text>
 <rect x="948.6" y="842.7" width="8" height="8" fill="none" stroke="#f4efe2" stroke-width="1.4" transform="rotate(45 952.6 846.7)"/>
 <text x="960.6" y="850.7" fill="#f4efe2" font-size="10.5">«Объект-404»</text>
 <rect x="167.5" y="405.5" width="8" height="8" fill="none" stroke="#f4efe2" stroke-width="1.4" transform="rotate(45 171.5 409.5)"/>
 <text x="179.5" y="413.5" fill="#f4efe2" font-size="10.5">Маяк «Последний рубеж»</text>
 <rect x="786.6" y="494.0" width="8" height="8" fill="none" stroke="#f4efe2" stroke-width="1.4" transform="rotate(45 790.6 498.0)"/>
 <text x="798.6" y="502.0" fill="#f4efe2" font-size="10.5">Командный центр «Аквилон»</text>
-<path d="M511.0,980.0 m-7,-6 l14,6 l-14,6 z" fill="#ffffff"/>
-<text x="511.0" y="968.0" fill="#ffffff" font-size="10.5" text-anchor="middle">Начало кампании</text>
+<path d="M446.1,959.4 m-7,-6 l14,6 l-14,6 z" fill="#ffffff"/>
+<text x="446.1" y="947.4" fill="#ffffff" font-size="10.5" text-anchor="middle">Начало кампании</text>
 <g transform="translate(24 1013)"><rect width="140" height="5" fill="#f4efe2"/><rect width="70" height="5" fill="#0e2a3a" stroke="#f4efe2"/><text y="-6" fill="#f4efe2" font-size="10.5">0</text><text x="140" y="-6" fill="#f4efe2" font-size="10.5" text-anchor="end">2 км</text></g>
 <g transform="translate(1223 40)"><path d="M0,-18 L7,8 L0,3 L-7,8 Z" fill="#f4efe2"/><text y="24" fill="#f4efe2" font-size="12" text-anchor="middle" font-weight="700">С</text></g>
 <g transform="translate(24 24)" font-size="11" fill="#f4efe2"><rect x="-10" y="-14" width="250" height="78" rx="6" fill="#0e2a3a" fill-opacity="0.82"/><line x1="0" y1="0" x2="22" y2="0" stroke="#e5484d" stroke-width="2.4" stroke-dasharray="8 4"/><text x="30" y="4">Линия карантина «Аквилона»</text><circle cx="11" cy="20" r="4.5" fill="#ffd166"/><text x="30" y="24">Места, куда уже ведёт сюжет</text><rect x="7" y="36" width="8" height="8" fill="none" stroke="#f4efe2" transform="rotate(45 11 40)"/><text x="30" y="44">Базы будущих глав</text></g>
