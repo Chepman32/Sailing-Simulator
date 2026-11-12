@@ -1,4 +1,4 @@
-import type { Cutscene, DroneGroup, Effect, Line, Mission, Text } from "../StoryTypes";
+import type { Cutscene, DroneGroup, Effect, Line, Mission, Presence, Text } from "../StoryTypes";
 import { stvor9Chart } from "../levels/stvor9";
 
 /**
@@ -34,6 +34,15 @@ const RELIEF = ["e12", "e13", "e14", "e15", "e16", "k17"] as const;
 
 /** The patrol boat at the north tip's pier, crewed: W18 at the wheel, W19 aft. */
 const CHASER: DroneGroup = { id: "chaser", at: "stvor9", count: 1, behaviour: "chase", spawn: stvor9Chart(-84.5, -1.2), heading: 45, speed: 13.5, crewed: true };
+
+/** The haven and the montage's sets, with their people, for the whole of S09. */
+const HAVEN: readonly Presence[] = [
+  { kind: "level", level: "cove" },
+  { kind: "level", level: "kenji" },
+  { kind: "level", level: "sara" },
+  { kind: "level", level: "viktor" },
+  { kind: "actors", ids: ["maya", "mark-cove", "luis-cove", "kenji", "sara", "viktor"] },
+];
 
 const S04 = ["infiltrate"];
 const S05 = ["journal", "copy", "copying", "attachment"];
@@ -571,13 +580,7 @@ export const M01: Mission = {
     {
       id: "haven",
       objective: { kind: "listen" },
-      presence: [
-        { kind: "level", level: "cove" },
-        { kind: "level", level: "kenji" },
-        { kind: "level", level: "sara" },
-        { kind: "level", level: "viktor" },
-        { kind: "actors", ids: ["maya", "mark-cove", "luis-cove", "kenji", "sara", "viktor"] },
-      ],
+      presence: HAVEN,
       onStart: [
         { do: "freeze", on: true },
         { do: "engine", running: false, throttle: 0 },
@@ -593,6 +596,7 @@ export const M01: Mission = {
     {
       id: "haven-proof",
       objective: { kind: "listen" },
+      presence: HAVEN,
       onStart: [
         lines(
           mark("У нас есть доказательство, что его хотели убить заранее.", "We've got proof they meant to kill him before he ever set out."),
@@ -604,6 +608,7 @@ export const M01: Mission = {
     {
       id: "haven-kenji",
       objective: { kind: "listen" },
+      presence: HAVEN,
       onStart: [
         { do: "cutscene", scene: "m01-kenji" },
         { do: "actor", id: "kenji", pose: { crouch: 1 } },
@@ -617,6 +622,7 @@ export const M01: Mission = {
     {
       id: "haven-sara",
       objective: { kind: "listen" },
+      presence: HAVEN,
       onStart: [
         { do: "cutscene", scene: "m01-sara" },
         lines(
@@ -629,6 +635,7 @@ export const M01: Mission = {
     {
       id: "haven-viktor",
       objective: { kind: "listen" },
+      presence: HAVEN,
       onStart: [
         { do: "cutscene", scene: "m01-viktor" },
         lines(
@@ -641,6 +648,7 @@ export const M01: Mission = {
     {
       id: "haven-end",
       objective: { kind: "listen" },
+      presence: HAVEN,
       onStart: [
         { do: "cutscene", scene: "m01-haven-end" },
         lines(
@@ -661,6 +669,7 @@ export const M01: Mission = {
     {
       id: "free",
       objective: { kind: "listen" },
+      presence: HAVEN,
       onStart: [
         { do: "cut" },
         { do: "freeze", on: false },

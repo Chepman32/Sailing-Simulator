@@ -380,21 +380,22 @@ export const KENJI: LevelDefinition = {
   frame: { x: 6493, z: -3985, y: 0, bearing: 180 },
   range: 3000,
   build: (b) => {
-    tent(b, ground(b, -3, -4), 10, 3.2, 3, 0x9fb0a0);
-    desk(b, ground(b, 0.5, -1.5), 0, 1.6);
-    const top = b.groundAt(0.5, -1.5) + 0.765;
-    for (let index = 0; index < 6; index += 1) b.cylinder([0.0 + index * 0.16, -1.4, top], 0.03, 0.15, "glass", index % 2 ? 0xbad9a0 : 0xd8eec8, { segments: 8, solid: false });
-    b.box({ at: [1.0, -1.7, top], size: [0.32, 0.18, 0.24], mat: "paint", color: 0xe6e3da, solid: false });
+    tent(b, ground(b, -3, -8), 10, 3.2, 3, 0x9fb0a0);
+    desk(b, ground(b, 1.5, -4.5), 0, 1.6);
+    const top = b.groundAt(1.5, -4.5) + 0.765;
+    for (let index = 0; index < 6; index += 1) b.cylinder([1.0 + index * 0.16, -4.4, top], 0.03, 0.15, "glass", index % 2 ? 0xbad9a0 : 0xd8eec8, { segments: 8, solid: false });
+    b.box({ at: [2.0, -4.7, top], size: [0.32, 0.18, 0.24], mat: "paint", color: 0xe6e3da, solid: false });
     // The lagoon: a sickly green skin on the water, rusty pipes standing out of it.
     const film = new THREE.Mesh(b.own(new THREE.CircleGeometry(14, 32)), b.own(new THREE.MeshStandardMaterial({ color: 0x5f8f3a, roughness: 0.4, transparent: true, opacity: 0.55, depthWrite: false })));
     film.rotation.x = -Math.PI / 2;
     b.object(film, [0, 14, 0.04]);
     for (let index = 0; index < 4; index += 1) b.cylinder([-10 + index * 6, 26 + (index % 2) * 4, -1.5], 0.35, 3.4 + index * 0.4, "rust", 0xffffff, { segments: 10, solid: false });
-    b.spot("kenji", ground(b, 0.5, 4), 0);
-    b.spot("cam-a", [6, 1, b.groundAt(6, 1) + 1.4], 0);
-    b.spot("look-a", ground(b, 0.5, 5, 0.6), 0);
-    b.spot("cam-b", [-2.2, 7.5, b.groundAt(-2, 6) + 1.2], 0);
-    b.spot("look-b", ground(b, 0.5, 4.2, 0.55), 0);
+    // He kneels at the water's edge with a sample; the camera low over the shallows, then behind him.
+    b.spot("kenji", ground(b, 0.5, 0.2), 0);
+    b.spot("cam-a", [4.5, 4.5, 0.9], 0);
+    b.spot("look-a", ground(b, 0.5, 0.2, 0.7), 0);
+    b.spot("cam-b", [-1.6, -3.4, b.groundAt(-1.6, -3.4) + 1.5], 0);
+    b.spot("look-b", ground(b, 1.4, 4, 0.2), 0);
   },
 };
 
@@ -403,7 +404,8 @@ export const SARA: LevelDefinition = {
   // A shore house on the rocky island to the north-east: its walls papered with documents.
   frame: { x: 5546, z: -3700, y: 0, bearing: 200 },
   range: 3000,
-  pads: [{ at: [0, 0], w: 8, d: 7, height: 1.2, blend: 3, clear: 2 }],
+  // The ground a little under the floor, so the two never fight.
+  pads: [{ at: [0, 0], w: 8, d: 7, height: 1.1, blend: 3, clear: 2 }],
   build: (b) => {
     const y = 1.2;
     b.slab([0, 0], 5, 4.4, y, { thick: 0.15, mat: "wood", color: 0x8a7556 });
@@ -459,7 +461,7 @@ export const VIKTOR: LevelDefinition = {
   // Under the rock on the rocky island to the east: a narrow technical room, a vent shaft to the surf.
   frame: { x: 5841, z: -5620, y: 0, bearing: 90 },
   range: 3000,
-  pads: [{ at: [0, 0], w: 9, d: 8, height: 1.0, blend: 3, clear: 2 }],
+  pads: [{ at: [0, 0], w: 9, d: 8, height: 0.9, blend: 3, clear: 2 }],
   build: (b) => {
     const y = 1.0;
     b.slab([0, 0], 6, 4, y, { thick: 0.2, mat: "concrete", color: 0x9a968c });
