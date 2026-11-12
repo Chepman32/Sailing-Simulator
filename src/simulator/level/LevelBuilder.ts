@@ -57,6 +57,8 @@ export type LevelAnchors = {
   nav: { points: { x: number; y: number; z: number }[]; links: number[][] };
   /** Rocks a boat must keep off (a sea stack), as circles in the world's plan. */
   obstacles: { x: number; z: number; radius: number }[];
+  /** Lamps indoors: where the level system's few pooled lights go when the camera is near (see `LevelSystem.lights`). */
+  lamps: { x: number; y: number; z: number; color: number; intensity: number; range: number }[];
 };
 
 export type BuiltLevel = {
@@ -76,7 +78,7 @@ const color = new THREE.Color();
 
 export class LevelBuilder {
   readonly collision = new LevelCollision();
-  readonly anchors: LevelAnchors = { spots: new Map(), routes: new Map(), areas: new Map(), covers: [], interactables: new Map(), switches: new Map(), nav: { points: [], links: [] }, obstacles: [] };
+  readonly anchors: LevelAnchors = { spots: new Map(), routes: new Map(), areas: new Map(), covers: [], interactables: new Map(), switches: new Map(), nav: { points: [], links: [] }, obstacles: [], lamps: [] };
   private readonly navPairs: [LP, LP][] = [];
   readonly group = new THREE.Group();
   private readonly buffers = new Map<LevelMaterialKey, Buffers>();
@@ -471,6 +473,17 @@ export class LevelBuilder {
    */
   way(points: readonly LP[]): void {
     for (let index = 1; index < points.length; index += 1) this.navPairs.push([points[index - 1]!, points[index]!]);
+  }
+
+  /**
+   * A ceiling lamp: a glowing fitting, and a light from the level system's
+   * pool while the camera is near (so the scene's count of lights never changes).
+   */
+  lamp(at: LP, color = 0xfff1d8, intensity = 6, range = 9): void {
+    const fitting = new THREE.Mesh(this.own(new THREE.BoxGeometry(1.1, 0.05, 0.16)), this.own(new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(1.6), toneMapped: false })));
+    this.object(fitting, [at[0], at[1], (at[2] ?? 0) + 0.02]);
+    const point = this.world([at[0], at[1], (at[2] ?? 0) - 0.15]);
+    this.anchors.lamps.push({ x: point.x, y: point.y, z: point.z, color, intensity, range });
   }
 
   /** A rock at sea a boat strikes and is turned off (see `LevelSystem.boatClearance`). */

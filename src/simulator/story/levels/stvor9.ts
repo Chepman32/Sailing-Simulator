@@ -409,6 +409,12 @@ function buildHq(b: LevelBuilder): void {
   b.stairs([3.4, 3], [3.4, -2.1], Y, UP, 1.2, { mat: "paint", color: 0x7a8682 });
   for (const [r, f] of [[-14, -2.2], [-8, -2.2], [-2, -2.2], [2, -2.2]] as const) b.cylinder([r, f, Y], 0.12, UP - Y - 0.22, "concrete", 0xd8d3c6, { segments: 10 });
 
+  // Ceiling lamps: the comms room, the stair hall, the archive; upstairs the radio room and the office.
+  b.lamp([-11, -10, UP - 0.28], 0xe8f2ff, 7, 8);
+  b.lamp([-6, -8, UP - 0.28], 0xfff0d6, 5, 7);
+  b.lamp([-1, -11, UP - 0.28], 0xfff3dc, 8, 9);
+  b.lamp([-11, -10, ROOF - 0.3], 0xe8f2ff, 6, 8);
+  b.lamp([-1, -13, ROOF - 0.3], 0xfff3dc, 6, 8);
   // Furniture.
   // The comms room: the console at the front window, its chair, I07's place; radios on the shelf.
   desk(b, [-11, -4.6, Y], 0, 2.6);
@@ -468,8 +474,10 @@ function buildHq(b: LevelBuilder): void {
   b.spot("terminal-stand", [-1, -13.2, Y], 180);
   b.spot("mark-terminal", [-2.1, -13.3, Y], 150);
   b.spot("hq-in", [-6, -6.2, Y], 180);
-  // Out of the archive's front window, at the yard and the gate.
-  b.spot("window", [-1, -4.5, Y + 1.6], 0);
+  // The screen itself, for a close shot.
+  b.spot("terminal-screen", [-1, -14.85, Y + 1.03], 180);
+  // From the gallery outside the glass upstairs: the yard, the gate and the road.
+  b.spot("window", [-3, -3.2, UP + 1.65], 0);
   // The office: a desk, a map on the wall; the meeting room: a long table.
   desk(b, [-1, -14.4, UP], 180, 1.8);
   chair(b, [-1, -13.4, UP], 0);

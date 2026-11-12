@@ -198,23 +198,25 @@ function part(group: THREE.Group, geometry: THREE.BufferGeometry, material: THRE
  */
 export type WornPiece = { bone: "Spine02" | "Spine01" | "Head" | "Hips" | "LeftArm" | "neck"; object: THREE.Object3D };
 
-/** A light plate carrier: front and back plates, side straps, magazine pouches, a radio. */
+/** A light plate carrier: a shell hugging the chest (front and back plates under cloth), shoulder straps, pouches, a radio. */
 function vest(color: number): THREE.Group {
   const group = new THREE.Group();
   const cloth = kitMaterial(color, 0.92);
   const webbing = kitMaterial(new THREE.Color(color).multiplyScalar(0.78).getHex(), 0.95);
-  const plate = shared("vest-plate", () => new THREE.BoxGeometry(0.33, 0.36, 0.05, 2, 2, 1));
-  part(group, plate, cloth, 0, 1.27, 0.135);
-  part(group, plate, cloth, 0, 1.28, -0.14);
-  const strap = shared("vest-strap", () => new THREE.BoxGeometry(0.06, 0.03, 0.3));
-  for (const side of [-1, 1]) {
-    part(group, strap, webbing, side * 0.11, 1.47, 0);
-    // The cummerbund round the side.
-    part(group, shared("vest-side", () => new THREE.BoxGeometry(0.05, 0.15, 0.22)), webbing, side * 0.175, 1.16, 0);
-  }
-  const pouch = shared("vest-pouch", () => new THREE.BoxGeometry(0.075, 0.12, 0.055));
-  for (const x of [-0.09, 0, 0.09]) part(group, pouch, webbing, x, 1.18, 0.185);
-  part(group, shared("vest-radio", () => new THREE.BoxGeometry(0.06, 0.13, 0.04)), kitMaterial(0x232527, 0.6), 0.13, 1.33, 0.18);
+  // The carrier: an open sleeve round the torso, a little deeper in front where the plate is.
+  const shell = shared("vest-shell", () => {
+    const geometry = new THREE.CylinderGeometry(0.182, 0.17, 0.34, 18, 1, true);
+    geometry.scale(1, 1, 0.84);
+    geometry.translate(0, 0, 0.005);
+    return geometry;
+  });
+  const sleeve = part(group, shell, cloth, 0, 1.27, 0);
+  (sleeve.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
+  const strap = shared("vest-strap", () => new THREE.BoxGeometry(0.055, 0.025, 0.27));
+  for (const side of [-1, 1]) part(group, strap, webbing, side * 0.1, 1.45, 0);
+  const pouch = shared("vest-pouch", () => new THREE.BoxGeometry(0.07, 0.11, 0.045));
+  for (const x of [-0.085, 0, 0.085]) part(group, pouch, webbing, x, 1.19, 0.16);
+  part(group, shared("vest-radio", () => new THREE.BoxGeometry(0.045, 0.1, 0.03)), kitMaterial(0x34372f, 0.7), 0.12, 1.33, 0.155);
   return group;
 }
 

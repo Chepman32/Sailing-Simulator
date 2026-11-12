@@ -332,6 +332,8 @@ export function applyToState(state: CampaignState, effect: Effect, campaign: Cam
 export type Advance = {
   /** Effects to carry out, in order. */
   effects: Effect[];
+  /** How many of them, from the front, are triggers' (the world's chatter, dropped when the story moves on). */
+  triggered?: number;
   /** Missions whose step changed (their step clocks restart). */
   moved: string[];
 };
@@ -403,5 +405,5 @@ export function advance(campaign: Campaign, state: CampaignState, facts: Facts):
     }
   }
   for (const effect of effects) applyToState(state, effect, campaign);
-  return { effects: [...triggered, ...effects], moved };
+  return { effects: [...triggered, ...effects], moved, triggered: triggered.length };
 }

@@ -2053,6 +2053,8 @@ export class Simulator {
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed, focus);
     this.islands.setNight(this.environmentState.nightFactor);
     this.islands.update(this.elapsed, this.environment.currentWeather.wind, focus.x, focus.z, this.camera.camera.position);
+    const eye = this.camera.camera.position;
+    this.levels.setCamera(eye.x, eye.y, eye.z);
     this.levels.update(delta, this.elapsed, focus.x, focus.z);
     // The helm camera looks out through the skipper's eyes: he steps out of
     // its way. Away from the helm the player is the skipper.

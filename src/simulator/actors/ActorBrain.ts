@@ -236,7 +236,8 @@ export class ActorBrain {
       this.bark("noticed");
       this.enter("suspicious");
     }
-    if ((this.state === "suspicious" || this.state === "search") && this.suspicion >= 1) {
+    // Sure, and (if only just roused) having looked a moment longer: a challenge, a beat, then the gun up.
+    if ((this.state === "search" || (this.state === "suspicious" && this.stateTime > 3)) && this.suspicion >= 1) {
       this.bark("contact");
       this.enter("combat");
     }

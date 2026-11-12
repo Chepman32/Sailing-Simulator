@@ -131,8 +131,8 @@ const ORDER: Cutscene = {
     {
       // Close on the screen: the photo, the outline of the yacht, the date.
       seconds: 9,
-      from: { eye: { anchor: "spot:stvor9:terminal-eye", offset: [0.15, 0.05, -0.15] }, look: { anchor: "spot:stvor9:terminal-eye", offset: [0, -0.05, 1] }, fov: 34 },
-      to: { eye: { anchor: "spot:stvor9:terminal-eye", offset: [0.05, 0, 0.12] }, look: { anchor: "spot:stvor9:terminal-eye", offset: [0, -0.05, 1] }, fov: 26 },
+      from: { eye: { anchor: "spot:stvor9:terminal-eye" }, look: { anchor: "spot:stvor9:terminal-screen" }, fov: 40 },
+      to: { eye: { anchor: "spot:stvor9:terminal-eye" }, look: { anchor: "spot:stvor9:terminal-screen" }, fov: 24 },
       ease: "linear",
     },
     {
@@ -152,8 +152,8 @@ const CONVOY: Cutscene = {
   shots: [
     {
       seconds: 8,
-      from: { eye: { anchor: "spot:stvor9:window" }, look: { anchor: "spot:stvor9:jeep-start1" }, fov: 30 },
-      to: { eye: { anchor: "spot:stvor9:window" }, look: { anchor: "spot:stvor9:jeep-enter" }, fov: 26 },
+      from: { eye: { anchor: "spot:stvor9:window" }, look: { anchor: "spot:stvor9:jeep-enter" }, fov: 36 },
+      to: { eye: { anchor: "spot:stvor9:window" }, look: { anchor: "spot:stvor9:jeep1" }, fov: 28 },
       ease: "inOut",
     },
     {
@@ -392,12 +392,9 @@ export const M01: Mission = {
     {
       id: "choose",
       objective: { kind: "listen" },
-      onStart: [
-        lines(hero("Хорошо. Я выбираю путь. Ты идёшь за мной?", "Fine. I pick the way. You're coming behind me?"), mark("Я прикрою. Но стрелять вместо тебя весь день не собираюсь.", "I'll cover you. But I'm not doing your shooting for you all day.")),
-        { do: "cut" },
-        { do: "freeze", on: false },
-        { do: "actor", id: "mark", follow: true },
-      ],
+      onStart: [lines(hero("Хорошо. Я выбираю путь. Ты идёшь за мной?", "Fine. I pick the way. You're coming behind me?"), mark("Я прикрою. Но стрелять вместо тебя весь день не собираюсь.", "I'll cover you. But I'm not doing your shooting for you all day."))],
+      // The binoculars' scene holds on the jetty until the last word is said.
+      onComplete: [{ do: "cut" }, { do: "freeze", on: false }, { do: "actor", id: "mark", follow: true }],
     },
 
     // --- S04 · The perimeter -------------------------------------------------------------
@@ -609,6 +606,7 @@ export const M01: Mission = {
       objective: { kind: "listen" },
       onStart: [
         { do: "cutscene", scene: "m01-kenji" },
+        { do: "actor", id: "kenji", pose: { crouch: 1 } },
         lines(
           mark("Кендзи Сато. Инженер. Когда понял, что здесь травят лагуны, полез с вопросами к неправильным людям.", "Kenji Sato. An engineer. When he worked out the lagoons here were being poisoned, he took his questions to the wrong people."),
           mark("Корпорация отняла у него работу, а потом попыталась заткнуть рот. Он ищет доказательства. И знает здешние воды лучше любого из их патрулей.", "The company took his job, then tried to shut him up. He's looking for proof. And he knows these waters better than any of their patrols."),

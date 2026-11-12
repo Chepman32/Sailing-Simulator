@@ -74,6 +74,7 @@ export class LevelSystem implements LevelQuery {
     private readonly onBuilt: (object: THREE.Object3D) => void = () => undefined,
   ) {
     this.group.name = "StoryLevels";
+    for (const light of this.lights) this.group.add(light);
     for (const definition of definitions) this.definitions.set(definition.id, definition);
     setTerrainPads(levelPads(definitions));
   }
@@ -89,6 +90,18 @@ export class LevelSystem implements LevelQuery {
   }
 
   private readonly serials = new Map<string, number>();
+  /** Two lights, always in the scene (dark when unused), handed to the lamps nearest the camera. */
+  private readonly lights = [0, 1].map(() => {
+    const light = new THREE.PointLight(0xffffff, 0, 9, 1.6);
+    light.castShadow = false;
+    return light;
+  });
+  private readonly camera = new THREE.Vector3();
+
+  /** Where the camera is, for the lamps (set each frame by the simulator). */
+  setCamera(x: number, y: number, z: number): void {
+    this.camera.set(x, y, z);
+  }
 
   isStanding(id: string): boolean {
     return this.standing.has(id);
@@ -267,6 +280,31 @@ export class LevelSystem implements LevelQuery {
       else if (standing && (!wanted || distance > range + 400)) this.takeDown(id);
     }
     for (const standing of this.standing.values()) standing.built.update(delta, elapsed);
+    this.updateLamps();
+  }
+
+  private updateLamps(): void {
+    const near: { lamp: LevelAnchors["lamps"][number]; distance: number }[] = [];
+    for (const standing of this.standing.values()) {
+      for (const lamp of standing.built.anchors.lamps) {
+        const distance = Math.hypot(this.camera.x - lamp.x, this.camera.y - lamp.y, this.camera.z - lamp.z);
+        if (distance < 22) near.push({ lamp, distance });
+      }
+    }
+    near.sort((a, b) => a.distance - b.distance);
+    this.lights.forEach((light, index) => {
+      const entry = near[index];
+      if (!entry) {
+        light.intensity = 0;
+        return;
+      }
+      const { lamp, distance } = entry;
+      light.position.set(lamp.x, lamp.y, lamp.z);
+      light.color.setHex(lamp.color);
+      light.distance = lamp.range;
+      // Faded in as the camera comes near, so a light never pops between lamps.
+      light.intensity = lamp.intensity * Math.min(1, Math.max(0, (22 - distance) / 8));
+    });
   }
 
   private build(definition: LevelDefinition): void {

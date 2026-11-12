@@ -168,7 +168,9 @@ export class StorySystem {
   private readonly places = new Map<string, Place>();
   private readonly stepClocks = new Map<string, number>();
   private readonly events = new Set<string>();
-  private readonly queue: StoryLine[] = [];
+  private readonly queue: (StoryLine & { ambient?: boolean })[] = [];
+  /** Lines said now are the world's chatter (a trigger's, a guard's shout): dropped if the story moves on before they are heard. */
+  private ambient = false;
   private line: StoryLine | null = null;
   private lineGap = 0;
   private readonly titles: StoryTitle[] = [];
@@ -531,6 +533,11 @@ export class StorySystem {
     for (const effect of use.do ?? []) this.cue(effect);
   }
 
+  /** Chatter still waiting to be said is dropped: the story has moved on (a new step, a scene). */
+  private dropChatter(): void {
+    for (let index = this.queue.length - 1; index >= 0; index -= 1) if (this.queue[index]!.ambient) this.queue.splice(index, 1);
+  }
+
   /** What the people of the story did (the simulator passes on each `ActorEvent`). */
   actorEvent(event: ActorEvent): void {
     if (!this.active) return;
@@ -559,7 +566,11 @@ export class StorySystem {
         break;
       case "bark":
         // A guard's shout never talks over the story: said only into a quiet moment.
-        if (!this.line && this.queue.length === 0) this.say([{ who: event.character, via: "voice", text: event.text }]);
+        if (!this.line && this.queue.length === 0) {
+          this.ambient = true;
+          this.say([{ who: event.character, via: "voice", text: event.text }]);
+          this.ambient = false;
+        }
         break;
       case "shotAt":
         this.events.add("shotAt");
@@ -759,10 +770,15 @@ export class StorySystem {
       this.progressSerial += 1;
       this.repairing = -1;
       this.dirty = true;
+      this.dropChatter();
       this.reconcile(true);
       this.persist();
     }
-    for (const effect of result.effects) this.carryOut(effect);
+    result.effects.forEach((effect, index) => {
+      this.ambient = index < (result.triggered ?? 0);
+      this.carryOut(effect);
+    });
+    this.ambient = false;
     // A new checkpoint: what a fall goes back to, as the step begins (its own effects done).
     if (this.state.checkpoint !== checkpoint && this.state.checkpoint) this.checkpointState = structuredClone(this.state);
     if (result.effects.length > 0) this.dirty = true;
@@ -847,6 +863,7 @@ export class StorySystem {
       case "cutscene": {
         const cutscene = this.campaign.cutscenes.find((entry) => entry.id === effect.scene);
         if (cutscene) this.scene = { cutscene, time: 0, cued: 0 };
+        if (cutscene && !this.ambient) this.dropChatter();
         break;
       }
       case "cut":
@@ -1054,7 +1071,7 @@ export class StorySystem {
   private say(lines: readonly Line[]): void {
     for (const line of lines) {
       const text = line.text.ru.length > line.text.en.length ? line.text.ru : line.text.en;
-      this.queue.push({ id: (this.serial += 1), who: line.who, via: line.via ?? "radio", text: line.text, duration: lineDuration(text), elapsed: 0 });
+      this.queue.push({ id: (this.serial += 1), who: line.who, via: line.via ?? "radio", text: line.text, duration: lineDuration(text), elapsed: 0, ambient: this.ambient || undefined });
     }
   }
 
