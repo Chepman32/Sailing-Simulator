@@ -71,6 +71,11 @@ export const SWIM_START = 1.3;
 export const WADE_SLOWDOWN = 0.55;
 /** Steepest ground he walks up without a jump (rise over run). */
 export const MAX_WALK_SLOPE = 1.6;
+/** Crouched: his pace, m/s, and his height and his eyes' (over his feet), m. */
+export const CROUCH_SPEED = 1.45;
+export const CROUCHED_BODY = 1.15;
+export const STANDING_BODY = 1.8;
+export const CROUCH_EYE_DROP = 0.62;
 
 /** Half the width of his body: how close he comes to a trunk or a wall, m. */
 export const BODY_RADIUS = 0.3;
@@ -377,8 +382,12 @@ export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, d
 
 
 export type GroundWorld = {
-  /** Height of whatever he stands on at (x, z): a beach, a hillside, the sand under the shallows, m. */
-  ground: (x: number, z: number) => number;
+  /**
+   * Height of whatever he stands on at (x, z): a beach, a hillside, the sand
+   * under the shallows, a floor of a building no higher than a step above
+   * `feetY` (given, it picks the storey he is on), m.
+   */
+  ground: (x: number, z: number, feetY?: number) => number;
   /** Height of the water surface at (x, z), m. */
   surface: (x: number, z: number) => number;
   /**
@@ -391,7 +400,9 @@ export type GroundWorld = {
    * Whether a body standing at (x, z) with its feet at `feetY` would be
    * inside a building's wall, a rail or a post (see `UprightGrid`).
    */
-  blocked?: (x: number, z: number, feetY: number) => boolean;
+  blocked?: (x: number, z: number, feetY: number, height?: number) => boolean;
+  /** Room over his feet at (x, z): from the feet to the lowest thing overhead, m (Infinity: the sky). */
+  headroom?: (x: number, z: number, feetY: number) => number;
 };
 
 export type WalkInput = {
@@ -403,6 +414,8 @@ export type WalkInput = {
   yaw: number;
   /** The jump key went down this step. */
   jump: boolean;
+  /** Crouching: slow, quiet, low (under a culvert's roof, behind a wall). */
+  crouch?: boolean;
 };
 
 export type WalkState = {
@@ -441,8 +454,8 @@ export function createWalkState(x: number, y: number, z: number): WalkState {
 export const WADE_STEP_DEPTH = 0.05;
 
 /** Water over the ground at (x, z), m (0 on dry land). */
-export function wadingDepth(x: number, z: number, world: GroundWorld): number {
-  return Math.max(0, world.surface(x, z) - world.ground(x, z));
+export function wadingDepth(x: number, z: number, world: GroundWorld, feetY?: number): number {
+  return Math.max(0, world.surface(x, z) - world.ground(x, z, feetY));
 }
 
 /**
@@ -454,10 +467,11 @@ export function wadingDepth(x: number, z: number, world: GroundWorld): number {
 export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld, dt: number, normal = { x: 0, z: 0 }): void {
   const step = clamp(dt, 0, 0.05);
   if (step <= 0) return;
-  const water = wadingDepth(state.x, state.z, world);
+  const water = wadingDepth(state.x, state.z, world, state.y);
   // Up to the knees he hardly notices; up to the hips it is a slog.
   const wade = 1 - (1 - WADE_SLOWDOWN) * clamp((water - 0.15) / 0.75, 0, 1);
-  const speed = (input.sprint ? RUN_SPEED : WALK_SPEED) * wade;
+  const speed = (input.crouch ? CROUCH_SPEED : input.sprint ? RUN_SPEED : WALK_SPEED) * wade;
+  const height = input.crouch ? CROUCHED_BODY : STANDING_BODY;
   const sinYaw = Math.sin(input.yaw);
   const cosYaw = Math.cos(input.yaw);
   const moveX = clamp(input.moveX, -1, 1);
@@ -477,7 +491,7 @@ export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld,
   // Swept in short moves (no more than a hand's breadth each), so a fast
   // frame never carries him through a trunk or over the lip of a cliff.
   // Already inside something (put down there): free to walk out of it.
-  const stuckInside = world.blocked?.(state.x, state.z, state.y) ?? false;
+  const stuckInside = world.blocked?.(state.x, state.z, state.y, height) ?? false;
   const travel = Math.hypot(state.vx, state.vz) * step;
   const moves = Math.min(16, Math.max(1, Math.ceil(travel / 0.1)));
   for (let move = 0; move < moves; move += 1) {
@@ -488,11 +502,11 @@ export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld,
       if (Math.abs(delta) < 1e-7) continue;
       const nextX = axis === 0 ? state.x + delta : state.x;
       const nextZ = axis === 0 ? state.z : state.z + delta;
-      const ground = world.ground(nextX, nextZ);
+      const ground = world.ground(nextX, nextZ, state.y);
       const rise = ground - state.y;
       const blocked =
         (state.grounded ? rise > Math.max(0.05, Math.abs(delta) * MAX_WALK_SLOPE) : rise > 0.05) ||
-        (!stuckInside && (world.blocked?.(nextX, nextZ, state.y) ?? false));
+        (!stuckInside && (world.blocked?.(nextX, nextZ, state.y, height) ?? false));
       if (blocked) {
         if (axis === 0) state.vx = 0;
         else state.vz = 0;
@@ -516,7 +530,7 @@ export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld,
     }
   }
 
-  const ground = world.ground(state.x, state.z);
+  const ground = world.ground(state.x, state.z, state.y);
   state.jumped = false;
   const canSpring = state.grounded || (state.airTime < COYOTE_TIME && state.vy <= 0.5);
   if (input.jump && canSpring) {

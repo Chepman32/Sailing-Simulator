@@ -35,6 +35,8 @@ export const WEAPON_ORDER: readonly WeaponId[] = ["pistol", "rifle"];
 
 export class Firearm {
   ammo: number;
+  /** Rounds carried for it besides the magazine (null: as many as needed). */
+  reserve: number | null = null;
   private cooldown = 0;
   private reloading = 0;
 
@@ -51,7 +53,14 @@ export class Firearm {
     if (this.reloading > 0 || this.cooldown > 0 || this.ammo <= 0) return false;
     this.ammo -= 1;
     this.cooldown = this.spec.interval;
-    if (this.ammo === 0) this.reloading = this.spec.reload;
+    if (this.ammo === 0 && (this.reserve === null || this.reserve > 0)) this.reloading = this.spec.reload;
+    return true;
+  }
+
+  /** Changes the magazine now, if it is not full and there is something to put in. */
+  reload(): boolean {
+    if (this.reloading > 0 || this.ammo >= this.spec.magazine || this.reserve === 0) return false;
+    this.reloading = this.spec.reload;
     return true;
   }
 
@@ -61,7 +70,10 @@ export class Firearm {
       this.reloading -= delta;
       if (this.reloading <= 0) {
         this.reloading = 0;
-        this.ammo = this.spec.magazine;
+        const wanted = this.spec.magazine - this.ammo;
+        const taken = this.reserve === null ? wanted : Math.min(wanted, this.reserve);
+        this.ammo += taken;
+        if (this.reserve !== null) this.reserve -= taken;
       }
     }
   }

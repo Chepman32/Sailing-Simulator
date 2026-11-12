@@ -108,6 +108,10 @@ import type { Place } from "./story/AtlasMath";
 import { StoryProps } from "./story/StoryProps";
 import { compileSafely } from "./core/SafeCompile";
 import { StorySystem, type StoryHost, type SkipperPose } from "./story/StorySystem";
+import { LevelSystem } from "./level/LevelSystem";
+import { ActorSystem, type ActorEvent } from "./actors/ActorSystem";
+import { PlayerHealth } from "./actors/PlayerHealth";
+import { STORY_LEVELS } from "./story/levels";
 import { readSave, saveBlock, writeSave, SAVE_VERSION, type SaveBlock, type SaveSlotId } from "./story/SaveGames";
 import { HULL_CENTER_Z, HULL_HALF_BEAM, HULL_HALF_LENGTH, HULL_OFFSET_X } from "./environment/shaders/oceanShader";
 
@@ -254,6 +258,13 @@ export class Simulator {
   private ocean!: OceanSystem;
   private environment!: EnvironmentSystem;
   private islands!: IslandSystem;
+  private levels!: LevelSystem;
+  /** The story's people on their feet (guards, a companion), and the skipper's own health in a fight. */
+  private actors: ActorSystem | null = null;
+  readonly health = new PlayerHealth();
+  /** Seconds since he went down (the story takes him back to its checkpoint after a moment), or −1. */
+  private downClock = -1;
+  private readonly actorEvents: ActorEvent[] = [];
   private physics!: VesselPhysics;
   private vessel!: Vessel;
   private wake!: WakeSystem;
@@ -368,7 +379,9 @@ export class Simulator {
   /** Sand or beach under (x, z): the sea floor, or an island's ground where it is higher. */
   private readonly groundBase = (x: number, z: number): number => Math.max(seabedHeight(x, z), this.islands.terrainHeightAt(x, z));
   /** What a walker stands on: the ground, or a pier's planks. */
-  private readonly groundWalk = (x: number, z: number): number => Math.max(this.groundBase(x, z), this.islands.pierDeckAt(x, z));
+  /** What a walker stands on: terrain, sea floor, a pier's planks, a story level's floors (the storey at `feetY`). */
+  private readonly groundWalk = (x: number, z: number, feetY?: number): number =>
+    Math.max(this.groundBase(x, z), this.islands.pierDeckAt(x, z), this.levels ? this.levels.floorAt(x, z, feetY) : Number.NEGATIVE_INFINITY);
   /**
    * A short, eased flight of the camera from where it was to where the new
    * view wants it (leaving the wheel for the skipper's eyes, or coming back),
@@ -585,6 +598,9 @@ export class Simulator {
       this.environment.setWeatherKind(this.currentWeatherKind(), true);
       this.environment.setShadowMapSize(this.quality.settings.shadowMapSize);
       this.environment.setSkyDetail(this.quality.settings.skyDetail);
+      // The story's built places: their levelled ground is the terrain's before any island is built.
+      this.levels = new LevelSystem(STORY_LEVELS, (x, z) => this.groundBase(x, z));
+      this.scene.add(this.levels.group);
       this.islands = new IslandSystem(
         this.scene,
         this.assets,
@@ -745,6 +761,9 @@ export class Simulator {
       this.storyCast = new Traders(this.scene, this.traderModels());
       this.mirrorHidden.push(this.storyCast.group, this.combatEffects.group);
       this.story = new StorySystem(this.storyHost, this.drones, this.storyProps, this.storyCast);
+      this.actors = new ActorSystem(this.actorHost, this.levels);
+      this.scene.add(this.actors.group);
+      this.mirrorHidden.push(this.actors.group);
       this.blobShadows = new BlobShadows(this.scene);
       this.mirrorHidden.push(this.blobShadows.mesh);
       const shadowModel = this.assets.animated("traderMan");
@@ -808,7 +827,8 @@ export class Simulator {
           ground: this.groundWalk,
           surface: this.swimSurface,
           obstacle: (x, z, normal) => this.landObstacle(x, z, normal),
-          blocked: (x, z, feetY) => this.islands.wallBlocked(x, z, feetY),
+          blocked: (x, z, feetY, height) => this.islands.wallBlocked(x, z, feetY) || this.levels.blocked(x, z, feetY, 0.3, height),
+          headroom: (x, z, feetY) => this.levels.headroom(x, z, feetY),
         },
       );
       this.applyEconomy();
@@ -1996,6 +2016,7 @@ export class Simulator {
     this.ocean.update(this.elapsed, this.physics.position, this.physics.heading, this.physics.telemetry.forwardSpeed, focus);
     this.islands.setNight(this.environmentState.nightFactor);
     this.islands.update(this.elapsed, this.environment.currentWeather.wind, focus.x, focus.z, this.camera.camera.position);
+    this.levels.update(delta, this.elapsed, focus.x, focus.z);
     // The helm camera looks out through the skipper's eyes: he steps out of
     // its way. Away from the helm the player is the skipper.
     const diving = this.diver?.active ?? false;
@@ -2260,6 +2281,66 @@ export class Simulator {
       if (throttle !== undefined) this.state.controls.throttle = throttle;
     },
   };
+
+  /** The world the story's people walk in, see by, and shoot in. */
+  private readonly actorHost: import("./actors/ActorSystem").ActorHost = {
+    ground: (x, z, feetY) => this.groundWalk(x, z, feetY),
+    terrain: (x, z) => this.groundBase(x, z),
+    model: (model) => {
+      const key = model === "woman" ? "traderWoman" : "traderMan";
+      if (!this.assets.has(key)) return null;
+      const asset = this.assets.animated(key);
+      return asset ? { scene: asset.scene, animations: asset.animations } : null;
+    },
+    player: () => {
+      const diver = this.diver;
+      if (!diver?.active || diver.mode !== "land") return null;
+      const walk = diver.walk;
+      return { x: walk.x, y: walk.y, z: walk.z, eye: walk.y + 1.62 - diver.crouchBlend * 0.62, speed: Math.hypot(walk.vx, walk.vz), crouched: diver.crouched, boat: false };
+    },
+    hurtPlayer: (damage, fromX, fromZ) => this.hurtPlayer(damage, fromX, fromZ),
+    light: () => 1 - this.environmentState.nightFactor * 0.7,
+    effects: {
+      flash: (at, size) => this.combatEffects?.flash(at, size),
+      tracer: (from, to) => this.combatEffects?.tracer(from, to, true),
+      impact: (at, material) => this.impactAt(at, material),
+    },
+    shotSound: (kind, at) => this.combatAudio?.distantShot(kind, at),
+    event: (event) => this.actorEvents.push(event),
+    skill: () => 1,
+  };
+
+  /** A round's strike on something solid: sparks off metal, dust and chips off stone and plaster. */
+  private impactAt(at: THREE.Vector3, material: string): void {
+    const effects = this.combatEffects;
+    if (!effects) return;
+    if (material === "metal") effects.sparks(at, 8, 1);
+    else if (material === "wood") effects.splinters(at);
+    else effects.puff(at, 0.35, 0.6, 0.86, 0.84, 0.8, 0.6, 0.6);
+    this.combatAudio?.ricochet(at, material);
+  }
+
+  /** The skipper hit: his health, the shock of it, and down if it was too much. */
+  private hurtPlayer(damage: number, fromX: number, fromZ: number): void {
+    const diver = this.diver;
+    if (!diver?.active || this.downClock >= 0) return;
+    const yaw = Math.atan2(fromX - diver.walk.x, fromZ - diver.walk.z);
+    const down = this.health.hurt(damage, yaw);
+    this.combatShake = Math.max(this.combatShake, 0.45);
+    this.combatAudio?.playerHit();
+    if (down) {
+      this.downClock = 0;
+      diver.setFrozen?.(true);
+    }
+  }
+
+  /** Where the last hit came from, off his view (radians, + to his right). */
+  private hitBearing(): number {
+    const diver = this.diver;
+    if (!diver?.active) return 0;
+    const off = this.health.hitFrom - diver.yaw;
+    return -Math.atan2(Math.sin(off), Math.cos(off));
+  }
 
   /** The story's alert on her screens (null: they work), in the player's language. */
   private storyAlert: readonly { ru: string; en: string }[] | null = null;
@@ -2693,8 +2774,23 @@ export class Simulator {
     this.shotDirection.y += (Math.random() - 0.5) * 2 * sway;
     this.shotDirection.z += (Math.random() - 0.5) * 2 * sway;
     this.shotDirection.normalize();
-    const result = drones.shoot(this.muzzlePoint, this.shotDirection, range, power);
     const effects = this.combatEffects;
+    // People and walls first (on foot, ashore): a guard, a wall, the ground.
+    if (this.actors && this.diver?.active) {
+      const damage = gun.spec.id === "pistol" ? 34 : 70;
+      const struck = this.actors.playerShot(this.muzzlePoint, this.shotDirection, range, damage);
+      const distance = struck.at.distanceTo(this.muzzlePoint);
+      if (struck.id || distance < range - 0.5) {
+        this.combatAudio?.gunshot(gun.spec.id);
+        this.projectScratch.copy(this.muzzlePoint).addScaledVector(this.shotDirection, 0.9);
+        effects?.flash(this.projectScratch, 0.35);
+        effects?.tracer(this.muzzlePoint, struck.at, false);
+        if (!struck.id) this.impactAt(struck.at, struck.material);
+        this.lastHit = { id: this.lastHit.id + 1, zone: struck.id ? "hull" : "miss", armour: false, condition: null };
+        return true;
+      }
+    }
+    const result = drones.shoot(this.muzzlePoint, this.shotDirection, range, power);
     this.combatAudio?.gunshot(gun.spec.id);
     if (effects) {
       // In his own eyes the flash is out at the muzzle, not in them.
@@ -3891,7 +3987,15 @@ export class Simulator {
         magazine: this.armoury.current?.spec.magazine ?? 0,
         reload: this.armoury.current?.reloadProgress ?? 1,
         alarm: this.story?.active ? (this.drones?.alarm().suspicion ?? 0) : 0,
-        attacking: this.story?.active ? (this.drones?.alarm().attacking ?? false) : false,
+        attacking: this.story?.active ? (this.drones?.alarm().attacking ?? false) || this.actors?.alertLevel === "combat" : false,
+        reserve: this.armoury.current?.reserve ?? null,
+        health: this.health.fraction,
+        sinceHit: this.health.sinceHit,
+        hitFrom: this.hitBearing(),
+        bandages: this.health.bandages,
+        bandaging: this.health.bandaging,
+        crouched: this.diver?.crouched ?? false,
+        alert: this.actors?.alertLevel ?? "quiet",
       },
       fps: this.fps,
       status: this.status,

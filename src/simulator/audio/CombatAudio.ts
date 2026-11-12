@@ -230,6 +230,76 @@ export class CombatAudio {
     window.setTimeout(() => panner.disconnect(), 500);
   }
 
+  /**
+   * A gun fired by someone else (a guard's carbine, a pistol), placed where
+   * it was fired: a sharp crack near, a flat thud with a long tail of echo
+   * off the hills far off.
+   */
+  distantShot(kind: "carbine" | "pistol", at: Point): void {
+    const mixer = this.ready();
+    if (!mixer) return;
+    const { context, master } = mixer;
+    const listener = this.audio.listener;
+    const distance = Math.hypot(at.x - listener.x, at.y - listener.y, at.z - listener.z);
+    const start = context.currentTime + 0.01 + distance / SPEED_OF_SOUND;
+    const panner = this.panner(context, at);
+    panner.refDistance = 12;
+    panner.rolloffFactor = 0.8;
+    panner.connect(master);
+    const near = Math.max(0, 1 - distance / 120);
+    const level = kind === "carbine" ? 1 : 0.7;
+    // The crack (a high, short burst) fades with distance faster than the boom.
+    this.burstOfNoise(context, panner, start, 0.02, 1.1 * level * near, "highpass", 2400, 0.7, 1.6);
+    this.burstOfNoise(context, panner, start, 0.12, 0.8 * level, "lowpass", 900 + 1500 * near, 0.7, 0.9);
+    this.thump(context, panner, start, kind === "carbine" ? 95 : 130, 0.14, 0.9 * level);
+    if (mixer.reverb) {
+      const wet = context.createGain();
+      wet.gain.value = 0.35 + 0.4 * (1 - near);
+      panner.connect(wet).connect(mixer.reverb);
+    }
+    window.setTimeout(() => panner.disconnect(), (start - context.currentTime + 1.5) * 1000);
+  }
+
+  /** A round striking something near the listener: a ricochet off steel, chips off stone. */
+  ricochet(at: Point, material: string): void {
+    const mixer = this.ready();
+    if (!mixer) return;
+    const { context, master } = mixer;
+    const listener = this.audio.listener;
+    const distance = Math.hypot(at.x - listener.x, at.y - listener.y, at.z - listener.z);
+    if (distance > 70) return;
+    const start = context.currentTime + 0.01 + distance / SPEED_OF_SOUND;
+    const panner = this.panner(context, at);
+    panner.refDistance = 6;
+    panner.connect(master);
+    if (material === "metal") {
+      const osc = context.createOscillator();
+      osc.type = "triangle";
+      const pitch = 1800 + Math.random() * 1600;
+      osc.frequency.setValueAtTime(pitch, start);
+      osc.frequency.exponentialRampToValueAtTime(pitch * 0.5, start + 0.3);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.18, start + 0.003);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.32);
+      osc.connect(gain).connect(panner);
+      osc.start(start);
+      osc.stop(start + 0.34);
+    }
+    this.burstOfNoise(context, panner, start, 0.05, material === "glass" ? 0.9 : 0.5, material === "glass" ? "highpass" : "bandpass", material === "glass" ? 4000 : 1600, 1.2, 1.4);
+    window.setTimeout(() => panner.disconnect(), (start - context.currentTime + 0.6) * 1000);
+  }
+
+  /** He is hit: a dull blow, his breath knocked out. */
+  playerHit(): void {
+    const mixer = this.ready();
+    if (!mixer) return;
+    const { context, master } = mixer;
+    const now = context.currentTime + 0.005;
+    this.thump(context, master, now, 70, 0.22, 0.9);
+    this.burstOfNoise(context, master, now, 0.18, 0.35, "lowpass", 600, 0.7, 0.8);
+  }
+
   /** The skipper's round arriving at a drone: a ring off armour, a crack of glass, or a dull hit in the jets. */
   impact(at: Point, zone: "dome" | "jet" | "hull", armour: boolean): void {
     const mixer = this.ready();

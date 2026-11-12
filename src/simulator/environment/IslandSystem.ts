@@ -1,3 +1,4 @@
+import { padHeight } from "./TerrainPads";
 import * as THREE from "three";
 import type { AssetManager } from "../core/AssetManager";
 import { computeBoundingSphereFast, computeVertexNormalsFast, mergeTransformed } from "../core/FastGeometry";
@@ -41,6 +42,7 @@ import { patchMaterialShader } from "../core/ShaderPatch";
 import {
   furnishIsland,
   hillHeight,
+  clearingEdge,
   inClearing,
   islandClearings,
   islandPoint,
@@ -649,7 +651,7 @@ export class IslandSystem {
       }
       // The grass thins out over the last couple of metres into a clearing, not at a ruled ring.
       let edge = Number.POSITIVE_INFINITY;
-      for (const clearing of clearings) edge = Math.min(edge, Math.hypot(lx - clearing.x, lz - clearing.z) - clearing.radius);
+      for (const clearing of clearings) edge = Math.min(edge, clearingEdge(clearing, lx, lz));
       if (edge < 0) return 0;
       const thinning = smoothstep(0, 2.2, edge);
       for (const stone of visual.stones) {
@@ -1220,9 +1222,13 @@ export class IslandSystem {
         const bump = volcanic ? 0 : hillHeight(profile, x, z, radial);
         const y = volcanic
           ? this.terrainSurfaceHeight(island, radial, angle)
-          : this.islandTerrainHeight(radial, angle, island.seed, island.height) +
-            (patch - 0.5) * (0.5 + highland * 1.6) * (1 - smoothstep(0.7, 0.95, radial)) +
-            bump;
+          : padHeight(
+              island.centerX + x,
+              island.centerZ + z,
+              this.islandTerrainHeight(radial, angle, island.seed, island.height) +
+                (patch - 0.5) * (0.5 + highland * 1.6) * (1 - smoothstep(0.7, 0.95, radial)) +
+                bump,
+            );
         positions[vertex * 3] = x;
         positions[vertex * 3 + 1] = y;
         positions[vertex * 3 + 2] = z;
@@ -1330,10 +1336,12 @@ export class IslandSystem {
     const z = Math.sin(angle) * radius * island.scaleZ;
     const patch = terrainNoise(x * 0.11 + island.seed * 17.3, z * 0.11 - island.seed * 9.1);
     const highland = smoothstep(3, 10, island.height);
-    return (
+    return padHeight(
+      island.centerX + x,
+      island.centerZ + z,
       this.islandTerrainHeight(radial, angle, island.seed, island.height) +
-      (patch - 0.5) * (0.5 + highland * 1.6) * (1 - smoothstep(0.7, 0.95, radial)) +
-      hillHeight(this.profile(island), x, z, radial)
+        (patch - 0.5) * (0.5 + highland * 1.6) * (1 - smoothstep(0.7, 0.95, radial)) +
+        hillHeight(this.profile(island), x, z, radial),
     );
   }
 

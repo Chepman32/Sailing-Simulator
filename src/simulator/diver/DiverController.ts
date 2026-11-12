@@ -6,7 +6,9 @@ import {
   createSwimState,
   createWalkState,
   DIVE_DEPTH,
+  CROUCH_EYE_DROP,
   EYE_HEIGHT,
+  STANDING_BODY,
   GRAVITY,
   hop,
   hullDistance,
@@ -189,6 +191,25 @@ export class DiverController {
   }
 
   /** Control is the player's (not during the leap and the plunge that ends it). */
+  /** Crouched ashore (toggled by the crouch key), and how far down his eyes have gone (0…1). */
+  crouched = false;
+  crouchBlend = 0;
+
+  /** Crouches, or stands up if there is room overhead; returns whether he is crouched now. */
+  setCrouched(on: boolean): boolean {
+    if (!on && this.crouched && this.mode === "land") {
+      const room = this.land.headroom?.(this.walk.x, this.walk.z, this.walk.y) ?? Number.POSITIVE_INFINITY;
+      if (room < STANDING_BODY + 0.02) return true;
+      if (this.land.blocked?.(this.walk.x, this.walk.z, this.walk.y, STANDING_BODY)) return true;
+    }
+    this.crouched = on && this.mode === "land";
+    return this.crouched;
+  }
+
+  toggleCrouch(): boolean {
+    return this.setCrouched(!this.crouched);
+  }
+
   get inControl(): boolean {
     return this.mode !== "leap" && !(this.mode === "swim" && this.leapTime > 0 && this.leapTime < LEAP_SECONDS);
   }
@@ -295,6 +316,10 @@ export class DiverController {
   }
 
   private setMode(mode: DiverMode): void {
+    if (mode !== "land") {
+      this.crouched = false;
+      this.crouchBlend = 0;
+    }
     this.mode = mode;
     this.syncCursor();
     this.modeTime = 0;
@@ -512,6 +537,7 @@ export class DiverController {
       if (this.mode !== "swim" || this.depth < DIVE_DEPTH * 0.8) this.jump();
     }
     if (action === "torch" && !event.repeat) this.torch = !this.torch;
+    if (action === "crouch" && !event.repeat && this.mode === "land") this.toggleCrouch();
     if (action === "interact" && !event.repeat) this.interactRequested = true;
     // A walking key must not scroll the page or press a focused button.
     event.preventDefault();
@@ -602,7 +628,10 @@ export class DiverController {
     walkInput.moveY = input.y;
     walkInput.sprint = input.sprint;
     walkInput.yaw = this.yaw;
-    walkInput.jump = this.jumpRequested > 0 && this.inControl;
+    walkInput.jump = this.jumpRequested > 0 && this.inControl && !this.crouched;
+    // Breaking into a run stands him up (if there is room overhead).
+    if (input.sprint && this.crouched && (input.x !== 0 || input.y !== 0)) this.setCrouched(false);
+    walkInput.crouch = this.crouched;
     const wasAirborne = !walk.grounded;
     stepWalk(walk, walkInput, this.land, dt, this.normal);
     // Used if it lifted him; otherwise it waits a moment (pressed just
@@ -610,7 +639,10 @@ export class DiverController {
     if (walkInput.jump && (walk.vy > 0 || walk.jumped)) this.jumpRequested = 0;
     else this.jumpRequested = Math.max(0, this.jumpRequested - dt);
     if (wasAirborne && walk.grounded) this.stepClock = 0;
-    const water = wadingDepth(walk.x, walk.z, this.land);
+    const water = wadingDepth(walk.x, walk.z, this.land, walk.y);
+    // Too deep to crouch in; and a crouch eases in and out.
+    if (this.crouched && water > 0.6) this.setCrouched(false);
+    this.crouchBlend += ((this.crouched ? 1 : 0) - this.crouchBlend) * (1 - Math.exp(-dt * 9));
     if (walk.landed > 0) {
       this.landing = Math.min(1, walk.landed * 0.12);
       if (water > WADE_STEP_DEPTH) this.hooks.wade?.(this.scratch.set(walk.x, walk.y + water, walk.z), water, true);
@@ -897,7 +929,7 @@ export class DiverController {
       const walk = this.walk;
       const bob = Math.sin(this.bobClock) * 0.028 * (walk.grounded ? 1 : 0);
       this.landing = Math.max(0, this.landing - delta * 3);
-      camera.position.set(walk.x, walk.y + EYE_HEIGHT + bob - this.landing * 0.12 + this.eyeLag, walk.z);
+      camera.position.set(walk.x, walk.y + EYE_HEIGHT - this.crouchBlend * CROUCH_EYE_DROP + bob * (1 - this.crouchBlend * 0.6) - this.landing * 0.12 + this.eyeLag, walk.z);
       camera.rotation.set(this.pitch, this.yaw + Math.PI, Math.sin(this.bobClock * 0.5) * 0.004, "YXZ");
     } else if (this.mode === "deck") {
       const bob = Math.sin(this.bobClock) * 0.025 * (this.grounded ? 1 : 0);

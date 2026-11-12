@@ -1,3 +1,4 @@
+import { terrainPads } from "./TerrainPads";
 import * as THREE from "three";
 import { leafGeometry, leafMass, type LeafBuffers } from "./IslandVegetation";
 import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
@@ -22,7 +23,25 @@ import { islandEdgeNoise, type IslandDefinition } from "./IslandMath";
 export type IslandCharacter = "cay" | "lush" | "hilly" | "rocky";
 
 export type Hill = { x: number; z: number; height: number; sigma: number };
-export type Clearing = { x: number; z: number; radius: number };
+/**
+ * Ground where nothing grows (island-local metres): a circle, or — a story's
+ * levelled pad (`TerrainPads`) — a rectangle `halfX` × `halfZ` turned by
+ * `angle`, with `radius` the margin kept clear round it.
+ */
+export type Clearing = { x: number; z: number; radius: number; halfX?: number; halfZ?: number; angle?: number };
+
+/** Signed distance from (x, z) to a clearing's edge (negative inside), island-local metres. */
+export function clearingEdge(clearing: Clearing, x: number, z: number): number {
+  if (clearing.halfX === undefined || clearing.halfZ === undefined) return Math.hypot(x - clearing.x, z - clearing.z) - clearing.radius;
+  const dx = x - clearing.x;
+  const dz = z - clearing.z;
+  const cos = Math.cos(clearing.angle ?? 0);
+  const sin = Math.sin(clearing.angle ?? 0);
+  const u = Math.abs(dx * cos + dz * sin) - clearing.halfX;
+  const v = Math.abs(-dx * sin + dz * cos) - clearing.halfZ;
+  const outside = Math.hypot(Math.max(u, 0), Math.max(v, 0));
+  return (outside > 0 ? outside : Math.max(u, v)) - clearing.radius;
+}
 
 export type IslandProfile = {
   character: IslandCharacter;
@@ -180,11 +199,17 @@ export function islandClearings(island: IslandDefinition, profile: IslandProfile
     const tower = islandPoint(island, 0.5, profile.lighthouseAngle);
     clearings.push({ ...tower, radius: 6 + 4.2 * LIGHTHOUSE_SCALE });
   }
+  // The story's levelled ground (an outpost's yard, a camp).
+  const reach = island.beachRadius * Math.max(1, island.scaleZ) * 1.2;
+  for (const pad of terrainPads()) {
+    if (Math.abs(pad.x - island.centerX) > reach + pad.halfX + pad.halfZ || Math.abs(pad.z - island.centerZ) > reach + pad.halfX + pad.halfZ) continue;
+    clearings.push({ x: pad.x - island.centerX, z: pad.z - island.centerZ, radius: pad.clear ?? 2, halfX: pad.halfX, halfZ: pad.halfZ, angle: pad.angle });
+  }
   return clearings;
 }
 
 export function inClearing(clearings: readonly Clearing[], x: number, z: number, margin = 0): boolean {
-  return clearings.some((clearing) => Math.hypot(x - clearing.x, z - clearing.z) < clearing.radius + margin);
+  return clearings.some((clearing) => clearingEdge(clearing, x, z) < margin);
 }
 
 // --- Geometry helpers -----------------------------------------------------------

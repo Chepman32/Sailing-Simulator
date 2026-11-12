@@ -123,6 +123,18 @@ export type SimulationSnapshot = {
     /** 0 unseen … 1 found; and whether a drone is attacking now. */
     alarm: number;
     attacking: boolean;
+    /** Rounds carried besides the magazine (null: no count kept). */
+    reserve: number | null;
+    /** His health 0…1, seconds since he was last hit, and from where (radians off his view, + to his right). */
+    health: number;
+    sinceHit: number;
+    hitFrom: number;
+    bandages: number;
+    bandaging: boolean;
+    /** Crouched ashore. */
+    crouched: boolean;
+    /** The guards: quiet, looking, fighting. */
+    alert: "quiet" | "suspicious" | "combat";
   };
   fps: number;
   status: "loading" | "running" | "paused" | "error";
