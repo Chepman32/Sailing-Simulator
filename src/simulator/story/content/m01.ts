@@ -26,6 +26,8 @@ const hero = (ru: string, en: string): Line => ({ who: "hero", via: "voice", tex
 const think = (ru: string, en: string): Line => ({ who: "hero", via: "thought", text: t(ru, en) });
 const say = (who: string, ru: string, en: string, via: Line["via"] = "voice"): Line => ({ who, via, text: t(ru, en) });
 const lines = (...list: Line[]): Effect => ({ do: "say", lines: list });
+/** A recorded effect of M01's scenes (`/audio/story/m01/sfx/…`). */
+const sfx = (clip: string, volume = 1): Effect => ({ do: "sfx", clip: `m01/sfx/${clip}`, volume });
 
 /** The outpost's eleven, there from the start: nobody "appears out of the air". */
 const POST = ["p01", "p02", "p03", "p04", "p05", "p06", "i07", "i08", "i09", "d10", "d11"] as const;
@@ -291,6 +293,7 @@ export const M01: Mission = {
     // --- S01 · The Slant Shoal ---------------------------------------------------------
     {
       id: "wake",
+      bed: "m01/sfx/FX045_beach_summer_day_loop",
       objective: { kind: "wait", seconds: 3.2 },
       checkpoint: { yacht: "stvor9:skiff", skipper: "ashore", spot: "kosaya:wake" },
       onStart: [
@@ -311,6 +314,7 @@ export const M01: Mission = {
     },
     {
       id: "shore",
+      bed: "m01/sfx/FX045_beach_summer_day_loop",
       goal: t("Осмотрите место крушения", "Look over the wreck site"),
       hint: t("Что-то мигает синим у кромки воды", "Something's blinking blue at the water's edge"),
       objective: { kind: "when", when: { any: [{ flags: ["used:container"], quiet: true }, { stepTime: 70, quiet: true }] } },
@@ -318,6 +322,7 @@ export const M01: Mission = {
     },
     {
       id: "mark-in",
+      bed: "m01/sfx/FX045_beach_summer_day_loop",
       objective: { kind: "listen" },
       onStart: [
         { do: "put", at: "kosaya:meet-hero" },
@@ -330,6 +335,7 @@ export const M01: Mission = {
     },
     {
       id: "meet",
+      bed: "m01/sfx/FX045_beach_summer_day_loop",
       objective: { kind: "listen" },
       onStart: [
         lines(
@@ -356,6 +362,7 @@ export const M01: Mission = {
     // --- S02 · The trail -----------------------------------------------------------------
     {
       id: "follow",
+      bed: "m01/sfx/FX055_tropical_jungle_day_loop",
       goal: t("Следуйте за Марком к наблюдательному выступу", "Follow Mark to the lookout ledge"),
       objective: { kind: "reach", at: "stvor9:overlook", by: "foot", radius: 7 },
       marker: "@actor:mark",
@@ -367,6 +374,8 @@ export const M01: Mission = {
           mark("Только тем, кого уже пытались убить на моих глазах.", "Only to people somebody's already tried to kill in front of me."),
         ),
         { do: "give", what: "pistol" },
+        sfx("FX060_pistol_hand_over"),
+        sfx("FX061_pistol_slide", 0.8),
         { do: "give", what: "knife" },
         { do: "actor", id: "mark", to: "kosaya:mark-trail1", pace: "walk" },
       ],
@@ -375,6 +384,7 @@ export const M01: Mission = {
     // --- S03 · The ledge over Створ-9 -----------------------------------------------------
     {
       id: "overlook",
+      bed: "m01/sfx/FX064_overlook_seabreeze",
       objective: { kind: "listen" },
       checkpoint: { yacht: "stvor9:skiff", skipper: "ashore", spot: "stvor9:overlook" },
       onStart: [
@@ -394,12 +404,14 @@ export const M01: Mission = {
     },
     {
       id: "scout",
+      bed: "m01/sfx/FX064_overlook_seabreeze",
       goal: t("Осмотрите заставу в бинокль Марка", "Look the outpost over through Mark's binoculars"),
       objective: { kind: "use", id: "binoculars" },
       marker: "stvor9:binoculars",
     },
     {
       id: "choose",
+      bed: "m01/sfx/FX064_overlook_seabreeze",
       objective: { kind: "listen" },
       onStart: [lines(hero("Хорошо. Я выбираю путь. Ты идёшь за мной?", "Fine. I pick the way. You're coming behind me?"), mark("Я прикрою. Но стрелять вместо тебя весь день не собираюсь.", "I'll cover you. But I'm not doing your shooting for you all day."))],
       // The binoculars' scene holds on the jetty until the last word is said.
@@ -409,6 +421,7 @@ export const M01: Mission = {
     // --- S04 · The perimeter -------------------------------------------------------------
     {
       id: "infiltrate",
+      bed: "m01/sfx/FX068_outpost_day_loop",
       goal: t("Проникните на заставу «Створ-9»", "Get inside Stvor-9"),
       hint: t("Ворота, водосток или гребень. Пригнуться — C", "The gate, the drain or the ridge. Crouch — C"),
       objective: { kind: "when", when: { area: "stvor9:hq" } },
@@ -419,6 +432,7 @@ export const M01: Mission = {
     // --- S05 · The white block, the archive, Luis ------------------------------------------
     {
       id: "journal",
+      bed: "m01/sfx/FX087_office_ac_loop",
       goal: t("Найдите журнал морских операций", "Find the sea operations log"),
       hint: t("Архив — на первом этаже, терминал у дальней стены", "The archive is on the ground floor, the terminal by the far wall"),
       objective: { kind: "use", id: "terminal" },
@@ -427,6 +441,7 @@ export const M01: Mission = {
     },
     {
       id: "copy",
+      bed: "m01/sfx/FX087_office_ac_loop",
       goal: t("Скопируйте данные об атаке на яхту", "Copy the record of the attack on the yacht"),
       objective: { kind: "use", id: "terminal-copy" },
       marker: "stvor9:terminal",
@@ -439,6 +454,7 @@ export const M01: Mission = {
     },
     {
       id: "copying",
+      bed: "m01/sfx/FX087_office_ac_loop",
       objective: { kind: "wait", seconds: 5.5 },
       onStart: [{ do: "switch", name: "stvor9:terminal", value: "copy:0.3" }, lines(hero("Здесь слишком много записей.", "There are too many entries here."), mark("Тащим всё. В убежище разберём.", "Take the lot. We'll sort it out at the haven."))],
       onComplete: [{ do: "switch", name: "stvor9:terminal", value: "copy:3" }, { do: "flag", flag: "m01_evidence_copied" }],
@@ -447,6 +463,7 @@ export const M01: Mission = {
     // --- S06 · The document that can't be explained ---------------------------------------
     {
       id: "attachment",
+      bed: "m01/sfx/FX087_office_ac_loop",
       goal: t("Откройте вложение к журналу", "Open the attachment to the log"),
       objective: { kind: "use", id: "terminal-order" },
       marker: "stvor9:terminal",
@@ -454,6 +471,7 @@ export const M01: Mission = {
     },
     {
       id: "order",
+      bed: "m01/sfx/FX087_office_ac_loop",
       objective: { kind: "listen" },
       onStart: [
         { do: "freeze", on: true },
@@ -474,6 +492,7 @@ export const M01: Mission = {
     },
     {
       id: "convoy",
+      bed: "m01/sfx/FX087_office_ac_loop",
       objective: { kind: "wait", seconds: 7.5 },
       onStart: [
         { do: "switch", name: "stvor9:jeeps", value: "arrive" },
@@ -484,6 +503,7 @@ export const M01: Mission = {
     },
     {
       id: "deploy",
+      bed: "m01/sfx/FX068_outpost_day_loop",
       objective: { kind: "listen" },
       presence: [{ kind: "actors", ids: RELIEF }],
       onStart: [
@@ -511,6 +531,7 @@ export const M01: Mission = {
     // --- S07 · The breakout to the jetty -------------------------------------------------
     {
       id: "breakout",
+      bed: "m01/sfx/FX068_outpost_day_loop",
       goal: t("Покиньте заставу через причал", "Get out of the outpost by the jetty"),
       hint: t("Боковая лестница, за контейнерами — к лодке. R — перезарядка, B — бинт", "The side stairs, behind the containers, to the boat. R reload, B bandage"),
       objective: { kind: "reach", at: "stvor9:mooring", by: "foot", radius: 3.2 },
@@ -529,6 +550,7 @@ export const M01: Mission = {
     },
     {
       id: "castoff",
+      bed: "m01/sfx/FX068_outpost_day_loop",
       goal: t("Отдайте швартов и садитесь за руль", "Cast off and take the tiller"),
       objective: { kind: "use", id: "mooring" },
       marker: "stvor9:mooring",
@@ -570,6 +592,7 @@ export const M01: Mission = {
     },
     {
       id: "cove",
+      bed: "m01/sfx/EXFX0048_tropical_beach_breeze",
       goal: t("Доберитесь до укрытой бухты", "Reach the sheltered cove"),
       objective: { kind: "reach", at: "mark-cove", by: "yacht", radius: 40 },
       marker: "mark-cove",
@@ -579,6 +602,7 @@ export const M01: Mission = {
     // --- S09 · "We're not alone here" ------------------------------------------------------
     {
       id: "haven",
+      bed: "m01/sfx/EXFX0048_tropical_beach_breeze",
       objective: { kind: "listen" },
       presence: HAVEN,
       onStart: [
@@ -595,6 +619,7 @@ export const M01: Mission = {
     },
     {
       id: "haven-proof",
+      bed: "m01/sfx/EXFX0048_tropical_beach_breeze",
       objective: { kind: "listen" },
       presence: HAVEN,
       onStart: [
@@ -607,6 +632,7 @@ export const M01: Mission = {
     },
     {
       id: "haven-kenji",
+      bed: "m01/sfx/EXFX0048_tropical_beach_breeze",
       objective: { kind: "listen" },
       presence: HAVEN,
       onStart: [
@@ -621,6 +647,7 @@ export const M01: Mission = {
     },
     {
       id: "haven-sara",
+      bed: "m01/sfx/EXFX0048_tropical_beach_breeze",
       objective: { kind: "listen" },
       presence: HAVEN,
       onStart: [
@@ -634,6 +661,7 @@ export const M01: Mission = {
     },
     {
       id: "haven-viktor",
+      bed: "m01/sfx/EXFX0048_tropical_beach_breeze",
       objective: { kind: "listen" },
       presence: HAVEN,
       onStart: [
@@ -647,6 +675,7 @@ export const M01: Mission = {
     },
     {
       id: "haven-end",
+      bed: "m01/sfx/EXFX0048_tropical_beach_breeze",
       objective: { kind: "listen" },
       presence: HAVEN,
       onStart: [
@@ -693,7 +722,7 @@ export const M01: Mission = {
       id: "container",
       label: t("Осмотреть контейнер", "Look in the container"),
       when: { steps: ["shore"] },
-      do: [lines(hero("Пусто?.. Что я вообще вёз?", "Empty?.. What was I even carrying?"), hero("Передатчик. Серьёзно?", "A transmitter. Seriously?")), { do: "flag", flag: "m01_beacon_seen" }],
+      do: [sfx("FX051_beacon_case_open"), lines(hero("Пусто?.. Что я вообще вёз?", "Empty?.. What was I even carrying?"), hero("Передатчик. Серьёзно?", "A transmitter. Seriously?")), { do: "flag", flag: "m01_beacon_seen" }],
     },
     {
       id: "hull-piece",
@@ -708,13 +737,13 @@ export const M01: Mission = {
     {
       id: "knife",
       label: t("Поднять нож и ремень с фонарём", "Pick up the knife and the belt with the torch"),
-      do: [{ do: "give", what: "knife" }, lines(think("Мой нож. И ремень — фонарь даже работает.", "My knife. And the belt — the torch even works."))],
+      do: [{ do: "give", what: "knife" }, sfx("EXFX0050_army_knife_unclip"), lines(think("Мой нож. И ремень — фонарь даже работает.", "My knife. And the belt — the torch even works."))],
     },
     // S02: the pack on the snag.
     {
       id: "backpack",
       label: t("Обыскать рюкзак", "Search the pack"),
-      do: [{ do: "give", what: "bandage" }, { do: "flag", flag: "has-bandage" }, lines(think("Сухой рюкзак. Бинт, почти новый. Пригодится.", "A dry pack. A bandage, nearly new. That'll come in handy."))],
+      do: [{ do: "give", what: "bandage" }, { do: "flag", flag: "has-bandage" }, sfx("EXFX0049_ripped_backpack_zipper"), lines(think("Сухой рюкзак. Бинт, почти новый. Пригодится.", "A dry pack. A bandage, nearly new. That'll come in handy."))],
     },
     // S03: Mark's binoculars.
     {
@@ -722,6 +751,7 @@ export const M01: Mission = {
       label: t("Взять бинокль Марка", "Take Mark's binoculars"),
       when: { steps: ["scout"] },
       do: [
+        sfx("FX065_binoculars_unfold"),
         { do: "freeze", on: true },
         { do: "cutscene", scene: "m01-binoculars" },
         lines(
@@ -733,14 +763,15 @@ export const M01: Mission = {
       ],
     },
     // S05: the terminal, in three goes.
-    { id: "terminal", label: t("Просмотреть журнал", "Look through the log"), when: { steps: ["journal"] } },
-    { id: "terminal-copy", label: t("Подключить накопитель Марка", "Plug in Mark's drive"), when: { steps: ["copy"] } },
-    { id: "terminal-order", label: t("Открыть вложение", "Open the attachment"), when: { steps: ["attachment"] } },
+    { id: "terminal", label: t("Просмотреть журнал", "Look through the log"), when: { steps: ["journal"] }, do: [sfx("FX089_keyboard_typing", 0.8)] },
+    { id: "terminal-copy", label: t("Подключить накопитель Марка", "Plug in Mark's drive"), when: { steps: ["copy"] }, do: [sfx("FX092_usb_insert"), sfx("EXFX0082_external_disk_mount", 0.7)] },
+    { id: "terminal-order", label: t("Открыть вложение", "Open the attachment"), when: { steps: ["attachment"] }, do: [sfx("FX090_computer_ui_confirm", 0.8)] },
     {
       id: "hydro-doc",
       label: t("Открыть протокол на полке", "Open the protocol on the shelf"),
       when: { steps: S05 },
       do: [
+        sfx("FX093_document_folder_open", 0.8),
         lines(
           think("«Подложка побережья, выпуск 04». Схема отметок дна… «Составлено по материалам военного гидрографического департамента».", "'Coastal substrate, issue 04'. A chart of bottom soundings… 'Compiled from the material of the military hydrographic department'."),
           hero("Я знаю эти условные знаки.", "I know these symbols."),
@@ -757,6 +788,7 @@ export const M01: Mission = {
       seconds: 1.2,
       when: { steps: [...S05, "order", "breakout", "castoff"], flags: ["luis-talked"] },
       do: [
+        sfx("FX095_metal_holding_cell"),
         { do: "switch", name: "stvor9:cell-door", value: "open" },
         { do: "flag", flag: "m01_luis_rescued" },
         lines(
@@ -852,6 +884,23 @@ export const M01: Mission = {
     { id: "far-wreck", when: { steps: ["follow", "overlook", "choose"], stepTime: 40, quiet: true, near: { at: "stvor9:overlook", radius: 14 } }, do: [lines(think("Сколько она стоила… и сколько стоил этот рейс.", "What she cost… and what this run cost."))] },
 
     // --- S04: what is heard at the posts, and Mark --------------------------------------
+    // The sounds of what he does: the bandage, the copy done.
+    { id: "bandage-sound", when: { event: "bandage" }, every: 1, do: [sfx("FX062_medicine_bandage")] },
+    { id: "copied-sound", when: { steps: ["attachment"] }, do: [sfx("EXFX0083_server_copy_success", 0.8)] },
+    // The trail: a word now and then on the way up (all voiced).
+    { id: "trail-dry", when: { steps: ["follow"], stepTime: 22, quiet: true }, do: [lines(mark("Иди по сухим камням — там не оставишь следов.", "Keep to the dry stones — you won't leave tracks there."))] },
+    { id: "trail-heat", when: { steps: ["follow"], stepTime: 40, quiet: true }, do: [lines(hero("Жара будто воздух глотает.", "This heat swallows the air."), mark("Привыкай. Ночью здесь не намного легче.", "Get used to it. Nights here aren't much better."))] },
+    {
+      id: "trail-smoke",
+      when: { steps: ["follow"], stepTime: 62, quiet: true },
+      do: [lines(mark("Видишь дым? Там у них полевой лагерь.", "See the smoke? That's their field camp."), hero("По запаху — жарят что-то съедобное.", "Smells like they're grilling something edible."), mark("Ещё одно доказательство, что жизнь несправедлива.", "One more proof life isn't fair."))],
+    },
+    { id: "trail-plan", when: { steps: ["follow"], stepTime: 84, quiet: true }, do: [lines(hero("А у нас план вообще есть?", "Do we even have a plan?"), mark("Есть. Не умереть до заката.", "We do. Don't die before sunset."))] },
+    { id: "trail-soft", when: { steps: ["follow"], stepTime: 104, quiet: true }, do: [lines(mark("Ноги ставь мягче. Слышишь, как хрустит известняк?", "Softer on your feet. Hear the limestone crunch?"))] },
+    // Inside the wire, while nobody has seen them.
+    { id: "in-base", when: { steps: S04, stepTime: 24, not: ["alert:suspicious", "alert:combat"], quiet: true }, do: [lines(hero("У них здесь целая база.", "They've got a whole base here."), mark("А нам нужен только архив.", "And all we need is the archive."))] },
+    { id: "in-quiet", when: { steps: S04, stepTime: 58, not: ["alert:suspicious", "alert:combat"], quiet: true }, do: [lines(hero("Слишком тихо.", "Too quiet."), mark("Тихо — это хорошо, пока тебя не заметили.", "Quiet is good, as long as nobody's spotted you."))] },
+    { id: "in-alarm", when: { steps: S04, alert: "suspicious", quiet: true }, do: [lines(mark("Если тревога пошла — действуем быстро.", "If the alarm goes up, we move fast."))] },
     { id: "route-gate", when: { steps: S04, area: "stvor9:gate" }, do: [{ do: "flag", flag: "m01_route_gate" }] },
     { id: "route-drain", when: { steps: S04, area: "stvor9:drain-in" }, do: [{ do: "flag", flag: "m01_route_drain" }] },
     { id: "route-ridge", when: { steps: S04, area: "stvor9:ridge-path" }, do: [{ do: "flag", flag: "m01_route_ridge" }] },

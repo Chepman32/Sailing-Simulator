@@ -529,3 +529,23 @@ test("a story's hour sets the day cycle's clock: a low sun at either end of the 
   assert.ok(dayCycleState(cycleTimeForHour(6.2)).sunArc < 0.1, "first light on the shoal");
   for (let hour = 0; hour < 24; hour += 0.25) assert.ok(Number.isFinite(cycleTimeForHour(hour)));
 });
+
+test("every recording the story plays is there: the voices, the scenes' effects, the beds of places", async () => {
+  const { existsSync } = await import("node:fs");
+  const { VOICE_SECONDS, voiceFor, voiceKey } = await import("../../src/simulator/story/content/voices");
+  const file = (clip: string) => `public/audio/story/${clip}.mp3`;
+  const clips = new Set<string>(Object.keys(VOICE_SECONDS));
+  const effects: Effect[] = [...CAMPAIGN.missions.flatMap(effectsOf), ...CAMPAIGN.cutscenes.flatMap((scene) => scene.shots.flatMap((shot) => shot.cue ?? []))];
+  for (const effect of effects) {
+    if (effect.do === "sfx") clips.add(effect.clip);
+    if (effect.do === "bed" && effect.clip) clips.add(effect.clip);
+  }
+  for (const mission of CAMPAIGN.missions) for (const step of mission.steps) if (step.bed) clips.add(step.bed);
+  for (const clip of clips) assert.ok(existsSync(file(clip)), `${clip} is recorded`);
+  for (const [clip, seconds] of Object.entries(VOICE_SECONDS)) assert.ok(seconds > 0.3 && seconds < 15, `${clip}: ${seconds} s`);
+  // The words are matched by their letters alone, and the prologue and M01 are spoken.
+  assert.equal(voiceKey("Ну что, красавица!"), voiceKey("ну что — красавица"));
+  assert.ok(voiceFor("Ну что, красавица! В последний раз проверим, на что ты способна."));
+  const voiced = effects.flatMap((effect) => (effect.do === "say" ? effect.lines : [])).filter((line) => voiceFor(line.text.ru)).length;
+  assert.ok(voiced > 120, `voiced lines: ${voiced}`);
+});

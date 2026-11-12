@@ -133,7 +133,7 @@ export type DroneWorld = {
 
 export type DroneHit = { point: THREE.Vector3; fromX: number; fromZ: number };
 
-export type DroneContact = { x: number; y: number; z: number; group: string; number: string; hostile: boolean; aware: boolean; condition: DroneCondition; mode: Mode; salvage: number };
+export type DroneContact = { x: number; y: number; z: number; group: string; number: string; hostile: boolean; aware: boolean; condition: DroneCondition; mode: Mode; salvage: number; crewed: boolean };
 
 /** Patrol and attack speeds, m/s. */
 const PATROL_SPEED = 7.5;
@@ -385,6 +385,7 @@ export class DroneSystem {
         condition: drone.condition,
         mode: drone.mode,
         salvage: drone.winched / WINCH_SECONDS,
+        crewed: drone.spec.crewed === true,
       });
     }
     return out;

@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { LanguageCode } from "../i18n";
 import type { SaveSlotId } from "@/src/simulator/story/SaveGames";
+import { moveMenuFocus, useMenuNavigation } from "../menuNavigation";
+import { menuBack } from "../menuSound";
 import { SaveSlots } from "./SaveSlots";
 import { storyMessages } from "./storyMessages";
 
@@ -33,15 +35,18 @@ export function MainMenu({ language, saved, onNew, onContinue, onLoad, onFree, o
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
   }, [page]);
+  useMenuNavigation(listRef, page);
 
-  // Esc goes back a page; nothing behind the menu hears a key.
+  // The arrows move through the items, Esc goes back a page; nothing behind the menu hears a key.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.code === "Escape" && page !== "main") {
         event.preventDefault();
+        menuBack();
         setPage("main");
       }
-      if (event.code !== "Tab" && !event.code.startsWith("Arrow") && event.code !== "Enter" && event.code !== "Space") event.stopImmediatePropagation();
+      moveMenuFocus(listRef.current, event);
+      if (event.code !== "Tab" && event.code !== "Enter" && event.code !== "Space") event.stopImmediatePropagation();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -88,7 +93,7 @@ export function MainMenu({ language, saved, onNew, onContinue, onLoad, onFree, o
               <button type="button" className="main-menu-item is-danger" onClick={onNew}>
                 <span>{messages.menuNewYes}</span>
               </button>
-              <button type="button" className="main-menu-item is-quiet" onClick={() => setPage("main")}>
+              <button type="button" className="main-menu-item is-quiet" data-sound="back" onClick={() => setPage("main")}>
                 <span>{messages.menuBack}</span>
               </button>
             </div>
@@ -99,7 +104,7 @@ export function MainMenu({ language, saved, onNew, onContinue, onLoad, onFree, o
           <div className="main-menu-load">
             <h2>{messages.loadTitle}</h2>
             <SaveSlots mode="load" language={language} onLoad={onLoad} />
-            <button type="button" className="main-menu-item is-quiet" onClick={() => setPage("main")}>
+            <button type="button" className="main-menu-item is-quiet" data-sound="back" onClick={() => setPage("main")}>
               <span>{messages.menuBack}</span>
             </button>
           </div>

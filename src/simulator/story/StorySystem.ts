@@ -22,6 +22,7 @@ import {
   type WorldFacts,
 } from "./CampaignMath";
 import { CAMPAIGN } from "./content";
+import { VOICE_SECONDS, voiceFor } from "./content/voices";
 import { cameraFor, shotAt, type AnchorFrame, type CameraPose } from "./CutsceneMath";
 import type { StoryProps } from "./StoryProps";
 import type { Campaign, CraftId, Cutscene, Effect, Line, Mission, Presence, Sector, StorySound, Text, Use } from "./StoryTypes";
@@ -82,6 +83,10 @@ export type StoryHost = {
   /** Her mast and sail shot away, or rigged again. */
   rig(broken: boolean): void;
   sound(sound: StorySound): void;
+  /** A recorded effect once, the bed of the place (null: none), the recordings of lines about to be spoken. */
+  sfx(clip: string, volume: number): void;
+  bed(clip: string | null, volume: number): void;
+  voices(clips: readonly string[]): void;
   /** Turns the skipper on foot toward (x, z). */
   look(x: number, z: number): void;
   /** Holds the player's controls (a scene, a moment of danger) or frees them. */
@@ -104,7 +109,7 @@ export type StoryHost = {
   clockHour(): number | null;
 };
 
-export type StoryLine = { id: number; who: string; via: Line["via"]; text: Text; duration: number; elapsed: number };
+export type StoryLine = { id: number; who: string; via: Line["via"]; text: Text; duration: number; elapsed: number; voice?: string };
 export type StoryTitle = { id: number; style: "chapter" | "place" | "end"; title: Text; subtitle?: Text };
 export type StoryPrompt =
   | { kind: "talk"; character: string }
@@ -670,6 +675,8 @@ export class StorySystem {
   damage(hull: number, engine: boolean): void {
     if (!this.active || this.sinking >= 0) return;
     this.state.hull = Math.max(0, this.state.hull - hull);
+    // Struck (a round through her side): the story may answer it.
+    if (hull > 0) this.events.add("struck");
     if (engine && this.state.engine) {
       this.state.engine = false;
       this.host.setEngine(false);
@@ -880,6 +887,12 @@ export class StorySystem {
       case "sound":
         this.host.sound(effect.sound);
         break;
+      case "sfx":
+        this.host.sfx(effect.clip, effect.volume ?? 1);
+        break;
+      case "bed":
+        this.host.bed(effect.clip, effect.volume ?? 1);
+        break;
       case "wake":
         this.wakeSerial += 1;
         break;
@@ -1069,10 +1082,21 @@ export class StorySystem {
   }
 
   private say(lines: readonly Line[]): void {
+    const clips: string[] = [];
     for (const line of lines) {
       const text = line.text.ru.length > line.text.en.length ? line.text.ru : line.text.en;
-      this.queue.push({ id: (this.serial += 1), who: line.who, via: line.via ?? "radio", text: line.text, duration: lineDuration(text), elapsed: 0, ambient: this.ambient || undefined });
+      // A voiced line stays up as long as it is spoken (and a breath after).
+      const recorded = line.voice ? { clip: line.voice, seconds: VOICE_SECONDS[line.voice] ?? 0 } : voiceFor(line.text.ru);
+      const duration = recorded && recorded.seconds > 0 ? Math.max(1.4, recorded.seconds + 0.3) : lineDuration(text);
+      if (recorded) clips.push(recorded.clip);
+      this.queue.push({ id: (this.serial += 1), who: line.who, via: line.via ?? "radio", text: line.text, duration, elapsed: 0, voice: recorded?.clip, ambient: this.ambient || undefined });
     }
+    if (clips.length) this.host.voices(clips);
+  }
+
+  /** The line on screen now (its recording, how far into it), for the voice to follow. */
+  get speaking(): { id: number; voice?: string; elapsed: number } | null {
+    return this.line;
   }
 
   private updateLines(delta: number): void {
@@ -1439,6 +1463,13 @@ export class StorySystem {
     // On foot, a porch or a beach; afloat, the place itself.
     const spot = !skipper.aboard && (place.porch ?? place.landing) ? (place.porch ?? place.landing)! : place;
     return out.set(spot.x, (place.island ? this.host.ground(spot.x, spot.z) : 0) + 2.5, spot.z);
+  }
+
+  /** The recorded bed of the step under way (null: none, or not in the campaign). */
+  get bed(): string | null {
+    const mission = this.active ? trackedMission(this.campaign, this.state) : null;
+    const step = mission ? stepOf(this.campaign, this.state, mission.id) : null;
+    return step?.bed ?? null;
   }
 
   view(): StoryView {

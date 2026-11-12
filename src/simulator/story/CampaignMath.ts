@@ -203,6 +203,7 @@ export function conditionHolds(when: Condition, state: CampaignState, facts: Fac
   if (when.stepTime !== undefined && facts.stepTime(mission) < when.stepTime) return false;
   if (when.quiet && !facts.dialogueIdle) return false;
   if (when.event && !facts.events.has(when.event)) return false;
+  if (when.hull !== undefined && facts.hull >= when.hull) return false;
   const where = facts.aboard ? facts.yacht : facts.skipper;
   if (when.near && !near(where, facts.place(when.near.at), when.near.radius)) return false;
   if (when.far) {

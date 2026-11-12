@@ -100,6 +100,7 @@ import { crabKit, SeabedCrabs, type CrabWorld } from "./diver/SeabedCrabs";
 import { DiveFish } from "./diver/DiveFish";
 import { HelmStation, HULL_TRANSOM_Z } from "./vessel/HelmStation";
 import { CombatAudio } from "./audio/CombatAudio";
+import { StoryAudio } from "./audio/StoryAudio";
 import { CombatEffects } from "./combat/CombatEffects";
 import { engineKnockedOut, HULL_PER_HIT, leakSpeedFactor, SMOKING_HULL, stepEngineHeat, yachtSignature, DOME_CENTRE, JET_CENTRES, droneToWorld, type HitZone, type DroneCondition } from "./combat/CombatMath";
 import { DroneSystem, type DroneContact } from "./combat/DroneSystem";
@@ -114,6 +115,7 @@ import { PlayerHealth } from "./actors/PlayerHealth";
 import { BoatParty, PatrolCrew } from "./actors/BoatFigures";
 import { HERO_LOOK, VANGUARD_CREW } from "./story/content/looks";
 import type { CraftId } from "./story/StoryTypes";
+import { setCraftScenes } from "./vessel/ModelCrafts";
 import { STORY_LEVELS } from "./story/levels";
 import { readSave, saveBlock, writeSave, SAVE_VERSION, type SaveBlock, type SaveSlotId } from "./story/SaveGames";
 import { HULL_CENTER_Z, HULL_HALF_BEAM, HULL_HALF_LENGTH, HULL_OFFSET_X } from "./environment/shaders/oceanShader";
@@ -343,6 +345,8 @@ export class Simulator {
   private combatEffects?: CombatEffects;
   private drones?: DroneSystem;
   private combatAudio?: CombatAudio;
+  /** The story's recordings: the voiced lines, the scenes' effects, the beds of places. */
+  private storyAudio?: StoryAudio;
   private storyProps?: StoryProps;
   private storyCast?: Traders;
   private story?: StorySystem;
@@ -549,6 +553,8 @@ export class Simulator {
     this.renderer.localClippingEnabled = true;
     this.renderer.setClearColor(0x0c7ba6, 1);
     this.assets = new AssetManager(options.onLoading);
+    // The story's boats from their models once they have come (drawn in code until then).
+    setCraftScenes((craft) => this.assets.scene(craft === "sport" ? "sportYacht" : "skiff"));
     this.hud = new HudController(options.onSnapshot);
     // Install the gesture listeners before asset loading begins. On iOS the
     // first trusted tap is often made while the loading screen is still up;
@@ -781,6 +787,7 @@ export class Simulator {
       this.combatEffects = new CombatEffects(this.scene);
       this.drones = new DroneSystem(this.scene, this.combatEffects, this.wake);
       this.combatAudio = new CombatAudio(this.audio);
+      this.storyAudio = new StoryAudio(this.audio);
       this.storyProps = new StoryProps(this.scene);
       this.storyCast = new Traders(this.scene, this.traderModels());
       this.mirrorHidden.push(this.storyCast.group, this.combatEffects.group);
@@ -1823,6 +1830,8 @@ export class Simulator {
   /** The pause menu: the world stands still and falls quiet, the skipper waits. */
   setPaused(paused: boolean): void {
     if (this.loop) this.loop.held = paused;
+    // A voice stops with the game and picks up where its line stands.
+    this.storyAudio?.update(this.story?.active ? this.story.speaking : null, !paused);
     this.audio?.setHeld(paused);
     this.diver?.setFrozen(paused);
     if (paused) this.diver?.releasePointer();
@@ -1956,6 +1965,7 @@ export class Simulator {
     this.drones?.dispose();
     this.combatEffects?.dispose();
     this.combatAudio?.dispose();
+    this.storyAudio?.dispose();
     this.storyProps?.dispose();
     this.storyCast?.dispose();
     this.diver?.dispose();
@@ -1991,6 +2001,7 @@ export class Simulator {
     this.islands?.dispose();
     this.environment?.dispose();
     this.ocean?.dispose(this.scene);
+    setCraftScenes(null);
     this.assets.dispose();
     this.renderer.dispose();
     window.clearInterval(this.recoveryTimer);
@@ -2138,8 +2149,9 @@ export class Simulator {
     // A cut scene has the camera to itself (the main menu's drift before it).
     this.directMenu(delta);
     const scene = this.menuView ? null : this.story?.sceneCamera();
+    if (!scene) this.shotReach = 1;
     if (scene) {
-      this.sceneShot.position = scene.eye;
+      this.sceneShot.position = scene.placed ? scene.eye : this.clearShot(scene.eye, scene.look, delta);
       this.sceneShot.target = scene.look;
       this.sceneShot.fov = scene.fov;
       this.camera.direct(this.sceneShot, 1);
@@ -2310,6 +2322,9 @@ export class Simulator {
     // (applied with her condition, which the story calls for next).
     rig: () => undefined,
     sound: (sound) => this.combatAudio?.story(sound),
+    sfx: (clip, volume) => this.storyAudio?.effect(clip, volume),
+    bed: (clip, volume) => this.storyAudio?.setBed(clip, volume),
+    voices: (clips) => this.storyAudio?.prefetch(clips),
     look: (x, z) => {
       const diver = this.diver;
       if (!diver?.active || diver.mode !== "land") return;
@@ -3007,6 +3022,10 @@ export class Simulator {
     if (!story) return;
     this.updatePeople(delta);
     story.update(delta);
+    // The voice follows the line on screen.
+    this.storyAudio?.update(story.active ? story.speaking : null, true);
+    // The bed of the place the step is set in (none outside the campaign); not under the main menu.
+    this.storyAudio?.setBed(story.active && !this.menuView ? story.bed : null);
     this.applyStoryHold();
     this.updateAutosave();
     // The weather: a story's own for a while, else the sector's leaning, else the planner's.
@@ -3165,6 +3184,8 @@ export class Simulator {
     frame.drones.length = 0;
     if (story.active) {
       for (const contact of drones.contacts(this.droneContacts)) {
+        // A boat with men aboard is seen for what she is: no brackets round her.
+        if (contact.crewed) continue;
         const distance = Math.hypot(contact.x - eye.x, contact.z - eye.z);
         if (distance > 1600) continue;
         this.aimPoint.set(contact.x, contact.y + 1.6, contact.z);
@@ -3754,6 +3775,7 @@ export class Simulator {
       .loadLater((key) => {
         if (this.disposed) return;
         if (key === "shark" || key === "whale" || key === "fishSchool") this.wildlife.adoptLateAssets(this.assets);
+        else if (key === "sportYacht" || key === "skiff") this.vessel?.refreshCrafts();
         else if (key === "crabRed" || key === "crabBlue") this.buildCrabs();
         else if ((TRADER_MODEL_KEYS as readonly string[]).includes(key)) {
           this.traders?.setModels(this.traderModels());
@@ -3769,6 +3791,58 @@ export class Simulator {
       .then(() => {
         if (!this.disposed) return this.ships.loadModelsInBackground();
       });
+  }
+
+  /** How far out along its line a scene's camera may stand (1: where the shot puts it), eased (`clearShot`). */
+  private shotReach = 1;
+  private readonly clearEye = { x: 0, y: 0, z: 0 };
+
+  /**
+   * A scene's eye kept out of what it would sit in or look through: drawn
+   * in along the line to what it looks at, in front of the first hillside
+   * or wall in the way, and held above the ground and the waves. In at
+   * once (never a frame inside a rock), back out gently once the way is
+   * clear, so a moving shot does not jump.
+   */
+  private clearShot(eye: { x: number; y: number; z: number }, look: { x: number; y: number; z: number }, delta: number): { x: number; y: number; z: number } {
+    const dx = eye.x - look.x;
+    const dy = eye.y - look.y;
+    const dz = eye.z - look.z;
+    const length = Math.hypot(dx, dy, dz);
+    let free = 1;
+    if (length > 0.8) {
+      const ux = dx / length;
+      const uy = dy / length;
+      const uz = dz / length;
+      // The ground along the line, from a little way out from what is looked at.
+      const steps = Math.min(90, Math.ceil(length / 0.6));
+      for (let index = 1; index <= steps; index += 1) {
+        const t = (index / steps) * length;
+        if (t < 0.6) continue;
+        const x = look.x + ux * t;
+        const z = look.z + uz * t;
+        const y = look.y + uy * t;
+        if (y < this.groundBase(x, z) + 0.3) {
+          free = Math.max(0, (t - 0.6) / length);
+          break;
+        }
+      }
+      // A level's walls and roofs.
+      const hit = this.levels?.raycast(look.x, look.y, look.z, ux, uy, uz, length * free);
+      if (hit) free = Math.min(free, Math.max(0, (hit.t - 0.3) / length));
+      // At least a little way off what is looked at.
+      free = Math.max(free, Math.min(1, 0.7 / length));
+    }
+    this.shotReach = free < this.shotReach ? free : this.shotReach + (free - this.shotReach) * Math.min(1, delta * 1.6);
+    const reach = this.shotReach;
+    const out = this.clearEye;
+    out.x = look.x + dx * reach;
+    out.z = look.z + dz * reach;
+    out.y = look.y + dy * reach;
+    // Above the ground and the sea where it ends up.
+    const floor = Math.max(this.groundBase(out.x, out.z) + 0.3, this.ocean.sample(out.x, out.z).height + 0.35);
+    if (out.y < floor) out.y = floor;
+    return out;
   }
 
   /** The loading bar beyond the downloads (`step` of `SCENE_LOAD_STEPS`). */

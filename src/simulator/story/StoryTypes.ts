@@ -94,7 +94,16 @@ export type Location = {
 export type LineChannel = "radio" | "voice" | "thought" | "broadcast";
 
 /** One line of dialogue. `who` is a character id, `hero`, `aquilon` (the network's voice) or `unknown`. */
-export type Line = { who: string; text: Text; via?: LineChannel };
+export type Line = {
+  who: string;
+  text: Text;
+  via?: LineChannel;
+  /**
+   * The recording of it (`/audio/story/<voice>.mp3`); without one, the
+   * recording whose words these are (`content/voices.ts`), if any.
+   */
+  voice?: string;
+};
 
 /** A group of boats in the world: Aquilon's uncrewed drones, or Vanguard's crewed patrol boats. */
 export type DroneGroup = {
@@ -168,6 +177,8 @@ export type Condition = {
   stepTime?: number;
   /** The skipper's health under this fraction. */
   health?: number;
+  /** The boat's hull under this fraction. */
+  hull?: number;
   /** He has stood still (on foot) this long, s. */
   still?: number;
   /** He is crouched. */
@@ -259,6 +270,10 @@ export type Effect =
   /** Her mast and sail: shot away (`broken: true`) or rigged again. */
   | { do: "rig"; broken: boolean }
   | { do: "sound"; sound: StorySound }
+  /** A recorded sound effect, once (`/audio/story/<clip>.mp3`); `volume` of the effects' level (1). */
+  | { do: "sfx"; clip: string; volume?: number }
+  /** The recorded bed of the place, looped (null: none), crossfaded from the last. */
+  | { do: "bed"; clip: string | null; volume?: number }
   /** Coming to: the eyes open slowly on the world. */
   | { do: "wake" }
   /** Turns the skipper on foot to look at a place or a person (`npc:<id>`). */
@@ -349,6 +364,8 @@ export type Step = {
   marker?: string;
   /** Things in the world while this step is current. */
   presence?: readonly Presence[];
+  /** The recorded bed of the place while this step is current (`/audio/story/<clip>.mp3`, looped); none: silence. */
+  bed?: string;
   onStart?: readonly Effect[];
   onComplete?: readonly Effect[];
   /**

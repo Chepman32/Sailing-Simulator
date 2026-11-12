@@ -10,8 +10,9 @@ export const FACTIONS: readonly Faction[] = [
 ];
 
 /**
- * The people. Three speakers are not in this list and need no entry: `hero`
- * (the skipper himself), `aquilon` (the network's voice) and `unknown` (a
+ * The people. Four speakers are not in this list and need no entry: `hero`
+ * (the skipper himself), `aquilon` (the network's voice), `dispatch` (the
+ * Outer Ridge's harbour dispatcher on the civil channel) and `unknown` (a
  * voice on the radio nobody knows).
  */
 export const CHARACTERS: readonly Character[] = [
@@ -84,6 +85,9 @@ export const CHARACTERS: readonly Character[] = [
   ...guard("e15", { ru: "Боец подкрепления", en: "Reinforcement" }),
   ...guard("e16", { ru: "Боец подкрепления", en: "Reinforcement" }),
   ...guard("w18", { ru: "Рулевой катера", en: "Patrol boat helmsman" }),
+  // The prologue's two patrol boats, heard on their own channel.
+  ...guard("vn-helm", { ru: "Рулевой патрульного катера", en: "Patrol boat helmsman" }),
+  ...guard("vn-lead", { ru: "Командир патруля", en: "Patrol leader" }),
   ...guard("w19", { ru: "Наблюдатель катера", en: "Patrol boat lookout" }),
   {
     id: "reese",
@@ -97,8 +101,8 @@ export const CHARACTERS: readonly Character[] = [
 
 /** One of Vanguard's people at Створ-9, named by his post (they speak, so they are cast). */
 function guard(id: string, role: { ru: string; en: string }): Character[] {
-  return [{ id, name: role, role, faction: "vanguard", monogram: id.toUpperCase().slice(0, 3) }];
+  return [{ id, name: role, role, faction: "vanguard", monogram: id.toUpperCase().replace(/-/g, "").slice(0, 3) }];
 }
 
 /** Speakers that are not characters. */
-export const OTHER_SPEAKERS = ["hero", "aquilon", "unknown"] as const;
+export const OTHER_SPEAKERS = ["hero", "aquilon", "dispatch", "unknown"] as const;

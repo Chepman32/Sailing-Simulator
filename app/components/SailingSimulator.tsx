@@ -29,6 +29,7 @@ import { JournalModal } from "./story/JournalModal";
 import { storyMessages } from "./story/storyMessages";
 import type { StoryOverlayFrame } from "@/src/simulator/types";
 import { keyBindings, type BindingAction } from "@/src/simulator/input/KeyBindings";
+import { setMenuSoundEnabled } from "./menuSound";
 import {
   DiscoveryCard,
   LootChip,
@@ -656,6 +657,10 @@ export function SailingSimulator() {
   }, [away, exitPhotoMode]);
   /** Sound is playing at all; the engine is heard only then (its own toggle shows muted under a global mute). */
   const soundPlaying = snapshot.soundEnabled && snapshot.audioReady;
+  // The menus' ticks and chimes are off with the game's sound.
+  useEffect(() => {
+    setMenuSoundEnabled(snapshot.soundEnabled);
+  }, [snapshot.soundEnabled]);
   const engineHeard = soundPlaying && !snapshot.engineMuted;
   // On foot the chart is a card over his eyes: he stands still and lets the
   // mouse go while it is open (`chartFroze`), and walks on when it closes.

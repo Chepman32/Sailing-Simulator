@@ -21,7 +21,8 @@ import { SailSystem } from "./SailSystem";
 import { JibSail } from "./JibSail";
 import type { VesselPhysics } from "./VesselPhysics";
 import { YachtShading } from "./YachtShading";
-import { buildCraft, type CraftModel } from "./CraftModels";
+import type { CraftModel } from "./CraftModels";
+import { buildCraft } from "./ModelCrafts";
 import type { CraftId } from "../story/StoryTypes";
 
 export const MAX_PROPELLER_RPM = 600;
@@ -337,14 +338,7 @@ export class Vessel {
     for (const model of this.craftModels.values()) model.group.visible = false;
     this.craftId = craft;
     if (craft === "catamaran") return;
-    let model = this.craftModels.get(craft);
-    if (!model) {
-      model = buildCraft(craft);
-      // Her waterline on the water: the root rides at the catamaran's float height.
-      model.group.position.y = -0.46;
-      this.craftModels.set(craft, model);
-      this.root.add(model.group);
-    }
+    const model = this.craftModels.get(craft) ?? this.addCraft(craft);
     const crafts = new Set<THREE.Object3D>([...this.craftModels.values()].map((entry) => entry.group));
     const hide = (node: THREE.Object3D) => {
       for (const child of node.children) {
@@ -364,6 +358,35 @@ export class Vessel {
     };
     hide(this.root);
     model.group.visible = true;
+  }
+
+  private addCraft(craft: "sport" | "skiff", model = buildCraft(craft)): CraftModel {
+    // Her waterline on the water: the root rides at the catamaran's float height.
+    model.group.position.y = -0.46;
+    model.group.visible = false;
+    model.setAlert?.(this.lockdown);
+    this.craftModels.set(craft, model);
+    this.root.add(model.group);
+    return model;
+  }
+
+  /**
+   * The boats' models have come: each boat built so far as the drawn
+   * stand-in is built again from her model (shown at once if she is the
+   * boat in use).
+   */
+  refreshCrafts(): void {
+    for (const [craft, model] of [...this.craftModels]) {
+      if (model.modelled) continue;
+      const next = buildCraft(craft);
+      if (!next.modelled) {
+        next.dispose();
+        continue;
+      }
+      this.root.remove(model.group);
+      model.dispose();
+      this.addCraft(craft, next).group.visible = this.craftId === craft;
+    }
   }
 
   /** Ships the chart plotter shows. */
@@ -597,8 +620,12 @@ export class Vessel {
 
   /** Her displays taken over by the network's alert (null: back to work). */
   setLockdown(lines: readonly string[] | null): void {
+    this.lockdown = lines;
     this.helm.setLockdown(lines);
+    for (const model of this.craftModels.values()) model.setAlert?.(lines);
   }
+
+  private lockdown: readonly string[] | null = null;
 
   /**
    * The rig shot away (a heavy round through the mast): the mast snapped

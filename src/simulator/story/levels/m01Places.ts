@@ -2,7 +2,8 @@ import * as THREE from "three";
 import type { LevelDefinition } from "../../level/LevelSystem";
 import type { LevelBuilder, LP } from "../../level/LevelBuilder";
 import { chair, crate, desk, drum, fan, jerrycan, laundry, shelves, tent, waterTank } from "../../level/LevelProps";
-import { skiff, sportYacht } from "../../vessel/CraftModels";
+import { skiff } from "../../vessel/CraftModels";
+import { wreckedSportYacht } from "../../vessel/ModelCrafts";
 
 /**
  * M01's other places (docs/campaign/missions/m01.md §2.2):
@@ -103,7 +104,7 @@ export const KOSAYA: LevelDefinition = {
 
 function buildKosaya(b: LevelBuilder): void {
   // --- The wreck's leavings on the sand ------------------------------------------------
-  // A piece of the white hull, the black carbon stripe along it.
+  // A piece of her white side, the black band along it.
   const shell = new THREE.CylinderGeometry(1.4, 1.4, 2.6, 14, 1, true, 0, Math.PI * 0.62);
   shell.rotateZ(Math.PI / 2);
   b.mesh(shell, "paint", ground(b, -12, 8, 0.25), 25, 0xf2f2ee);
@@ -194,7 +195,7 @@ function buildKosaya(b: LevelBuilder): void {
   b.spot("cam-ots-hero", head(5.52, 4.52, 1.86), 0);
 
   // --- The wreck on the reef offshore -----------------------------------------------------
-  const wreck = sportYacht(true);
+  const wreck = wreckedSportYacht();
   boatProp(b, wreck, [-20, 125, -0.9], 140, 0.36, -0.12);
   smoke(b, [-21, 123, 1.5], 46);
 

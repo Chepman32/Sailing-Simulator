@@ -11,6 +11,8 @@ import {
   RESERVED_KEYS,
   type BindingAction,
 } from "@/src/simulator/input/KeyBindings";
+import { moveMenuFocus, useMenuNavigation } from "./menuNavigation";
+import { menuBack } from "./menuSound";
 import { LANGUAGE_OPTIONS, type LanguageCode } from "./i18n";
 import type { PauseMessages } from "./pauseMessages";
 import type { SaveBlock, SaveSlotId } from "@/src/simulator/story/SaveGames";
@@ -110,6 +112,7 @@ export function PauseMenu({
   useEffect(() => {
     cardRef.current?.querySelector<HTMLElement>("button, select, input")?.focus({ preventScroll: true });
   }, [page]);
+  useMenuNavigation(cardRef, page);
 
   // Esc: stop listening for a key, or go back a page, or resume. Captured
   // before the game's own key handlers, which must not see it.
@@ -126,11 +129,13 @@ export function PauseMenu({
         event.preventDefault();
         event.stopImmediatePropagation();
         if (performance.now() - openedAt.current < 350) return;
+        menuBack();
         if (page !== "main") setPage("main");
         else onResume();
         return;
       }
-      // Nothing behind the menu hears a key while it is open (Tab still moves focus).
+      // The arrows move through the menu; nothing behind it hears a key while it is open (Tab still moves focus).
+      moveMenuFocus(cardRef.current, event);
       if (event.code !== "Tab") event.stopImmediatePropagation();
     };
     window.addEventListener("keydown", onKey, true);
@@ -166,7 +171,7 @@ export function PauseMenu({
       <section ref={cardRef} className="pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
         <header className="pause-head">
           {page !== "main" && (
-            <button type="button" className="pause-back" onClick={() => setPage("main")} aria-label={messages.back}>
+            <button type="button" className="pause-back" data-sound="back" onClick={() => setPage("main")} aria-label={messages.back}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
           )}

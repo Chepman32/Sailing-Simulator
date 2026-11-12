@@ -43,6 +43,7 @@ export function speakerOf(who: string, messages: StoryMessages, language: "ru" |
   }
   if (who === "aquilon") return { name: messages.speakerAquilon, callsign: null, monogram: "AQ", color: FACTION_COLOR.get("aquilon") ?? "#e5484d" };
   if (who === "hero") return { name: messages.speakerHero, callsign: null, monogram: "SK", color: "#e9d8a6" };
+  if (who === "dispatch") return { name: messages.speakerDispatch, callsign: null, monogram: "OR", color: "#7fb8e6" };
   return { name: messages.speakerUnknown, callsign: null, monogram: "??", color: "#8a96a3" };
 }
 

@@ -12,7 +12,7 @@ export type AnimatedAssetKey =
   | "traderMan" | "traderWoman" | "traderPirate" | "crabRed" | "crabBlue";
 /** The island traders' models, in the order they are handed out. */
 export const TRADER_MODEL_KEYS = ["traderMan", "traderWoman", "traderPirate"] as const satisfies readonly AnimatedAssetKey[];
-export type StaticAssetKey = "yacht";
+export type StaticAssetKey = "yacht" | "sportYacht" | "skiff";
 export type AssetKey = StaticAssetKey | AnimatedAssetKey;
 
 export type AnimatedAssetInstance = {
@@ -38,7 +38,11 @@ const ASSETS = {
   dolphin: { url: "/models/dolphin-animated.glb", label: "Loading dolphins", required: true, stage: "start" },
   seagull: { url: "/models/seagull-animated.glb", label: "Loading seabirds", required: false, stage: "start" },
   traderMan: { url: "/models/trader-man.glb", label: "Loading the skipper", required: false, stage: "start" },
-  // In the order they are wanted: what is met at sea first, then ashore.
+  // In the order they are wanted: the story's boats (the prologue's sport
+  // yacht, the skiff of M01; drawn in code until they come), what is met
+  // at sea, then ashore.
+  sportYacht: { url: "/models/sport-yacht.glb", label: "Loading the sport yacht", required: false, stage: "later" },
+  skiff: { url: "/models/skiff-center-console.glb", label: "Loading the skiff", required: false, stage: "later" },
   shark: { url: "/models/shark-animated.glb", label: "Loading sharks", required: false, stage: "later" },
   whale: { url: "/models/blue-whale-rigged-pbr-v2.glb", label: "Loading whale", required: false, stage: "later" },
   crabRed: { url: "/models/crab-red.glb", label: "Loading crabs", required: false, stage: "later" },
@@ -181,6 +185,11 @@ export class AssetManager {
 
   yacht(): THREE.Group {
     return this.cloneScene("yacht", false);
+  }
+
+  /** A copy of a model that may not have come yet (null until it has). */
+  scene(key: StaticAssetKey): THREE.Group | null {
+    return this.assets.has(key) ? this.cloneScene(key, false) : null;
   }
 
 

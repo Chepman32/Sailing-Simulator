@@ -12,7 +12,17 @@ import type { Cutscene, Shot, ShotPoint } from "./StoryTypes";
 
 export type AnchorFrame = { x: number; y: number; z: number; heading: number };
 
-export type CameraPose = { eye: { x: number; y: number; z: number }; look: { x: number; y: number; z: number }; fov: number };
+export type CameraPose = {
+  eye: { x: number; y: number; z: number };
+  look: { x: number; y: number; z: number };
+  fov: number;
+  /**
+   * The eye was put where it is by hand: a camera spot in a level, or at
+   * the helm (through a window, over a console). Left as it is; any other
+   * eye is kept out of the ground and the walls (`Simulator.clearShot`).
+   */
+  placed?: boolean;
+};
 
 export function ease(kind: Shot["ease"], t: number): number {
   const x = Math.min(1, Math.max(0, t));
@@ -90,5 +100,10 @@ export function cameraFor(shot: Shot, progress: number, time: number, frame: (an
       z: mix(lookA.z, lookB.z) + wobble(time, 2.9) * shake,
     },
     fov: mix(fovA, fovB),
+    placed: placedEye(from.eye.anchor) && placedEye(to.eye.anchor),
   };
+}
+
+function placedEye(anchor: string): boolean {
+  return anchor.startsWith("spot:") || anchor === "helm";
 }

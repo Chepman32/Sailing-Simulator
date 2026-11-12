@@ -2,12 +2,12 @@ import * as THREE from "three";
 import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
 /**
- * The boats the skipper drives besides the catamaran, built in code: the
- * prologue's sport yacht (a fast single-deck motor yacht, white, with the
- * black carbon stripe along her quarters by which the order describes her)
- * and the skiff from Створ-9 (an open 4.4 m aluminium boat with a tired
- * outboard, salt-streaked, an orange lifebuoy on her thwart). And the sport
- * yacht's wreck, as it lies on the reef afterwards.
+ * The boats the skipper drives besides the catamaran, drawn in code: the
+ * prologue's sport yacht and the skiff from Створ-9 (an open aluminium
+ * boat with a tired outboard, salt-streaked, an orange lifebuoy on her
+ * thwart), and the sport yacht's wreck. They stand in until the boats'
+ * models have loaded (`ModelCrafts`); the skiff stays as the fishermen's
+ * boats drawn up on the sand.
  *
  * Frame: bow +Z, up +Y, x to port (the vessel's own), origin at the
  * waterline amidships. `Vessel` lowers the group to the water.
@@ -33,6 +33,10 @@ export type CraftModel = {
   /** The outboard turned with the helm, the propeller spinning with the shaft. */
   update(delta: number, rudder: number, shaft: number): void;
   dispose(): void;
+  /** Built from the loaded model (`ModelCrafts`), not drawn in code as the stand-in. */
+  modelled?: boolean;
+  /** The helm's display: the alert the network puts on it (null: the chart). */
+  setAlert?(lines: readonly string[] | null): void;
 };
 
 type Station = { beam: number; sheerY: number; chine: number; chineY: number; keelY: number };
@@ -178,7 +182,7 @@ function sideUvs(geometry: THREE.BufferGeometry, length: number, height: number)
   geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
 }
 
-class Kit {
+export class Kit {
   readonly geometries: THREE.BufferGeometry[] = [];
   readonly materials: THREE.Material[] = [];
   readonly textures: THREE.Texture[] = [];
@@ -404,7 +408,7 @@ export function skiff(): CraftModel {
   };
 }
 
-/** The craft's model by id. */
-export function buildCraft(craft: "sport" | "skiff"): CraftModel {
+/** The craft's stand-in by id, drawn in code (`ModelCrafts.buildCraft` prefers the loaded model). */
+export function drawnCraft(craft: "sport" | "skiff"): CraftModel {
   return craft === "sport" ? sportYacht() : skiff();
 }
