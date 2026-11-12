@@ -108,23 +108,22 @@ export const SECTORS: readonly Sector[] = [
  * open water). The ones not yet in play mark where the planned chapters lie.
  */
 export const LOCATIONS: readonly Location[] = [
-  // The prologue: in from the south-east before the trade wind, to the old light on the outer shoal.
-  { id: "outer-cay", name: { ru: "Мыс у внешней кромки", en: "The outer cape" }, sector: "dead-tide", at: [-4789, -6325], snap: "island", radius: 60 },
-  { id: "reef-refuge", name: { ru: "Рифы у маяка", en: "The reefs off the light" }, sector: "dead-tide", at: [-5688, -5978], snap: "point", radius: 70 },
-  { id: "wash-up", name: { ru: "Внешняя отмель", en: "The outer shoal" }, sector: "dead-tide", at: [-5650, -6010], snap: "island", radius: 60 },
-  { id: "tide-rock", name: { ru: "Скала над линией прилива", en: "The rock above the tide line" }, sector: "dead-tide", at: [-5741, -5877], snap: "point", radius: 9 },
-  { id: "old-light", name: { ru: "Старый маяк", en: "The old lighthouse" }, sector: "dead-tide", at: [-5712, -5876], snap: "point", radius: 8 },
-  { id: "light-tracks", name: { ru: "Следы у маяка", en: "Tracks by the light" }, sector: "dead-tide", at: [-5723, -5878], snap: "point", radius: 4 },
-  { id: "light-ambush", name: { ru: "Тропа на склоне", en: "The path on the slope" }, sector: "dead-tide", at: [-5734, -5881], snap: "point", radius: 4 },
-  // Chapter 1.
-  { id: "sunken-zodiac", name: { ru: "Затонувший «Зодиак»", en: "The sunken Zodiac" }, sector: "dead-tide", at: [-5640, -5925], snap: "point", radius: 30 },
-  { id: "sato-hideout", name: { ru: "Схрон Сато", en: "Sato's hideout" }, sector: "dead-tide", at: [-7600, -2582], snap: "pier", radius: 160, charted: false },
-  { id: "broken-ridge", name: { ru: "Сломанная гряда", en: "Broken Ridge" }, sector: "dead-tide", at: [-6500, -2050], snap: "water", radius: 420 },
-  { id: "pale-banks", name: { ru: "Бледные банки", en: "The Pale Banks" }, sector: "dead-tide", at: [-5500, -4300], snap: "water", radius: 400 },
+  // The prologue: in from the south-east at full speed, for the outer island of the reef belt.
+  { id: "delivery", name: { ru: "Точка передачи груза", en: "The hand-over point" }, sector: "dead-tide", at: [-7121, -5300], snap: "water", radius: 90 },
+  { id: "ambush-cay", name: { ru: "Низкий ки", en: "The low cay" }, sector: "dead-tide", at: [-6215, -5664], snap: "island", radius: 40 },
+  { id: "reef-gap", name: { ru: "Проход в рифах у Косой отмели", en: "The gap in the reef off the Slant Shoal" }, sector: "dead-tide", at: [-7100, -5330], snap: "point", radius: 70 },
+  { id: "crash", name: { ru: "Риф у Косой отмели", en: "The reef off the Slant Shoal" }, sector: "dead-tide", at: [-7111, -5296], snap: "point", radius: 30 },
+  // M01, "You Should Be Dead": the outer island, Створ-9 on its north-east shore, Mark's cove across the lagoon.
+  { id: "kosaya", name: { ru: "Косая отмель", en: "The Slant Shoal" }, sector: "dead-tide", at: [-7120, -5163], snap: "island", radius: 40, charted: true },
+  { id: "stvor9", name: { ru: "Застава «Створ-9»", en: "Outpost Stvor-9" }, sector: "dead-tide", at: [-7067, -4955], snap: "point", radius: 60, charted: true },
+  { id: "m01-pass", name: { ru: "Два белых камня", en: "The two white rocks" }, sector: "dead-tide", at: [-6643, -4770], snap: "point", radius: 26 },
+  { id: "mark-cove", name: { ru: "Бухта Марка", en: "Mark's cove" }, sector: "dead-tide", at: [-6262, -4612], snap: "point", radius: 45, charted: true },
+  // The four people of the arcs M01 opens (their first meetings are planned).
+  { id: "kenji-lab", name: { ru: "Лагуна Кендзи", en: "Kenji's lagoon" }, sector: "dead-tide", at: [-6493, -3964], snap: "island", radius: 60 },
+  { id: "sara-refuge", name: { ru: "Береговое убежище Сары", en: "Sara's shore refuge" }, sector: "dead-tide", at: [-5546, -3720], snap: "island", radius: 70 },
+  { id: "viktor-gate", name: { ru: "Технический вход Седова", en: "Sedov's service entrance" }, sector: "dead-tide", at: [-5841, -5620], snap: "island", radius: 60 },
   // Planned: the bases of the chapters to come.
-  { id: "rusty-spire", name: { ru: "Аванпост-12 «Ржавый шпиль»", en: "Outpost 12, the Rusty Spire" }, sector: "dead-tide", at: [-5200, -3100], snap: "water", radius: 200 },
   { id: "pepel-relay", name: { ru: "Узел связи «Пепел»", en: "The Ash relay" }, sector: "green-squall", at: [-4758, 3253], snap: "island", radius: 200 },
-  { id: "kenji-den", name: { ru: "Мастерская Рэйна", en: "Rain's workshop" }, sector: "green-squall", at: [-1408, 2735], snap: "island", radius: 160 },
   { id: "object-404", name: { ru: "«Объект-404»", en: "Object 404" }, sector: "sand-teeth", at: [1458, -4996], snap: "island", radius: 200 },
   { id: "last-frontier", name: { ru: "Маяк «Последний рубеж»", en: "Last Frontier light" }, sector: "open-wedge", at: [-9700, 1250], snap: "water", radius: 200 },
   { id: "command-center", name: { ru: "Командный центр «Аквилон»", en: "Aquilon command centre" }, sector: "black-caldera", at: [-856, -14], snap: "island", radius: 300 },

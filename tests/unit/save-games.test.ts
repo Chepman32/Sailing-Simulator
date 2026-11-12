@@ -35,8 +35,8 @@ function memoryStore(limit = Infinity): KeyValueStore & { map: Map<string, strin
 
 function aSave(overrides: Partial<SaveGame> = {}): SaveGame {
   const campaign = createCampaign();
-  campaign.missions.prologue = { step: "talk", done: true };
-  campaign.missions.stranded = { step: "kit", done: false };
+  campaign.missions.prologue = { step: "dark", done: true };
+  campaign.missions.m01 = { step: "journal", done: false };
   campaign.gear = ["pistol", "knife", "map"];
   campaign.hull = 0.4;
   campaign.rig = false;
@@ -107,14 +107,14 @@ test("the load menu shows the newest save first and says where in the story each
   assert.equal(latestSave([null, older, newer, null])?.slot, "auto");
   assert.equal(latestSave([null, null]), null);
   const described = describeSave(aSave(), CAMPAIGN);
-  const stranded = CAMPAIGN.missions.find((mission) => mission.id === "stranded")!;
-  assert.deepEqual(described.mission, stranded.title);
+  const m01 = CAMPAIGN.missions.find((mission) => mission.id === "m01")!;
+  assert.deepEqual(described.mission, m01.title);
   assert.ok(described.chapter, "the chapter");
-  assert.deepEqual(described.goal, stranded.steps.find((step) => step.id === "kit")!.goal ?? null);
+  assert.deepEqual(described.goal, m01.steps.find((step) => step.id === "journal")!.goal ?? null);
   assert.equal(described.done, 1);
   // Everything finished so far: the last mission done.
   const finished = aSave();
-  finished.campaign.missions = { prologue: { step: "talk", done: true } };
+  finished.campaign.missions = { prologue: { step: "dark", done: true } };
   assert.deepEqual(describeSave(finished, CAMPAIGN).mission, CAMPAIGN.missions.find((mission) => mission.id === "prologue")!.title);
   assert.equal(describeSave(finished, CAMPAIGN).goal, null);
 });

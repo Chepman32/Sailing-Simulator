@@ -1,10 +1,13 @@
 import * as THREE from "three";
 import type { DroneSystem } from "../combat/DroneSystem";
+import type { ActorEvent, ActorSystem } from "../actors/ActorSystem";
+import type { LevelSystem } from "../level/LevelSystem";
 import type { Traders, TraderSpot } from "../economy/Traders";
 import { buildAtlas, resolvePlace, sectorAt, seabedNear, toWorld, type Atlas, type Place } from "./AtlasMath";
 import {
   advance,
   applyToState,
+  conditionHolds,
   createCampaign,
   isDone,
   missionById,
@@ -16,11 +19,12 @@ import {
   trackedMission,
   type CampaignState,
   type Facts,
+  type WorldFacts,
 } from "./CampaignMath";
 import { CAMPAIGN } from "./content";
 import { cameraFor, shotAt, type AnchorFrame, type CameraPose } from "./CutsceneMath";
 import type { StoryProps } from "./StoryProps";
-import type { Campaign, Cutscene, Effect, Line, Presence, Sector, StorySound, Text } from "./StoryTypes";
+import type { Campaign, CraftId, Cutscene, Effect, Line, Mission, Presence, Sector, StorySound, Text, Use } from "./StoryTypes";
 
 /**
  * The campaign at run time: it keeps the progress, gathers what happens in
@@ -84,11 +88,35 @@ export type StoryHost = {
   freeze(on: boolean): void;
   /** Sets the rudder and the throttle. */
   steer(rudder?: number, throttle?: number): void;
+  /** The skipper's boat becomes this craft (her model, her handling). */
+  craft(craft: CraftId): void;
+  /** Moves the boat to (x, z) without the skipper (he stays where he is ashore). */
+  moveBoat(x: number, z: number, heading: number): void;
+  /** Sets the skipper down on foot at (x, y, z), facing `yaw`. */
+  putAshore(x: number, y: number, z: number, yaw: number): void;
+  /** Full health; rounds for the pistol. */
+  heal(): void;
+  ammo(rounds: number): void;
+  /** The skipper's own state for the story's conditions. */
+  body(): { health: number; still: number; crouched: boolean };
+  /** Holds the day at a real day's pace from `hour` (null: lets it run on its own); the hour it is held at now. */
+  holdClock(hour: number | null): void;
+  clockHour(): number | null;
 };
 
 export type StoryLine = { id: number; who: string; via: Line["via"]; text: Text; duration: number; elapsed: number };
 export type StoryTitle = { id: number; style: "chapter" | "place" | "end"; title: Text; subtitle?: Text };
-export type StoryPrompt = { kind: "talk"; character: string } | { kind: "repair"; progress: number } | { kind: "winch"; progress: number };
+export type StoryPrompt =
+  | { kind: "talk"; character: string }
+  | { kind: "repair"; progress: number }
+  | { kind: "winch"; progress: number }
+  /** A thing to work (a terminal, a cell door, a mooring line), and how far it has been worked. */
+  | { kind: "use"; id: string; label: Text; progress: number }
+  /** A guard within reach from behind, unaware: to be put down quietly. */
+  | { kind: "takedown"; id: string };
+
+/** A side goal as the interface lists it. */
+export type StoryOptional = { id: string; goal: Text; done: boolean };
 
 /** What the interface shows of the story (refreshed with the HUD). */
 export type StoryView = {
@@ -124,6 +152,8 @@ export type StoryView = {
   frozen: boolean;
   /** A save now would resume here (past the prologue's opening run, or at a checkpoint). */
   anchored: boolean;
+  /** The mission's side goals shown so far. */
+  optionals: StoryOptional[];
 };
 
 export class StorySystem {
@@ -161,13 +191,29 @@ export class StorySystem {
   private wakeSerial = 0;
   private alert: readonly Text[] | null = null;
   private frozen = false;
+  /** The campaign as it was when the last checkpoint was reached: what a fall in a fight goes back to. */
+  private checkpointState: CampaignState | null = null;
+  /** Seconds since the skipper fell (−1: on his feet). */
+  private downed = -1;
+  /** A use being worked (held), and how long it has been. */
+  private using: { use: Use; time: number } | null = null;
+  /** When repeating triggers last fired (story clock). */
+  private readonly fired = new Map<string, number>();
+  /** How roused the guards are. */
+  private guards: "quiet" | "suspicious" | "combat" = "quiet";
+  /** The build count of each level the switches were last put back on. */
+  private readonly switched = new Map<string, number>();
+  private readonly roster = new Map<string, import("../actors/ActorSystem").ActorSpec>();
 
   constructor(
     private readonly host: StoryHost,
     private readonly drones: DroneSystem,
     private readonly props: StoryProps,
     private readonly cast: Traders,
+    private readonly actors: ActorSystem,
+    private readonly levels: LevelSystem,
   ) {
+    for (const spec of this.campaign.actors) this.roster.set(spec.id, spec);
     this.mode = StorySystem.readMode();
     this.state = StorySystem.readCampaign();
   }
@@ -219,6 +265,19 @@ export class StorySystem {
     return place;
   }
 
+  /**
+   * Where a name the story uses is: a built level's spot (`level:spot`, while
+   * the level stands), else a place.
+   */
+  point(id: string): { x: number; y: number | null; z: number; radius: number; yaw: number | null } | null {
+    if (id.includes(":")) {
+      const spot = this.levels.spot(id);
+      return spot ? { x: spot.x, y: spot.y, z: spot.z, radius: 3, yaw: spot.yaw } : null;
+    }
+    const place = this.place(id);
+    return place ? { x: place.x, y: null, z: place.z, radius: place.radius, yaw: null } : null;
+  }
+
   // --- Starting, resuming, leaving ----------------------------------------------
 
   /** The main menu: no story running (what was under way stays saved, to continue). */
@@ -240,13 +299,16 @@ export class StorySystem {
     this.mode = "campaign";
     this.state = createCampaign();
     this.resetRun();
+    this.host.craft(this.state.craft);
     const start = toWorld(this.campaign.start.yacht);
     this.host.placeYacht(start.x, start.z, (-this.campaign.start.heading * Math.PI) / 180);
     this.host.conditionChanged();
     this.host.gearChanged();
+    this.host.heal();
     this.persist();
     this.reconcile(true);
     this.tick(0);
+    this.checkpointState = structuredClone(this.state);
   }
 
   /** Back into the campaign where it was left. */
@@ -258,11 +320,16 @@ export class StorySystem {
       this.startNew();
       return;
     }
+    this.host.craft(this.state.craft);
+    this.host.holdClock(this.state.clock);
+    this.reconcile(true);
     this.restorePosition(!isDone(this.state, "prologue"));
     this.host.conditionChanged();
     this.host.gearChanged();
+    this.host.heal();
     this.persist();
     this.reconcile(true);
+    this.checkpointState = structuredClone(this.state);
     this.tick(0);
   }
 
@@ -279,11 +346,15 @@ export class StorySystem {
       this.startNew();
       return false;
     }
+    this.host.craft(this.state.craft);
+    this.host.holdClock(this.state.clock);
     this.host.placeYacht(yacht.x, yacht.z, yacht.heading);
     this.host.conditionChanged();
     this.host.gearChanged();
+    this.host.heal();
     this.persist();
     this.reconcile(true);
+    this.checkpointState = structuredClone(this.state);
     return true;
   }
 
@@ -309,10 +380,17 @@ export class StorySystem {
     this.alert = null;
     if (this.frozen) this.host.freeze(false);
     this.frozen = false;
+    this.downed = -1;
+    this.using = null;
+    this.fired.clear();
+    this.guards = "quiet";
   }
 
   private clearWorld(): void {
     this.drones.clear();
+    this.actors.clear();
+    this.levels.want([]);
+    this.switched.clear();
     for (const key of this.props.keys()) this.props.remove(key);
     this.present.clear();
     this.missingSince.clear();
@@ -329,9 +407,23 @@ export class StorySystem {
     }
     const checkpoint = this.state.checkpoint;
     const step = checkpoint ? missionById(this.campaign, checkpoint.mission)?.steps.find((entry) => entry.id === checkpoint.step) : null;
-    const place = step?.checkpoint ? this.place(step.checkpoint.yacht) : null;
-    if (step?.checkpoint && place) {
-      this.host.place(place, step.checkpoint.skipper);
+    const cp = step?.checkpoint;
+    // A boat lying at a built level's spot (the skiff at the jetty), the skipper at her wheel or on his spot.
+    if (cp && cp.yacht.includes(":")) {
+      const boat = this.point(cp.yacht);
+      if (boat) {
+        if (cp.skipper === "helm") this.host.placeYacht(boat.x, boat.z, boat.yaw ?? 0);
+        else this.host.moveBoat(boat.x, boat.z, boat.yaw ?? 0);
+      }
+      const spot = cp.spot ? this.point(cp.spot) : null;
+      if (cp.skipper === "ashore" && spot) this.host.putAshore(spot.x, spot.y ?? this.host.ground(spot.x, spot.z), spot.z, spot.yaw ?? 0);
+      if (boat) return;
+    }
+    const place = cp ? this.place(cp.yacht) : null;
+    if (cp && place) {
+      this.host.place(place, cp.skipper);
+      const spot = cp.spot ? this.point(cp.spot) : null;
+      if (cp.skipper === "ashore" && spot) this.host.putAshore(spot.x, spot.y ?? this.host.ground(spot.x, spot.z), spot.z, spot.yaw ?? 0);
       return;
     }
     const start = toWorld(this.campaign.start.yacht);
@@ -350,8 +442,14 @@ export class StorySystem {
     if (!this.active || this.sinking >= 0) return null;
     const skipper = this.host.skipper();
     if (skipper.mode === "land") {
+      if (this.downed >= 0) return null;
       const near = this.speakerNear(skipper.x, skipper.z);
       if (near) return { kind: "talk", character: near };
+      if (this.using) return { kind: "use", id: this.using.use.id, label: this.using.use.label, progress: Math.min(1, this.using.time / Math.max(0.01, this.using.use.seconds ?? 0)) };
+      const use = this.useNear(skipper.x, skipper.y, skipper.z);
+      if (use) return { kind: "use", id: use.id, label: use.label, progress: 0 };
+      const quiet = this.actors.takedownTarget(skipper.x, skipper.z);
+      if (quiet) return { kind: "takedown", id: quiet };
       return null;
     }
     if (!skipper.aboard) return null;
@@ -371,6 +469,15 @@ export class StorySystem {
       this.events.add(`talk:${prompt.character}`);
       // Spoken to with nothing to say: a word in passing.
       if (!this.wantsTalk(prompt.character)) this.small(prompt.character);
+    } else if (prompt.kind === "use") {
+      const use = this.useNear(this.host.skipper().x, this.host.skipper().y, this.host.skipper().z);
+      if (use && !this.using) {
+        if ((use.seconds ?? 0) > 0) this.using = { use, time: 0 };
+        else this.worked(use);
+      }
+    } else if (prompt.kind === "takedown") {
+      this.actors.takedown(prompt.id);
+      this.events.add("takedown");
     } else if (prompt.kind === "repair") {
       if (this.repairing < 0) this.repairing = 0;
     } else {
@@ -379,12 +486,125 @@ export class StorySystem {
     return true;
   }
 
-  /** The skipper on the porch of a story person, if one is in reach. */
+  /** The skipper on the porch of a story person, or beside a friendly one on his feet, if one is in reach and has a word for him. */
   private speakerNear(x: number, z: number): string | null {
     for (const spot of this.castSpots) {
       if (Math.hypot(spot.x - x, spot.z - z) <= TALK_REACH) return this.castWho.get(spot.id) ?? null;
     }
+    for (const id of this.actors.ids()) {
+      const spec = this.roster.get(id);
+      if (!spec?.character || spec.faction === "hostile" || this.actors.status(id) !== "active") continue;
+      if (!this.wantsTalk(spec.character) && !this.smallTalk(spec.character)) continue;
+      const at = this.actors.where(id);
+      if (at && Math.hypot(at.x - x, at.z - z) <= TALK_REACH) return spec.character;
+    }
     return null;
+  }
+
+  /** The use the skipper stands at, if one is open to him now. */
+  private useNear(x: number, y: number, z: number): Use | null {
+    for (const mission of openMissions(this.campaign, this.state)) {
+      const progress = this.state.missions[mission.id];
+      if (!progress) continue;
+      for (const use of mission.uses ?? []) {
+        if (use.once !== false && this.state.flags.includes(`used:${use.id}`)) continue;
+        const at = this.levels.interactable(use.id);
+        if (!at || Math.hypot(at.x - x, at.z - z) > at.radius || Math.abs(at.y - y) > 2.2) continue;
+        if (use.when && !conditionHolds(use.when, this.state, this.facts(), mission.id, progress.step)) continue;
+        return use;
+      }
+    }
+    return null;
+  }
+
+  /** A use worked: its flag, its event, what it does. */
+  private worked(use: Use): void {
+    this.using = null;
+    const flag = `used:${use.id}`;
+    if (!this.state.flags.includes(flag)) this.state.flags.push(flag);
+    this.events.add(`use:${use.id}`);
+    this.dirty = true;
+    for (const effect of use.do ?? []) this.cue(effect);
+  }
+
+  /** What the people of the story did (the simulator passes on each `ActorEvent`). */
+  actorEvent(event: ActorEvent): void {
+    if (!this.active) return;
+    const flag = (name: string) => {
+      if (!this.state.flags.includes(name)) this.state.flags.push(name);
+      this.dirty = true;
+    };
+    switch (event.kind) {
+      case "down":
+        flag(`down:${event.id}`);
+        if (event.lethal) flag(`killed:${event.id}`);
+        this.events.add(`down:${event.id}`);
+        this.events.add("down");
+        if (event.by === "takedown") flag("took-down");
+        break;
+      case "surrender":
+        flag(`surr:${event.id}`);
+        this.events.add(`surrender:${event.id}`);
+        this.events.add("surrender");
+        break;
+      case "alert":
+        this.guards = event.level;
+        if (event.level !== "quiet") flag(`alert:${event.level}`);
+        if (event.level === "combat") flag("alert:suspicious");
+        this.events.add(`alert:${event.level}`);
+        break;
+      case "bark":
+        // A guard's shout never talks over the story: said only into a quiet moment.
+        if (!this.line && this.queue.length === 0) this.say([{ who: event.character, via: "voice", text: event.text }]);
+        break;
+      case "shotAt":
+        this.events.add("shotAt");
+        break;
+      case "playerHit":
+        this.events.add("hit");
+        break;
+    }
+  }
+
+  /** The skipper fell in a fight: black, then back to the last checkpoint as it was. */
+  playerDown(): void {
+    if (!this.active || this.downed >= 0) return;
+    this.downed = 0;
+    this.fadeTarget = 1;
+    this.fadeHold = 2;
+  }
+
+  /** Whether the story is taking the skipper back after a fall. */
+  get recovering(): boolean {
+    return this.downed >= 0;
+  }
+
+  private afterDown(): void {
+    this.downed = -1;
+    this.fadeTarget = 0;
+    if (this.checkpointState) this.state = structuredClone(this.checkpointState);
+    this.queue.length = 0;
+    this.line = null;
+    this.scene = null;
+    this.using = null;
+    this.stepClocks.clear();
+    this.events.clear();
+    this.fired.clear();
+    this.guards = "quiet";
+    if (this.frozen) this.host.freeze(false);
+    this.frozen = false;
+    this.actors.clear();
+    this.drones.clear();
+    this.present.clear();
+    this.switched.clear();
+    this.host.craft(this.state.craft);
+    this.reconcile(true);
+    this.restorePosition(true);
+    this.host.heal();
+    this.host.conditionChanged();
+    this.host.gearChanged();
+    this.reconcile(true);
+    this.persist();
   }
 
   /** Whether some open step waits for a word with this person. */
@@ -397,7 +617,12 @@ export class StorySystem {
 
   private small(character: string): void {
     if (this.line || this.queue.length > 0) return;
-    if (character === "holloway") {
+    const lines = this.smallTalk(character);
+    if (lines) {
+      this.say([{ who: character, via: "voice", text: lines[Math.floor(Math.random() * lines.length)]! }]);
+      return;
+    }
+    if (character === "holloway-old") {
       const lines: Text[] = [
         { ru: "Патроны береги. Купол — три выстрела, не больше.", en: "Save your rounds. Three for the dome, no more." },
         { ru: "Под парусом, гидрограф. Мотор — чтобы удрать.", en: "Under sail, hydrographer. The engine's for running." },
@@ -405,6 +630,12 @@ export class StorySystem {
       ];
       this.say([{ who: "holloway", via: "voice", text: lines[Math.floor(Math.random() * lines.length)]! }]);
     }
+  }
+
+  /** A person's words in passing, when no mission is under way. */
+  private smallTalk(character: string): readonly Text[] | null {
+    if (trackedMission(this.campaign, this.state)) return null;
+    return this.campaign.smallTalk?.[character] ?? null;
   }
 
   private repairSeconds(): number {
@@ -457,7 +688,12 @@ export class StorySystem {
     const skipper = this.host.skipper();
     if (this.saveClock <= 0) {
       this.saveClock = 4;
-      if (skipper.mode === "helm" && isDone(this.state, "prologue") && this.sinking < 0) {
+      const hour = this.host.clockHour();
+      if (hour !== null && this.state.clock !== null && Math.abs(hour - this.state.clock) > 0.01) {
+        this.state.clock = Math.round(hour * 1000) / 1000;
+        this.dirty = true;
+      }
+      if (skipper.mode === "helm" && isDone(this.state, "prologue") && this.sinking < 0 && this.downed < 0) {
         const yacht = this.host.yacht();
         this.state.position = { x: Math.round(yacht.x * 10) / 10, z: Math.round(yacht.z * 10) / 10, heading: Math.round(yacht.heading * 1000) / 1000 };
         this.dirty = true;
@@ -466,11 +702,23 @@ export class StorySystem {
     }
   }
 
-  private tick(delta: number): void {
-    void delta;
+  /** What the world says now, for `advance` and for conditions. */
+  private facts(): Facts {
     const yacht = this.host.yacht();
     const skipper = this.host.skipper();
-    const facts: Facts = {
+    const body = this.host.body();
+    const world: WorldFacts = {
+      inArea: (name) => skipper.mode === "land" && this.levels.inArea(name, skipper.x, skipper.y + 0.5, skipper.z),
+      actor: (id) => {
+        const at = this.actors.where(id);
+        return at && this.actors.status(id) !== null ? { x: at.x, z: at.z } : null;
+      },
+      alert: this.guards,
+      health: body.health,
+      still: body.still,
+      crouched: body.crouched,
+    };
+    return {
       events: this.events,
       dialogueIdle: !this.line && this.queue.length === 0 && this.lineGap <= 0,
       cutscene: this.scene !== null,
@@ -479,9 +727,23 @@ export class StorySystem {
       skipper: { x: skipper.x, z: skipper.z },
       aboard: skipper.aboard,
       hull: this.state.hull,
-      place: (id) => this.place(id),
+      place: (id) => this.point(id),
+      now: this.time,
+      fired: this.fired,
+      world,
     };
+  }
+
+  private tick(delta: number): void {
+    void delta;
+    if (this.downed >= 0) {
+      this.events.clear();
+      return;
+    }
+    const checkpoint = this.state.checkpoint;
+    const facts = this.facts();
     const result = advance(this.campaign, this.state, facts);
+    this.updateOptionals(facts);
     this.events.clear();
     for (const mission of result.moved) this.stepClocks.set(mission, 0);
     if (result.moved.length > 0) {
@@ -492,6 +754,41 @@ export class StorySystem {
       this.persist();
     }
     for (const effect of result.effects) this.carryOut(effect);
+    // A new checkpoint: what a fall goes back to, as the step begins (its own effects done).
+    if (this.state.checkpoint !== checkpoint && this.state.checkpoint) this.checkpointState = structuredClone(this.state);
+    if (result.effects.length > 0) this.dirty = true;
+  }
+
+  /** Side goals: shown (flag `opt:<id>`) once their condition holds, done (`optdone:<id>`) once theirs does. */
+  private updateOptionals(facts: Facts): void {
+    for (const mission of openMissions(this.campaign, this.state)) {
+      const progress = this.state.missions[mission.id];
+      if (!progress) continue;
+      for (const optional of mission.optionals ?? []) {
+        const shown = `opt:${optional.id}`;
+        const done = `optdone:${optional.id}`;
+        if (this.state.flags.includes(done)) continue;
+        if (!this.state.flags.includes(shown)) {
+          if (!conditionHolds(optional.show, this.state, facts, mission.id, progress.step)) continue;
+          this.state.flags.push(shown);
+          this.dirty = true;
+        }
+        if (conditionHolds(optional.done, this.state, facts, mission.id, progress.step)) {
+          this.state.flags.push(done);
+          this.dirty = true;
+        }
+      }
+    }
+  }
+
+  private optionalsView(mission: Mission | null): StoryOptional[] {
+    if (!mission) return [];
+    const out: StoryOptional[] = [];
+    for (const optional of mission.optionals ?? []) {
+      if (!this.state.flags.includes(`opt:${optional.id}`)) continue;
+      out.push({ id: optional.id, goal: optional.goal, done: this.state.flags.includes(`optdone:${optional.id}`) });
+    }
+    return out;
   }
 
   private carryOut(effect: Effect): void {
@@ -525,6 +822,7 @@ export class StorySystem {
         break;
       case "time":
         this.host.setHour(effect.hour);
+        this.host.holdClock(effect.hold ? effect.hour : null);
         break;
       case "weather":
         this.host.setWeather(effect.kind);
@@ -571,8 +869,84 @@ export class StorySystem {
       case "steer":
         this.host.steer(effect.rudder, effect.throttle);
         break;
+      case "actor":
+        this.direct(effect);
+        break;
+      case "alarm": {
+        const at = this.point(effect.at);
+        if (at) this.actors.alarmSquad(effect.squad, { x: at.x, z: at.z }, effect.combat ?? false);
+        break;
+      }
+      case "switch":
+        this.levels.signal(effect.name, effect.value);
+        break;
+      case "craft": {
+        this.host.craft(effect.craft);
+        const at = effect.at ? this.point(effect.at) : null;
+        if (at && effect.board) this.host.placeYacht(at.x, at.z, at.yaw ?? 0);
+        else if (at) this.host.moveBoat(at.x, at.z, at.yaw ?? 0);
+        else if (effect.board) this.host.placeYacht(this.host.yacht().x, this.host.yacht().z, this.host.yacht().heading);
+        this.host.conditionChanged();
+        break;
+      }
+      case "board": {
+        const yacht = this.host.yacht();
+        this.host.placeYacht(yacht.x, yacht.z, yacht.heading);
+        break;
+      }
+      case "put": {
+        const at = this.point(effect.at);
+        if (at) this.host.putAshore(at.x, at.y ?? this.host.ground(at.x, at.z), at.z, at.yaw ?? this.host.skipper().yaw);
+        break;
+      }
+      case "heal":
+        this.host.heal();
+        break;
+      case "ammo":
+        this.host.ammo(effect.rounds);
+        break;
+      case "withdraw": {
+        const to = this.point(effect.to);
+        if (to) this.drones.withdraw(effect.group, to.x, to.z);
+        break;
+      }
       default:
         break;
+    }
+  }
+
+  /** The story's hand on a person of the roster. */
+  private direct(effect: Extract<Effect, { do: "actor" }>): void {
+    const id = effect.id;
+    if (effect.remove) {
+      const gone = `gone:${id}`;
+      if (!this.state.flags.includes(gone)) this.state.flags.push(gone);
+      this.actors.remove(id);
+      return;
+    }
+    if (!this.actors.has(id)) return;
+    if (effect.release) this.actors.release(id);
+    if (effect.follow !== undefined) this.actors.setFollow(id, effect.follow);
+    if (effect.put) {
+      const at = this.levels.spot(effect.put);
+      if (at) this.actors.place(id, at);
+    }
+    if (effect.to) {
+      const at = this.levels.spot(effect.to);
+      if (at) this.actors.order(id, at, effect.pace ?? "walk", effect.pose);
+    } else if (effect.pose) {
+      this.actors.pose(id, effect.pose);
+    }
+    if (effect.face) {
+      const where = this.actors.where(id);
+      const toward = effect.face === "skipper" ? this.host.skipper() : this.levels.spot(effect.face);
+      if (where && toward) this.actors.pose(id, {});
+      if (where && toward) this.actors.face(id, Math.atan2(toward.x - where.x, toward.z - where.z));
+    }
+    if (effect.alarm) {
+      const where = this.actors.where(id);
+      const spec = this.roster.get(id);
+      if (where && spec?.squad) this.actors.alarmSquad(spec.squad, { x: where.x, z: where.z }, true);
     }
   }
 
@@ -640,7 +1014,7 @@ export class StorySystem {
     if (anchor === "helm") return this.host.helm();
     if (anchor === "skipper") {
       const skipper = this.host.skipper();
-      return { x: skipper.x, y: skipper.mode === "land" ? this.host.ground(skipper.x, skipper.z) : skipper.y, z: skipper.z, heading: skipper.yaw };
+      return { x: skipper.x, y: skipper.y, z: skipper.z, heading: skipper.yaw };
     }
     if (anchor.startsWith("drone:")) {
       const drone = this.drones.find(anchor.slice(6));
@@ -652,6 +1026,14 @@ export class StorySystem {
         if (this.castWho.get(spot.id) === who) return { x: spot.x, y: this.host.ground(spot.x, spot.z), z: spot.z, heading: spot.facing };
       }
       return null;
+    }
+    if (anchor.startsWith("actor:")) {
+      const where = this.actors.where(anchor.slice(6));
+      return where ? { x: where.x, y: where.y, z: where.z, heading: where.yaw } : null;
+    }
+    if (anchor.startsWith("spot:")) {
+      const spot = this.levels.spot(anchor.slice(5));
+      return spot ? { x: spot.x, y: spot.y, z: spot.z, heading: spot.yaw } : null;
     }
     if (anchor.startsWith("place:")) {
       const place = this.place(anchor.slice(6));
@@ -715,6 +1097,9 @@ export class StorySystem {
         if (this.sinking >= 0) {
           this.sinking += delta;
           if (this.sinking > 1.6) this.afterSinking();
+        } else if (this.downed >= 0) {
+          this.downed += delta;
+          if (this.downed > 1.2) this.afterDown();
         } else if (this.fadeHold <= 0) {
           this.fadeTarget = 0;
         }
@@ -740,6 +1125,15 @@ export class StorySystem {
 
   private updateActions(delta: number): void {
     const skipper = this.host.skipper();
+    // A use held: worked once its time is up, given up if he walks away from it.
+    if (this.using) {
+      const at = this.levels.interactable(this.using.use.id);
+      if (skipper.mode !== "land" || !at || Math.hypot(at.x - skipper.x, at.z - skipper.z) > at.radius + 0.6) this.using = null;
+      else {
+        this.using.time += delta;
+        if (this.using.time >= (this.using.use.seconds ?? 0)) this.worked(this.using.use);
+      }
+    }
     if (this.repairing >= 0) {
       if (!skipper.aboard) this.repairing = -1;
       else {
@@ -819,6 +1213,33 @@ export class StorySystem {
   /** Puts in what the story now needs and takes out what it no longer does. */
   private reconcile(now: boolean): void {
     const wanted = presenceNow(this.campaign, this.state);
+    // The built places first: the people stand on them.
+    const levels = wanted.filter((entry): entry is Extract<Presence, { kind: "level" }> => entry.kind === "level").map((entry) => entry.level);
+    this.levels.want(levels);
+    if (now) for (const level of levels) this.levels.ensure(level);
+    // Their switches as the story left them (a door opened, a screen's page), once each time one is built.
+    for (const level of levels) {
+      const serial = this.levels.buildSerial(level);
+      if (serial === 0 || this.switched.get(level) === serial) continue;
+      this.switched.set(level, serial);
+      for (const flag of this.state.flags) {
+        if (!flag.startsWith(`sw:${level}:`)) continue;
+        const [name, value] = flag.slice(3).split("=");
+        if (name && value !== undefined) this.levels.signal(name, value);
+      }
+    }
+    // The people: on their spots once their level stands; not back once down or gone.
+    const people = new Set<string>();
+    for (const entry of wanted) if (entry.kind === "actors") for (const id of entry.ids) people.add(id);
+    for (const id of this.actors.ids()) if (!people.has(id)) this.actors.remove(id);
+    for (const id of people) {
+      if (this.actors.has(id)) continue;
+      if (this.state.flags.includes(`down:${id}`) || this.state.flags.includes(`gone:${id}`) || this.state.flags.includes(`surr:${id}`)) continue;
+      const spec = this.roster.get(id);
+      if (!spec) continue;
+      const spot = this.levels.spot(spec.spawn);
+      if (spot) this.actors.spawn(spec, spot);
+    }
     const keys = new Set(wanted.map(presenceKey));
     // Out with what is no longer wanted.
     for (const key of [...this.present]) {
@@ -874,6 +1295,10 @@ export class StorySystem {
         this.present.add(key);
         continue;
       }
+      if (presence.kind === "level" || presence.kind === "actors") {
+        this.present.add(key);
+        continue;
+      }
       // Drones: put on the water when first wanted; a group that went missing comes back after a while.
       const there = this.drones.has(presence.group.id);
       if (there) {
@@ -923,6 +1348,7 @@ export class StorySystem {
         respawn: group.respawn,
         start: start ? { x: start.x, z: start.z, heading: (-(group.heading ?? 0) * Math.PI) / 180 } : undefined,
         speed: group.speed,
+        crewed: group.crewed,
       },
       yacht,
     );
@@ -938,8 +1364,10 @@ export class StorySystem {
     const out = new Set<number>();
     if (!this.active) return out;
     for (const presence of presenceNow(this.campaign, this.state)) {
-      if (presence.kind !== "npc") continue;
-      const island = this.place(presence.at)?.island;
+      // A built place on an island (the beach and the café of M01) empties its trader's porch too.
+      const at = presence.kind === "npc" ? presence.at : presence.kind === "level" ? presence.level : null;
+      if (!at) continue;
+      const island = this.place(at)?.island;
       if (island) out.add(island.id);
     }
     return out;
@@ -947,7 +1375,7 @@ export class StorySystem {
 
   /** Where the waypoint points now, or null. */
   marker(out: THREE.Vector3): THREE.Vector3 | null {
-    if (!this.active || this.sinking >= 0) return null;
+    if (!this.active || this.sinking >= 0 || this.downed >= 0) return null;
     const mission = trackedMission(this.campaign, this.state);
     if (!mission) return null;
     const step = stepOf(this.campaign, this.state, mission.id);
@@ -964,6 +1392,14 @@ export class StorySystem {
     if (target.startsWith("@drone:")) {
       const drone = this.drones.find(target.slice(7));
       return drone ? out.set(drone.x, drone.y + 1.5, drone.z) : null;
+    }
+    if (target.startsWith("@actor:")) {
+      const where = this.actors.where(target.slice(7));
+      return where ? out.set(where.x, where.y + 2.3, where.z) : null;
+    }
+    if (target.includes(":")) {
+      const spot = this.levels.interactable(target.slice(target.indexOf(":") + 1)) ?? this.levels.spot(target);
+      return spot ? out.set(spot.x, spot.y + 1.2, spot.z) : null;
     }
     // A sunken thing: the waypoint stands over it.
     if (objective.kind === "collect") {
@@ -1006,7 +1442,31 @@ export class StorySystem {
       rig: this.state.rig,
       frozen: this.active && this.frozen,
       anchored: isDone(this.state, "prologue") || this.state.checkpoint !== null,
+      optionals: this.optionalsView(mission),
     };
+  }
+
+  /** Who rides in the skipper's boat with him (flags `aboard:<id>`), as the roster dresses them. */
+  party(): { id: string; look: import("../actors/ActorLooks").ActorLook }[] {
+    const out: { id: string; look: import("../actors/ActorLooks").ActorLook }[] = [];
+    for (const flag of this.state.flags) {
+      if (!flag.startsWith("aboard:")) continue;
+      const spec = this.roster.get(flag.slice(7));
+      if (spec) out.push({ id: spec.id, look: spec.look });
+    }
+    return out;
+  }
+
+  /** Bandages in his pack: the one from the backpack on the trail, until it is used. */
+  bandages(): number {
+    if (!this.active) return 0;
+    return this.state.gear.includes("bandage") && !this.state.flags.includes("bandage-used") ? 1 : 0;
+  }
+
+  bandageUsed(): void {
+    if (!this.state.flags.includes("bandage-used")) this.state.flags.push("bandage-used");
+    this.events.add("bandage");
+    this.dirty = true;
   }
 
   /** The skipper has this gear. */

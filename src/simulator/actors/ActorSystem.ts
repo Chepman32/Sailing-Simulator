@@ -296,6 +296,14 @@ export class ActorSystem {
     if (actor) Object.assign(actor.pose, pose);
   }
 
+  /** Turns him to face `yaw` where he stands (the story's glance). */
+  face(id: string, yaw: number): void {
+    const actor = this.actors.get(id);
+    if (!actor) return;
+    actor.yaw = yaw;
+    if (actor.order) actor.order.face = yaw;
+  }
+
   /** Makes him a companion of the player, keeping about `distance` behind. */
   setFollow(id: string, on: boolean, distance = 4): void {
     const actor = this.actors.get(id);

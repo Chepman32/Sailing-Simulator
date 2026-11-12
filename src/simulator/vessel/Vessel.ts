@@ -21,6 +21,8 @@ import { SailSystem } from "./SailSystem";
 import { JibSail } from "./JibSail";
 import type { VesselPhysics } from "./VesselPhysics";
 import { YachtShading } from "./YachtShading";
+import { buildCraft, type CraftModel } from "./CraftModels";
+import type { CraftId } from "../story/StoryTypes";
 
 export const MAX_PROPELLER_RPM = 600;
 const MIN_ACTIVE_PROPELLER_RPM = 220;
@@ -69,6 +71,10 @@ const BOOM_RISE = 0.115;
 
 export class Vessel {
   readonly root = new THREE.Group();
+  /** Which boat she is: the catamaran, or one of the story's (`CraftModels`), whose model stands in for hers. */
+  private craftId: CraftId = "catamaran";
+  private readonly craftModels = new Map<"sport" | "skiff", CraftModel>();
+  private readonly hiddenForCraft: THREE.Object3D[] = [];
   private readonly model: THREE.Group;
   private readonly sailSystem: SailSystem;
   private readonly jib = new JibSail();
@@ -303,7 +309,59 @@ export class Vessel {
 
   /** Where the helmsman's eyes are, in vessel space (the helm camera's anchor). */
   get helmEye(): THREE.Vector3 {
-    return HELM_EYE;
+    const craft = this.craftModel;
+    return craft ? this.craftEye.copy(craft.eye).add(craft.group.position) : HELM_EYE;
+  }
+
+  private readonly craftEye = new THREE.Vector3();
+
+  get craft(): CraftId {
+    return this.craftId;
+  }
+
+  /** The story's boat in place of the catamaran's model (null: the catamaran herself). */
+  get craftModel(): CraftModel | null {
+    return this.craftId === "catamaran" ? null : (this.craftModels.get(this.craftId) ?? null);
+  }
+
+  /**
+   * Becomes another boat: the catamaran's model, rig, helm and skipper are
+   * hidden (her lamps' lights kept, dark, so the scene's lights never change
+   * in number) and the craft's model shown in their place.
+   */
+  setCraft(craft: CraftId): void {
+    if (craft === this.craftId) return;
+    for (const object of this.hiddenForCraft) object.visible = true;
+    this.hiddenForCraft.length = 0;
+    for (const model of this.craftModels.values()) model.group.visible = false;
+    this.craftId = craft;
+    if (craft === "catamaran") return;
+    let model = this.craftModels.get(craft);
+    if (!model) {
+      model = buildCraft(craft);
+      // Her waterline on the water: the root rides at the catamaran's float height.
+      model.group.position.y = -0.46;
+      this.craftModels.set(craft, model);
+      this.root.add(model.group);
+    }
+    const crafts = new Set<THREE.Object3D>([...this.craftModels.values()].map((entry) => entry.group));
+    const hide = (node: THREE.Object3D) => {
+      for (const child of node.children) {
+        if (crafts.has(child) || child instanceof THREE.Light || !child.visible) continue;
+        let lit = false;
+        child.traverse((object) => {
+          if (object instanceof THREE.Light) lit = true;
+        });
+        if (lit) {
+          hide(child);
+          continue;
+        }
+        child.visible = false;
+        this.hiddenForCraft.push(child);
+      }
+    };
+    hide(this.root);
+    model.group.visible = true;
   }
 
   /** Ships the chart plotter shows. */
@@ -322,6 +380,13 @@ export class Vessel {
     this.root.position.copy(physics.position);
     this.root.rotation.set(physics.pitch, physics.heading, -physics.roll, "YXZ");
     this.root.updateMatrixWorld(true);
+    const craft = this.craftModel;
+    if (craft) {
+      craft.update(delta, controls.rudder, physics.engineShaft);
+      for (const light of this.navigationLights) light.intensity = 0;
+      if (lighting) this.shading.update(this.root, time, lighting.camera, lighting.lightDirection, lighting.palette);
+      return;
+    }
     this.sailSystem.update(
       time,
       physics.telemetry.apparentWindSpeed,

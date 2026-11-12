@@ -43,7 +43,7 @@ import type {
 } from "./types";
 import { HudController } from "./ui/HudController";
 import { Vessel } from "./vessel/Vessel";
-import { VesselPhysics } from "./vessel/VesselPhysics";
+import { CRAFT_HANDLING, VesselPhysics } from "./vessel/VesselPhysics";
 import { WakeSystem } from "./vessel/WakeSystem";
 import { WildlifeSystem } from "./wildlife/WildlifeSystem";
 import { ShipSystem } from "./ships/ShipSystem";
@@ -111,6 +111,9 @@ import { StorySystem, type StoryHost, type SkipperPose } from "./story/StorySyst
 import { LevelSystem } from "./level/LevelSystem";
 import { ActorSystem, type ActorEvent } from "./actors/ActorSystem";
 import { PlayerHealth } from "./actors/PlayerHealth";
+import { BoatParty, PatrolCrew } from "./actors/BoatFigures";
+import { HERO_LOOK, VANGUARD_CREW } from "./story/content/looks";
+import type { CraftId } from "./story/StoryTypes";
 import { STORY_LEVELS } from "./story/levels";
 import { readSave, saveBlock, writeSave, SAVE_VERSION, type SaveBlock, type SaveSlotId } from "./story/SaveGames";
 import { HULL_CENTER_Z, HULL_HALF_BEAM, HULL_HALF_LENGTH, HULL_OFFSET_X } from "./environment/shaders/oceanShader";
@@ -233,6 +236,10 @@ const CAMERA_HANDOFF = 0.9;
 const CAMPAIGN_SKY_KEY = "sailing-campaign-sky-v1";
 /** The main menu's hour: the sun going down, the sea turning gold. */
 const MENU_CLOCK = cycleTimeForHour(18.45);
+/** The outer island of M01 (world x, z), whose summer is heard ashore. */
+const KOSAYA_ISLAND = { x: 7111.77, z: -5043.04 };
+/** Rounds for the pistol besides its magazine when Mark hands it over: two spare magazines. */
+const PISTOL_RESERVE = 24;
 /** Nothing of the quarantine on the chart (before he has the map). */
 const NO_ZONE = new Float64Array(0);
 
@@ -265,6 +272,23 @@ export class Simulator {
   /** Seconds since he went down (the story takes him back to its checkpoint after a moment), or −1. */
   private downClock = -1;
   private readonly actorEvents: ActorEvent[] = [];
+  /** The skipper's party in the story's boats (he at the tiller, Mark and Luis aboard). */
+  private boatParty: BoatParty | null = null;
+  private heroStand: BoatParty | null = null;
+  private readonly heroSeat = [{ x: 0, y: 0, z: 0, yaw: 0, sit: false, seat: 0.45 }];
+  /** The story's afternoon held at a real day's pace: the hour it was held at, and when. */
+  private storyClock: { hour: number; since: number } | null = null;
+  /** Seconds the skipper has stood still on foot, for the story's "he waits" lines. */
+  private stillTime = 0;
+  /** Seconds since a gun was last fired near (the birds and insects go quiet). */
+  private sinceGunfire = 99;
+  /** The story's figures, from the islanders' rigged models. */
+  private readonly figureSource = (model: "man" | "woman") => {
+    const key = model === "woman" ? "traderWoman" : "traderMan";
+    if (!this.assets.has(key)) return null;
+    const asset = this.assets.animated(key);
+    return asset ? { scene: asset.scene, animations: asset.animations } : null;
+  };
   private physics!: VesselPhysics;
   private vessel!: Vessel;
   private wake!: WakeSystem;
@@ -760,10 +784,23 @@ export class Simulator {
       this.storyProps = new StoryProps(this.scene);
       this.storyCast = new Traders(this.scene, this.traderModels());
       this.mirrorHidden.push(this.storyCast.group, this.combatEffects.group);
-      this.story = new StorySystem(this.storyHost, this.drones, this.storyProps, this.storyCast);
       this.actors = new ActorSystem(this.actorHost, this.levels);
       this.scene.add(this.actors.group);
       this.mirrorHidden.push(this.actors.group);
+      this.story = new StorySystem(this.storyHost, this.drones, this.storyProps, this.storyCast, this.actors, this.levels);
+      // Vanguard's patrol boats are crewed: their people are the story's figures, aboard.
+      this.drones.crew = (root, seats) => {
+        const crew = new PatrolCrew(root, seats, VANGUARD_CREW, this.figureSource);
+        if (crew.manned) return crew;
+        crew.dispose();
+        return null;
+      };
+      this.boatParty = new BoatParty(this.figureSource);
+      this.vessel.root.add(this.boatParty.group);
+      this.mirrorHidden.push(this.boatParty.group);
+      // The skipper as others see him in a scene on foot (the player is his eyes otherwise).
+      this.heroStand = new BoatParty(this.figureSource);
+      this.scene.add(this.heroStand.group);
       this.blobShadows = new BlobShadows(this.scene);
       this.mirrorHidden.push(this.blobShadows.mesh);
       const shadowModel = this.assets.animated("traderMan");
@@ -2067,6 +2104,11 @@ export class Simulator {
       if (skipper) this.lod.register(skipper, 3000, FIGURE_LOD_STEPS);
       if (this.walkerShadow) this.lod.register(this.walkerShadow.object, 3000, SHADOW_FIGURE_LOD_STEPS);
       if (this.traders) this.lod.register(this.traders.group, 3000, FIGURE_LOD_STEPS);
+      // The story's people: on their feet, in the patrol boats, in the skipper's own boat.
+      if (this.actors) this.lod.register(this.actors.group, 3000, FIGURE_LOD_STEPS);
+      if (this.drones) this.lod.register(this.drones.group, 3000, FIGURE_LOD_STEPS);
+      if (this.boatParty) this.lod.register(this.boatParty.group, 3000, FIGURE_LOD_STEPS);
+      if (this.heroStand) this.lod.register(this.heroStand.group, 3000, FIGURE_LOD_STEPS);
       this.lod.register(this.wildlife.group, 2500);
       // A ship is a long, flat-sided landmark: aggressive simplification turns
       // her into a lumpy toy at a kilometre, so her levels are gentler.
@@ -2248,6 +2290,7 @@ export class Simulator {
     conditionChanged: () => this.applyCondition(),
     gearChanged: () => {
       this.armoury.check(this.owns);
+      this.health.bandages = this.story?.bandages() ?? 0;
       this.hud.emit(this.snapshot());
     },
     ground: (x, z) => this.groundWalk(x, z),
@@ -2280,18 +2323,53 @@ export class Simulator {
       if (rudder !== undefined) this.state.controls.rudder = rudder;
       if (throttle !== undefined) this.state.controls.throttle = throttle;
     },
+    craft: (craft) => this.setCraft(craft),
+    moveBoat: (x, z, heading) => {
+      this.physics.relocate(x, z, heading);
+      this.wake.reset();
+    },
+    putAshore: (x, y, z, yaw) => {
+      const diver = this.diver;
+      if (!diver) return;
+      this.ensureDeckField();
+      this.state.controls.throttle = 0;
+      this.state.controls.rudder = 0;
+      diver.placeAshore(x, z, y, yaw);
+      this.handoff.active = false;
+      this.camera.snap();
+    },
+    heal: () => {
+      this.health.reset();
+      this.downClock = -1;
+      this.setDiverFrozen(this.storyHeld);
+      const pistol = this.armoury.guns.pistol;
+      pistol.reset();
+      pistol.reserve = Math.max(pistol.reserve ?? 0, PISTOL_RESERVE);
+    },
+    ammo: (rounds) => {
+      const pistol = this.armoury.guns.pistol;
+      pistol.reserve = (pistol.reserve ?? 0) + rounds;
+    },
+    body: () => ({ health: this.health.fraction, still: this.stillTime, crouched: this.diver?.crouched ?? false }),
+    holdClock: (hour) => {
+      this.storyClock = hour === null ? null : { hour, since: this.elapsed };
+      if (hour !== null) this.storyHost.setHour(hour);
+    },
+    clockHour: () => (this.storyClock ? (this.storyClock.hour + (this.elapsed - this.storyClock.since) / 3600) % 24 : null),
   };
+
+  /** The skipper's boat becomes `craft`: her model, her handling, who is drawn aboard. */
+  private setCraft(craft: CraftId): void {
+    this.vessel.setCraft(craft);
+    Object.assign(this.physics.handling, CRAFT_HANDLING[craft]);
+    this.applyCondition();
+  }
 
   /** The world the story's people walk in, see by, and shoot in. */
   private readonly actorHost: import("./actors/ActorSystem").ActorHost = {
     ground: (x, z, feetY) => this.groundWalk(x, z, feetY),
     terrain: (x, z) => this.groundBase(x, z),
-    model: (model) => {
-      const key = model === "woman" ? "traderWoman" : "traderMan";
-      if (!this.assets.has(key)) return null;
-      const asset = this.assets.animated(key);
-      return asset ? { scene: asset.scene, animations: asset.animations } : null;
-    },
+    model: (model) => this.figureSource(model),
     player: () => {
       const diver = this.diver;
       if (!diver?.active || diver.mode !== "land") return null;
@@ -2305,7 +2383,10 @@ export class Simulator {
       tracer: (from, to) => this.combatEffects?.tracer(from, to, true),
       impact: (at, material) => this.impactAt(at, material),
     },
-    shotSound: (kind, at) => this.combatAudio?.distantShot(kind, at),
+    shotSound: (kind, at) => {
+      this.sinceGunfire = 0;
+      this.combatAudio?.distantShot(kind, at);
+    },
     event: (event) => this.actorEvents.push(event),
     skill: () => 1,
   };
@@ -2323,7 +2404,7 @@ export class Simulator {
   /** The skipper hit: his health, the shock of it, and down if it was too much. */
   private hurtPlayer(damage: number, fromX: number, fromZ: number): void {
     const diver = this.diver;
-    if (!diver?.active || this.downClock >= 0) return;
+    if (!diver?.active || this.downClock >= 0 || this.story?.recovering) return;
     const yaw = Math.atan2(fromX - diver.walk.x, fromZ - diver.walk.z);
     const down = this.health.hurt(damage, yaw);
     this.combatShake = Math.max(this.combatShake, 0.45);
@@ -2683,6 +2764,8 @@ export class Simulator {
   enterMainMenu(): void {
     if (!this.story) return;
     this.story.enterMenu();
+    this.setCraft("catamaran");
+    this.storyClock = null;
     this.armoury.reset();
     if (this.diver?.active) {
       const yacht = this.physics.position;
@@ -2716,6 +2799,8 @@ export class Simulator {
       this.environment.setMode(sky.mode);
     }
     this.story.chooseFree();
+    this.setCraft("catamaran");
+    this.storyClock = null;
     this.armoury.reset();
     this.applyCondition();
     this.hud.emit(this.snapshot());
@@ -2750,6 +2835,8 @@ export class Simulator {
     const gun = this.armoury.current;
     if (!this.initialized || !drones || !gun || !this.owns(gun.spec.id)) return false;
     if (!gun.trigger()) return false;
+    this.story?.notify("shot");
+    this.sinceGunfire = 0;
     const { range, spread, power } = gun.spec;
     const camera = this.camera.camera;
     this.aimNdc.set(ndcX, ndcY);
@@ -2881,7 +2968,9 @@ export class Simulator {
       effects.splinters(hit.point);
       this.combatAudio?.hullHit(hit.point);
       const fromStern = Math.atan2(hit.fromX - yacht.x, hit.fromZ - yacht.z) - (this.physics.heading + Math.PI);
-      story.damage(HULL_PER_HIT, engineKnockedOut(Math.atan2(Math.sin(fromStern), Math.cos(fromStern)), Math.random()));
+      // The skiff's chase is to be outrun, not lost to one round in the outboard.
+      if (this.vessel.craft === "skiff") story.damage(HULL_PER_HIT * 0.25, false);
+      else story.damage(HULL_PER_HIT, engineKnockedOut(Math.atan2(Math.sin(fromStern), Math.cos(fromStern)), Math.random()));
       this.combatShake = Math.max(this.combatShake, 0.25);
     }
     for (const shot of drones.consumeShots()) {
@@ -2912,6 +3001,7 @@ export class Simulator {
   private updateStory(delta: number): void {
     const story = this.story;
     if (!story) return;
+    this.updatePeople(delta);
     story.update(delta);
     this.applyStoryHold();
     this.updateAutosave();
@@ -2921,6 +3011,117 @@ export class Simulator {
     this.sectorFog += (goal - this.sectorFog) * Math.min(1, delta / 8);
     this.environment.setSeaFog(this.sectorFog);
     this.updateOverlay();
+  }
+
+  /**
+   * The story's people and the skipper's own state in a fight: the guards
+   * and the companion, his health, what they did (told to the story), the
+   * rounds he picks up from the fallen, a fall that sends him back to the
+   * checkpoint, the afternoon held at its pace, and his party in the boat.
+   */
+  private updatePeople(delta: number): void {
+    const story = this.story;
+    const actors = this.actors;
+    if (!story || !actors) return;
+    actors.update(delta, this.camera.camera.position);
+    this.health.update(delta);
+    for (const event of this.actorEvents.splice(0)) story.actorEvent(event);
+    const diver = this.diver;
+    const afoot = diver?.active && diver.mode === "land";
+    if (afoot && diver) {
+      const walk = diver.walk;
+      this.stillTime = Math.hypot(walk.vx, walk.vz) < 0.2 ? this.stillTime + delta : 0;
+      const rounds = actors.pickUp(walk.x, walk.z);
+      if (rounds > 0) {
+        const pistol = this.armoury.guns.pistol;
+        pistol.reserve = (pistol.reserve ?? 0) + rounds;
+        story.notify("pickup");
+        this.combatAudio?.story("click");
+        this.hud.emit(this.snapshot());
+      }
+    } else {
+      this.stillTime = 0;
+    }
+    // Down: a moment on the ground, then the story takes him back to the checkpoint.
+    if (this.downClock >= 0) {
+      this.downClock += delta;
+      if (this.downClock > 1.8) story.playerDown();
+    }
+    if (story.active && this.storyClock && !this.menuView) this.environment.setClock(cycleTimeForHour(this.storyHost.clockHour() ?? this.storyClock.hour));
+    // The summer of the outer island ashore: cicadas and birds, hushed a while by gunfire.
+    this.sinceGunfire += delta;
+    const walker = afoot && diver ? diver.walk : null;
+    const insects = story.active && walker && this.levels.isStanding("kosaya") ? Math.max(0, Math.min(1, 1.4 - Math.hypot(walker.x - KOSAYA_ISLAND.x, walker.z - KOSAYA_ISLAND.z) / 220)) : 0;
+    this.combatAudio?.setAmbience(insects * 0.9, delta, Math.max(0, 1 - this.sinceGunfire / 7));
+    // A boat on a sea stack: held off it, her way taken off.
+    if (!diver?.active) {
+      const position = this.physics.position;
+      const room = this.levels.boatClearance(position.x, position.z, this.obstacleNormal) - 2.6;
+      if (room < 0) {
+        position.x -= this.obstacleNormal.x * room;
+        position.z -= this.obstacleNormal.z * room;
+        const into = this.physics.velocity.x * this.obstacleNormal.x + this.physics.velocity.z * this.obstacleNormal.z;
+        if (into < 0) {
+          this.physics.velocity.x -= this.obstacleNormal.x * into * 1.4;
+          this.physics.velocity.z -= this.obstacleNormal.z * into * 1.4;
+          this.physics.velocity.multiplyScalar(0.6);
+          if (into < -2) {
+            this.combatShake = Math.max(this.combatShake, 0.35);
+            this.audio.splash(Math.min(2, -into * 0.3), "slap", 0);
+            story.notify("rock");
+          }
+        }
+      }
+    }
+    // Himself, seen in a scene on foot.
+    const stand = this.heroStand;
+    if (stand) {
+      if (story.cinematic && walker && diver) {
+        stand.set([{ id: "hero", look: HERO_LOOK }]);
+        const seat = this.heroSeat[0]!;
+        seat.x = walker.x;
+        seat.y = walker.y;
+        seat.z = walker.z;
+        seat.yaw = diver.yaw;
+        // Not when the camera is in his own eyes (a shot through them).
+        const eye = this.camera.camera.position;
+        const inside = Math.hypot(eye.x - walker.x, eye.y - walker.y - 1.6, eye.z - walker.z) < 0.9;
+        stand.update(delta, this.heroSeat, !inside, 0, this.elapsed);
+      } else {
+        stand.set([]);
+      }
+    }
+    // His party aboard the story's boats.
+    const party = this.boatParty;
+    const craft = this.vessel.craftModel;
+    if (party) {
+      if (craft && story.active) {
+        party.set([{ id: "hero", look: HERO_LOOK }, ...story.party()]);
+        const visible = !diver?.active && (this.state.cameraMode !== "helm" || this.flareCamera.blend > 0.3 || this.photo.blend > 0.3 || story.cinematic);
+        party.group.position.copy(craft.group.position);
+        party.update(delta, craft.seats, visible, this.physics.guard.output.rudder, this.elapsed);
+      } else {
+        party.set([]);
+      }
+    }
+  }
+
+  /** R on foot: a fresh magazine into the gun in his hands. */
+  reloadWeapon(): boolean {
+    const gun = this.armoury.current;
+    if (!gun || !this.diver?.active) return false;
+    const done = gun.reload();
+    if (done) this.hud.emit(this.snapshot());
+    return done;
+  }
+
+  /** B on foot: the bandage from the pack onto the wound. */
+  applyBandage(): boolean {
+    if (!this.story?.active || !this.diver?.active) return false;
+    if (!this.health.bandage()) return false;
+    this.story.bandageUsed();
+    this.hud.emit(this.snapshot());
+    return true;
   }
 
   /** Screen positions for the interface's waypoint and drone markers. */
@@ -3264,9 +3465,17 @@ export class Simulator {
     // The story's own: a word with someone, patching the hull on deck.
     if ((!diver.prompt || diver.prompt === "trade") && diver.inControl && diver.mode !== "swim") {
       const story = this.story?.prompt();
-      if (story && (story.kind === "talk" || diver.mode === "deck")) {
+      const ashorePrompt = story && (story.kind === "talk" || story.kind === "use" || story.kind === "takedown");
+      if (story && (ashorePrompt || diver.mode === "deck")) {
         diver.prompt = "story";
-        this.promptDetail = story.kind === "talk" ? `talk:${story.character}` : `${story.kind}:${story.progress.toFixed(2)}`;
+        this.promptDetail =
+          story.kind === "talk"
+            ? `talk:${story.character}`
+            : story.kind === "use"
+              ? `use:${story.progress.toFixed(2)}:${story.label[this.storyLanguage]}`
+              : story.kind === "takedown"
+                ? "takedown"
+                : `${story.kind}:${story.progress.toFixed(2)}`;
       }
     }
     const action: DiverPrompt = diver.consumeInteract();

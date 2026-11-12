@@ -1,3 +1,6 @@
+import type { ActorSpec } from "../actors/ActorSystem";
+import type { BodyPose } from "../actors/ActorBody";
+
 /**
  * The shapes the campaign is written in. Everything the story is made of —
  * the sectors, the people, the missions, what is said and what happens — is
@@ -93,7 +96,7 @@ export type LineChannel = "radio" | "voice" | "thought" | "broadcast";
 /** One line of dialogue. `who` is a character id, `hero`, `aquilon` (the network's voice) or `unknown`. */
 export type Line = { who: string; text: Text; via?: LineChannel };
 
-/** A group of Aquilon drones in the world. */
+/** A group of boats in the world: Aquilon's uncrewed drones, or Vanguard's crewed patrol boats. */
 export type DroneGroup = {
   id: string;
   /** Where they patrol from. */
@@ -105,7 +108,7 @@ export type DroneGroup = {
    * - `strike`: the prologue's interceptors: they know where she is and close in shooting, and cannot be stopped;
    * - `ram`: comes in at full speed from her flank and drives into her side (`rammed:<group>` when it strikes).
    */
-  behaviour: "patrol" | "pass" | "strike" | "ram";
+  behaviour: "patrol" | "pass" | "strike" | "ram" | "chase";
   /** Where it starts, exactly (a chart point; behind a cape, say), and its compass heading, degrees; else near `at` or, for a strike or a ram, off the yacht. */
   spawn?: ChartPoint;
   heading?: number;
@@ -117,6 +120,8 @@ export type DroneGroup = {
   line?: readonly [ChartPoint, ChartPoint];
   /** Seconds before a destroyed or salvaged drone of an ambient group comes back. */
   respawn?: number;
+  /** Vanguard's crewed patrol boats, not Aquilon's drones (`chase`: one follows her from astern until called off). */
+  crewed?: boolean;
 };
 
 /** Something put into the world while a step (or the world) calls for it; reconciled, so it survives a reload. */
@@ -127,7 +132,72 @@ export type Presence =
   /** A character standing at a place: on its porch, or (a place without one) on the spot, facing `face` if given. */
   | { kind: "npc"; character: string; at: string; face?: string; kit?: "armed" }
   /** Things lying about a place (a wreck's flotsam, footprints and spent cases), for the eye only. */
-  | { kind: "props"; set: "flotsam" | "tracks"; at: string };
+  | { kind: "props"; set: "flotsam" | "tracks"; at: string }
+  /** A built place (`STORY_LEVELS`): standing while wanted and near. */
+  | { kind: "level"; level: string }
+  /** People of the campaign's roster (`Campaign.actors`), on their spots; one taken down stays down (flag `down:<id>`). */
+  | { kind: "actors"; ids: readonly string[] };
+
+/** The boat the skipper has: the catamaran of free sailing, the prologue's sport yacht, the skiff from Створ-9. */
+export type CraftId = "catamaran" | "sport" | "skiff";
+
+/**
+ * A state of the world a trigger, an optional goal or a use waits for: every
+ * field given must hold. Areas and spots are a built level's (`level:name`).
+ */
+export type Condition = {
+  /** Flags set, and flags not set. */
+  flags?: readonly string[];
+  not?: readonly string[];
+  /** The skipper on foot inside a level's area. */
+  area?: string;
+  /** The skipper (on foot or at the wheel) within `radius` of a level spot or a place. */
+  near?: { at: string; radius: number };
+  /** ...or beyond it. */
+  far?: { at: string; radius: number };
+  /** The skipper within `radius` of a person of the roster, or beyond it. */
+  nearActor?: { id: string; radius: number };
+  farActor?: { id: string; radius: number };
+  /** A person of the roster within `radius` of a spot or a place (he has got there). */
+  actorAt?: { id: string; at: string; radius: number };
+  /** The guards at least this roused. */
+  alert?: "suspicious" | "combat";
+  /** The current step of the mission is one of these. */
+  steps?: readonly string[];
+  /** Seconds the step has been current, at least. */
+  stepTime?: number;
+  /** The skipper's health under this fraction. */
+  health?: number;
+  /** He has stood still (on foot) this long, s. */
+  still?: number;
+  /** He is crouched. */
+  crouched?: boolean;
+  /** Nothing is being said. */
+  quiet?: boolean;
+  /** Something happened this frame (`down:p01`, `use:terminal`, `shot`, `bandage`, `takedown`, `pickup`). */
+  event?: string;
+  /** At least one of these holds (with everything else given). */
+  any?: readonly Condition[];
+};
+
+/** Something the story does when a condition comes to hold (once, unless it repeats). */
+export type Trigger = { id: string; when: Condition; do: readonly Effect[]; /** Fires again this many seconds after it last did, while it holds. */ every?: number };
+
+/** A thing to work with the action key: a level's interactable, while `when` holds. */
+export type Use = {
+  /** The level interactable (`Level.interact`) it is worked at. */
+  id: string;
+  label: Text;
+  when?: Condition;
+  /** Seconds the key is held (0: a press). */
+  seconds?: number;
+  /** Worked once (flag `used:<id>`), then gone. */
+  once?: boolean;
+  do?: readonly Effect[];
+};
+
+/** A goal on the side: shown once its `show` holds, ticked off once its `done` does. */
+export type Optional = { id: string; goal: Text; show: Condition; done: Condition };
 
 /** A point a camera is set from or looks at: an anchor, and an offset in its frame (metres to its right, up, ahead). */
 export type ShotPoint = { anchor: string; offset?: readonly [right: number, up: number, ahead: number] };
@@ -157,7 +227,7 @@ export type Cutscene = {
 };
 
 /** A sound the story calls for. */
-export type StorySound = "radio-noise" | "click" | "crash" | "flooding" | "surf" | "mast";
+export type StorySound = "radio-noise" | "click" | "crash" | "flooding" | "surf" | "mast" | "outboard" | "jeeps";
 
 /** Something that happens once, when a step starts or ends. */
 export type Effect =
@@ -173,13 +243,14 @@ export type Effect =
   | { do: "pay"; coins: number }
   /** The engine's state at the helm (the prologue starts under way). */
   | { do: "engine"; running: boolean; throttle?: number }
-  /** The time of day, hours (0…24). */
-  | { do: "time"; hour: number }
+  /** The time of day, hours (0…24); `hold`: the day runs at the pace of a real one from there (a mission's half hour of afternoon). */
+  | { do: "time"; hour: number; hold?: boolean }
   | { do: "weather"; kind: "clear" | "cloudy" | "overcast" | "rain" | "storm" }
   | { do: "fade"; seconds: number }
   /** Shakes the camera and plays a blast near the yacht (a hit the story decides). */
   | { do: "blast"; strength: number }
-  | { do: "flag"; flag: string }
+  /** Sets a flag of the campaign (or clears it). */
+  | { do: "flag"; flag: string; off?: boolean }
   /** Plays a cut scene (by id); `{ do: "cut" }` ends one that holds its last shot. */
   | { do: "cutscene"; scene: string }
   | { do: "cut" }
@@ -195,7 +266,46 @@ export type Effect =
   /** Holds or frees the player's controls (a moment when he must not move). */
   | { do: "freeze"; on: boolean }
   /** The rudder and the throttle, set by the story (a scene sailing by itself). */
-  | { do: "steer"; rudder?: number; throttle?: number; heading?: number };
+  | { do: "steer"; rudder?: number; throttle?: number; heading?: number }
+  /**
+   * A person of the roster: sent to a spot (`to`, at `pace`, then holding
+   * `pose`), put there at once (`put`), set to follow the skipper or not,
+   * given back to his own will (`release`), roused (`alarm`), turned to face
+   * a spot or the skipper.
+   */
+  | {
+      do: "actor";
+      id: string;
+      to?: string;
+      put?: string;
+      pace?: "walk" | "run" | "creep";
+      pose?: Partial<BodyPose>;
+      follow?: boolean;
+      release?: boolean;
+      alarm?: boolean;
+      face?: string;
+      /** Out of the world (gone in a car, off in a boat). */
+      remove?: boolean;
+    }
+  /** Rouses a squad (to search, or to fight), toward a spot. */
+  | { do: "alarm"; squad: string; at: string; combat?: boolean }
+  /** Throws a built level's switch (`level:name`, a value its builder understands: a door open, a screen's page). */
+  | { do: "switch"; name: string; value: string }
+  /** The skipper's boat becomes this craft, lying at `at` (a level spot or a place); he stays where he is unless `board`. */
+  | { do: "craft"; craft: CraftId; at?: string; board?: boolean }
+  /** The skipper to the wheel of his boat where she lies. */
+  | { do: "board" }
+  /** The skipper on foot at a level spot (or a place's beach). */
+  | { do: "put"; at: string }
+  /** His wounds bound up: full health. */
+  | { do: "heal" }
+  /** Rounds for the pistol into his pockets. */
+  | { do: "ammo"; rounds: number }
+  /**
+   * A crewed boat of a group gives up the chase: she turns away and runs
+   * for home at `to` (a place or a spot), and is gone once out of sight.
+   */
+  | { do: "withdraw"; group: string; to: string };
 
 export type Objective =
   /** Everything queued to be said has been said. */
@@ -217,7 +327,13 @@ export type Objective =
   /** The cut scene started by this step has run (or been skipped). */
   | { kind: "watch" }
   /** Something happened in the world (`rammed:<group>`), or `after` seconds went by. */
-  | { kind: "event"; event: string; after?: number };
+  | { kind: "event"; event: string; after?: number }
+  /** A flag is set (by a trigger, a use, a person taken down: `down:<id>`). */
+  | { kind: "flag"; flag: string; after?: number }
+  /** A use worked (flag `used:<id>`). */
+  | { kind: "use"; id: string }
+  /** A condition holds. */
+  | { kind: "when"; when: Condition };
 
 export type Step = {
   id: string;
@@ -235,8 +351,12 @@ export type Step = {
   presence?: readonly Presence[];
   onStart?: readonly Effect[];
   onComplete?: readonly Effect[];
-  /** Reached, this step is where the game resumes (after a reload or a sinking). */
-  checkpoint?: { yacht: string; skipper: "helm" | "ashore" };
+  /**
+   * Reached, this step is where the game resumes (after a reload, a sinking,
+   * a fall in a fight): the boat off `yacht` (a place, or a level spot she
+   * lies at), the skipper at her wheel or ashore — at `spot` if given.
+   */
+  checkpoint?: { yacht: string; skipper: "helm" | "ashore"; spot?: string };
 };
 
 export type Mission = {
@@ -254,6 +374,12 @@ export type Mission = {
   /** Things in the world for as long as the mission is under way. */
   presence?: readonly Presence[];
   onComplete?: readonly Effect[];
+  /** What happens when the world comes to a state, whatever the step (lines, people moving, flags). */
+  triggers?: readonly Trigger[];
+  /** Things to work with the action key. */
+  uses?: readonly Use[];
+  /** Goals on the side. */
+  optionals?: readonly Optional[];
 };
 
 export type Chapter = { id: string; title: Text; subtitle: Text; sector: string };
@@ -276,6 +402,10 @@ export type Campaign = {
   missions: readonly Mission[];
   world: readonly WorldRule[];
   cutscenes: readonly Cutscene[];
+  /** The people on their feet: guards, a companion, the people of a scene. */
+  actors: readonly ActorSpec[];
+  /** Words in passing from a person spoken to when no mission is under way. */
+  smallTalk?: Readonly<Record<string, readonly Text[]>>;
   /** Where a new campaign begins; `heading` is a compass bearing, degrees. */
   start: { yacht: ChartPoint; heading: number };
 };

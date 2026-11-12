@@ -316,3 +316,66 @@ export function tent(b: LevelBuilder, at: LP, turn: number, w: number, d: number
     panel.dispose();
   }
 }
+
+/** An open four-by-four of the company's: a sand body, a roll bar, a folded windscreen, its wheels (to turn). */
+export function jeep(b: LevelBuilder, colour = 0xb7a57e): { group: THREE.Group; wheels: THREE.Object3D[] } {
+  const group = new THREE.Group();
+  const paint = b.own(new THREE.MeshStandardMaterial({ color: colour, roughness: 0.62, metalness: 0.15 }));
+  const dark = b.own(new THREE.MeshStandardMaterial({ color: 0x24272a, roughness: 0.7, metalness: 0.2 }));
+  const tyre = b.own(new THREE.MeshStandardMaterial({ color: 0x1b1b1b, roughness: 0.9 }));
+  const glass = b.own(new THREE.MeshStandardMaterial({ color: 0x24343c, roughness: 0.05, metalness: 0.5, transparent: true, opacity: 0.6 }));
+  const seat = b.own(new THREE.MeshStandardMaterial({ color: 0x3e3b33, roughness: 0.9 }));
+  const box = (w: number, h: number, d: number, material: THREE.Material, x: number, y: number, z: number): THREE.Mesh => {
+    const mesh = new THREE.Mesh(b.own(new THREE.BoxGeometry(w, h, d)), material);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    return mesh;
+  };
+  // The tub, the bonnet, the wings, the bumpers.
+  box(1.72, 0.62, 3.4, paint, 0, 0.78, -0.15);
+  box(1.6, 0.28, 1.25, paint, 0, 1.18, 1.0);
+  for (const x of [0.9, -0.9]) box(0.18, 0.1, 1.0, paint, x, 1.08, 1.05);
+  box(1.86, 0.18, 0.18, dark, 0, 0.6, 1.72);
+  box(1.86, 0.18, 0.18, dark, 0, 0.6, -1.92);
+  box(0.9, 0.3, 0.05, dark, 0, 1.02, 1.66);
+  // The windscreen, the roll bar, the seats, a spare on the back.
+  const screen = box(1.5, 0.48, 0.04, glass, 0, 1.5, 0.36);
+  screen.rotation.x = -0.25;
+  for (const x of [0.78, -0.78]) {
+    box(0.06, 0.95, 0.06, dark, x, 1.55, -0.95);
+  }
+  box(1.62, 0.06, 0.06, dark, 0, 2.02, -0.95);
+  for (const x of [0.42, -0.42]) {
+    box(0.5, 0.12, 0.5, seat, x, 1.13, -0.3);
+    box(0.5, 0.55, 0.1, seat, x, 1.38, -0.58);
+  }
+  box(1.1, 0.12, 0.9, seat, 0, 1.13, -1.35);
+  const spare = new THREE.Mesh(b.own(new THREE.CylinderGeometry(0.36, 0.36, 0.22, 16)), tyre);
+  spare.rotation.x = Math.PI / 2;
+  spare.position.set(0, 0.98, -2.02);
+  group.add(spare);
+  // The wheels.
+  const wheels: THREE.Object3D[] = [];
+  const wheelGeometry = b.own(new THREE.CylinderGeometry(0.38, 0.38, 0.28, 18));
+  const hubGeometry = b.own(new THREE.CylinderGeometry(0.17, 0.17, 0.3, 10));
+  for (const [x, z] of [
+    [0.82, 1.08],
+    [-0.82, 1.08],
+    [0.82, -1.18],
+    [-0.82, -1.18],
+  ] as const) {
+    const wheel = new THREE.Group();
+    wheel.position.set(x, 0.38, z);
+    const rim = new THREE.Mesh(wheelGeometry, tyre);
+    rim.rotation.z = Math.PI / 2;
+    rim.castShadow = true;
+    const hub = new THREE.Mesh(hubGeometry, paint);
+    hub.rotation.z = Math.PI / 2;
+    wheel.add(rim, hub);
+    group.add(wheel);
+    wheels.push(wheel);
+  }
+  return { group, wheels };
+}

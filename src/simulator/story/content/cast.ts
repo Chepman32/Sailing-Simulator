@@ -47,6 +47,45 @@ export const CHARACTERS: readonly Character[] = [
     monogram: "VS",
   },
   {
+    id: "commander",
+    name: { ru: "Командир", en: "The Commander" },
+    role: { ru: "Командир сил ЧВК в секторе (имя не установлено)", en: "Commander of the PMC's force in the sector (name unknown)" },
+    faction: "vanguard",
+    monogram: "KM",
+  },
+  {
+    id: "luis",
+    name: { ru: "Луис Мендес", en: "Luis Mendes" },
+    role: { ru: "Портовый диспетчер", en: "Harbour dispatcher" },
+    faction: "resistance",
+    monogram: "LM",
+  },
+  {
+    id: "maya",
+    name: { ru: "Майя Ривера", en: "Maya Rivera" },
+    role: { ru: "Медик и завхоз убежища", en: "The haven's medic and quartermaster" },
+    faction: "resistance",
+    monogram: "MR",
+  },
+  ...guard("p01", { ru: "Часовой у КПП", en: "Checkpoint sentry" }),
+  ...guard("p02", { ru: "Часовая у КПП", en: "Checkpoint sentry" }),
+  ...guard("p03", { ru: "Механик у генератора", en: "Generator mechanic" }),
+  ...guard("p04", { ru: "Охранник у генератора", en: "Generator guard" }),
+  ...guard("p05", { ru: "Патрульная, северный обход", en: "North round patrol" }),
+  ...guard("p06", { ru: "Патрульный, северный обход", en: "North round patrol" }),
+  ...guard("i07", { ru: "Связист", en: "Signaller" }),
+  ...guard("i08", { ru: "Архивариус", en: "Archive clerk" }),
+  ...guard("i09", { ru: "Сержант в архиве", en: "Archive sergeant" }),
+  ...guard("d10", { ru: "Охранник причала", en: "Dock guard" }),
+  ...guard("d11", { ru: "Охранник причала", en: "Dock guard" }),
+  ...guard("e12", { ru: "Командир отделения", en: "Squad leader" }),
+  ...guard("e13", { ru: "Боец подкрепления", en: "Reinforcement" }),
+  ...guard("e14", { ru: "Боец подкрепления", en: "Reinforcement" }),
+  ...guard("e15", { ru: "Боец подкрепления", en: "Reinforcement" }),
+  ...guard("e16", { ru: "Боец подкрепления", en: "Reinforcement" }),
+  ...guard("w18", { ru: "Рулевой катера", en: "Patrol boat helmsman" }),
+  ...guard("w19", { ru: "Наблюдатель катера", en: "Patrol boat lookout" }),
+  {
     id: "reese",
     name: { ru: "Харланд Риз", en: "Harland Reese" },
     callsign: { ru: "Пастух", en: "Shepherd" },
@@ -55,6 +94,11 @@ export const CHARACTERS: readonly Character[] = [
     monogram: "HR",
   },
 ];
+
+/** One of Vanguard's people at Створ-9, named by his post (they speak, so they are cast). */
+function guard(id: string, role: { ru: string; en: string }): Character[] {
+  return [{ id, name: role, role, faction: "vanguard", monogram: id.toUpperCase().slice(0, 3) }];
+}
 
 /** Speakers that are not characters. */
 export const OTHER_SPEAKERS = ["hero", "aquilon", "unknown"] as const;

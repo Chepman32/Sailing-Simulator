@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { waterDepthAt, distanceFromWaterline } from "../../src/simulator/environment/IslandMath";
-import { buildAtlas, insideOutline, resolvePlace, ringPoints, seabedNear, sectorAt, toWorld } from "../../src/simulator/story/AtlasMath";
+import { distanceFromWaterline } from "../../src/simulator/environment/IslandMath";
+import { buildAtlas, insideOutline, resolvePlace, ringPoints, sectorAt, toWorld } from "../../src/simulator/story/AtlasMath";
 import {
   advance,
   applyToState,
@@ -17,6 +17,7 @@ import {
 } from "../../src/simulator/story/CampaignMath";
 import { OTHER_SPEAKERS } from "../../src/simulator/story/content/cast";
 import { CAMPAIGN } from "../../src/simulator/story/content";
+import { STORY_LEVELS } from "../../src/simulator/story/levels";
 import type { Cutscene, Effect, Mission, Objective, Presence, Step, Text } from "../../src/simulator/story/StoryTypes";
 import { cameraFor, ease, sceneLength, shotAt, type AnchorFrame } from "../../src/simulator/story/CutsceneMath";
 import { cycleTimeForHour, dayCycleState, DAY_HOLD_SECONDS } from "../../src/simulator/environment/EnvironmentMath";
@@ -27,7 +28,11 @@ import { cycleTimeForHour, dayCycleState, DAY_HOLD_SECONDS } from "../../src/sim
  * sector, a mission nobody can reach, a step that can never be done.
  */
 
-const GEAR = new Set(["rifle", "pistol", "knife", "map"]);
+const GEAR = new Set(["rifle", "pistol", "knife", "map", "bandage"]);
+const LEVELS = new Set(STORY_LEVELS.map((level) => level.id));
+const ROSTER = new Set(CAMPAIGN.actors.map((actor) => actor.id));
+/** A built level's named point (`level:name`), whose level exists. */
+const levelPoint = (name: string) => name.includes(":") && LEVELS.has(name.split(":")[0]!);
 const ids = <T extends { id: string }>(list: readonly T[]) => new Set(list.map((entry) => entry.id));
 const unique = (label: string, list: readonly { id: string }[]) => assert.equal(ids(list).size, list.length, `${label}: ids are unique`);
 
@@ -42,7 +47,7 @@ function texts(value: unknown, path: string, out: { path: string; text: Text }[]
 }
 
 function effectsOf(mission: Mission): Effect[] {
-  const out: Effect[] = [...(mission.onComplete ?? [])];
+  const out: Effect[] = [...(mission.onComplete ?? []), ...(mission.triggers ?? []).flatMap((trigger) => trigger.do), ...(mission.uses ?? []).flatMap((use) => use.do ?? [])];
   for (const step of mission.steps) {
     out.push(...(step.onStart ?? []), ...(step.onComplete ?? []));
     if (step.objective.kind === "disable") out.push(...(step.objective.onLost ?? []));
@@ -95,6 +100,10 @@ test("every id is unique and every reference names something that exists", () =>
       assert.ok(locations.has(presence.at), `${where}: item at ${presence.at}`);
     } else if (presence.kind === "props") {
       assert.ok(locations.has(presence.at), `${where}: props at ${presence.at}`);
+    } else if (presence.kind === "level") {
+      assert.ok(LEVELS.has(presence.level), `${where}: level ${presence.level}`);
+    } else if (presence.kind === "actors") {
+      for (const id of presence.ids) assert.ok(ROSTER.has(id), `${where}: actor ${id}`);
     } else {
       assert.ok(characters.has(presence.character), `${where}: npc ${presence.character}`);
       assert.ok(locations.has(presence.at), `${where}: npc at ${presence.at}`);
@@ -110,7 +119,9 @@ test("every id is unique and every reference names something that exists", () =>
     anchor === "skipper" ||
     (anchor.startsWith("drone:") && groupsEverywhere.has(anchor.slice(6))) ||
     (anchor.startsWith("npc:") && characters.has(anchor.slice(4))) ||
-    (anchor.startsWith("place:") && locations.has(anchor.slice(6)));
+    (anchor.startsWith("place:") && locations.has(anchor.slice(6))) ||
+    (anchor.startsWith("actor:") && ROSTER.has(anchor.slice(6))) ||
+    (anchor.startsWith("spot:") && levelPoint(anchor.slice(5)));
   for (const scene of campaign.cutscenes) {
     assert.ok(scene.shots.length > 0, `cutscene ${scene.id}: has shots`);
     for (const [index, shot] of scene.shots.entries()) {
@@ -133,14 +144,16 @@ test("every id is unique and every reference names something that exists", () =>
     assert.ok(sectors.has(mission.sector), `${where}: sector`);
     if (mission.giver) assert.ok(characters.has(mission.giver), `${where}: giver`);
     for (const id of mission.requires) assert.ok(missions.has(id), `${where}: requires ${id}`);
-    assert.ok(mission.steps.length > 0, `${where}: has steps`);
+    if (mission.status === "playable") assert.ok(mission.steps.length > 0, `${where}: has steps`);
+    const place = (id: string) => locations.has(id) || levelPoint(id);
     unique(`${where} steps`, mission.steps);
     presencesOf(mission).forEach((presence) => checkPresence(where, presence));
     const groups = new Set(presencesOf(mission).flatMap((presence) => (presence.kind === "drones" ? [presence.group.id] : [])));
     for (const step of mission.steps) {
       const at = `${where}/${step.id}`;
       const objective: Objective = step.objective;
-      if (objective.kind === "reach") assert.ok(locations.has(objective.at), `${at}: reach ${objective.at}`);
+      if (objective.kind === "reach") assert.ok(place(objective.at), `${at}: reach ${objective.at}`);
+      if (objective.kind === "use") assert.ok((mission.uses ?? []).some((use) => use.id === objective.id), `${at}: use ${objective.id} is one of the mission's`);
       if (objective.kind === "hull" && objective.at) assert.ok(locations.has(objective.at), `${at}: hull at`);
       if (objective.kind === "talk") assert.ok(characters.has(objective.character), `${at}: talk`);
       if (objective.kind === "collect") {
@@ -152,9 +165,13 @@ test("every id is unique and every reference names something that exists", () =>
       if (step.marker) {
         if (step.marker === "@yacht") continue;
         if (step.marker.startsWith("@drone:")) assert.ok(groupsEverywhere.has(step.marker.slice(7)), `${at}: marker drone group`);
-        else assert.ok(locations.has(step.marker), `${at}: marker ${step.marker}`);
+        else if (step.marker.startsWith("@actor:")) assert.ok(ROSTER.has(step.marker.slice(7)), `${at}: marker actor`);
+        else assert.ok(place(step.marker), `${at}: marker ${step.marker}`);
       }
-      if (step.checkpoint) assert.ok(locations.has(step.checkpoint.yacht), `${at}: checkpoint`);
+      if (step.checkpoint) {
+        assert.ok(place(step.checkpoint.yacht), `${at}: checkpoint`);
+        if (step.checkpoint.spot) assert.ok(place(step.checkpoint.spot), `${at}: checkpoint spot`);
+      }
       if (objective.kind === "event" && objective.event.startsWith("rammed:")) assert.ok(groups.has(objective.event.slice(7)), `${at}: the rammer is in the mission`);
       if (objective.kind === "event") assert.ok(objective.after !== undefined, `${at}: an event step has a way on if the event never comes`);
     }
@@ -165,8 +182,32 @@ test("every id is unique and every reference names something that exists", () =>
       if (effect.do === "take") assert.ok(items.has(effect.item), `${where}: take ${effect.item}`);
       if (effect.do === "cutscene") assert.ok(scenes.has(effect.scene), `${where}: cutscene ${effect.scene}`);
       if (effect.do === "look") assert.ok(effect.at.startsWith("npc:") ? characters.has(effect.at.slice(4)) : locations.has(effect.at), `${where}: look at ${effect.at}`);
+      if (effect.do === "actor") {
+        assert.ok(ROSTER.has(effect.id), `${where}: actor ${effect.id}`);
+        for (const spot of [effect.to, effect.put]) if (spot) assert.ok(levelPoint(spot), `${where}: ${effect.id} to ${spot}`);
+        if (effect.face && effect.face !== "skipper") assert.ok(levelPoint(effect.face), `${where}: ${effect.id} faces ${effect.face}`);
+      }
+      if (effect.do === "switch") assert.ok(levelPoint(effect.name), `${where}: switch ${effect.name}`);
+      if (effect.do === "craft" && effect.at) assert.ok(place(effect.at), `${where}: craft at ${effect.at}`);
+      if (effect.do === "put") assert.ok(place(effect.at), `${where}: put at ${effect.at}`);
+      if (effect.do === "alarm") assert.ok(place(effect.at), `${where}: alarm at ${effect.at}`);
+      if (effect.do === "withdraw") assert.ok(groups.has(effect.group) && place(effect.to), `${where}: withdraw ${effect.group}`);
     }
+    for (const use of mission.uses ?? []) assert.ok(use.label.ru && use.label.en, `${where}: use ${use.id} labelled`);
   }
+});
+
+test("the roster's people stand on a level's spot, speak as someone cast, and the hostile ones number nineteen with the boat's crew", () => {
+  const characters = new Set(CAMPAIGN.characters.map((character) => character.id));
+  for (const actor of CAMPAIGN.actors) {
+    assert.ok(levelPoint(actor.spawn), `${actor.id}: spawns at ${actor.spawn}`);
+    if (actor.character) assert.ok(characters.has(actor.character), `${actor.id}: ${actor.character}`);
+  }
+  assert.equal(ROSTER.size, CAMPAIGN.actors.length, "unique ids");
+  // M01: eleven at the post, five with the commander, the commander, and the two of the patrol boat (her crew).
+  const hostile = CAMPAIGN.actors.filter((actor) => /^[pide]\d\d$/.test(actor.id)).length + 1 + 2;
+  assert.equal(hostile, 19);
+  assert.ok(CAMPAIGN.actors.find((actor) => actor.id === "k17")?.immortal, "the commander lives through M01");
 });
 
 test("every text is written in Russian and in English", () => {
@@ -262,27 +303,21 @@ test("the story's places are found in the sea: beaches, a porch, open water, a d
     if (location.snap === "pier") assert.ok(place.porch && place.landing, `${location.id}: a porch`);
     if (location.snap === "water") assert.ok(distanceFromWaterline(place.x, place.z) > 40, `${location.id}: open water`);
   }
-  // Sato's hideout lies a proper sail from the shoal where she wrecked.
-  const shoal = resolvePlace(CAMPAIGN.locations.find((entry) => entry.id === "wash-up")!);
-  const camp = resolvePlace(CAMPAIGN.locations.find((entry) => entry.id === "sato-hideout")!);
-  const leg = Math.hypot(shoal.x - camp.x, shoal.z - camp.z);
-  assert.ok(leg > 2000 && leg < 6000, `shoal to the hideout ${leg.toFixed(0)} m`);
-  // The lighthouse, the tracks and Holloway's ambush lie up on the shoal's island, above the tide.
-  for (const id of ["tide-rock", "old-light", "light-tracks", "light-ambush"]) {
-    const place = toWorld(CAMPAIGN.locations.find((entry) => entry.id === id)!.at);
-    assert.ok(distanceFromWaterline(place.x, place.z) < -8, `${id} is well ashore`);
-  }
-  // The sunken Zodiac lies on the shelf, a free dive deep.
-  const zodiac = toWorld(CAMPAIGN.locations.find((entry) => entry.id === "sunken-zodiac")!.at);
-  const bed = seabedNear(zodiac.x, zodiac.z);
-  const depth = waterDepthAt(bed.x, bed.z);
-  assert.ok(depth > 5 && depth < 12, `the Zodiac lies ${depth.toFixed(1)} m down`);
-  assert.ok(Math.hypot(bed.x - shoal.landing!.x, bed.z - shoal.landing!.z) < 260, "near the shoal");
-  // The prologue's run in comes from outside the line with the trade wind behind her.
+  const at = (id: string) => resolvePlace(CAMPAIGN.locations.find((entry) => entry.id === id)!);
+  // The prologue's run: from the south-east, a mile and more to the outer island's reef.
   const start = toWorld(CAMPAIGN.start.yacht);
-  const refuge = resolvePlace(CAMPAIGN.locations.find((entry) => entry.id === "reef-refuge")!);
-  const run = Math.hypot(refuge.x - start.x, refuge.z - start.z);
-  assert.ok(run > 900 && run < 2600, `the run to the reefs ${run.toFixed(0)} m`);
+  const crash = at("crash");
+  const run = Math.hypot(crash.x - start.x, crash.z - start.z);
+  assert.ok(run > 1100 && run < 2200, `the run to the reef ${run.toFixed(0)} m`);
+  assert.ok(distanceFromWaterline(crash.x, crash.z) > 20, "the wreck lies off the beach, in the water");
+  // The pass lies between the outpost and the cove, in open water.
+  const outpost = at("stvor9");
+  const pass = at("m01-pass");
+  const cove = at("mark-cove");
+  const leg = Math.hypot(cove.x - outpost.x, cove.z - outpost.z);
+  assert.ok(Math.hypot(pass.x - outpost.x, pass.z - outpost.z) < leg && Math.hypot(pass.x - cove.x, pass.z - cove.z) < leg, "the pass is on the way");
+  assert.ok(distanceFromWaterline(pass.x, pass.z) > 60, "the pass is open water");
+  assert.ok(leg > 600 && leg < 1400, `the outpost to the cove ${leg.toFixed(0)} m`);
 });
 
 /** Facts that do whatever the current step asks. */
@@ -290,6 +325,8 @@ function satisfying(state: CampaignState, mission: Mission, step: Step, time: nu
   const events = new Set<string>();
   const objective = step.objective;
   const placeOf = (id: string) => {
+    // A level's spot: wherever the step wants him to be (the test has no built levels).
+    if (id.includes(":")) return { x: 0, z: 0, radius: 5 };
     const location = CAMPAIGN.locations.find((entry) => entry.id === id)!;
     const place = resolvePlace(location);
     return { x: place.x, z: place.z, radius: place.radius };
@@ -300,12 +337,16 @@ function satisfying(state: CampaignState, mission: Mission, step: Step, time: nu
     at = placeOf(objective.at);
     aboard = objective.by !== "foot";
   }
+  // A condition about him on foot (in an area of a level) needs him ashore.
+  if (objective.kind === "when") aboard = false;
   if (objective.kind === "talk") events.add(`talk:${objective.character}`);
   if (objective.kind === "collect") events.add(`collect:${objective.item}`);
   if (objective.kind === "repair") events.add("repaired");
   if (objective.kind === "disable") events.add(`disabled:${objective.group}`);
   if (objective.kind === "salvage") events.add(`salvaged:${objective.group}`);
   if (objective.kind === "event") events.add(objective.event);
+  if (objective.kind === "flag" && !state.flags.includes(objective.flag)) state.flags.push(objective.flag);
+  if (objective.kind === "use" && !state.flags.includes(`used:${objective.id}`)) state.flags.push(`used:${objective.id}`);
   return {
     events,
     dialogueIdle: true,
@@ -316,49 +357,61 @@ function satisfying(state: CampaignState, mission: Mission, step: Step, time: nu
     hull: objective.kind === "hull" ? 0.1 : state.hull,
     cutscene: false,
     place: (id) => placeOf(id),
+    // Whatever a condition asks of the world, it is so: in the area, beside the person, at the spot.
+    world: { inArea: () => true, actor: () => at, alert: "quiet", health: 1, still: 0, crouched: false },
   };
 }
 
 test("the whole story can be played through, and the engine hands out what the steps promise", () => {
   const state = createCampaign();
-  const said: string[] = [];
+  const said = new Set<string>();
   const gave = new Set<string>();
-  let shotAway = false;
-  for (let tick = 0; tick < 400 && !storyComplete(CAMPAIGN, state); tick += 1) {
+  const crafts: string[] = [];
+  for (let tick = 0; tick < 600 && !storyComplete(CAMPAIGN, state); tick += 1) {
     const open = openMissions(CAMPAIGN, state).find((mission) => state.missions[mission.id]) ?? openMissions(CAMPAIGN, state)[0]!;
     const step = stepOf(CAMPAIGN, state, open.id);
     const facts = step ? satisfying(state, open, step, 999) : satisfying(state, open, open.steps[0]!, 0);
     const result = advance(CAMPAIGN, state, facts);
-    for (const effect of result.effects) {
-      if (effect.do === "say") said.push(...effect.lines.map((line) => line.who));
+    const effects = [...result.effects];
+    // A use's effects come with the key press (the story system's), as the step asking for it is met.
+    if (step?.objective.kind === "use") {
+      const id = step.objective.id;
+      for (const effect of open.uses?.find((use) => use.id === id)?.do ?? []) {
+        applyToState(state, effect, CAMPAIGN);
+        effects.push(effect);
+      }
+    }
+    for (const effect of effects) {
+      if (effect.do === "say") for (const line of effect.lines) said.add(line.who);
       if (effect.do === "give") gave.add(effect.what);
-      // A scene's cues are the story too (played out by the story system as each shot begins).
+      if (effect.do === "craft") crafts.push(effect.craft);
       if (effect.do === "cutscene") {
         for (const shot of CAMPAIGN.cutscenes.find((scene) => scene.id === effect.scene)!.shots) {
           for (const cue of shot.cue ?? []) {
-            if (cue.do === "say") said.push(...cue.lines.map((line) => line.who));
-            // As the story system plays it: the cue changes the campaign too.
+            if (cue.do === "say") for (const line of cue.lines) said.add(line.who);
             applyToState(state, cue, CAMPAIGN);
           }
-          if (!state.rig) shotAway = true;
         }
       }
     }
   }
-  assert.ok(storyComplete(CAMPAIGN, state), "the story so far comes to its end");
+  assert.ok(storyComplete(CAMPAIGN, state), `the story so far comes to its end (stuck at ${JSON.stringify(state.missions)})`);
   for (const mission of CAMPAIGN.missions) {
     if (mission.status === "playable") assert.ok(state.missions[mission.id]?.done, `${mission.id} done`);
     else assert.equal(state.missions[mission.id], undefined, `${mission.id} is not started`);
   }
-  for (const what of ["pistol", "knife", "map", "rifle"]) assert.ok(gave.has(what), `the ${what} is handed over`);
-  assert.ok(shotAway, "the prologue shoots her mast away");
-  assert.equal(state.rig, true, "she is rigged again (the prologue's scene shot the mast away, the jury rig put one up)");
-  assert.ok(said.includes("holloway") && said.includes("sara") && said.includes("aquilon"));
-  assert.equal(state.engine, true, "the engine runs again");
-  assert.equal(state.hull, 1, "the hull is whole again");
-  assert.deepEqual(state.items, ["lis-battery"], "the guidance unit went to Holloway; the battery is his to sell");
-  // The patrols are out once Holloway has her running.
-  assert.ok(presenceNow(CAMPAIGN, state).some((entry) => entry.kind === "drones" && entry.group.id === "tide-patrol-ridge"));
+  for (const what of ["pistol", "knife", "map"]) assert.ok(gave.has(what), `the ${what} is handed over`);
+  assert.deepEqual(crafts.slice(0, 2), ["sport", "skiff"], "the sport yacht in the prologue, the skiff after it");
+  assert.equal(state.craft, "skiff", "the skiff is his");
+  for (const who of ["hero", "holloway", "maya", "kenji", "sara", "sedov", "commander", "aquilon"]) assert.ok(said.has(who), `${who} speaks`);
+  assert.equal(state.engine, true, "the outboard runs");
+  assert.equal(state.hull, 1);
+  for (const flag of ["m01_beacon_seen", "m01_evidence_copied", "m01_commander_seen", "m01_escape_boat_owned", "arc_kenji_available", "arc_sarah_available", "arc_viktor_available", "arc_mark_available"]) {
+    assert.ok(state.flags.includes(flag), flag);
+  }
+  assert.equal(state.clock, null, "the afternoon runs on its own again");
+  // The haven stands afterwards, with Mark and Maya in it.
+  assert.ok(presenceNow(CAMPAIGN, state).some((entry) => entry.kind === "actors" && entry.ids.includes("mark-cove")));
   assert.ok(state.checkpoint, "a checkpoint to resume from");
 });
 
@@ -397,38 +450,40 @@ test("a saved game survives the story being rewritten under it", () => {
     {
       version: 1,
       missions: {
-        prologue: { step: "struck", done: true },
-        stranded: { step: "a-step-that-was-cut", done: false },
+        prologue: { step: "dark", done: true },
+        m01: { step: "a-step-that-was-cut", done: false },
         "a-mission-that-was-cut": { step: "x", done: false },
-        "rusty-spire": { step: "spire", done: false },
+        "arc-kenji": { step: "x", done: false },
       },
-      checkpoint: { mission: "stranded", step: "no-longer-there" },
-      gear: ["rifle", 7, "rifle"],
-      items: ["repair-kit", "a-thing-that-was-cut"],
-      collected: ["repair-kit"],
+      checkpoint: { mission: "m01", step: "no-longer-there" },
+      gear: ["pistol", 7, "pistol"],
+      items: ["a-thing-that-was-cut"],
       hull: 4,
       engine: false,
       sectors: ["dead-tide", "atlantis"],
       position: { x: 1, z: 2, heading: Number.NaN },
+      flags: ["m01_beacon_seen", 3, "down:p01"],
+      craft: "submarine",
+      clock: 40.75,
     },
     CAMPAIGN,
   );
   assert.equal(state.missions.prologue?.done, true);
-  assert.equal(state.missions.stranded?.step, "look", "an unknown step starts the mission over");
+  assert.equal(state.missions.m01?.step, "wake", "an unknown step starts the mission over");
   assert.equal(state.missions["a-mission-that-was-cut"], undefined);
-  assert.equal(state.missions["rusty-spire"], undefined, "a planned mission is not under way");
+  assert.equal(state.missions["arc-kenji"], undefined, "a planned mission is not under way");
   assert.equal(state.checkpoint, null);
-  assert.deepEqual(state.gear, ["rifle"]);
-  assert.deepEqual(state.items, ["repair-kit"]);
+  assert.deepEqual(state.gear, ["pistol"]);
+  assert.deepEqual(state.items, []);
   assert.equal(state.hull, 1);
   assert.equal(state.engine, false);
   assert.deepEqual(state.sectors, ["dead-tide"]);
   assert.equal(state.position, null);
+  assert.deepEqual(state.flags, ["m01_beacon_seen", "down:p01"]);
+  assert.equal(state.craft, "catamaran", "an unknown boat is the catamaran");
+  assert.equal(state.clock, 16.75);
   // Rubbish is a new campaign.
   assert.deepEqual(restoreCampaign("nonsense", CAMPAIGN), createCampaign());
-  // An item picked up is not put back in the world.
-  const holding = restoreCampaign({ missions: { prologue: { step: "struck", done: true }, stranded: { step: "kit", done: false } }, collected: ["repair-kit"], items: ["repair-kit"] }, CAMPAIGN);
-  assert.ok(!presenceNow(CAMPAIGN, holding).some((entry) => entry.kind === "item"));
 });
 
 test("a cut scene's camera follows its anchors, eases between its ends, and holds when told", () => {

@@ -1,8 +1,6 @@
 import type { LevelDefinition } from "../../level/LevelSystem";
+import { M01_PLACES } from "./m01Places";
 import { STVOR9 } from "./stvor9";
 
-/**
- * The story's built places (see `LevelSystem`), each in its own module:
- * where it stands, the ground it levels, how it is built.
- */
-export const STORY_LEVELS: readonly LevelDefinition[] = [STVOR9];
+/** Every built place of the story (their pads level the ground from the start; each stands while the story wants it). */
+export const STORY_LEVELS: readonly LevelDefinition[] = [STVOR9, ...M01_PLACES];

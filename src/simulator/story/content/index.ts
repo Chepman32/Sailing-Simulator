@@ -1,12 +1,14 @@
-import type { Campaign, Chapter, StoryItem, WorldRule } from "../StoryTypes";
+import type { Campaign, Chapter, Mission, StoryItem, WorldRule } from "../StoryTypes";
 import { CHARACTERS, FACTIONS } from "./cast";
-import { CHAPTER_1 } from "./chapter1";
 import { BORDERS, LOCATIONS, QUARANTINE, SECTORS } from "./geography";
+import { M01, M01_CUTSCENES } from "./m01";
+import { M01_ACTORS } from "./m01Cast";
 import { PROLOGUE, PROLOGUE_CUTSCENES } from "./prologue";
 
 const CHAPTERS: readonly Chapter[] = [
   { id: "prologue", title: { ru: "Пролог", en: "Prologue" }, subtitle: { ru: "Штиль перед обрывом", en: "The Calm Before the Drop" }, sector: "dead-tide" },
   { id: "chapter-1", title: { ru: "Глава 1", en: "Chapter 1" }, subtitle: { ru: "Мёртвый прилив", en: "Dead Tide" }, sector: "dead-tide" },
+  { id: "arcs", title: { ru: "Сюжетные линии", en: "Story lines" }, subtitle: { ru: "В любом порядке", en: "In any order" }, sector: "dead-tide" },
   { id: "chapter-2", title: { ru: "Глава 2", en: "Chapter 2" }, subtitle: { ru: "Зелёный шквал", en: "Green Squall" }, sector: "green-squall" },
   { id: "chapter-3", title: { ru: "Глава 3", en: "Chapter 3" }, subtitle: { ru: "Песчаные зубья", en: "Sand Teeth" }, sector: "sand-teeth" },
   { id: "chapter-4", title: { ru: "Глава 4", en: "Chapter 4" }, subtitle: { ru: "Открытый клин", en: "The Open Wedge" }, sector: "open-wedge" },
@@ -14,23 +16,40 @@ const CHAPTERS: readonly Chapter[] = [
 ];
 
 /** Things the story hands over; `value` is what the black market pays for one (gold). */
-const ITEMS: readonly StoryItem[] = [
-  { id: "repair-kit", name: { ru: "Ремкомплект: пластыри и герметик", en: "Repair kit: patches and sealant" }, value: 0 },
-  { id: "guidance-unit", name: { ru: "Блок наведения дрона", en: "Drone guidance unit" }, value: 0 },
-  { id: "lis-battery", name: { ru: "Литий-серный аккумулятор", en: "Lithium-sulphur battery" }, value: 160 },
+const ITEMS: readonly StoryItem[] = [];
+
+/** The four story lines M01 opens: in the journal, in any order, their first meetings still to be written. */
+const arc = (id: string, giver: string, ru: string, en: string, briefRu: string, briefEn: string): Mission => ({
+  id,
+  chapter: "arcs",
+  title: { ru, en },
+  brief: { ru: briefRu, en: briefEn },
+  giver,
+  sector: "dead-tide",
+  requires: ["m01"],
+  status: "planned",
+  steps: [],
+});
+
+const ARCS: readonly Mission[] = [
+  arc("arc-mark", "holloway", "Продолжить у Марка", "Carry on with Mark", "Марк остаётся в бухте: его людям нужно снабжение. Следующая работа — только если сам придёшь.", "Mark stays at the cove: his people need supplies. The next job is his only if you come to him."),
+  arc("arc-kenji", "kenji", "Познакомиться с Кендзи Сато", "Meet Kenji Sato", "Инженер, который понял, что лагуны травят. Знает здешние воды лучше любого патруля.", "The engineer who worked out the lagoons are being poisoned. Knows these waters better than any patrol."),
+  arc("arc-sara", "sara", "Познакомиться с Сарой Дженкинс", "Meet Sara Jenkins", "Бывший аналитик их разведки. Если кто и прочтёт код группы на приказе — она.", "A former analyst of their intelligence. If anyone can read the group code on the order, she can."),
+  arc("arc-viktor", "sedov", "Познакомиться с Виктором Седовым", "Meet Viktor Sedov", "Один из создателей «Аквилона». Говорит, что хочет всё остановить.", "One of the men who built Aquilon. Says he wants to stop it."),
 ];
 
 /** What the world holds from a point of the story on. */
 const WORLD: readonly WorldRule[] = [
-  // Holloway waits at Sato's hideout once he has gone ahead to it.
-  { id: "holloway-at-hideout", after: "stranded", presence: [{ kind: "npc", character: "holloway", at: "sato-hideout", kit: "armed" }] },
-  // Once she can fight back, the reef belt is patrolled: blind them and strip them for money.
+  // After M01: the outpost and the beach stay as they were left; Mark, Maya (and Luis, if he got out) at the cove.
   {
-    id: "tide-patrols",
-    after: "heart",
+    id: "after-m01",
+    after: "m01",
     presence: [
-      { kind: "drones", group: { id: "tide-patrol-ridge", at: "broken-ridge", count: 1, behaviour: "patrol", beat: 450, respawn: 240 } },
-      { kind: "drones", group: { id: "tide-patrol-banks", at: "pale-banks", count: 2, behaviour: "patrol", beat: 500, respawn: 300 } },
+      { kind: "level", level: "kosaya" },
+      { kind: "level", level: "stvor9" },
+      { kind: "level", level: "white-rocks" },
+      { kind: "level", level: "cove" },
+      { kind: "actors", ids: ["mark-cove", "maya", "luis-cove"] },
     ],
   },
 ];
@@ -45,9 +64,18 @@ export const CAMPAIGN: Campaign = {
   locations: LOCATIONS,
   chapters: CHAPTERS,
   items: ITEMS,
-  missions: [PROLOGUE, ...CHAPTER_1],
+  missions: [PROLOGUE, M01, ...ARCS],
   world: WORLD,
-  cutscenes: PROLOGUE_CUTSCENES,
-  // Outside the line to the south-east of the reef belt, running before the trade wind for the old light.
-  start: { yacht: [-4850, -6900], heading: 318 },
+  cutscenes: [...PROLOGUE_CUTSCENES, ...M01_CUTSCENES],
+  actors: M01_ACTORS,
+  smallTalk: {
+    holloway: [
+      { ru: "Я остаюсь здесь. Остальным можешь заняться в любом порядке.", en: "I'm staying here. The rest you can take in any order." },
+      { ru: "Мотор подлатать можно. Новую посудину купишь, когда заработаешь.", en: "The motor can be patched. You'll buy a new tub when you've earned it." },
+    ],
+    maya: [{ ru: "Воду бери с собой. И шляпу.", en: "Take water with you. And a hat." }],
+    luis: [{ ru: "Как жене расскажу — не поверит. Спасибо тебе.", en: "When I tell my wife she won't believe it. Thank you." }],
+  },
+  // South-east of the outer island, just outside the zone, flat out for it.
+  start: { yacht: [-5777, -6606], heading: 314 },
 };

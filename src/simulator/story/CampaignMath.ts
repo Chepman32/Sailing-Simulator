@@ -1,4 +1,4 @@
-import type { Campaign, Effect, Mission, Objective, Presence, Step } from "./StoryTypes";
+import type { Campaign, Condition, CraftId, Effect, Mission, Objective, Presence, Step } from "./StoryTypes";
 
 /**
  * The campaign's progress and the rules that move it on. Pure: the runtime
@@ -34,6 +34,12 @@ export type CampaignState = {
   sectors: string[];
   /** Where she was last at the helm in open play (null after the story moved her). */
   position: { x: number; z: number; heading: number } | null;
+  /** What has happened that the story remembers (`beacon_seen`, `down:p01`, `used:terminal`, `t:<trigger>`). */
+  flags: string[];
+  /** The boat he has now. */
+  craft: CraftId;
+  /** The hour the day is held at (a mission's afternoon running at a real day's pace), or null: the day runs on its own. */
+  clock: number | null;
 };
 
 export function createCampaign(): CampaignState {
@@ -49,8 +55,13 @@ export function createCampaign(): CampaignState {
     rig: true,
     sectors: [],
     position: null,
+    flags: [],
+    craft: "catamaran",
+    clock: null,
   };
 }
+
+const CRAFTS: readonly CraftId[] = ["catamaran", "sport", "skiff"];
 
 const strings = (value: unknown, limit = 64): string[] =>
   Array.isArray(value) ? Array.from(new Set(value.filter((entry): entry is string => typeof entry === "string"))).slice(0, limit) : [];
@@ -86,6 +97,9 @@ export function restoreCampaign(raw: unknown, campaign: Campaign): CampaignState
   if (typeof saved.rig === "boolean") state.rig = saved.rig;
   const sectors = new Set(campaign.sectors.map((sector) => sector.id));
   state.sectors = strings(saved.sectors).filter((sector) => sectors.has(sector));
+  state.flags = strings(saved.flags, 400);
+  if (typeof saved.craft === "string" && (CRAFTS as readonly string[]).includes(saved.craft)) state.craft = saved.craft as CraftId;
+  if (typeof saved.clock === "number" && Number.isFinite(saved.clock)) state.clock = ((saved.clock % 24) + 24) % 24;
   const position = saved.position as { x?: unknown; z?: unknown; heading?: unknown } | null | undefined;
   if (position && [position.x, position.z, position.heading].every((value) => typeof value === "number" && Number.isFinite(value))) {
     state.position = { x: position.x as number, z: position.z as number, heading: position.heading as number };
@@ -140,6 +154,8 @@ export function presenceKey(presence: Presence): string {
   if (presence.kind === "drones") return `drones:${presence.group.id}`;
   if (presence.kind === "item") return `item:${presence.item}`;
   if (presence.kind === "props") return `props:${presence.set}:${presence.at}`;
+  if (presence.kind === "level") return `level:${presence.level}`;
+  if (presence.kind === "actors") return `actors:${presence.ids.join(",")}`;
   return `npc:${presence.character}`;
 }
 
@@ -158,9 +174,65 @@ export type Facts = {
   /** The skipper is aboard (at the helm or on deck). */
   aboard: boolean;
   hull: number;
-  /** Where a story place is (see AtlasMath.resolvePlace). */
+  /** Where a story place is (see AtlasMath.resolvePlace), or a built level's spot (`level:spot`). */
   place: (id: string) => { x: number; z: number; radius: number } | null;
+  /** The story's clock (s) and when each repeating trigger last fired, for `Trigger.every`. */
+  now?: number;
+  fired?: Map<string, number>;
+  /** The rest of what a condition may ask (see `Condition`); absent in plain tests: nothing holds. */
+  world?: WorldFacts;
 };
+
+/** What the world says for conditions: the built levels' areas, the people, the skipper's state. */
+export type WorldFacts = {
+  inArea(name: string): boolean;
+  /** Where a person of the roster is (null: not in the world). */
+  actor(id: string): { x: number; z: number } | null;
+  alert: "quiet" | "suspicious" | "combat";
+  health: number;
+  still: number;
+  crouched: boolean;
+};
+
+/** Whether a condition holds now, for the mission whose step is `step`. */
+export function conditionHolds(when: Condition, state: CampaignState, facts: Facts, mission: string, step: string | null): boolean {
+  if (when.any && !when.any.some((other) => conditionHolds(other, state, facts, mission, step))) return false;
+  if (when.flags && !when.flags.every((flag) => state.flags.includes(flag))) return false;
+  if (when.not && when.not.some((flag) => state.flags.includes(flag))) return false;
+  if (when.steps && (step === null || !when.steps.includes(step))) return false;
+  if (when.stepTime !== undefined && facts.stepTime(mission) < when.stepTime) return false;
+  if (when.quiet && !facts.dialogueIdle) return false;
+  if (when.event && !facts.events.has(when.event)) return false;
+  const where = facts.aboard ? facts.yacht : facts.skipper;
+  if (when.near && !near(where, facts.place(when.near.at), when.near.radius)) return false;
+  if (when.far) {
+    const place = facts.place(when.far.at);
+    if (!place || near(where, place, when.far.radius)) return false;
+  }
+  const world = facts.world;
+  const needsWorld = when.area || when.nearActor || when.farActor || when.actorAt || when.alert || when.health !== undefined || when.still !== undefined || when.crouched;
+  if (!needsWorld) return true;
+  if (!world) return false;
+  if (when.area && (facts.aboard || !world.inArea(when.area))) return false;
+  if (when.nearActor) {
+    const at = world.actor(when.nearActor.id);
+    if (!at || Math.hypot(at.x - where.x, at.z - where.z) > when.nearActor.radius) return false;
+  }
+  if (when.farActor) {
+    const at = world.actor(when.farActor.id);
+    if (!at || Math.hypot(at.x - where.x, at.z - where.z) <= when.farActor.radius) return false;
+  }
+  if (when.actorAt) {
+    const at = world.actor(when.actorAt.id);
+    if (!at || !near(at, facts.place(when.actorAt.at), when.actorAt.radius)) return false;
+  }
+  if (when.alert === "suspicious" && world.alert === "quiet") return false;
+  if (when.alert === "combat" && world.alert !== "combat") return false;
+  if (when.health !== undefined && world.health >= when.health) return false;
+  if (when.still !== undefined && (facts.aboard || world.still < when.still)) return false;
+  if (when.crouched && !world.crouched) return false;
+  return true;
+}
 
 function near(point: { x: number; z: number }, place: { x: number; z: number; radius: number } | null, radius?: number): boolean {
   return place !== null && Math.hypot(point.x - place.x, point.z - place.z) <= (radius ?? place.radius);
@@ -198,6 +270,12 @@ export function objectiveMet(objective: Objective, state: CampaignState, facts: 
       return !facts.cutscene && time > 0.4;
     case "event":
       return facts.events.has(objective.event) || (objective.after !== undefined && time >= objective.after);
+    case "flag":
+      return (state.flags.includes(objective.flag) && time > 0.2) || (objective.after !== undefined && time >= objective.after);
+    case "use":
+      return state.flags.includes(`used:${objective.id}`);
+    case "when":
+      return time > 0.2 && conditionHolds(objective.when, state, facts, mission, state.missions[mission]?.step ?? null);
   }
 }
 
@@ -227,7 +305,24 @@ export function applyToState(state: CampaignState, effect: Effect, campaign: Cam
       state.rig = !effect.broken;
       break;
     case "place":
+    case "board":
       state.position = null;
+      break;
+    case "flag":
+      if (effect.off) state.flags = state.flags.filter((flag) => flag !== effect.flag);
+      else if (!state.flags.includes(effect.flag)) state.flags.push(effect.flag);
+      break;
+    case "craft":
+      state.craft = effect.craft;
+      state.position = null;
+      if (effect.craft !== "catamaran") state.rig = true;
+      break;
+    case "time":
+      state.clock = effect.hold ? effect.hour : null;
+      break;
+    case "switch":
+      state.flags = state.flags.filter((flag) => !flag.startsWith(`sw:${effect.name}=`));
+      state.flags.push(`sw:${effect.name}=${effect.value}`);
       break;
     default:
       break;
@@ -249,6 +344,8 @@ export type Advance = {
  */
 export function advance(campaign: Campaign, state: CampaignState, facts: Facts): Advance {
   const effects: Effect[] = [];
+  /** A trigger's effects: already applied to the state (they run before the step's). */
+  const triggered: Effect[] = [];
   const moved: string[] = [];
   const enter = (mission: Mission, step: Step) => {
     state.missions[mission.id] = { step: step.id, done: false };
@@ -279,6 +376,21 @@ export function advance(campaign: Campaign, state: CampaignState, facts: Facts):
         continue;
       }
     }
+    // The mission's triggers: each fires once its condition holds (once only, or again after `every` s).
+    for (const trigger of mission.triggers ?? []) {
+      const key = `t:${trigger.id}`;
+      const fired = state.flags.includes(key);
+      if (fired && trigger.every === undefined) continue;
+      if (fired && (facts.now === undefined || facts.now - (facts.fired?.get(key) ?? -Infinity) < trigger.every!)) continue;
+      if (!conditionHolds(trigger.when, state, facts, mission.id, step.id)) continue;
+      if (!fired) state.flags.push(key);
+      facts.fired?.set(key, facts.now ?? 0);
+      for (const effect of trigger.do) {
+        // Its own flags at once, so a later trigger this call sees them.
+        applyToState(state, effect, campaign);
+        triggered.push(effect);
+      }
+    }
     if (!objectiveMet(step.objective, state, facts, mission.id)) continue;
     effects.push(...(step.onComplete ?? []));
     const next = mission.steps[index + 1];
@@ -291,5 +403,5 @@ export function advance(campaign: Campaign, state: CampaignState, facts: Facts):
     }
   }
   for (const effect of effects) applyToState(state, effect, campaign);
-  return { effects, moved };
+  return { effects: [...triggered, ...effects], moved };
 }

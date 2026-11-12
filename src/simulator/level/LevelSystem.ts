@@ -83,6 +83,13 @@ export class LevelSystem implements LevelQuery {
     this.wanted = new Set(ids);
   }
 
+  /** How many times a level has been built (0: never), so what is set on it can be put back after a rebuild. */
+  buildSerial(id: string): number {
+    return this.standing.has(id) ? (this.serials.get(id) ?? 0) : 0;
+  }
+
+  private readonly serials = new Map<string, number>();
+
   isStanding(id: string): boolean {
     return this.standing.has(id);
   }
@@ -202,6 +209,27 @@ export class LevelSystem implements LevelQuery {
     return near;
   }
 
+  /**
+   * How far (x, z) is from the nearest of the standing levels' sea rocks'
+   * sides (negative: inside one), its outward direction in `normal`.
+   */
+  boatClearance(x: number, z: number, normal: { x: number; z: number }): number {
+    let best = Number.POSITIVE_INFINITY;
+    for (const standing of this.standing.values()) {
+      for (const rock of standing.built.anchors.obstacles) {
+        const dx = x - rock.x;
+        const dz = z - rock.z;
+        const distance = Math.hypot(dx, dz);
+        const clearance = distance - rock.radius;
+        if (clearance >= best) continue;
+        best = clearance;
+        normal.x = distance > 1e-6 ? dx / distance : 1;
+        normal.z = distance > 1e-6 ? dz / distance : 0;
+      }
+    }
+    return best;
+  }
+
   /** Whether (x, y, z) is inside a named area of a standing level. */
   inArea(name: string, x: number, y: number, z: number): boolean {
     const [levelId, areaName] = name.includes(":") ? name.split(":") : [null, name];
@@ -247,6 +275,7 @@ export class LevelSystem implements LevelQuery {
     const built = builder.build();
     this.group.add(built.group);
     this.standing.set(definition.id, { definition, built });
+    this.serials.set(definition.id, (this.serials.get(definition.id) ?? 0) + 1);
     this.onBuilt(built.group);
   }
 

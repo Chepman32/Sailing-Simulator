@@ -1311,6 +1311,17 @@ export function SailingSimulator() {
     if (photoMode) return;
     // On deck and in the water the signals, flares and camera keys are not his.
     // Nor is the cinematic view (P): it is a view of the yacht.
+    // On foot in the campaign: R changes the magazine, B binds a wound.
+    if (campaign && away && event.code === "KeyR") {
+      simulatorRef.current?.reloadWeapon();
+      event.preventDefault();
+      return;
+    }
+    if (campaign && away && event.code === "KeyB") {
+      simulatorRef.current?.applyBandage();
+      event.preventDefault();
+      return;
+    }
     if (away && ["KeyF", "KeyG", "KeyJ", "KeyB", "KeyR", "KeyO", "KeyP"].includes(event.code)) return;
     switch (event.code) {
       case "KeyP":

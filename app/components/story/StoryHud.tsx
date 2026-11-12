@@ -52,7 +52,7 @@ export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip,
   const hullPercent = Math.round(view.hull * 100);
   const alarmLevel = combat.attacking ? "spotted" : combat.alarm > 0.08 ? "suspicious" : "hidden";
   const prompt = view.prompt;
-  const helmPrompt = atHelm && prompt && prompt.kind !== "talk" ? prompt : null;
+  const helmPrompt = atHelm && prompt && (prompt.kind === "repair" || prompt.kind === "winch") ? prompt : null;
   const progress = helmPrompt ? helmPrompt.progress : 0;
   const busy = progress > 0.001;
   return (
@@ -227,5 +227,11 @@ export function storyPromptText(detail: string | null, language: LanguageCode): 
   if (detail.startsWith("talk:")) return fill(messages.talk, { name: speakerOf(detail.slice(5), messages, lang).name });
   if (detail.startsWith("repair:")) return Number(detail.slice(7)) > 0.001 ? messages.repairing : messages.repair;
   if (detail.startsWith("winch:")) return Number(detail.slice(6)) > 0.001 ? messages.winching : messages.winch;
+  if (detail.startsWith("use:")) {
+    const [, progress, ...label] = detail.split(":");
+    const text = label.join(":");
+    return Number(progress) > 0.001 ? `${text}… ${Math.round(Number(progress) * 100)}%` : text;
+  }
+  if (detail === "takedown") return messages.takedown;
   return null;
 }

@@ -55,6 +55,8 @@ export type LevelAnchors = {
   switches: Map<string, (value: string) => void>;
   /** The level's way-points for those who walk it (guards, a companion): a graph of points and the links walkable between them. */
   nav: { points: { x: number; y: number; z: number }[]; links: number[][] };
+  /** Rocks a boat must keep off (a sea stack), as circles in the world's plan. */
+  obstacles: { x: number; z: number; radius: number }[];
 };
 
 export type BuiltLevel = {
@@ -74,7 +76,7 @@ const color = new THREE.Color();
 
 export class LevelBuilder {
   readonly collision = new LevelCollision();
-  readonly anchors: LevelAnchors = { spots: new Map(), routes: new Map(), areas: new Map(), covers: [], interactables: new Map(), switches: new Map(), nav: { points: [], links: [] } };
+  readonly anchors: LevelAnchors = { spots: new Map(), routes: new Map(), areas: new Map(), covers: [], interactables: new Map(), switches: new Map(), nav: { points: [], links: [] }, obstacles: [] };
   private readonly navPairs: [LP, LP][] = [];
   readonly group = new THREE.Group();
   private readonly buffers = new Map<LevelMaterialKey, Buffers>();
@@ -469,6 +471,12 @@ export class LevelBuilder {
    */
   way(points: readonly LP[]): void {
     for (let index = 1; index < points.length; index += 1) this.navPairs.push([points[index - 1]!, points[index]!]);
+  }
+
+  /** A rock at sea a boat strikes and is turned off (see `LevelSystem.boatClearance`). */
+  obstacle(at: LP, radius: number): void {
+    const point = this.world(at);
+    this.anchors.obstacles.push({ x: point.x, z: point.z, radius });
   }
 
   interact(id: string, at: LP, radius = 1.6): void {

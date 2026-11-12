@@ -483,7 +483,7 @@ export class CombatAudio {
    * rock, water flooding in, a breaker on the shoal, a mast cracking and
    * coming down.
    */
-  story(sound: "radio-noise" | "click" | "crash" | "flooding" | "surf" | "mast"): void {
+  story(sound: "radio-noise" | "click" | "crash" | "flooding" | "surf" | "mast" | "outboard" | "jeeps"): void {
     const mixer = this.ready();
     if (!mixer) return;
     const { context, master, music } = mixer;
@@ -491,7 +491,7 @@ export class CombatAudio {
     const out = context.createGain();
     out.gain.value = 1;
     out.connect(sound === "radio-noise" ? music : master);
-    const length = { "radio-noise": 9, click: 0.6, crash: 3.5, flooding: 6, surf: 4, mast: 3.2 }[sound];
+    const length = { "radio-noise": 9, click: 0.6, crash: 3.5, flooding: 6, surf: 4, mast: 3.2, outboard: 4.5, jeeps: 10 }[sound];
     if (sound === "radio-noise") {
       // Shortwave: a band of hiss, fluttering with the fading.
       const source = context.createBufferSource();
@@ -547,6 +547,50 @@ export class CombatAudio {
       source.start(now);
       source.stop(now + length);
       for (let index = 0; index < 10; index += 1) this.thump(context, out, now + 0.6 + index * 0.45 + Math.random() * 0.2, 90 + Math.random() * 60, 0.18, 0.35);
+    } else if (sound === "outboard") {
+      // A pull-start: the cord, a cough, a catch, the motor settling into a rattle.
+      this.burstOfNoise(context, out, now, 0.35, 0.25, "bandpass", 900, 1.5);
+      this.thump(context, out, now + 0.5, 70, 0.12, 0.5);
+      this.thump(context, out, now + 0.72, 64, 0.1, 0.4);
+      const motor = context.createOscillator();
+      motor.type = "sawtooth";
+      motor.frequency.setValueAtTime(28, now + 0.9);
+      motor.frequency.linearRampToValueAtTime(64, now + 1.5);
+      motor.frequency.linearRampToValueAtTime(46, now + length);
+      const low = context.createBiquadFilter();
+      low.type = "lowpass";
+      low.frequency.value = 520;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now + 0.9);
+      gain.gain.exponentialRampToValueAtTime(0.22, now + 1.2);
+      gain.gain.setValueAtTime(0.22, now + length - 1);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + length);
+      motor.connect(low).connect(gain).connect(out);
+      motor.start(now + 0.9);
+      motor.stop(now + length);
+    } else if (sound === "jeeps") {
+      // Two engines coming up the road and pulling in, gravel under the tyres.
+      for (const [offset, pitch] of [
+        [0, 38],
+        [1.6, 44],
+      ] as const) {
+        const engine = context.createOscillator();
+        engine.type = "sawtooth";
+        engine.frequency.setValueAtTime(pitch, now + offset);
+        engine.frequency.linearRampToValueAtTime(pitch * 1.5, now + offset + 4);
+        engine.frequency.linearRampToValueAtTime(pitch * 0.8, now + offset + 8);
+        const low = context.createBiquadFilter();
+        low.type = "lowpass";
+        low.frequency.value = 380;
+        const gain = context.createGain();
+        gain.gain.setValueAtTime(0.0001, now + offset);
+        gain.gain.exponentialRampToValueAtTime(0.16, now + offset + 3.5);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 8.4);
+        engine.connect(low).connect(gain).connect(out);
+        engine.start(now + offset);
+        engine.stop(now + offset + 8.5);
+      }
+      this.burstOfNoise(context, out, now + 6.5, 1.8, 0.2, "bandpass", 1400, 0.7);
     } else if (sound === "surf") {
       const source = context.createBufferSource();
       source.buffer = this.noiseBuffer(context);
@@ -585,6 +629,81 @@ export class CombatAudio {
       this.burstOfNoise(context, out, now + 1.75, 0.5, 0.6, "lowpass", 1200, 0.6);
     }
     window.setTimeout(() => out.disconnect(), (length + 0.5) * 1000);
+  }
+
+  private ambience: { gain: GainNode; birds: number; nodes: AudioScheduledSourceNode[] } | null = null;
+
+  /**
+   * The island's summer ashore (M01): cicadas in a dense shimmer and birds
+   * now and then, falling silent for a few seconds after a gunshot. `level`
+   * 0…1 (0: none, the sound faded out).
+   */
+  setAmbience(level: number, delta: number, hush: number): void {
+    const mixer = this.ready();
+    if (!mixer) return;
+    const { context, master } = mixer;
+    if (!this.ambience && level > 0.01) {
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      gain.connect(master);
+      const nodes: AudioScheduledSourceNode[] = [];
+      // Cicadas: a band of hiss around 5 kHz, pulsing fast and swelling slowly.
+      for (const [frequency, rate] of [
+        [4800, 38],
+        [6300, 46],
+      ] as const) {
+        const source = context.createBufferSource();
+        source.buffer = this.noiseBuffer(context);
+        source.loop = true;
+        const band = context.createBiquadFilter();
+        band.type = "bandpass";
+        band.frequency.value = frequency;
+        band.Q.value = 6;
+        const pulse = context.createGain();
+        pulse.gain.value = 0.02;
+        const lfo = context.createOscillator();
+        lfo.frequency.value = rate;
+        const depth = context.createGain();
+        depth.gain.value = 0.018;
+        lfo.connect(depth).connect(pulse.gain);
+        source.connect(band).connect(pulse).connect(gain);
+        source.start();
+        lfo.start();
+        nodes.push(source, lfo);
+      }
+      this.ambience = { gain, birds: 2, nodes };
+    }
+    const ambience = this.ambience;
+    if (!ambience) return;
+    const target = level * (1 - hush);
+    ambience.gain.gain.setTargetAtTime(target, context.currentTime, 0.8);
+    // A bird now and then: a few quick falling whistles.
+    ambience.birds -= delta;
+    if (ambience.birds <= 0 && target > 0.05) {
+      ambience.birds = 3 + Math.random() * 7;
+      const start = context.currentTime + 0.02;
+      const notes = 2 + Math.floor(Math.random() * 4);
+      const base = 2200 + Math.random() * 1800;
+      for (let index = 0; index < notes; index += 1) {
+        const at = start + index * (0.09 + Math.random() * 0.05);
+        const osc = context.createOscillator();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(base * (1.1 + Math.random() * 0.2), at);
+        osc.frequency.exponentialRampToValueAtTime(base * 0.8, at + 0.07);
+        const tone = context.createGain();
+        tone.gain.setValueAtTime(0.0001, at);
+        tone.gain.exponentialRampToValueAtTime(0.05 * target + 0.0002, at + 0.012);
+        tone.gain.exponentialRampToValueAtTime(0.0001, at + 0.08);
+        osc.connect(tone).connect(master);
+        osc.start(at);
+        osc.stop(at + 0.1);
+      }
+    }
+    if (level <= 0.01 && ambience.gain.gain.value < 0.001) {
+      for (const node of ambience.nodes) node.stop();
+      ambience.gain.disconnect();
+      this.ambience = null;
+    }
   }
 
   /** A short warning cue the moment a drone has her (the interface's own sound, not a sound of the world). */

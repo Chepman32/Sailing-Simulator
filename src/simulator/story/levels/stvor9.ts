@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { LevelDefinition } from "../../level/LevelSystem";
 import type { LevelBuilder, LP } from "../../level/LevelBuilder";
+import { PatrolBoatTemplate } from "../../combat/PatrolBoatModel";
 import {
   antennaMast,
   bollard,
@@ -17,6 +18,7 @@ import {
   jerrycan,
   laundry,
   sandbags,
+  jeep,
   sheetFence,
   shelves,
   tent,
@@ -48,6 +50,13 @@ import {
 /** The island's centre on the chart, and the outpost's origin from it. */
 const ISLAND = { east: -7111.77, north: -5043.04 };
 export const STVOR9_ORIGIN = { east: ISLAND.east + 45, north: ISLAND.north + 88 };
+
+/** A point of the outpost's frame (`right`, `forward`) on the chart, [east, north]. */
+export function stvor9Chart(right: number, forward: number): readonly [number, number] {
+  // Forward is north-east (bearing 45), right south-east.
+  const s = Math.SQRT1_2;
+  return [STVOR9_ORIGIN.east + (forward + right) * s, STVOR9_ORIGIN.north + (forward - right) * s];
+}
 
 const Y = 1.25;
 const UP = 4.65;
@@ -190,6 +199,7 @@ function buildStvor9(b: LevelBuilder): void {
     if (cell.bars) cell.bars.off = open;
   });
   b.interact("cell-door", [8.2, -5.3, Y], 1.8);
+  b.spot("cell-front", [8.3, -4.6, Y], 180);
   b.spot("luis", [8.0, -10.5, Y + 0.12], 0);
   b.spot("luis-out", [8.4, -3.6, Y], 20);
   // Inside: a mattress, bottles, a child's old drawing on the door.
@@ -270,6 +280,8 @@ function buildStvor9(b: LevelBuilder): void {
   b.spot("skiff", [-0.6, 31.5, 0], 0);
   b.spot("mooring", [-2.3, 31.2, Y], 90);
   b.interact("mooring", [-2.4, 31.4, Y], 1.6);
+  b.spot("mooring-mark", [-2.2, 29.6, Y], 90);
+  b.spot("mooring-luis", [-2.4, 33.4, Y], 90);
   b.spot("d10", [-2.8, 27, Y], 90);
   b.spot("d11", [-6.3, 41.6, Y], -30);
   b.area("dock", [-4, 31], 12, 24, { height: 4 });
@@ -305,6 +317,7 @@ function buildStvor9(b: LevelBuilder): void {
   b.spot("e15", [-1.5, -3.1, UP], 0);
   b.spot("e16", [-3.8, 15.6, Y], 0);
   b.spot("k17", [-9, 3.5, Y], 200);
+  b.spot("e12-arrive", [-13.6, 5.8, Y], 135);
   b.spot("k17-gallery", [-10, -3.1, UP], 0);
   b.spot("hq-door", [-6, -3.2, Y], 180);
   // Areas the mission listens for.
@@ -448,7 +461,15 @@ function buildHq(b: LevelBuilder): void {
     texture.needsUpdate = true;
   });
   b.interact("terminal", [-1, -13.7, Y], 1.3);
-  b.spot("terminal-eye", [-1, -13.5, Y + 1.55], 180);
+  // The same keyboard, worked three times over (the log, the drive, the attachment).
+  b.interact("terminal-copy", [-1, -13.7, Y], 1.3);
+  b.interact("terminal-order", [-1, -13.7, Y], 1.3);
+  b.spot("terminal-eye", [-1, -14.2, Y + 1.2], 180);
+  b.spot("terminal-stand", [-1, -13.2, Y], 180);
+  b.spot("mark-terminal", [-2.1, -13.3, Y], 150);
+  b.spot("hq-in", [-6, -6.2, Y], 180);
+  // Out of the archive's front window, at the yard and the gate.
+  b.spot("window", [-1, -4.5, Y + 1.6], 0);
   // The office: a desk, a map on the wall; the meeting room: a long table.
   desk(b, [-1, -14.4, UP], 180, 1.8);
   chair(b, [-1, -13.4, UP], 0);
@@ -546,6 +567,7 @@ function buildOverlook(b: LevelBuilder): void {
   b.spot("mark-overlook", [6.4, -56.6, top], 10);
   b.spot("overlook-view", [8.2, -55.6, top + 1.55], 0);
   b.area("overlook", [8, -57], 9, 8, { height: 4 });
+  b.interact("binoculars", [7.2, -56.8, top], 2.4);
   // The routes as Mark shows them: down to the gate, along to the drain, over the ridge.
   b.spot("route-a", [-27, 2, Y], 0);
   b.spot("route-b", [30, -14, 0.5], 0);
@@ -576,6 +598,73 @@ function buildNorthTip(b: LevelBuilder): void {
     b.cylinder([-80 + s * Math.sin(radians), -4 + s * Math.cos(radians), -2.5], 0.2, 3.5, "concrete", 0xa8a294, { segments: 8, solid: false });
   }
   b.spot("chase-boat", [-84.5, -1.2, 0], -60);
+  // The patrol boat lying at the pier, her crew ashore: seen from the ledge before she goes.
+  const template = b.own(new PatrolBoatTemplate());
+  const boat = template.build("VN-31");
+  boat.root.position.y = -0.05;
+  b.object(boat.root, [-84.5, -1.2, 0], -60);
+  b.switch("chase-boat", (value) => {
+    boat.root.visible = value !== "gone";
+  });
+  // The two jeeps in the shed, until the commander comes in them.
+  const cars = [jeep(b), jeep(b, 0xa8987a)];
+  const route: LP[] = [[-66, -11], [-62, -8.5], [-58, -7], [-50, -4], [-41, -1], [-33, 0.5], [-27, 1], [-22, 3.2]];
+  const parked: [LP, number][] = [
+    [[-15, 8, Y], 135],
+    [[-19, 13, Y], 135],
+  ];
+  const starts: [LP, number][] = [
+    [[-66, -11, ground + 0.15], 160],
+    [[-64, -7, ground + 0.15], 160],
+  ];
+  cars.forEach((car, index) => b.object(car.group, starts[index]![0], starts[index]![1]));
+  let driving = -1;
+  const at = new THREE.Vector3();
+  const place = (index: number, point: LP, turn: number) => {
+    b.local(point, at);
+    cars[index]!.group.position.copy(at);
+    cars[index]!.group.rotation.y = (-turn * Math.PI) / 180;
+  };
+  /** Where a car is `t` seconds into the drive: along the road, then into its bay. */
+  const along = (index: number, t: number): void => {
+    const path: LP[] = [...route, parked[index]![0]];
+    const lengths = path.slice(1).map((point, step) => Math.hypot(point[0] - path[step]![0], point[1] - path[step]![1]));
+    const total = lengths.reduce((sum, length) => sum + length, 0);
+    // Easing in from the shed and braking into the bay: about 11 m/s on the road.
+    const u = Math.min(1, Math.max(0, t / 8.5));
+    let distance = total * (u * u * (3 - 2 * u));
+    for (let step = 0; step < lengths.length; step += 1) {
+      const length = lengths[step]!;
+      if (distance > length && step < lengths.length - 1) {
+        distance -= length;
+        continue;
+      }
+      const a = path[step]!;
+      const c = path[step + 1]!;
+      const k = Math.min(1, distance / length);
+      const r = a[0] + (c[0] - a[0]) * k;
+      const f = a[1] + (c[1] - a[1]) * k;
+      const heading = (Math.atan2(c[0] - a[0], c[1] - a[1]) * 180) / Math.PI;
+      const y = u >= 1 ? Y : Math.max(b.groundAt(r, f) + 0.06, r > -27 ? Y : 0);
+      place(index, [r, f, y], u >= 1 ? parked[index]![1] : heading);
+      for (const wheel of cars[index]!.wheels) wheel.rotation.x += 0.35 * (1 - u);
+      return;
+    }
+  };
+  b.animate((delta) => {
+    if (driving < 0) return;
+    driving += delta;
+    along(0, driving);
+    along(1, driving - 1.6);
+  });
+  b.switch("jeeps", (value) => {
+    if (value === "arrive") {
+      driving = 0;
+    } else if (value === "parked") {
+      driving = -1;
+      parked.forEach(([point, turn], index) => place(index, point, turn));
+    }
+  });
   b.spot("w18", [-82, -2.6, 1.15], 120);
   b.spot("w19", [-81, -3.4, 1.15], 100);
 }

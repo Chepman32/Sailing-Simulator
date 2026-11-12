@@ -1,41 +1,43 @@
-import type { Cutscene, Mission } from "../StoryTypes";
+import type { Cutscene, DroneGroup, Mission } from "../StoryTypes";
 
 /**
- * Mission 1 (the prologue), "Штиль перед обрывом" — "The Calm Before the
- * Drop" (docs/campaign/campaign.md). A sunset run before the trade wind
- * with fuel and fresh water for the far atolls; the radio dies, the
- * instruments die, a drone bursts from behind a cape and shoots the rig
- * away; a run for the reefs off the old light; a second drone rams her onto
- * the rocks. Dawn on the outer shoal: up the rock above the tide line, along
- * the path to the abandoned lighthouse, fresh cases in the dust — and a
- * rifle bolt behind him. Holloway.
+ * The prologue, "Штиль перед обрывом" — "The Calm Before the Drop"
+ * (docs/campaign/campaign.md). A hot afternoon run across turquoise water
+ * at the wheel of a fast sport yacht that is not his: an unknown client
+ * hired the hydrographer yesterday to deliver a sealed container to the
+ * outer island of the Dead Tide, and paid too well. The radio dies, the
+ * screens go red with Aquilon's pass regime; two Vanguard patrol boats,
+ * crewed, burst from behind a cay and open fire without a word of warning.
+ * A run for the island's reef; her helm shot through, she strikes it at
+ * full speed. About 16:40. The prologue ends with the crash; M01 opens on
+ * the beach five minutes later.
  *
- * The opening is a cut scene; the route comes in from the south-east so the
- * trade wind (from about 120°) is fair for her all the way to the light.
+ * Nothing in it is a robot or a drone: Aquilon is the network that watches
+ * and lets pass; the boats that come for him have people in them.
  */
 
-/** The opening: sunset, the run in, the radio's forecast, the screens going dark and then red. */
+/** The two patrol boats, lying behind the low cay with their engines idling. */
+const HUNTERS: DroneGroup = { id: "hunters", at: "ambush-cay", count: 2, behaviour: "strike", spawn: [-6232, -5712], heading: 220, speed: 21, crewed: true };
+
+/** The opening: the yacht flat out over the shallows' colours, the man at her wheel, the radio, the screens going red. */
 const OPENING: Cutscene = {
   id: "opening",
   shots: [
     {
-      // High and wide over her quarter, the low sun behind: settling down toward her.
+      // High over her quarter, the sun high and to the side: settling down toward her as she runs.
       seconds: 8,
-      from: { eye: { anchor: "yacht", offset: [-52, 30, -72] }, look: { anchor: "yacht", offset: [0, 2, 26] }, fov: 40 },
-      to: { eye: { anchor: "yacht", offset: [-24, 9, -30] }, look: { anchor: "yacht", offset: [0, 4, 8] }, fov: 36 },
+      from: { eye: { anchor: "yacht", offset: [-48, 26, -70] }, look: { anchor: "yacht", offset: [0, 1.5, 30] }, fov: 42 },
+      to: { eye: { anchor: "yacht", offset: [-20, 7, -26] }, look: { anchor: "yacht", offset: [0, 2, 10] }, fov: 38 },
       ease: "inOut",
-      cue: [
-        { do: "title", style: "chapter", title: { ru: "Пролог", en: "Prologue" }, subtitle: { ru: "Штиль перед обрывом", en: "The Calm Before the Drop" } },
-        { do: "sound", sound: "radio-noise" },
-      ],
+      cue: [{ do: "title", style: "chapter", title: { ru: "Пролог", en: "Prologue" }, subtitle: { ru: "Штиль перед обрывом", en: "The Calm Before the Drop" } }],
     },
     {
-      // Low along her lee hull: the bow wave, the cans lashed on deck.
+      // Low along her side: the bow wave, the black stripe flicking past.
       seconds: 7,
-      from: { eye: { anchor: "yacht", offset: [6.5, 1.1, 11] }, look: { anchor: "yacht", offset: [0, 1.6, -3] }, fov: 50 },
-      to: { eye: { anchor: "yacht", offset: [5.2, 0.9, 3] }, look: { anchor: "yacht", offset: [0, 2.4, -6] }, fov: 46 },
+      from: { eye: { anchor: "yacht", offset: [5.5, 0.6, 9] }, look: { anchor: "yacht", offset: [0, 0.9, -4] }, fov: 52 },
+      to: { eye: { anchor: "yacht", offset: [4.6, 0.5, 1] }, look: { anchor: "yacht", offset: [0, 1.2, -6] }, fov: 48 },
       ease: "linear",
-      shake: 0.25,
+      shake: 0.3,
       cue: [
         {
           do: "say",
@@ -44,21 +46,23 @@ const OPENING: Cutscene = {
               who: "hero",
               via: "thought",
               text: {
-                ru: "Сорок канистр солярки и сорок — пресной воды. Дальние атоллы ждут их неделю. Попутный ветер, мягкий закат, к полуночи буду на месте.",
-                en: "Forty cans of diesel and forty of fresh water. The far atolls have waited a week for them. A fair wind, a soft sunset, there by midnight.",
+                ru: "Вчера — звонок от заказчика, которого я в глаза не видел. Доставить герметичный контейнер на внешний остров «Мёртвого прилива». Яхта их, деньги вперёд.",
+                en: "Yesterday a call from a client I've never laid eyes on. Deliver a sealed container to the outer island of the Dead Tide. Their yacht, money up front.",
               },
             },
+            { who: "hero", via: "thought", text: { ru: "Слишком хорошие деньги за один рейс.", en: "Too much money for one run." } },
           ],
         },
       ],
     },
     {
-      // Over his shoulder at the wheel: the shortwave crackling a forecast.
-      seconds: 8,
-      from: { eye: { anchor: "helm", offset: [0.42, 0.12, -0.55] }, look: { anchor: "helm", offset: [-0.05, -0.32, 0.75] }, fov: 46 },
-      to: { eye: { anchor: "helm", offset: [0.3, 0.05, -0.35] }, look: { anchor: "helm", offset: [-0.05, -0.36, 0.75] }, fov: 40 },
+      // Over his shoulder at the wheel: the radio murmuring the forecast.
+      seconds: 7,
+      from: { eye: { anchor: "helm", offset: [0.5, 0.25, -0.9] }, look: { anchor: "helm", offset: [0, -0.15, 6] }, fov: 50 },
+      to: { eye: { anchor: "helm", offset: [0.36, 0.15, -0.6] }, look: { anchor: "helm", offset: [0, -0.2, 6] }, fov: 44 },
       ease: "inOut",
       cue: [
+        { do: "sound", sound: "radio-noise" },
         {
           do: "say",
           lines: [
@@ -66,8 +70,8 @@ const OPENING: Cutscene = {
               who: "unknown",
               via: "radio",
               text: {
-                ru: "…ветер юго-восточный, четыре — пять метров в секунду… волнение два балла… к ночи без изменений… повторяем прогноз для района…",
-                en: "…wind south-easterly, four to five metres a second… sea state two… no change by night… repeating the forecast for the area…",
+                ru: "…ветер юго-восточный, слабый… видимость отличная… к вечеру до тридцати двух градусов… повторяем прогноз для района…",
+                en: "…wind south-easterly, light… visibility excellent… up to thirty-two degrees by evening… repeating the forecast for the area…",
               },
             },
           ],
@@ -75,18 +79,18 @@ const OPENING: Cutscene = {
       ],
     },
     {
-      // The radio cuts out; every screen goes dark, then red.
+      // The radio cuts out; the screens go dark, then red.
       seconds: 7,
-      from: { eye: { anchor: "helm", offset: [0.25, 0.02, -0.3] }, look: { anchor: "helm", offset: [-0.05, -0.38, 0.75] }, fov: 38 },
-      to: { eye: { anchor: "helm", offset: [0.18, -0.04, -0.12] }, look: { anchor: "helm", offset: [-0.05, -0.4, 0.75] }, fov: 34 },
+      from: { eye: { anchor: "helm", offset: [0.3, 0.05, -0.4] }, look: { anchor: "helm", offset: [0, -0.4, 1.2] }, fov: 40 },
+      to: { eye: { anchor: "helm", offset: [0.2, -0.02, -0.2] }, look: { anchor: "helm", offset: [0, -0.45, 1.2] }, fov: 34 },
       ease: "out",
       cue: [
         {
           do: "instruments",
           on: false,
           alert: [
-            { ru: "ВНИМАНИЕ: СЕКТОР ЗАБЛОКИРОВАН", en: "WARNING: SECTOR LOCKED" },
-            { ru: "АВТОНОМНЫЙ КАРАНТИН ПРОТОКОЛА «АКВИЛОН»", en: "AUTONOMOUS QUARANTINE · AQUILON PROTOCOL" },
+            { ru: "ВНИМАНИЕ: СЕКТОР ЗАКРЫТ", en: "WARNING: SECTOR CLOSED" },
+            { ru: "ЦИФРОВОЙ ПРОПУСКНОЙ РЕЖИМ «АКВИЛОН»", en: "AQUILON DIGITAL PASS REGIME" },
           ],
         },
         { do: "sound", sound: "click" },
@@ -96,8 +100,12 @@ const OPENING: Cutscene = {
             {
               who: "aquilon",
               via: "broadcast",
-              text: { ru: "Внимание: сектор заблокирован. Автономный карантин Протокола «Аквилон».", en: "Warning: sector locked. Autonomous quarantine, Aquilon Protocol." },
+              text: {
+                ru: "Внимание: сектор закрыт. Цифровой пропускной режим «Аквилон». Судам без допуска лечь в дрейф и ожидать досмотра.",
+                en: "Warning: sector closed. Aquilon digital pass regime. Vessels without clearance, heave to and await inspection.",
+              },
             },
+            { who: "hero", via: "thought", text: { ru: "Досмотр? Мне сказали — коридор открыт.", en: "Inspection? They told me the corridor was open." } },
           ],
         },
       ],
@@ -105,103 +113,73 @@ const OPENING: Cutscene = {
   ],
 };
 
-/** The drone from behind the cape, its turret opening up, the rig shot away. */
+/** The patrol boats out from behind the cay, the gunner opening up without a word. */
 const CONTACT: Cutscene = {
   id: "contact",
   shots: [
     {
-      // From beside the cape: the drone bursts out round it at full speed.
-      seconds: 5,
-      from: { eye: { anchor: "drone:ambush", offset: [16, 3.5, 34] }, look: { anchor: "drone:ambush", offset: [0, 1.2, 0] }, fov: 40 },
-      to: { eye: { anchor: "drone:ambush", offset: [11, 2.6, 15] }, look: { anchor: "drone:ambush", offset: [0, 1.4, 2] }, fov: 46 },
+      // From beside the cay: the first boat bursting out round it, people aboard.
+      seconds: 4.5,
+      from: { eye: { anchor: "drone:hunters", offset: [14, 3, 30] }, look: { anchor: "drone:hunters", offset: [0, 1.4, 0] }, fov: 40 },
+      to: { eye: { anchor: "drone:hunters", offset: [9, 2.4, 13] }, look: { anchor: "drone:hunters", offset: [0, 1.6, 1] }, fov: 46 },
       ease: "linear",
       shake: 0.4,
-      cue: [
-        {
-          do: "say",
-          lines: [{ who: "hero", via: "thought", text: { ru: "Катер? Без огней, без людей…", en: "A launch? No lights, nobody aboard…" } }],
-        },
-      ],
+      cue: [{ do: "say", lines: [{ who: "hero", via: "thought", text: { ru: "Катера. Вангард. Без огней, без вызова…", en: "Patrol boats. Vanguard. No lights, no hail…" } }] }],
     },
     {
-      // Over its weapon station at her: the turret turns and opens up without a word.
+      // Over the gunner's shoulder at her: he swings the gun round and fires.
       seconds: 4,
-      from: { eye: { anchor: "drone:ambush", offset: [2.2, 2.6, -6] }, look: { anchor: "yacht", offset: [0, 5, 0] }, fov: 16 },
-      to: { eye: { anchor: "drone:ambush", offset: [1.9, 2.4, -4.5] }, look: { anchor: "yacht", offset: [0, 5, 0] }, fov: 11 },
+      from: { eye: { anchor: "drone:hunters", offset: [0.9, 2.5, 1.2] }, look: { anchor: "yacht", offset: [0, 2, 0] }, fov: 20 },
+      to: { eye: { anchor: "drone:hunters", offset: [0.8, 2.45, 1.6] }, look: { anchor: "yacht", offset: [0, 2, 0] }, fov: 14 },
       ease: "linear",
       shake: 0.5,
+      cue: [{ do: "say", lines: [{ who: "hero", via: "voice", text: { ru: "Эй! Я гражданский!..", en: "Hey! I'm a civilian!.." } }] }],
     },
     {
-      // On her: a heavy round splits the mast, the sail goes to rags.
-      seconds: 4.5,
-      from: { eye: { anchor: "yacht", offset: [14, 4, 10] }, look: { anchor: "yacht", offset: [0, 7, 0] }, fov: 46 },
-      to: { eye: { anchor: "yacht", offset: [11, 3, 7] }, look: { anchor: "yacht", offset: [0, 4, 0] }, fov: 52 },
+      // On her: rounds splintering her side, glass going.
+      seconds: 4,
+      from: { eye: { anchor: "yacht", offset: [12, 3.5, 9] }, look: { anchor: "yacht", offset: [0, 1.5, 0] }, fov: 48 },
+      to: { eye: { anchor: "yacht", offset: [9, 2.6, 6] }, look: { anchor: "yacht", offset: [0, 1.4, 0] }, fov: 54 },
       ease: "out",
       shake: 0.8,
-      cue: [
-        { do: "rig", broken: true },
-        { do: "sound", sound: "mast" },
-        { do: "blast", strength: 0.55 },
-        { do: "damage", hull: 0.12 },
-      ],
+      cue: [{ do: "blast", strength: 0.4 }, { do: "damage", hull: 0.12 }],
     },
   ],
 };
 
-/** The second drone drives into her side. The last shot holds until it strikes. */
-const RAM: Cutscene = {
-  id: "ram",
+/** Her helm shot through: the wheel dead in his hands, the reef coming up white. The last shot holds until she strikes. */
+const CRASH: Cutscene = {
+  id: "crash",
   hold: true,
   shots: [
     {
-      // Wide on her beam: something low and fast coming in out of the dusk.
-      seconds: 3,
-      from: { eye: { anchor: "yacht", offset: [-46, 7, 14] }, look: { anchor: "drone:rammer", offset: [0, 1, 0] }, fov: 44 },
-      to: { eye: { anchor: "yacht", offset: [-36, 5, 8] }, look: { anchor: "drone:rammer", offset: [0, 1, 0] }, fov: 40 },
+      // Through his eyes over the bow: the reef's white water dead ahead.
+      seconds: 2.5,
+      from: { eye: { anchor: "helm", offset: [0, 0.05, 0] }, look: { anchor: "helm", offset: [0.2, -0.6, 12] }, fov: 58 },
+      to: { eye: { anchor: "helm", offset: [0, 0.02, 0.2] }, look: { anchor: "helm", offset: [-0.4, -0.7, 12] }, fov: 62 },
       ease: "linear",
-      shake: 0.3,
+      shake: 0.7,
     },
     {
-      // Low on her quarter, the drone filling the frame as it strikes.
+      // Low ahead of her, looking back as she comes on at the rocks.
       seconds: 6,
-      from: { eye: { anchor: "yacht", offset: [-11, 2.4, -9] }, look: { anchor: "yacht", offset: [-1, 1.2, 1] }, fov: 52 },
-      to: { eye: { anchor: "yacht", offset: [-9, 2, -7] }, look: { anchor: "yacht", offset: [-1, 1.2, 1] }, fov: 56 },
+      from: { eye: { anchor: "yacht", offset: [-3, 0.8, 26] }, look: { anchor: "yacht", offset: [0, 1, 0] }, fov: 46 },
+      to: { eye: { anchor: "yacht", offset: [-2.5, 0.7, 14] }, look: { anchor: "yacht", offset: [0, 1, 0] }, fov: 52 },
       ease: "linear",
       shake: 0.6,
     },
   ],
 };
 
-/** The bolt behind him, and the man who worked it. */
-const AMBUSH: Cutscene = {
-  id: "ambush",
-  hold: true,
-  shots: [
-    {
-      // Over his own shoulder, looking at the cases in the dust; the click.
-      seconds: 1.6,
-      from: { eye: { anchor: "skipper", offset: [0.45, 1.75, -0.7] }, look: { anchor: "skipper", offset: [0, 0.3, 3] }, fov: 48 },
-      ease: "linear",
-    },
-    {
-      // Round to the man on the slope, the rifle on him.
-      seconds: 9,
-      from: { eye: { anchor: "npc:holloway", offset: [0.9, 1.7, 3.4] }, look: { anchor: "npc:holloway", offset: [0, 1.45, 0] }, fov: 34 },
-      to: { eye: { anchor: "npc:holloway", offset: [0.7, 1.65, 2.6] }, look: { anchor: "npc:holloway", offset: [0, 1.5, 0] }, fov: 30 },
-      ease: "inOut",
-    },
-  ],
-};
-
-export const PROLOGUE_CUTSCENES: readonly Cutscene[] = [OPENING, CONTACT, RAM, AMBUSH];
+export const PROLOGUE_CUTSCENES: readonly Cutscene[] = [OPENING, CONTACT, CRASH];
 
 export const PROLOGUE: Mission = {
   id: "prologue",
   chapter: "prologue",
   title: { ru: "Штиль перед обрывом", en: "The Calm Before the Drop" },
   brief: {
-    ru: "Закат на внешней границе архипелага. Груз — топливо и пресная вода для дальних атоллов. Обычный рейс — до первого выхода в эфир «Аквилона».",
-    en: "Sunset on the outer edge of the archipelago. Fuel and fresh water for the far atolls. An ordinary run — until Aquilon comes on the air.",
+    ru: "Жаркий день на внешней кромке архипелага. Чужая спортивная яхта, герметичный контейнер для внешнего острова и слишком щедрый заказчик. Обычный рейс — до первого выхода в эфир «Аквилона».",
+    en: "A hot day on the outer edge of the archipelago. Somebody else's sport yacht, a sealed container for the outer island and a too-generous client. An ordinary run — until Aquilon comes on the air.",
   },
   sector: "dead-tide",
   requires: [],
@@ -211,226 +189,70 @@ export const PROLOGUE: Mission = {
       id: "opening",
       objective: { kind: "watch" },
       onStart: [
-        { do: "time", hour: 18.15 },
+        { do: "craft", craft: "sport" },
+        { do: "time", hour: 16.1, hold: true },
         { do: "weather", kind: "clear" },
-        { do: "engine", running: false },
-        { do: "steer", rudder: 0, throttle: 0 },
+        { do: "engine", running: true, throttle: 0.85 },
+        { do: "steer", rudder: 0, throttle: 0.85 },
         { do: "cutscene", scene: "opening" },
       ],
     },
     {
+      id: "run",
+      goal: { ru: "Доставьте контейнер к внешнему острову", en: "Deliver the container to the outer island" },
+      hint: {
+        ru: "Газ — W / S, руль — A / D или ← / → (на телефоне — рычаг и штурвал внизу)",
+        en: "Throttle W / S, helm A / D or ← / → (on a phone, the lever and the wheel below)",
+      },
+      objective: { kind: "wait", seconds: 24 },
+      marker: "delivery",
+    },
+    {
       id: "contact",
       objective: { kind: "watch" },
-      presence: [
-        {
-          kind: "drones",
-          // Lying behind the cape, out round it at full speed the moment the screens die.
-          group: { id: "ambush", at: "outer-cay", count: 1, behaviour: "strike", spawn: [-4850, -6272], heading: 191, speed: 19 },
-        },
-      ],
+      presence: [{ kind: "drones", group: HUNTERS }],
       onStart: [{ do: "cutscene", scene: "contact" }],
     },
     {
       id: "escape",
-      goal: { ru: "Уходите на рифы у маяка: тяжёлый катер туда не сунется", en: "Run for the reefs off the light: the heavy launch won't follow in" },
-      hint: {
-        ru: "Мотор заведён, газ до упора. Рулите к отметке: A / D или ← / → (на телефоне — штурвал внизу)",
-        en: "The engine's going, full ahead. Steer for the marker: A / D or ← / → (on a phone, the wheel below)",
-      },
-      objective: { kind: "hull", hull: 0.3, after: 45, at: "reef-refuge" },
-      marker: "reef-refuge",
-      presence: [{ kind: "drones", group: { id: "ambush", at: "outer-cay", count: 1, behaviour: "strike", spawn: [-4850, -6272], heading: 191, speed: 19 } }],
+      goal: { ru: "Уходите к острову, за риф: катерам там тесно", en: "Run for the island, inside the reef: it's tight for the patrol boats there" },
+      hint: { ru: "Газ до упора, петляйте — так в вас труднее попасть", en: "Full throttle, and weave — it makes you harder to hit" },
+      objective: { kind: "hull", hull: 0.32, after: 55, at: "crash" },
+      marker: "crash",
+      presence: [{ kind: "drones", group: HUNTERS }],
       onStart: [
         { do: "engine", running: true, throttle: 1 },
         {
           do: "say",
           lines: [
-            { who: "hero", via: "voice", text: { ru: "Мачта — к чёрту. Мотор! Давай, родная…", en: "The mast's gone. Engine! Come on, old girl…" } },
-            {
-              who: "hero",
-              via: "thought",
-              text: { ru: "Рифы у маяка. Осадка у него глубже моей — на мелководье не полезет.", en: "The reefs off the light. He draws more than I do — he won't come into the shallows." },
-            },
+            { who: "hero", via: "voice", text: { ru: "Ну же… Давай, давай!", en: "Come on… come on!" } },
+            { who: "hero", via: "thought", text: { ru: "Внешний остров. За рифом им не развернуться.", en: "The outer island. Inside the reef they can't turn." } },
           ],
         },
       ],
     },
     {
-      id: "rammed",
-      objective: { kind: "event", event: "rammed:rammer", after: 12 },
-      presence: [
-        { kind: "drones", group: { id: "ambush", at: "outer-cay", count: 1, behaviour: "strike", spawn: [-4850, -6272], heading: 191, speed: 19 } },
-        { kind: "drones", group: { id: "rammer", at: "reef-refuge", count: 1, behaviour: "ram", speed: 24 } },
-      ],
+      id: "crash",
+      objective: { kind: "wait", seconds: 7 },
+      presence: [{ kind: "drones", group: HUNTERS }],
       onStart: [
         { do: "freeze", on: true },
-        { do: "cutscene", scene: "ram" },
-        { do: "say", lines: [{ who: "hero", via: "voice", text: { ru: "Второй! С борта!..", en: "Another! On the beam!.." } }] },
+        { do: "steer", rudder: 0.55, throttle: 1 },
+        { do: "cutscene", scene: "crash" },
+        { do: "say", lines: [{ who: "hero", via: "voice", text: { ru: "Руль не слушается!..", en: "The helm's gone!.." } }] },
       ],
       onComplete: [
         { do: "sound", sound: "crash" },
-        { do: "blast", strength: 1.2 },
+        { do: "blast", strength: 1.4 },
         { do: "damage", hull: 0.3, engine: true },
-        { do: "fade", seconds: 5 },
+        { do: "fade", seconds: 6 },
         { do: "sound", sound: "flooding" },
       ],
     },
     {
-      id: "sinking",
-      objective: { kind: "wait", seconds: 4.5 },
+      id: "dark",
+      objective: { kind: "wait", seconds: 4 },
       onStart: [{ do: "cut" }],
-      onComplete: [
-        // Holed and flooded, but the reef held her up: she lies off the shoal.
-        { do: "place", yacht: "wash-up", skipper: "ashore" },
-        { do: "repair", hull: 0.25 },
-        // Her electronics drowned with her: the alert is gone with them.
-        { do: "instruments", on: true },
-        { do: "freeze", on: false },
-        { do: "time", hour: 6.2 },
-        { do: "weather", kind: "overcast" },
-        { do: "wake" },
-        { do: "sound", sound: "surf" },
-      ],
-    },
-    {
-      id: "ashore",
-      goal: { ru: "Поднимитесь на скалу выше линии прилива", en: "Climb the rock above the tide line" },
-      hint: { ru: "Волна вот-вот утащит остатки груза", en: "The surf is about to drag what's left of the cargo away" },
-      objective: { kind: "reach", at: "tide-rock", by: "foot" },
-      marker: "tide-rock",
-      checkpoint: { yacht: "wash-up", skipper: "ashore" },
-      presence: [{ kind: "props", set: "flotsam", at: "wash-up" }],
-      onStart: [
-        { do: "title", style: "place", title: { ru: "Мёртвый прилив", en: "Dead Tide" }, subtitle: { ru: "Внешняя отмель · рассвет", en: "The outer shoal · dawn" } },
-        {
-          do: "say",
-          lines: [
-            { who: "hero", via: "thought", text: { ru: "Живой… Песок во рту, в ушах звон.", en: "Alive… Sand in my mouth, a ringing in my ears." } },
-            {
-              who: "hero",
-              via: "thought",
-              text: {
-                ru: "Нож, компас, ранец — всё, что было на ремне. Обломки мачты, канистры… Прилив поднимается. Наверх, пока волна не утащила остальное.",
-                en: "Knife, compass, pack — whatever was on my belt. Bits of the mast, the cans… The tide's coming in. Up, before the surf takes the rest.",
-              },
-            },
-          ],
-        },
-      ],
-    },
-    {
-      id: "view",
-      objective: { kind: "listen" },
-      onStart: [
-        {
-          do: "say",
-          lines: [
-            {
-              who: "hero",
-              via: "thought",
-              text: {
-                ru: "Туман. Лабиринт чужих островов… А там, на горизонте, — дым. Горят буровые. Это не учения.",
-                en: "Fog. A maze of strange islands… And out there, on the horizon — smoke. The rigs are burning. This is no exercise.",
-              },
-            },
-            { who: "hero", via: "thought", text: { ru: "Маяк. Старый, но там может быть рация.", en: "A lighthouse. Old, but there might be a radio." } },
-          ],
-        },
-      ],
-    },
-    {
-      id: "path",
-      goal: { ru: "Идите по тропе к старому маяку", en: "Follow the path to the old lighthouse" },
-      objective: { kind: "reach", at: "light-tracks", by: "foot" },
-      marker: "old-light",
-      presence: [{ kind: "props", set: "tracks", at: "light-tracks" }],
-    },
-    {
-      id: "tracks",
-      objective: { kind: "wait", seconds: 3.6 },
-      presence: [{ kind: "props", set: "tracks", at: "light-tracks" }],
-      onStart: [
-        {
-          do: "say",
-          lines: [{ who: "hero", via: "thought", text: { ru: "Следы сапог. Гильзы — свежие, ещё пахнут порохом.", en: "Boot prints. Spent cases — fresh, they still smell of powder." } }],
-        },
-      ],
-    },
-    {
-      id: "ambush",
-      objective: { kind: "listen" },
-      presence: [
-        { kind: "props", set: "tracks", at: "light-tracks" },
-        { kind: "npc", character: "holloway", at: "light-ambush", face: "light-tracks", kit: "armed" },
-      ],
-      onStart: [
-        { do: "freeze", on: true },
-        { do: "sound", sound: "click" },
-        { do: "cutscene", scene: "ambush" },
-        {
-          do: "say",
-          lines: [
-            {
-              who: "holloway",
-              via: "voice",
-              text: {
-                ru: "Руки на затылок, турист. Если ты из корпоративных «чистильщиков», то у тебя отвратительно тихий мотор, но очень громкие шаги.",
-                en: "Hands on your head, tourist. If you're one of the corporate cleaners, you've got a damn quiet engine and mighty loud feet.",
-              },
-            },
-          ],
-        },
-      ],
-      onComplete: [{ do: "cut" }, { do: "freeze", on: false }, { do: "look", at: "npc:holloway" }],
-    },
-    {
-      id: "talk",
-      goal: { ru: "Поговорите с Холлоуэем", en: "Talk to Holloway" },
-      objective: { kind: "talk", character: "holloway" },
-      marker: "light-ambush",
-      presence: [
-        { kind: "props", set: "tracks", at: "light-tracks" },
-        { kind: "npc", character: "holloway", at: "light-ambush", face: "light-tracks", kit: "armed" },
-      ],
-      onComplete: [
-        {
-          do: "say",
-          lines: [
-            {
-              who: "holloway",
-              via: "voice",
-              text: {
-                ru: "Ладно, забудь. Твою лодку только что пустили на дно «Аквилона». Здесь каждый выживает как может.",
-                en: "All right, forget it. Aquilon just put your boat on the bottom. Out here everybody survives however they can.",
-              },
-            },
-            {
-              who: "holloway",
-              via: "voice",
-              text: {
-                ru: "Если хочешь не сдохнуть от пуль автоматонов или голода через три дня — топай за мной в схрон к старику Сато. Нам как раз нужны отчаянные головы, чтобы вернуть эту проклятую акваторию.",
-                en: "If you don't want to die of automaton lead or hunger in three days, follow me to old Sato's hideout. We could use a few desperate heads to take these damned waters back.",
-              },
-            },
-            {
-              who: "holloway",
-              via: "voice",
-              text: { ru: "Держи. Пистолет, пара магазинов, и карта секторов. Нож у тебя свой, вижу.", en: "Here. A pistol, a couple of magazines, and a chart of the sectors. You've your own knife, I see." },
-            },
-          ],
-        },
-        { do: "give", what: "pistol" },
-        { do: "give", what: "knife" },
-        { do: "give", what: "map" },
-      ],
-    },
-  ],
-  onComplete: [
-    {
-      do: "title",
-      style: "end",
-      title: { ru: "Пролог завершён", en: "Prologue complete" },
-      subtitle: { ru: "Вы вступили в сопротивление", en: "You have joined the resistance" },
     },
   ],
 };
