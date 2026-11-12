@@ -121,13 +121,32 @@ function buildKosaya(b: LevelBuilder): void {
   }
   // The container: a grey hard case, its lid thrown back, nothing in it but a board and a blue light.
   const caseAt = ground(b, 4, 12, 0.02);
-  b.box({ at: caseAt, size: [0.9, 0.42, 0.6], turn: -18, mat: "paint", color: 0x4c5358 });
-  b.box({ at: [caseAt[0] + 0.05, caseAt[1] - 0.42, caseAt[2]! + 0.4], size: [0.9, 0.05, 0.6], turn: -18, mat: "paint", color: 0x4c5358, solid: false });
-  b.box({ at: [caseAt[0], caseAt[1], caseAt[2]! + 0.12], size: [0.32, 0.03, 0.22], turn: -18, mat: "paint", color: 0x1d5a34, solid: false });
+  b.box({ at: caseAt, size: [0.86, 0.36, 0.58], turn: -18, mat: "paint", color: 0x8d969d });
+  const container = new THREE.Group();
+  const caseMaterial = b.own(new THREE.MeshStandardMaterial({ color: 0x8d969d, roughness: 0.55, metalness: 0.1 }));
+  const latchMaterial = b.own(new THREE.MeshStandardMaterial({ color: 0xe0b232, roughness: 0.5 }));
+  const foam = b.own(new THREE.MeshStandardMaterial({ color: 0x25282b, roughness: 0.95 }));
+  // The lid, hinged at the back and thrown open past upright.
+  const lid = new THREE.Mesh(b.own(new THREE.BoxGeometry(0.86, 0.07, 0.58)), caseMaterial);
+  lid.geometry.translate(0, 0, -0.29);
+  lid.position.set(0, 0.37, -0.29);
+  lid.rotation.x = 1.95;
+  lid.castShadow = true;
+  const lining = new THREE.Mesh(b.own(new THREE.BoxGeometry(0.78, 0.02, 0.5)), foam);
+  lining.geometry.translate(0, -0.053, -0.29);
+  lid.add(lining);
+  container.add(lid);
+  for (const x of [-0.26, 0.26]) {
+    const latch = new THREE.Mesh(b.own(new THREE.BoxGeometry(0.08, 0.1, 0.03)), latchMaterial);
+    latch.position.set(x, 0.27, 0.3);
+    container.add(latch);
+  }
+  b.object(container, caseAt, -18);
+  b.box({ at: [caseAt[0], caseAt[1], caseAt[2]! + 0.365], size: [0.3, 0.025, 0.2], turn: -18, mat: "paint", color: 0x1d5a34, solid: false });
   const led = new THREE.Mesh(b.own(new THREE.SphereGeometry(0.03, 8, 6)), b.own(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.3, 0.7, 3.2), toneMapped: false })));
-  b.object(led, [caseAt[0] + 0.12, caseAt[1], caseAt[2]! + 0.17]);
+  b.object(led, [caseAt[0] + 0.08, caseAt[1], caseAt[2]! + 0.4]);
   const glow = new THREE.Mesh(b.own(new THREE.SphereGeometry(0.11, 10, 8)), b.own(new THREE.MeshBasicMaterial({ color: 0x4c8cff, transparent: true, opacity: 0.35, depthWrite: false, toneMapped: false })));
-  b.object(glow, [caseAt[0] + 0.12, caseAt[1], caseAt[2]! + 0.17]);
+  b.object(glow, [caseAt[0] + 0.08, caseAt[1], caseAt[2]! + 0.4]);
   b.animate((_delta, elapsed) => {
     const on = elapsed % 1.6 < 0.18;
     led.visible = on;
@@ -162,6 +181,17 @@ function buildKosaya(b: LevelBuilder): void {
   b.spot("mark-hidden", ground(b, 34, -48), 200);
   b.spot("mark-beach", ground(b, 5, -5), 190);
   b.area("beach", [0, 6], 60, 26, { height: 6 });
+  // The meeting: where they stand, and the camera's places for it.
+  const head = (r: number, f: number, up: number): LP => ground(b, r, f, up);
+  b.spot("meet-hero", ground(b, 3, 9), 157);
+  b.spot("meet-mark", ground(b, 4.5, 5.5), -23);
+  b.spot("meet-hero-head", head(3, 9, 1.62), 157);
+  b.spot("meet-mark-head", head(4.5, 5.5, 1.62), -23);
+  b.spot("meet-mid", head(3.75, 7.25, 1.3), 0);
+  b.spot("cam-profile", head(8.6, 9.6, 1.45), 0);
+  b.spot("cam-profile-near", head(7.2, 8.9, 1.5), 0);
+  b.spot("cam-ots-mark", head(2.99, 10.41, 1.86), 0);
+  b.spot("cam-ots-hero", head(5.52, 4.52, 1.86), 0);
 
   // --- The wreck on the reef offshore -----------------------------------------------------
   const wreck = sportYacht(true);

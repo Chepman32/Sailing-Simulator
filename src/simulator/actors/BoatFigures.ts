@@ -97,6 +97,7 @@ export class BoatParty {
 
   constructor(private readonly source: FigureSource) {
     this.group.name = "BoatParty";
+    this.group.userData.anyCraft = true;
   }
 
   /** Who is aboard now (an empty list: nobody to draw, as on the catamaran, whose skipper is her own). */

@@ -188,7 +188,7 @@ export class PatrolBoatTemplate {
   private readonly shield = new THREE.BoxGeometry(0.62, 0.36, 0.03);
   private readonly boxMag = new THREE.BoxGeometry(0.16, 0.16, 0.22);
   private readonly cowling = new THREE.BoxGeometry(0.46, 0.62, 0.62);
-  private readonly leg = new THREE.BoxGeometry(0.14, 0.75, 0.24);
+  private readonly leg = new THREE.BoxGeometry(0.11, 0.55, 0.2);
   private readonly lamp = new THREE.SphereGeometry(0.06, 8, 6);
   private readonly decal = new THREE.PlaneGeometry(2.4, 0.45);
   private readonly hullMaterial = new THREE.MeshStandardMaterial({ color: 0x8d969c, roughness: 0.5, metalness: 0.18, side: THREE.DoubleSide });
@@ -267,7 +267,7 @@ export class PatrolBoatTemplate {
     // Twin outboards on the transom.
     for (const x of [0.48, -0.48]) {
       add(this.cowling, this.engineMaterial, x, 1.18, -HALF - 0.32);
-      add(this.leg, this.engineMaterial, x, 0.5, -HALF - 0.28);
+      add(this.leg, this.engineMaterial, x, 0.62, -HALF - 0.28);
     }
     // Her number and the company's name on both bows.
     let decal = this.decals.get(number);

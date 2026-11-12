@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
 /**
  * The boats the skipper drives besides the catamaran, built in code: the
@@ -97,13 +98,15 @@ function loftHull(
     if (side > 0) quad(topsides, stern[0]!, stern[3]!, stern[2]!, stern[1]!);
     else quad(topsides, stern[0]!, stern[1]!, stern[2]!, stern[3]!);
   }
-  const build = (positions: number[]) => {
-    const geometry = new THREE.BufferGeometry();
+  const build = (positions: number[], smooth: boolean) => {
+    let geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    // The skin smooth along its run (welded), the deck's and the cockpit's faces kept crisp.
+    if (smooth) geometry = mergeVertices(geometry, 1e-4);
     geometry.computeVertexNormals();
     return geometry;
   };
-  return { topsides: build(topsides), bottom: build(bottom), deck: build(deck), liner: build(liner) };
+  return { topsides: build(topsides, true), bottom: build(bottom, true), deck: build(deck, false), liner: build(liner, false) };
 }
 
 /** A band along a hull's side between two heights, from `s0` to `s1` (a stripe), just proud of the skin. */
@@ -257,10 +260,10 @@ export function sportYacht(wrecked = false): CraftModel {
   const glassHouse = kit.mesh(house, shell, wrecked ? char : glass, 0, 0.36, 0.25);
   glassHouse.rotation.x = -0.08;
   const roof = kit.geometry(new THREE.BoxGeometry(2.62, 0.09, 3.6));
-  const top = kit.mesh(house, roof, gelcoat, 0, 0.82, -0.95);
+  const top = kit.mesh(house, roof, gelcoat, 0, 1.08, -0.95);
   if (wrecked) top.rotation.set(0.1, 0.05, 0.22);
   for (const x of [1.18, -1.18]) {
-    const post = kit.mesh(house, kit.geometry(new THREE.BoxGeometry(0.07, 0.86, 0.07)), steel, x, 0.42, -2.55);
+    const post = kit.mesh(house, kit.geometry(new THREE.BoxGeometry(0.07, 1.12, 0.07)), steel, x, 0.55, -2.55);
     post.rotation.x = 0.08;
   }
   // The helm under it: console, wheel, a seat.
@@ -284,7 +287,7 @@ export function sportYacht(wrecked = false): CraftModel {
     kit.tube(group, points, 0.016, steel);
   }
   // Stern drives below the platform.
-  for (const x of [0.62, -0.62]) kit.mesh(group, kit.geometry(new THREE.BoxGeometry(0.22, 0.55, 0.42)), dark, x, -0.1, -half - 0.18);
+  for (const x of [0.62, -0.62]) kit.mesh(group, kit.geometry(new THREE.BoxGeometry(0.16, 0.42, 0.3)), dark, x, -0.32, -half - 0.12);
   if (wrecked) {
     // Torn open aft: the transom stove in, a black scorch over the quarter.
     kit.mesh(group, kit.geometry(new THREE.BoxGeometry(2.8, 1.1, 1.6)), char, 0, 0.75, -half + 1.0);
@@ -292,11 +295,11 @@ export function sportYacht(wrecked = false): CraftModel {
   group.traverse((object) => {
     if (object instanceof THREE.Mesh) object.castShadow = true;
   });
-  const eye = new THREE.Vector3(helmX, SPORT_SOLE + 1.62, zAt(0.47) - 0.1);
+  const eye = new THREE.Vector3(helmX, SPORT_SOLE + 1.28, zAt(0.47) - 0.35);
   return {
     group,
     eye,
-    seats: [{ x: helmX, y: SPORT_SOLE, z: zAt(0.47) - 0.42, yaw: 0, sit: false, seat: 0.5 }],
+    seats: [{ x: helmX, y: SPORT_SOLE, z: zAt(0.47) - 0.5, yaw: 0, sit: true, seat: 0.5 }],
     update: () => undefined,
     dispose: () => kit.dispose(),
   };

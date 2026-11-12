@@ -1519,6 +1519,7 @@ export function SailingSimulator() {
         <DiverHud
           diver={snapshot.diver}
           storyPrompt={snapshot.diver.prompt === "story" ? storyPromptText(snapshot.diver.promptDetail, language) : null}
+          helmLocked={snapshot.story?.boatLocked ?? false}
           messages={diverWords}
           shop={shopWords}
           wallet={{ gold: snapshot.doubloons, bag: snapshot.economy.bagCount }}
@@ -1641,6 +1642,9 @@ export function SailingSimulator() {
           onAct={() => simulatorRef.current?.storyAct()}
           onSkip={() => simulatorRef.current?.skipStoryLine()}
           onToggleRifle={() => simulatorRef.current?.toggleRifle()}
+          onCrouch={() => simulatorRef.current?.toggleCrouch()}
+          onReload={() => simulatorRef.current?.reloadWeapon()}
+          onBandage={() => simulatorRef.current?.applyBandage()}
           onJournal={() => {
             simulatorRef.current?.releaseDiverPointer();
             setJournalOpen(true);

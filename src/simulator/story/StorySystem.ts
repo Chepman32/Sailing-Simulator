@@ -154,6 +154,10 @@ export type StoryView = {
   anchored: boolean;
   /** The mission's side goals shown so far. */
   optionals: StoryOptional[];
+  /** People on their feet about him (a fight may come): health, not the hull, on his status. */
+  field: boolean;
+  /** His boat is out of reach for now (the skiff at the outpost's jetty until he casts her off). */
+  boatLocked: boolean;
 };
 
 export class StorySystem {
@@ -572,6 +576,11 @@ export class StorySystem {
     this.downed = 0;
     this.fadeTarget = 1;
     this.fadeHold = 2;
+  }
+
+  /** The story's boat is not his to take yet (the skiff before she is cast off). */
+  get boatLocked(): boolean {
+    return this.active && this.state.craft !== "catamaran" && !this.state.engine;
   }
 
   /** Whether the story is taking the skipper back after a fall. */
@@ -1443,6 +1452,8 @@ export class StorySystem {
       frozen: this.active && this.frozen,
       anchored: isDone(this.state, "prologue") || this.state.checkpoint !== null,
       optionals: this.optionalsView(mission),
+      field: this.actors.ids().length > 0,
+      boatLocked: this.boatLocked,
     };
   }
 

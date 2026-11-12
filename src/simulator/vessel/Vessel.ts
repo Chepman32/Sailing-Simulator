@@ -269,7 +269,8 @@ export class Vessel {
 
   /** The skipper is hidden from his own eyes (the helm camera). */
   setCrewVisible(visible: boolean): void {
-    if (this.skipper) this.skipper.visible = visible;
+    // In the story's boats the skipper is the party's figure (`BoatParty`), not the catamaran's.
+    if (this.skipper) this.skipper.visible = visible && this.craftId === "catamaran";
   }
 
   /** Flies, hangs and stands the decor chosen (null takes it down). */
@@ -347,7 +348,8 @@ export class Vessel {
     const crafts = new Set<THREE.Object3D>([...this.craftModels.values()].map((entry) => entry.group));
     const hide = (node: THREE.Object3D) => {
       for (const child of node.children) {
-        if (crafts.has(child) || child instanceof THREE.Light || !child.visible) continue;
+        // Kept: the crafts, lights, what is already hidden, and what rides in any boat (the story's party).
+        if (crafts.has(child) || child instanceof THREE.Light || !child.visible || child.userData.anyCraft) continue;
         let lit = false;
         child.traverse((object) => {
           if (object instanceof THREE.Light) lit = true;

@@ -23,6 +23,10 @@ type Props = {
   onSkip: () => void;
   onToggleRifle: () => void;
   onJournal: () => void;
+  /** On foot among armed people: crouch, a fresh magazine, the bandage (touch buttons; C, R, B on a keyboard). */
+  onCrouch: () => void;
+  onReload: () => void;
+  onBandage: () => void;
 };
 
 const FACTION_COLOR = new Map(CAMPAIGN.factions.map((faction) => [faction.id, faction.color]));
@@ -42,7 +46,7 @@ export function speakerOf(who: string, messages: StoryMessages, language: "ru" |
   return { name: messages.speakerUnknown, callsign: null, monogram: "??", color: "#8a96a3" };
 }
 
-export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip, onToggleRifle, onJournal }: Props) {
+export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip, onToggleRifle, onJournal, onCrouch, onReload, onBandage }: Props) {
   if (view.mode !== "campaign") return null;
   const messages = storyMessages(language);
   const lang = storyLanguage(language);
@@ -50,7 +54,22 @@ export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip,
   const speaker = line ? speakerOf(line.who, messages, lang) : null;
   const title = view.title;
   const hullPercent = Math.round(view.hull * 100);
-  const alarmLevel = combat.attacking ? "spotted" : combat.alarm > 0.08 ? "suspicious" : "hidden";
+  // Ashore among the story's people: his own health and the guards' awareness, not the hull and the drones.
+  const field = view.field && !atHelm;
+  const alarmLevel = field
+    ? combat.alert === "combat"
+      ? "spotted"
+      : combat.alert === "suspicious"
+        ? "suspicious"
+        : "hidden"
+    : combat.attacking
+      ? "spotted"
+      : combat.alarm > 0.08
+        ? "suspicious"
+        : "hidden";
+  const health = Math.max(0, Math.min(1, combat.health));
+  const hurt = field ? Math.max(0, 0.62 - health) / 0.62 : 0;
+  const struck = field && combat.sinceHit < 1.1 ? 1 - combat.sinceHit / 1.1 : 0;
   const prompt = view.prompt;
   const helmPrompt = atHelm && prompt && (prompt.kind === "repair" || prompt.kind === "winch") ? prompt : null;
   const progress = helmPrompt ? helmPrompt.progress : 0;
@@ -58,6 +77,12 @@ export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip,
   return (
     <>
       <div className="story-fade" style={{ opacity: view.fade }} aria-hidden="true" />
+      {field && (hurt > 0 || struck > 0) && (
+        <div className="story-hurt" style={{ opacity: Math.min(1, hurt * 0.85 + struck * 0.5) }} aria-hidden="true">
+          {struck > 0 && <span className="story-hit-arc" style={{ opacity: struck, transform: `rotate(${combat.hitFrom}rad)` }} />}
+        </div>
+      )}
+      {field && health <= 0 && view.fade < 0.9 && <p className="story-down">{messages.wounded}</p>}
 
       {title && (
         <div key={title.id} className={`story-title is-${title.style}`} role="status" aria-live="polite">
@@ -78,6 +103,16 @@ export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip,
               </p>
               {view.goal && <p className="story-tracker-goal">{textIn(view.goal, lang)}</p>}
               {view.hint && <p className="story-tracker-hint">{textIn(view.hint, lang)}</p>}
+              {view.optionals.length > 0 && (
+                <ul className="story-optionals" aria-label={messages.optional}>
+                  {view.optionals.map((optional) => (
+                    <li key={optional.id} className={optional.done ? "is-done" : ""}>
+                      <span className="story-optional-box" aria-hidden="true" />
+                      {textIn(optional.goal, lang)}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </>
           ) : (
             <p className="story-tracker-hint">{messages.storyComplete}</p>
@@ -91,15 +126,43 @@ export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip,
         </section>
       )}
 
-      <div className={`story-status${view.hull < 0.5 ? " is-damaged" : ""}`} aria-label={`${messages.hull} ${hullPercent}%`}>
-        <span className="story-hull">
-          <span className="story-status-label">{messages.hull}</span>
-          <span className="story-hull-bar" aria-hidden="true">
-            <span style={{ transform: `scaleX(${Math.max(0, Math.min(1, view.hull))})` }} />
+      <div
+        className={`story-status${field ? (health < 0.5 ? " is-damaged" : "") : view.hull < 0.5 ? " is-damaged" : ""}`}
+        aria-label={field ? `${messages.health} ${Math.round(health * 100)}%` : `${messages.hull} ${hullPercent}%`}
+      >
+        {field ? (
+          <span className="story-health">
+            <span className="story-status-label">{messages.health}</span>
+            <span className="story-health-bar" aria-hidden="true">
+              {[0, 1, 2, 3].map((segment) => (
+                <span key={segment}>
+                  <span style={{ transform: `scaleX(${Math.max(0, Math.min(1, health * 4 - segment))})` }} />
+                </span>
+              ))}
+            </span>
           </span>
-          <strong>{hullPercent}%</strong>
-        </span>
-        {!view.engine && <span className="story-engine-dead">{messages.engineDead}</span>}
+        ) : (
+          <span className="story-hull">
+            <span className="story-status-label">{messages.hull}</span>
+            <span className="story-hull-bar" aria-hidden="true">
+              <span style={{ transform: `scaleX(${Math.max(0, Math.min(1, view.hull))})` }} />
+            </span>
+            <strong>{hullPercent}%</strong>
+          </span>
+        )}
+        {!field && !view.engine && <span className="story-engine-dead">{messages.engineDead}</span>}
+        {field && combat.bandages > 0 && (
+          <button type="button" className={`story-chip${combat.bandaging ? " is-busy" : ""}`} onClick={onBandage} title={`${messages.bandage} (B)`}>
+            {!touch && <kbd>B</kbd>}
+            {messages.bandage}
+          </button>
+        )}
+        {field && (
+          <button type="button" className={`story-chip${combat.crouched ? " is-on" : ""}`} onClick={onCrouch} aria-pressed={combat.crouched} title={`${messages.crouch} (C)`}>
+            {!touch && <kbd>C</kbd>}
+            {combat.crouched ? messages.crouched : messages.crouch}
+          </button>
+        )}
         <span className={`story-alarm is-${alarmLevel}`} role="status">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             {alarmLevel === "hidden" ? (
@@ -211,7 +274,14 @@ export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip,
               ) : (
                 Array.from({ length: combat.magazine }, (_, index) => <span key={index} className={`story-round${index < combat.ammo ? " is-loaded" : ""}`} aria-hidden="true" />)
               )}
+              {combat.reserve !== null && <span className="story-reserve">/ {combat.reserve}</span>}
             </span>
+          )}
+          {combat.drawn && field && combat.reload >= 1 && combat.ammo < combat.magazine && (combat.reserve ?? 1) > 0 && (
+            <button type="button" className="story-chip" onClick={onReload} title={`${messages.reload} (R)`}>
+              {!touch && <kbd>R</kbd>}
+              {messages.reload}
+            </button>
           )}
         </div>
       )}

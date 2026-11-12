@@ -41,30 +41,44 @@ const OUTPOST = [...S04, ...S05, "order", "convoy", "deploy", "breakout", "casto
 
 // --- Cut scenes -------------------------------------------------------------------
 
-/** Mark, above him under the palms: the safety catch, then the two of them. */
+/** Mark, coming down from the palms with his rifle: the two of them on the sand, the beacon between them. */
 const MEET: Cutscene = {
   id: "m01-meet",
   hold: true,
   shots: [
     {
-      // Through his eyes, up at the man under the palms.
-      seconds: 3.2,
-      from: { eye: { anchor: "skipper", offset: [0, 1.62, 0] }, look: { anchor: "actor:mark", offset: [0, 1.55, 0] }, fov: 42 },
-      to: { eye: { anchor: "skipper", offset: [0, 1.64, 0.1] }, look: { anchor: "actor:mark", offset: [0, 1.6, 0] }, fov: 34 },
+      // Through his eyes, up the beach at the man coming down out of the palms.
+      seconds: 4,
+      from: { eye: { anchor: "spot:kosaya:meet-hero-head" }, look: { anchor: "actor:mark", offset: [0, 1.5, 0] }, fov: 34 },
+      to: { eye: { anchor: "spot:kosaya:meet-hero-head" }, look: { anchor: "actor:mark", offset: [0, 1.55, 0] }, fov: 28 },
       ease: "out",
     },
     {
-      // The two of them in profile, the sun behind Mark's shoulder.
-      seconds: 14,
-      from: { eye: { anchor: "actor:mark", offset: [5.5, 1.5, 4.5] }, look: { anchor: "actor:mark", offset: [-1.2, 1.2, 3] }, fov: 36 },
-      to: { eye: { anchor: "actor:mark", offset: [4.8, 1.45, 4.2] }, look: { anchor: "actor:mark", offset: [-1, 1.25, 3] }, fov: 33 },
+      // The two of them in profile as Mark stops, the sea behind.
+      seconds: 9,
+      from: { eye: { anchor: "spot:kosaya:cam-profile" }, look: { anchor: "spot:kosaya:meet-mid" }, fov: 38 },
+      to: { eye: { anchor: "spot:kosaya:cam-profile-near" }, look: { anchor: "spot:kosaya:meet-mid" }, fov: 36 },
       ease: "inOut",
     },
     {
-      // Closer on Mark as he looks at the beacon and puts his rifle down.
-      seconds: 40,
-      from: { eye: { anchor: "actor:mark", offset: [1.4, 1.62, 2.6] }, look: { anchor: "actor:mark", offset: [0, 1.5, 0] }, fov: 30 },
-      to: { eye: { anchor: "actor:mark", offset: [1.1, 1.6, 2.2] }, look: { anchor: "actor:mark", offset: [0, 1.52, 0] }, fov: 28 },
+      // Over the skipper's shoulder: Mark.
+      seconds: 12,
+      from: { eye: { anchor: "spot:kosaya:cam-ots-mark" }, look: { anchor: "spot:kosaya:meet-mark-head", offset: [0, -0.1, 0] }, fov: 30 },
+      to: { eye: { anchor: "spot:kosaya:cam-ots-mark" }, look: { anchor: "spot:kosaya:meet-mark-head", offset: [0, -0.08, 0] }, fov: 27 },
+      ease: "linear",
+    },
+    {
+      // Over Mark's shoulder: the skipper, wet through, the case at his feet.
+      seconds: 12,
+      from: { eye: { anchor: "spot:kosaya:cam-ots-hero" }, look: { anchor: "spot:kosaya:meet-hero-head", offset: [0, -0.15, 0] }, fov: 30 },
+      to: { eye: { anchor: "spot:kosaya:cam-ots-hero" }, look: { anchor: "spot:kosaya:meet-hero-head", offset: [0, -0.12, 0] }, fov: 27 },
+      ease: "linear",
+    },
+    {
+      // Back to the profile, slowly closer, as they decide.
+      seconds: 60,
+      from: { eye: { anchor: "spot:kosaya:cam-profile-near" }, look: { anchor: "spot:kosaya:meet-mid" }, fov: 34 },
+      to: { eye: { anchor: "spot:kosaya:cam-profile-near", offset: [0, 0, 0] }, look: { anchor: "spot:kosaya:meet-mid" }, fov: 26 },
       ease: "inOut",
     },
   ],
@@ -257,14 +271,19 @@ export const M01: Mission = {
   sector: "dead-tide",
   requires: ["prologue"],
   status: "playable",
-  presence: [{ kind: "level", level: "kosaya" }, { kind: "level", level: "stvor9" }, { kind: "level", level: "white-rocks" }],
+  // The places, and the people who are there from the start (nobody "appears out of the air").
+  presence: [
+    { kind: "level", level: "kosaya" },
+    { kind: "level", level: "stvor9" },
+    { kind: "level", level: "white-rocks" },
+    { kind: "actors", ids: ["mark", "luis", ...POST] },
+  ],
   steps: [
     // --- S01 · The Slant Shoal ---------------------------------------------------------
     {
       id: "wake",
       objective: { kind: "wait", seconds: 3.2 },
       checkpoint: { yacht: "stvor9:skiff", skipper: "ashore", spot: "kosaya:wake" },
-      presence: [{ kind: "actors", ids: ["mark", "luis", ...POST] }],
       onStart: [
         // The yacht is gone; the boat he will have is the skiff at the outpost's jetty.
         { do: "craft", craft: "skiff", at: "stvor9:skiff" },
@@ -291,9 +310,10 @@ export const M01: Mission = {
     {
       id: "mark-in",
       objective: { kind: "listen" },
-      presence: [{ kind: "actors", ids: ["mark", "luis", ...POST] }],
       onStart: [
-        { do: "actor", id: "mark", put: "kosaya:mark-beach", face: "skipper" },
+        { do: "put", at: "kosaya:meet-hero" },
+        { do: "actor", id: "mark", put: "kosaya:mark-beach" },
+        { do: "actor", id: "mark", to: "kosaya:meet-mark", pace: "walk" },
         { do: "sound", sound: "click" },
         { do: "freeze", on: true },
         { do: "cutscene", scene: "m01-meet" },
@@ -330,7 +350,7 @@ export const M01: Mission = {
       goal: t("Следуйте за Марком к наблюдательному выступу", "Follow Mark to the lookout ledge"),
       objective: { kind: "reach", at: "stvor9:overlook", by: "foot", radius: 7 },
       marker: "@actor:mark",
-      checkpoint: { yacht: "stvor9:skiff", skipper: "ashore", spot: "kosaya:mark-beach" },
+      checkpoint: { yacht: "stvor9:skiff", skipper: "ashore", spot: "kosaya:meet-hero" },
       onStart: [
         lines(
           mark("Держи. Не новый, зато стреляет прямо.", "Here. Not new, but it shoots straight."),
@@ -767,7 +787,7 @@ export const M01: Mission = {
   ],
   triggers: [
     // --- S01 --------------------------------------------------------------------------
-    { id: "smoke", when: { steps: ["shore"], stepTime: 5, quiet: true }, do: [lines(hero("Нет. Только не это.", "No. Not that."))] },
+    { id: "smoke", when: { steps: ["shore"], stepTime: 2.5, quiet: true }, do: [lines(hero("Нет. Только не это.", "No. Not that."))] },
     {
       id: "beacon-a",
       when: { steps: ["mark-in"], not: ["used:container"] },
@@ -791,18 +811,14 @@ export const M01: Mission = {
     },
     {
       id: "cafe",
-      when: { steps: ["follow"], near: { at: "kosaya:cafe", radius: 9 }, quiet: true },
+      when: { steps: ["follow"], actorAt: { id: "mark", at: "kosaya:mark-cafe", radius: 2.5 }, nearActor: { id: "mark", radius: 12 }, quiet: true },
       do: [
         lines(
           hero("Здесь раньше жили люди.", "People used to live here."),
           mark("Живут. Кто-то скрывается в лесу. Кто-то служит тем, кто держит ворота. Не суди по форме с первого взгляда.", "They still do. Some are hiding in the woods. Some work for whoever holds the gate. Don't judge by the uniform at first sight."),
         ),
+        { do: "actor", id: "mark", to: "kosaya:mark-trail2", pace: "walk" },
       ],
-    },
-    {
-      id: "leg3",
-      when: { steps: ["follow"], actorAt: { id: "mark", at: "kosaya:mark-cafe", radius: 2.5 }, nearActor: { id: "mark", radius: 12 }, flags: ["t:cafe"] },
-      do: [{ do: "actor", id: "mark", to: "kosaya:mark-trail2", pace: "walk" }],
     },
     {
       id: "leg4",

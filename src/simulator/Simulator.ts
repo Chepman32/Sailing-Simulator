@@ -2593,7 +2593,7 @@ export class Simulator {
     const story = this.story;
     if (!story) return "no-campaign";
     const view = story.view();
-    return saveBlock({ campaign: story.active, cinematic: view.cinematic, frozen: view.frozen, fade: view.fade, attacking: this.drones?.alarm().attacking ?? false, anchored: view.anchored });
+    return saveBlock({ campaign: story.active, cinematic: view.cinematic, frozen: view.frozen, fade: view.fade, attacking: (this.drones?.alarm().attacking ?? false) || this.actors?.alertLevel === "combat" || this.health.fraction < 0.999, anchored: view.anchored });
   }
 
   /**
@@ -2970,6 +2970,8 @@ export class Simulator {
       const fromStern = Math.atan2(hit.fromX - yacht.x, hit.fromZ - yacht.z) - (this.physics.heading + Math.PI);
       // The skiff's chase is to be outrun, not lost to one round in the outboard.
       if (this.vessel.craft === "skiff") story.damage(HULL_PER_HIT * 0.25, false);
+      // The prologue's run is a run, not a sinking: the reef ends it, not the guns.
+      else if (this.vessel.craft === "sport") story.damage(HULL_PER_HIT * 0.35, false);
       else story.damage(HULL_PER_HIT, engineKnockedOut(Math.atan2(Math.sin(fromStern), Math.cos(fromStern)), Math.random()));
       this.combatShake = Math.max(this.combatShake, 0.25);
     }
@@ -3104,6 +3106,11 @@ export class Simulator {
         party.set([]);
       }
     }
+  }
+
+  /** C on foot (or the touch button): down into a crouch, or up out of it. */
+  toggleCrouch(): void {
+    if (this.diver?.active && this.diver.mode === "land") this.diver.toggleCrouch();
   }
 
   /** R on foot: a fresh magazine into the gun in his hands. */
@@ -3329,7 +3336,7 @@ export class Simulator {
 
   /** Back to the wheel (from anywhere: a quick way home from a dive). */
   returnToHelm(): void {
-    if (!this.diver?.active) return;
+    if (!this.diver?.active || this.story?.boatLocked) return;
     this.diver.takeHelm();
   }
 

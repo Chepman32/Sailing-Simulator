@@ -129,8 +129,8 @@ const CONTACT: Cutscene = {
     {
       // Over the gunner's shoulder at her: he swings the gun round and fires.
       seconds: 4,
-      from: { eye: { anchor: "drone:hunters", offset: [0.9, 2.5, 1.2] }, look: { anchor: "yacht", offset: [0, 2, 0] }, fov: 20 },
-      to: { eye: { anchor: "drone:hunters", offset: [0.8, 2.45, 1.6] }, look: { anchor: "yacht", offset: [0, 2, 0] }, fov: 14 },
+      from: { eye: { anchor: "drone:hunters", offset: [0.7, 2.2, 1.4] }, look: { anchor: "yacht", offset: [0, 1.5, 0] }, fov: 11 },
+      to: { eye: { anchor: "drone:hunters", offset: [0.6, 2.15, 1.8] }, look: { anchor: "yacht", offset: [0, 1.5, 0] }, fov: 7 },
       ease: "linear",
       shake: 0.5,
       cue: [{ do: "say", lines: [{ who: "hero", via: "voice", text: { ru: "Эй! Я гражданский!..", en: "Hey! I'm a civilian!.." } }] }],
@@ -217,7 +217,7 @@ export const PROLOGUE: Mission = {
       id: "escape",
       goal: { ru: "Уходите к острову, за риф: катерам там тесно", en: "Run for the island, inside the reef: it's tight for the patrol boats there" },
       hint: { ru: "Газ до упора, петляйте — так в вас труднее попасть", en: "Full throttle, and weave — it makes you harder to hit" },
-      objective: { kind: "hull", hull: 0.32, after: 55, at: "crash" },
+      objective: { kind: "hull", hull: 0.12, after: 60, at: "crash" },
       marker: "crash",
       presence: [{ kind: "drones", group: HUNTERS }],
       onStart: [
