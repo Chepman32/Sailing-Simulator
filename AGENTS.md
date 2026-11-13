@@ -227,6 +227,9 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | Path | Responsibility |
 | --- | --- |
 | `scripts/build-verified.sh` | Canonical production build wrapper |
+| `scripts/start.sh` | Local production launcher for npm/Yarn: builds and verifies missing or incomplete output before starting Vinext; reuses a verified build |
+| `scripts/start-server.mjs` | Starts Vinext and opens the default browser once it confirms it is listening, using the actual host/port; `BROWSER=none` or CI suppresses opening |
+| `scripts/run-bounded.mjs` | Portable build deadline and subprocess termination (macOS/Linux, no GNU timeout required) |
 | `scripts/sites-env.sh` | Reproducible environment wrapper for lint/type/build commands |
 | `scripts/install-ci.sh` | CI installation path |
 | `build/sites-vite-plugin.ts` | Sites-specific Vite behavior |

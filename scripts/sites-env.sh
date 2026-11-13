@@ -13,6 +13,8 @@ mkdir -p \
 
 export SITES_ENV_READY=1
 export SITES_PROJECT_ROOT="${project_root}"
+# Corepack must keep finding the installed Yarn after the isolated HOME is set.
+export COREPACK_HOME="${COREPACK_HOME:-${XDG_CACHE_HOME:-${HOME}/.cache}/node/corepack}"
 export HOME="${runtime_root}/home"
 export XDG_CONFIG_HOME="${runtime_root}/xdg-config"
 export TMPDIR="${runtime_root}/tmp"
