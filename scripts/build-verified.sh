@@ -7,23 +7,19 @@ if [[ "${SITES_ENV_READY:-}" != "1" ]]; then
   exec "${script_dir}/sites-env.sh" -- "$0" "$@"
 fi
 
-command -v timeout || {
-  echo "build-verified.sh requires GNU timeout." >&2
-  exit 69
-}
-
-vinext="${SITES_PROJECT_ROOT}/node_modules/.bin/vinext"
-if [[ ! -x "${vinext}" ]]; then
-  echo "vinext is unavailable. Run npm run install:ci and wait for it to finish before building." >&2
+export PATH="${SITES_PROJECT_ROOT}/node_modules/.bin:${PATH}"
+if ! command -v vinext >/dev/null 2>&1; then
+  echo "vinext is unavailable. Run npm ci or yarn install before building." >&2
   exit 69
 fi
 
+rm -f "${SITES_PROJECT_ROOT}/dist/.build-verified"
 echo "Running bounded vinext build..."
-timeout \
-  --signal=TERM \
-  --kill-after="${SITES_BUILD_KILL_AFTER:-10s}" \
+node "${script_dir}/run-bounded.mjs" \
   "${SITES_BUILD_TIMEOUT:-3m}" \
-  "${vinext}" build
+  "${SITES_BUILD_KILL_AFTER:-10s}" \
+  vinext build
 
 echo "Running Worker import and rendered-route smoke test..."
 npm run test:rendered
+touch "${SITES_PROJECT_ROOT}/dist/.build-verified"
