@@ -5953,3 +5953,42 @@ html.rifle-drawn .simulator-canvas {
 .story-gunner-label { position: absolute; left: 50%; top: calc(50% + 54px); transform: translateX(-50%); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(255, 245, 220, 0.75); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); }
 .story-gunner.is-hot .story-gunner-sight { border-color: rgba(255, 110, 80, 0.9); }
 .story-gunner.is-hot .story-gunner-label { color: #ff8a6a; }
+
+/* The yard crane's cab: what each control does, its key, and buttons to hold on a touch screen. */
+.story-crane {
+  position: absolute;
+  right: max(16px, var(--edge-right, 16px));
+  /* Clear of the controls' hint line along the bottom. */
+  bottom: calc(max(16px, var(--edge-bottom, 16px)) + 48px);
+  width: min(300px, calc(100vw - 32px));
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(8, 24, 34, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  color: #eaf4f6;
+  pointer-events: auto;
+  font-size: 12px;
+}
+.story-crane-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.story-crane-title { font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; font-size: 11px; }
+.story-crane-state { color: rgba(234, 244, 246, 0.6); font-size: 11px; }
+.story-crane.is-holding .story-crane-state { color: #f2c230; }
+.story-crane-rows { display: grid; gap: 6px; }
+.story-crane-row { display: grid; grid-template-columns: 1fr 52px 52px; gap: 6px; align-items: center; }
+.story-crane-label { color: rgba(234, 244, 246, 0.82); }
+.story-crane-key {
+  height: 40px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.07);
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+}
+.story-crane-key:active { background: rgba(94, 230, 210, 0.3); border-color: rgba(94, 230, 210, 0.7); }
+.story-crane-key.is-wide { width: 100%; font-weight: 600; }

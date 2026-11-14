@@ -158,6 +158,8 @@ export type StoryOverlayFrame = {
   attacking: boolean;
   /** At the mounted gun: the barrel's heat (0…1) and whether it must cool before firing again. */
   gunner: { heat: number; hot: boolean } | null;
+  /** In the yard crane's cab: whether a load hangs on the hook. */
+  crane: { holding: boolean } | null;
 };
 
 /** Something taken from the sea floor: what, its tier, and gold (paid at once for a chest). */

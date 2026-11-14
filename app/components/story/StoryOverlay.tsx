@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type MutableRefObject } from "react";
+import { useEffect, useRef, type MutableRefObject, type PointerEvent as ReactPointerEvent } from "react";
 import type { LanguageCode } from "../i18n";
 import type { StoryOverlayFrame } from "@/src/simulator/types";
 import { distanceText, storyMessages } from "./storyMessages";
@@ -18,7 +18,11 @@ type Props = {
   listenerRef: MutableRefObject<((frame: StoryOverlayFrame) => void) | null>;
   language: LanguageCode;
   active: boolean;
+  /** The yard crane's controls held or let go (the pad's buttons, for touch and mouse). */
+  crane?: (control: CraneControl, down: boolean) => void;
 };
+
+export type CraneControl = "travel+" | "travel-" | "cross+" | "cross-" | "up" | "down" | "grab";
 
 const DRONE_SLOTS = 6;
 const EDGE = 46;
@@ -37,7 +41,7 @@ function arrowBounds(width: number, height: number): { left: number; right: numb
   };
 }
 
-export function StoryOverlay({ listenerRef, language, active }: Props) {
+export function StoryOverlay({ listenerRef, language, active, crane }: Props) {
   const markerRef = useRef<HTMLDivElement>(null);
   const markerLabel = useRef<HTMLSpanElement>(null);
   const droneRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -45,10 +49,13 @@ export function StoryOverlay({ listenerRef, language, active }: Props) {
   const hitRef = useRef<HTMLDivElement>(null);
   const gunnerRef = useRef<HTMLDivElement | null>(null);
   const gunnerHeat = useRef<HTMLSpanElement | null>(null);
+  const craneRef = useRef<HTMLDivElement | null>(null);
+  const craneState = useRef<HTMLSpanElement | null>(null);
   const hitLabel = useRef<HTMLSpanElement>(null);
   const lastHit = useRef(0);
   const pointer = useRef({ x: -1, y: -1 });
   const messagesRef = useRef(storyMessages(language));
+  const words = storyMessages(language);
 
   useEffect(() => {
     messagesRef.current = storyMessages(language);
@@ -178,6 +185,16 @@ export function StoryOverlay({ listenerRef, language, active }: Props) {
       }
       document.documentElement.classList.toggle("rifle-drawn", frame.rifle);
       // At the mounted gun: its sight in the middle, the barrel's heat under it.
+      const cranePad = craneRef.current;
+      if (cranePad) {
+        cranePad.style.display = frame.crane ? "" : "none";
+        if (frame.crane) {
+          cranePad.classList.toggle("is-holding", frame.crane.holding);
+          const state = craneState.current;
+          const label = frame.crane.holding ? messagesRef.current.craneHolding : messagesRef.current.craneFree;
+          if (state && state.textContent !== label) state.textContent = label;
+        }
+      }
       const gunner = gunnerRef.current;
       if (gunner) {
         gunner.style.display = frame.gunner ? "" : "none";
@@ -220,6 +237,28 @@ export function StoryOverlay({ listenerRef, language, active }: Props) {
           />
         </div>
       ))}
+      <div ref={craneRef} className="story-crane" style={{ display: "none" }}>
+        <div className="story-crane-head">
+          <span className="story-crane-title">{words.craneTitle}</span>
+          <span ref={craneState} className="story-crane-state" />
+        </div>
+        <div className="story-crane-rows">
+          {(
+            [
+              [words.craneTravel, "travel-", "S", "travel+", "W"],
+              [words.craneCross, "cross-", "A", "cross+", "D"],
+              [words.craneHoist, "down", "F", "up", "R"],
+            ] as const
+          ).map(([label, less, lessKey, more, moreKey]) => (
+            <div key={label} className="story-crane-row">
+              <span className="story-crane-label">{label}</span>
+              <CraneButton control={less} glyph={lessKey} press={crane} />
+              <CraneButton control={more} glyph={moreKey} press={crane} />
+            </div>
+          ))}
+          <CraneButton control="grab" glyph={`␣ ${words.craneGrab}`} press={crane} wide />
+        </div>
+      </div>
       <div ref={gunnerRef} className="story-gunner" style={{ display: "none" }}>
         <span className="story-gunner-sight" />
         <span className="story-gunner-heat">
@@ -232,5 +271,30 @@ export function StoryOverlay({ listenerRef, language, active }: Props) {
         <span ref={hitLabel} className="story-hit-label" />
       </div>
     </div>
+  );
+}
+
+/** One of the crane pad's buttons: held while pressed (the grab acts once), the key it stands for shown on it. */
+function CraneButton({ control, glyph, press, wide = false }: { control: CraneControl; glyph: string; press?: (control: CraneControl, down: boolean) => void; wide?: boolean }) {
+  const release = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    press?.(control, false);
+  };
+  return (
+    <button
+      type="button"
+      className={`story-crane-key${wide ? " is-wide" : ""}`}
+      tabIndex={-1}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        press?.(control, true);
+      }}
+      onPointerUp={release}
+      onPointerCancel={release}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {glyph}
+    </button>
   );
 }

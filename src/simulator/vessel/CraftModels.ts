@@ -527,14 +527,16 @@ export function albatross(): CraftModel {
   kit.mesh(cradle, kit.geometry(new THREE.BoxGeometry(0.22, 0.24, 0.34)), olive, 0.24, -0.06, 0.05);
   // The shield: a bent steel plate with a sighting slot.
   const shield = new THREE.Shape();
-  shield.moveTo(-0.5, -0.32);
-  shield.lineTo(0.5, -0.32);
-  shield.lineTo(0.5, 0.3);
-  shield.lineTo(0.06, 0.3);
-  shield.lineTo(0.06, 0.08);
-  shield.lineTo(-0.06, 0.08);
-  shield.lineTo(-0.06, 0.3);
-  shield.lineTo(-0.5, 0.3);
+  shield.moveTo(-0.44, -0.34);
+  shield.lineTo(0.44, -0.34);
+  shield.lineTo(0.44, 0.2);
+  shield.lineTo(0.3, 0.24);
+  shield.lineTo(0.06, 0.24);
+  shield.lineTo(0.06, 0.06);
+  shield.lineTo(-0.06, 0.06);
+  shield.lineTo(-0.06, 0.24);
+  shield.lineTo(-0.3, 0.24);
+  shield.lineTo(-0.44, 0.2);
   shield.closePath();
   const plate = kit.mesh(cradle, kit.geometry(new THREE.ExtrudeGeometry(shield, { depth: 0.02, bevelEnabled: false })), olive, 0, 0.02, 0.36);
   plate.rotation.x = -0.12;
@@ -568,7 +570,7 @@ export function albatross(): CraftModel {
       cradle,
       muzzle: new THREE.Vector3(0, 0.02, 1.74),
       // Over the shield, not into it: the plate low in the view, the barrel running out to the sight.
-      eye: new THREE.Vector3(0, 0.5, -1.2),
+      eye: new THREE.Vector3(0, 0.6, -1.2),
       aft: Math.PI,
       seat: { x: 0, y: ALBATROSS_SOLE, z: gunnerZ, yaw: Math.PI, sit: false, seat: 0 },
     },

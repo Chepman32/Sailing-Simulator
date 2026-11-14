@@ -429,7 +429,7 @@ export class Simulator {
   private lastHit: { id: number; zone: HitZone | "miss"; armour: boolean; condition: DroneCondition | null } = { id: 0, zone: "miss", armour: false, condition: null };
   private pointerDown: { x: number; y: number; time: number; id: number } | null = null;
   /** Per-frame screen positions of the waypoint and the drones (see `StoryOverlay`). */
-  private readonly overlay: StoryOverlayFrame = { width: 1, height: 1, marker: null, drones: [], hit: this.lastHit, rifle: false, alarm: 0, attacking: false, gunner: null };
+  private readonly overlay: StoryOverlayFrame = { width: 1, height: 1, marker: null, drones: [], hit: this.lastHit, rifle: false, alarm: 0, attacking: false, gunner: null, crane: null };
   /** The diver's eyes are under the surface (with a little hysteresis), and seconds since his last splash. */
   private eyesUnder = false;
   private sinceSplash = 10;
@@ -3342,7 +3342,8 @@ export class Simulator {
     if (party) {
       if (craft && story.active) {
         party.set([{ id: "hero", look: HERO_LOOK }, ...story.party()]);
-        const visible = !diver?.active && (this.state.cameraMode !== "helm" || this.flareCamera.blend > 0.3 || this.photo.blend > 0.3 || story.cinematic);
+        // Not while the view is his own eyes: at the wheel, or behind the stern gun.
+        const visible = !diver?.active && !this.gunner.active && (this.state.cameraMode !== "helm" || this.flareCamera.blend > 0.3 || this.photo.blend > 0.3 || story.cinematic);
         party.group.position.copy(craft.group.position);
         const seats = story.flagged("scramble") && craft.seats.length > 0 ? this.scrambleSeats(delta, craft.seats, craft.deck) : craft.seats;
         if (seats === craft.seats) this.scramble.active = false;
@@ -3662,7 +3663,7 @@ export class Simulator {
     const visual = this.visualMuzzle.copy(mount.muzzle);
     mount.cradle.localToWorld(visual);
     const effects = this.combatEffects;
-    effects?.flash(visual, 0.9);
+    effects?.flash(visual, 1.3);
     effects?.muzzleSmoke(visual, this.shotDirection.x, this.shotDirection.y, this.shotDirection.z);
     this.combatAudio?.gunshot("heavy");
     this.combatShake = Math.max(this.combatShake, 0.16);
@@ -3725,6 +3726,7 @@ export class Simulator {
     frame.hit = this.lastHit;
     frame.rifle = this.armoury.drawn !== null;
     frame.gunner = this.gunner.active ? { heat: this.gunner.heat, hot: this.gunner.hot } : null;
+    frame.crane = this.craneMode ? { holding: Boolean(GantryCrane.active?.holding) } : null;
     const alarm = story.active ? drones.alarm() : { suspicion: 0, attacking: false };
     frame.alarm = alarm.suspicion;
     frame.attacking = alarm.attacking;
