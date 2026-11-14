@@ -32,6 +32,7 @@ import { UnderwaterLight } from "./environment/UnderwaterLight";
 import { helmFromRudder, InputController } from "./input/InputController";
 import { TouchControls } from "./input/TouchControls";
 import { clamp, smoothstep } from "./math";
+import { GantryCrane } from "./level/GantryCrane";
 import { compassBearing } from "./vessel/HelmInstruments";
 import { applyEnginePower, createSimulatorState, type SimulatorState } from "./state";
 import type {
@@ -340,6 +341,12 @@ export class Simulator {
    */
   private readonly gunner = { active: false, yaw: 0, pitch: 0.03, heat: 0, hot: false, next: 0, firing: false, kick: 0, locked: false, lastX: 0, lastY: 0, dragging: false };
   private readonly gunnerShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 62 };
+  /** At the yard crane's controls (the story's `crane` flag, the crane's level standing): the keys held, the view. */
+  private craneMode = false;
+  private readonly craneKeys = new Set<string>();
+  private readonly craneShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 50 };
+  private readonly craneLook = new THREE.Vector3();
+  private craneLookReady = false;
   private readonly gunnerScratch = new THREE.Vector3();
   private readonly gunnerForward = new THREE.Vector3();
   /** The skipper on foot and in the water (see `diver/`). */
@@ -931,6 +938,8 @@ export class Simulator {
       this.canvas.addEventListener("pointerup", this.onCanvasPointerUp);
       this.canvas.addEventListener("pointermove", this.onGunnerPointerMove);
       window.addEventListener("pointerup", this.onGunnerPointerUp);
+      window.addEventListener("keydown", this.onCraneKey, true);
+      window.addEventListener("keyup", this.onCraneKey, true);
       this.resizeObserver = new ResizeObserver(this.requestResize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
       this.resize();
@@ -2063,6 +2072,8 @@ export class Simulator {
     this.canvas.removeEventListener("pointerup", this.onCanvasPointerUp);
     this.canvas.removeEventListener("pointermove", this.onGunnerPointerMove);
     window.removeEventListener("pointerup", this.onGunnerPointerUp);
+    window.removeEventListener("keydown", this.onCraneKey, true);
+    window.removeEventListener("keyup", this.onCraneKey, true);
     this.story?.dispose();
     this.drones?.dispose();
     this.combatEffects?.dispose();
@@ -2261,6 +2272,7 @@ export class Simulator {
       this.camera.camera.updateMatrixWorld();
     } else {
       this.directGunner(delta);
+      this.directCrane(delta);
     }
     this.updateShake(delta);
     this.environment.setWeatherKind(this.currentWeatherKind());
@@ -3161,6 +3173,8 @@ export class Simulator {
       this.combatAudio?.hullHit(hit.point);
       // The skiff's chase is to be outrun, not lost to one round in the outboard.
       if (this.vessel.craft === "skiff") story.damage(HULL_PER_HIT * 0.25, false);
+      // The Albatross takes it on her plating: the chase is a fight, not a race against her hull.
+      else if (this.vessel.craft === "albatross") story.damage(story.hull > 0.35 ? HULL_PER_HIT * 0.1 : 0, false);
       // The prologue's run is a run, not a sinking: the reef ends it, not the guns.
       else if (this.vessel.craft === "sport") story.damage(HULL_PER_HIT * 0.35, false);
       // The engine dies only where the story says so (a scripted effect), never to a chance round.
@@ -3461,6 +3475,81 @@ export class Simulator {
     this.gunner.firing = false;
     this.gunner.dragging = false;
   };
+
+  /** The crane's keys: W/S (or ↑/↓) along the rails, A/D (←/→) across, R/F the hook up and down, Space takes or lets go. */
+  private readonly onCraneKey = (event: KeyboardEvent): void => {
+    if (!this.craneMode) return;
+    const code = event.code;
+    const ours = ["KeyW", "KeyS", "KeyA", "KeyD", "KeyR", "KeyF", "Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(code);
+    if (!ours) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.type === "keydown") {
+      if (code === "Space" && !event.repeat) {
+        const crane = GantryCrane.active;
+        if (crane?.toggle()) this.combatAudio?.story("click");
+      }
+      this.craneKeys.add(code);
+    } else {
+      this.craneKeys.delete(code);
+    }
+  };
+
+  /** Crane controls from the touch screen (the interface's buttons): an axis held, or the hook's grab. */
+  setCraneControl(control: "travel+" | "travel-" | "cross+" | "cross-" | "up" | "down" | "grab", down: boolean): void {
+    if (!this.craneMode) return;
+    if (control === "grab") {
+      if (down && GantryCrane.active?.toggle()) this.combatAudio?.story("click");
+      return;
+    }
+    const code = { "travel+": "KeyW", "travel-": "KeyS", "cross+": "KeyD", "cross-": "KeyA", up: "KeyR", down: "KeyF" }[control];
+    if (down) this.craneKeys.add(code);
+    else this.craneKeys.delete(code);
+  }
+
+  /**
+   * The yard crane: driven from its cab while the story has him there,
+   * seen from high behind the gantry, following the hook; its results
+   * told to the story (`crane:<load>:<zone>`, `crane:first-motion`).
+   */
+  private directCrane(delta: number): void {
+    const crane = GantryCrane.active;
+    const story = this.story;
+    const wanted = Boolean(crane && story?.active && story.flagged("crane") && !this.menuView && !story.cinematic);
+    if (wanted !== this.craneMode) {
+      this.craneMode = wanted;
+      this.craneKeys.clear();
+      this.craneLookReady = false;
+    }
+    if (!crane) return;
+    if (story && !crane.onPlaced) {
+      crane.onPlaced = (load, zone) => story.notify(`crane:${load}:${zone}`);
+      crane.onEvent = (event) => story.notify(`crane:${event}`);
+    }
+    const keys = this.craneKeys;
+    const axis = (plus: string[], minus: string[]) => (plus.some((code) => keys.has(code)) ? 1 : 0) - (minus.some((code) => keys.has(code)) ? 1 : 0);
+    crane.update(delta, wanted ? { travel: axis(["KeyW", "ArrowUp"], ["KeyS", "ArrowDown"]), cross: axis(["KeyD", "ArrowRight"], ["KeyA", "ArrowLeft"]), hoist: axis(["KeyR"], ["KeyF"]) } : { travel: 0, cross: 0, hoist: 0 });
+    if (!wanted) return;
+    // High behind the gantry, a little to the side, looking down at the hook.
+    crane.hookPoint(this.gunnerScratch);
+    crane.group.localToWorld(this.gunnerScratch);
+    if (!this.craneLookReady) {
+      this.craneLook.copy(this.gunnerScratch);
+      this.craneLookReady = true;
+    } else {
+      this.craneLook.lerp(this.gunnerScratch, Math.min(1, delta * 3));
+    }
+    this.gunnerForward.set(crane.cross * 0.35 + 6, crane.floor + 24, crane.travel - 24);
+    crane.group.localToWorld(this.gunnerForward);
+    this.craneShot.position.x = this.gunnerForward.x;
+    this.craneShot.position.y = this.gunnerForward.y;
+    this.craneShot.position.z = this.gunnerForward.z;
+    this.craneShot.target.x = this.craneLook.x;
+    this.craneShot.target.y = this.craneLook.y - 2;
+    this.craneShot.target.z = this.craneLook.z;
+    this.camera.direct(this.craneShot, 1);
+    this.camera.camera.updateMatrixWorld();
+  }
 
   /** Space or a held key fires the mounted gun too. */
   setGunnerTrigger(down: boolean): void {

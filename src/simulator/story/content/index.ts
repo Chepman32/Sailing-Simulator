@@ -3,6 +3,10 @@ import { CHARACTERS, FACTIONS } from "./cast";
 import { BORDERS, LOCATIONS, QUARANTINE, SECTORS } from "./geography";
 import { M01, M01_CUTSCENES } from "./m01";
 import { M01_ACTORS } from "./m01Cast";
+import { M02, M02_CUTSCENES } from "./m02";
+import { BAY_PEOPLE, M02_ACTORS } from "./m02Cast";
+import { M03, M03_CUTSCENES } from "./m03";
+import { M03_ACTORS } from "./m03Cast";
 import { PROLOGUE, PROLOGUE_CUTSCENES } from "./prologue";
 
 const CHAPTERS: readonly Chapter[] = [
@@ -33,7 +37,6 @@ const arc = (id: string, giver: string, ru: string, en: string, briefRu: string,
 
 const ARCS: readonly Mission[] = [
   arc("arc-mark", "holloway", "Продолжить у Марка", "Carry on with Mark", "Марк остаётся в бухте: его людям нужно снабжение. Следующая работа — только если сам придёшь.", "Mark stays at the cove: his people need supplies. The next job is his only if you come to him."),
-  arc("arc-kenji", "kenji", "Познакомиться с Кендзи Сато", "Meet Kenji Sato", "Инженер, который понял, что лагуны травят. Знает здешние воды лучше любого патруля.", "The engineer who worked out the lagoons are being poisoned. Knows these waters better than any patrol."),
   arc("arc-sara", "sara", "Познакомиться с Сарой Дженкинс", "Meet Sara Jenkins", "Бывший аналитик их разведки. Если кто и прочтёт код группы на приказе — она.", "A former analyst of their intelligence. If anyone can read the group code on the order, she can."),
   arc("arc-viktor", "sedov", "Познакомиться с Виктором Седовым", "Meet Viktor Sedov", "Один из создателей «Аквилона». Говорит, что хочет всё остановить.", "One of the men who built Aquilon. Says he wants to stop it."),
 ];
@@ -52,6 +55,15 @@ const WORLD: readonly WorldRule[] = [
       { kind: "actors", ids: ["mark-cove", "maya", "luis-cove"] },
     ],
   },
+  // After M02: the Free Bay, open, its people about their day.
+  {
+    id: "after-m02",
+    after: "m02",
+    presence: [
+      { kind: "level", level: "bay" },
+      { kind: "actors", ids: BAY_PEOPLE },
+    ],
+  },
 ];
 
 /** The whole campaign: everything the engine reads (see StoryTypes). */
@@ -64,10 +76,10 @@ export const CAMPAIGN: Campaign = {
   locations: LOCATIONS,
   chapters: CHAPTERS,
   items: ITEMS,
-  missions: [PROLOGUE, M01, ...ARCS],
+  missions: [PROLOGUE, M01, M02, M03, ...ARCS],
   world: WORLD,
-  cutscenes: [...PROLOGUE_CUTSCENES, ...M01_CUTSCENES],
-  actors: M01_ACTORS,
+  cutscenes: [...PROLOGUE_CUTSCENES, ...M01_CUTSCENES, ...M02_CUTSCENES, ...M03_CUTSCENES],
+  actors: [...M01_ACTORS, ...M02_ACTORS, ...M03_ACTORS],
   smallTalk: {
     holloway: [
       { ru: "Я остаюсь здесь. Остальным можешь заняться в любом порядке.", en: "I'm staying here. The rest you can take in any order." },

@@ -65,6 +65,8 @@ export type DroneSpec = {
    * firing now and then, until the story calls her off (`withdraw`).
    */
   crewed?: boolean;
+  /** She can be hit and stopped or sunk (the M02 chase's pursuers); a strike, a ram or a chase is otherwise untouchable. */
+  vulnerable?: boolean;
 };
 
 /** A boat's crew, made by the simulator once the figures are in (see `DroneSystem.crew`). */
@@ -297,7 +299,7 @@ export class DroneSystem {
       sparkClock: 0,
       winched: 0,
       scanPhase: Math.random() * 6,
-      invulnerable: spec.behaviour === "strike" || spec.behaviour === "ram" || spec.behaviour === "chase",
+      invulnerable: !spec.vulnerable && (spec.behaviour === "strike" || spec.behaviour === "ram" || spec.behaviour === "chase"),
       crew: null,
       seats,
     };
@@ -321,6 +323,14 @@ export class DroneSystem {
       const offset = index * 60;
       const heading = Math.atan2(to.x - from.x, to.z - from.z);
       return { x: from.x - Math.sin(heading) * offset, z: from.z - Math.cos(heading) * offset, heading };
+    }
+    if (spec.behaviour === "chase" && spec.vulnerable) {
+      // Astern of her, out of the last bend, one off each quarter, already running.
+      const side = index % 2 === 0 ? 0.22 : -0.22;
+      const bearing = yacht.heading + Math.PI + side;
+      const x = yacht.x + Math.sin(bearing) * (230 + index * 40);
+      const z = yacht.z + Math.cos(bearing) * (230 + index * 40);
+      return { x, z, heading: yacht.heading };
     }
     if (spec.behaviour === "strike") {
       // Ahead of her, either bow, coming in.

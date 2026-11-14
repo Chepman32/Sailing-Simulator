@@ -131,6 +131,8 @@ export type DroneGroup = {
   respawn?: number;
   /** Vanguard's crewed patrol boats, not Aquilon's drones (`chase`: one follows her from astern until called off). */
   crewed?: boolean;
+  /** A chase's boat that can be shot to a stop or sunk (M02's pursuers), not untouchable. */
+  vulnerable?: boolean;
 };
 
 /** Something put into the world while a step (or the world) calls for it; reconciled, so it survives a reload. */

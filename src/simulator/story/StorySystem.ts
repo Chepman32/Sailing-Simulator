@@ -1260,6 +1260,7 @@ export class StorySystem {
       if (event.type === "rammed") this.events.add(`rammed:${event.group}`);
       if (event.type === "disabled") this.events.add(`disabled:${event.group}`);
       if (event.type === "destroyed") this.events.add(`destroyed:${event.group}`);
+      if (event.type === "stopped") this.events.add(`stopped:${event.group}`);
       if (event.type === "salvaged") {
         this.events.add(`salvaged:${event.group}`);
         this.host.pay(event.value);
@@ -1442,6 +1443,7 @@ export class StorySystem {
         start: start ? { x: start.x, z: start.z, heading: (-(group.heading ?? 0) * Math.PI) / 180 } : undefined,
         speed: group.speed,
         crewed: group.crewed,
+        vulnerable: group.vulnerable,
       },
       yacht,
     );

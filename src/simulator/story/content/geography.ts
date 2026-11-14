@@ -123,6 +123,13 @@ export const LOCATIONS: readonly Location[] = [
   { id: "sara-refuge", name: { ru: "Береговое убежище Сары", en: "Sara's shore refuge" }, sector: "dead-tide", at: [-5546, -3720], snap: "island", radius: 70 },
   { id: "viktor-gate", name: { ru: "Технический вход Седова", en: "Sedov's service entrance" }, sector: "dead-tide", at: [-5841, -5620], snap: "island", radius: 60 },
   // Planned: the bases of the chapters to come.
+  // M02, "The People We Saved": the fishing village, the narrows, the Free Bay.
+  { id: "tikhiy-list", name: { ru: "Тихий Лист", en: "Тихий Лист" }, sector: "dead-tide", at: [-7600, -2582], snap: "island", radius: 140 },
+  { id: "green-spit", name: { ru: "Зелёная Коса", en: "The Green Spit" }, sector: "dead-tide", at: [-5920, -1850], snap: "point", radius: 120 },
+  { id: "free-bay", name: { ru: "Бухта свободных", en: "The Free Bay" }, sector: "dead-tide", at: [-4463, -3420], snap: "point", radius: 120, charted: true },
+  // M03, "Dead Water": the Sunny Cape's pier, the Laguna-4 water station at the island's south end.
+  { id: "sunny-cape", name: { ru: "Солнечный мыс", en: "The Sunny Cape" }, sector: "dead-tide", at: [-3385, -4875], snap: "point", radius: 60, charted: true },
+  { id: "laguna-4", name: { ru: "Станция «Лагуна-4»", en: "Laguna-4 station" }, sector: "dead-tide", at: [-3375, -5075], snap: "point", radius: 60 },
   { id: "pepel-relay", name: { ru: "Узел связи «Пепел»", en: "The Ash relay" }, sector: "green-squall", at: [-4758, 3253], snap: "island", radius: 200 },
   { id: "object-404", name: { ru: "«Объект-404»", en: "Object 404" }, sector: "sand-teeth", at: [1458, -4996], snap: "island", radius: 200 },
   { id: "last-frontier", name: { ru: "Маяк «Последний рубеж»", en: "Last Frontier light" }, sector: "open-wedge", at: [-9700, 1250], snap: "water", radius: 200 },
