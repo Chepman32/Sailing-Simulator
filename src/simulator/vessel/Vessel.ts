@@ -74,7 +74,7 @@ export class Vessel {
   readonly root = new THREE.Group();
   /** Which boat she is: the catamaran, or one of the story's (`CraftModels`), whose model stands in for hers. */
   private craftId: CraftId = "catamaran";
-  private readonly craftModels = new Map<"sport" | "skiff", CraftModel>();
+  private readonly craftModels = new Map<"sport" | "skiff" | "albatross", CraftModel>();
   private readonly hiddenForCraft: THREE.Object3D[] = [];
   private readonly model: THREE.Group;
   private readonly sailSystem: SailSystem;
@@ -360,7 +360,7 @@ export class Vessel {
     model.group.visible = true;
   }
 
-  private addCraft(craft: "sport" | "skiff", model = buildCraft(craft)): CraftModel {
+  private addCraft(craft: "sport" | "skiff" | "albatross", model = buildCraft(craft)): CraftModel {
     // Her waterline on the water: the root rides at the catamaran's float height.
     model.group.position.y = -0.46;
     model.group.visible = false;

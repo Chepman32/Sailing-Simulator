@@ -148,7 +148,7 @@ export type Presence =
   | { kind: "actors"; ids: readonly string[] };
 
 /** The boat the skipper has: the catamaran of free sailing, the prologue's sport yacht, the skiff from Створ-9. */
-export type CraftId = "catamaran" | "sport" | "skiff";
+export type CraftId = "catamaran" | "sport" | "skiff" | "albatross";
 
 /**
  * A state of the world a trigger, an optional goal or a use waits for: every
@@ -288,6 +288,13 @@ export type Effect =
   | { do: "freeze"; on: boolean }
   /** The rudder and the throttle, set by the story (a scene sailing by itself). */
   | { do: "steer"; rudder?: number; throttle?: number; heading?: number }
+  /**
+   * Someone else has the wheel (the captain): the skipper's boat steered
+   * through these waypoints (places, level spots or chart points) at
+   * `speed` (0…1 of the throttle), easing to a stop at the last; null hands
+   * the wheel back.
+   */
+  | { do: "pilot"; route: readonly (string | ChartPoint)[] | null; speed?: number }
   /**
    * A person of the roster: sent to a spot (`to`, at `pace`, then holding
    * `pose`), put there at once (`put`), set to follow the skipper or not,

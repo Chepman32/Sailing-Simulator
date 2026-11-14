@@ -156,6 +156,8 @@ export type StoryOverlayFrame = {
   rifle: boolean;
   alarm: number;
   attacking: boolean;
+  /** At the mounted gun: the barrel's heat (0…1) and whether it must cool before firing again. */
+  gunner: { heat: number; hot: boolean } | null;
 };
 
 /** Something taken from the sea floor: what, its tier, and gold (paid at once for a chest). */

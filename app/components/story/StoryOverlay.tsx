@@ -43,6 +43,8 @@ export function StoryOverlay({ listenerRef, language, active }: Props) {
   const droneRefs = useRef<(HTMLDivElement | null)[]>([]);
   const droneLabels = useRef<(HTMLSpanElement | null)[]>([]);
   const hitRef = useRef<HTMLDivElement>(null);
+  const gunnerRef = useRef<HTMLDivElement | null>(null);
+  const gunnerHeat = useRef<HTMLSpanElement | null>(null);
   const hitLabel = useRef<HTMLSpanElement>(null);
   const lastHit = useRef(0);
   const pointer = useRef({ x: -1, y: -1 });
@@ -151,6 +153,12 @@ export function StoryOverlay({ listenerRef, language, active }: Props) {
           hitLabel.current.textContent =
             result.zone === "miss"
               ? ""
+              : frame.gunner
+                ? result.condition === "wrecked"
+                  ? messages.hitBoatWrecked
+                  : result.condition === "stopped" && result.zone === "jet"
+                    ? messages.hitBoatStopped
+                    : ""
               : result.condition === "wrecked"
                 ? messages.hitWrecked
                 : result.condition === "blind" && result.zone === "dome"
@@ -169,6 +177,15 @@ export function StoryOverlay({ listenerRef, language, active }: Props) {
         hit.classList.add("is-live");
       }
       document.documentElement.classList.toggle("rifle-drawn", frame.rifle);
+      // At the mounted gun: its sight in the middle, the barrel's heat under it.
+      const gunner = gunnerRef.current;
+      if (gunner) {
+        gunner.style.display = frame.gunner ? "" : "none";
+        if (frame.gunner) {
+          gunner.classList.toggle("is-hot", frame.gunner.hot);
+          if (gunnerHeat.current) gunnerHeat.current.style.transform = `scaleX(${frame.gunner.heat.toFixed(3)})`;
+        }
+      }
     };
     return () => {
       listenerRef.current = null;
@@ -203,6 +220,13 @@ export function StoryOverlay({ listenerRef, language, active }: Props) {
           />
         </div>
       ))}
+      <div ref={gunnerRef} className="story-gunner" style={{ display: "none" }}>
+        <span className="story-gunner-sight" />
+        <span className="story-gunner-heat">
+          <span ref={gunnerHeat} className="story-gunner-heat-fill" />
+        </span>
+        <span className="story-gunner-label">{storyMessages(language).gunnerHeat}</span>
+      </div>
       <div ref={hitRef} className="story-hit">
         <span className="story-hit-cross" />
         <span ref={hitLabel} className="story-hit-label" />

@@ -3,7 +3,7 @@ import { AudioSystem, type AudioWeather } from "./audio/AudioSystem";
 import { CameraController } from "./camera/CameraController";
 import { AssetManager, ASSET_LOAD_TOTAL, AUTHORED_FIGURE_KEY, LOAD_STEPS_TOTAL, SCENE_LOAD_STEPS, TRADER_MODEL_KEYS } from "./core/AssetManager";
 import type { ActorModel } from "./actors/ActorLooks";
-import type { CraftSeat } from "./vessel/CraftModels";
+import type { CraftModel, CraftSeat } from "./vessel/CraftModels";
 import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
 import { CanvasSizeGate, contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
@@ -31,7 +31,7 @@ import { autoWeatherKind, isWeatherKind, type WeatherKind, type WeatherMode } fr
 import { UnderwaterLight } from "./environment/UnderwaterLight";
 import { helmFromRudder, InputController } from "./input/InputController";
 import { TouchControls } from "./input/TouchControls";
-import { smoothstep } from "./math";
+import { clamp, smoothstep } from "./math";
 import { compassBearing } from "./vessel/HelmInstruments";
 import { applyEnginePower, createSimulatorState, type SimulatorState } from "./state";
 import type {
@@ -159,6 +159,18 @@ const HELM_REACH = 28;
 const SCRAMBLE_REACH = { x: 0.75, z: 0.55, dx: 0.35, dz: -0.25 };
 /** The longest a turn of his head to what the story shows him takes, s. */
 const STORY_LOOK_SECONDS = 1.6;
+/** The pilot passes a waypoint this near, m. */
+const PILOT_REACH = 32;
+/** The mounted gun: its traverse either side of its rest bearing and its elevation (rad), rounds' interval (s), spread (rad) and reach (m). */
+const GUN_TRAVERSE = 1.95;
+const GUN_PITCH: readonly [number, number] = [-0.22, 0.38];
+const GUN_INTERVAL = 0.09;
+const GUN_SPREAD = 0.0055;
+const GUN_RANGE = 820;
+/** Seconds of fire that heat the barrel through, how fast it cools (per s), and the heat it must cool to before it fires again. */
+const GUN_BURST = 6;
+const GUN_COOLING = 0.32;
+const GUN_COOL = 0.4;
 /** How fast he dashes, m/s. */
 const SCRAMBLE_SPEED = 3.2;
 const STORAGE_KEY = "sailing-simulator-pro-preferences-v2";
@@ -318,6 +330,18 @@ export class Simulator {
   private readonly shipImpact = new THREE.Vector3();
   private readonly helmPoint = new THREE.Vector3();
   private readonly sceneShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 45 };
+  /** Another hand at the wheel (the story's `pilot`): her waypoints, the next one, her throttle. */
+  private pilot: { route: { x: number; z: number }[]; index: number; speed: number } | null = null;
+  /**
+   * The skipper at the mounted gun (the story's `gunner` flag aboard a boat
+   * with a `mount`): where he aims (rad from the gun's rest bearing, and up),
+   * the barrel's heat (1: too hot to fire until it cools to `GUN_COOL`), the
+   * time to the next round, the trigger, his kick.
+   */
+  private readonly gunner = { active: false, yaw: 0, pitch: 0.03, heat: 0, hot: false, next: 0, firing: false, kick: 0, locked: false, lastX: 0, lastY: 0, dragging: false };
+  private readonly gunnerShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 62 };
+  private readonly gunnerScratch = new THREE.Vector3();
+  private readonly gunnerForward = new THREE.Vector3();
   /** The skipper on foot and in the water (see `diver/`). */
   private diver?: DiverController;
   private deckField: DeckField | null = null;
@@ -393,7 +417,7 @@ export class Simulator {
   private lastHit: { id: number; zone: HitZone | "miss"; armour: boolean; condition: DroneCondition | null } = { id: 0, zone: "miss", armour: false, condition: null };
   private pointerDown: { x: number; y: number; time: number; id: number } | null = null;
   /** Per-frame screen positions of the waypoint and the drones (see `StoryOverlay`). */
-  private readonly overlay: StoryOverlayFrame = { width: 1, height: 1, marker: null, drones: [], hit: this.lastHit, rifle: false, alarm: 0, attacking: false };
+  private readonly overlay: StoryOverlayFrame = { width: 1, height: 1, marker: null, drones: [], hit: this.lastHit, rifle: false, alarm: 0, attacking: false, gunner: null };
   /** The diver's eyes are under the surface (with a little hysteresis), and seconds since his last splash. */
   private eyesUnder = false;
   private sinceSplash = 10;
@@ -905,6 +929,8 @@ export class Simulator {
       this.canvas.addEventListener("click", this.onCanvasClick);
       this.canvas.addEventListener("pointerdown", this.onCanvasPointerDown);
       this.canvas.addEventListener("pointerup", this.onCanvasPointerUp);
+      this.canvas.addEventListener("pointermove", this.onGunnerPointerMove);
+      window.addEventListener("pointerup", this.onGunnerPointerUp);
       this.resizeObserver = new ResizeObserver(this.requestResize);
       this.resizeObserver.observe(this.canvas.parentElement ?? this.canvas);
       this.resize();
@@ -2035,6 +2061,8 @@ export class Simulator {
     this.canvas.removeEventListener("click", this.onCanvasClick);
     this.canvas.removeEventListener("pointerdown", this.onCanvasPointerDown);
     this.canvas.removeEventListener("pointerup", this.onCanvasPointerUp);
+    this.canvas.removeEventListener("pointermove", this.onGunnerPointerMove);
+    window.removeEventListener("pointerup", this.onGunnerPointerUp);
     this.story?.dispose();
     this.drones?.dispose();
     this.combatEffects?.dispose();
@@ -2231,6 +2259,8 @@ export class Simulator {
       this.sceneShot.fov = scene.fov;
       this.camera.direct(this.sceneShot, 1);
       this.camera.camera.updateMatrixWorld();
+    } else {
+      this.directGunner(delta);
     }
     this.updateShake(delta);
     this.environment.setWeatherKind(this.currentWeatherKind());
@@ -2343,6 +2373,7 @@ export class Simulator {
       this.photo.offer({ kind: "horn", x: horn.position.x, y: 8, z: horn.position.z, size: horn.length * 0.75 }, this.physics.position.x, this.physics.position.z);
     }
     this.updateStory(delta);
+    this.updatePilot();
     this.updateCombat(delta);
     this.hud.update(delta, () => this.snapshot());
   }
@@ -2425,6 +2456,13 @@ export class Simulator {
     steer: (rudder, throttle) => {
       if (rudder !== undefined) this.state.controls.rudder = rudder;
       if (throttle !== undefined) this.state.controls.throttle = throttle;
+    },
+    pilot: (route, speed) => {
+      this.pilot = route && route.length > 0 ? { route: route.map((point) => ({ ...point })), index: 0, speed } : null;
+      if (!this.pilot) {
+        this.state.controls.rudder = 0;
+        this.state.controls.throttle = 0;
+      }
     },
     craft: (craft) => this.setCraft(craft),
     moveBoat: (x, z, heading) => {
@@ -3277,7 +3315,7 @@ export class Simulator {
         party.set([{ id: "hero", look: HERO_LOOK }, ...story.party()]);
         const visible = !diver?.active && (this.state.cameraMode !== "helm" || this.flareCamera.blend > 0.3 || this.photo.blend > 0.3 || story.cinematic);
         party.group.position.copy(craft.group.position);
-        const seats = story.flagged("scramble") && craft.seats.length > 0 ? this.scrambleSeats(delta, craft.seats) : craft.seats;
+        const seats = story.flagged("scramble") && craft.seats.length > 0 ? this.scrambleSeats(delta, craft.seats, craft.deck) : craft.seats;
         if (seats === craft.seats) this.scramble.active = false;
         party.setSpeed("hero", this.scramble.active ? this.scramble.speed : 0);
         party.update(delta, seats, visible, this.physics.guard.output.rudder, this.elapsed);
@@ -3293,7 +3331,7 @@ export class Simulator {
    * another, stopping short, turning, dashing again, never twice the same
    * way. The spots lie on the deck his seat stands on, within `SCRAMBLE_REACH`.
    */
-  private scrambleSeats(delta: number, seats: readonly CraftSeat[]): CraftSeat[] {
+  private scrambleSeats(delta: number, seats: readonly CraftSeat[], deck?: CraftModel["deck"]): CraftSeat[] {
     const home = seats[0]!;
     const s = this.scramble;
     if (!s.active) {
@@ -3316,8 +3354,9 @@ export class Simulator {
       if (s.pause <= 0) {
         // The next spot: somewhere else on the deck, a good stride away.
         for (let attempt = 0; attempt < 6; attempt += 1) {
-          const x = home.x + SCRAMBLE_REACH.dx + (Math.random() * 2 - 1) * SCRAMBLE_REACH.x;
-          const z = home.z + SCRAMBLE_REACH.dz + (Math.random() * 2 - 1) * SCRAMBLE_REACH.z;
+          // Her open deck when she has one, else round his seat.
+          const x = deck ? deck.x + (Math.random() * 2 - 1) * deck.halfX : home.x + SCRAMBLE_REACH.dx + (Math.random() * 2 - 1) * SCRAMBLE_REACH.x;
+          const z = deck ? deck.z + (Math.random() * 2 - 1) * deck.halfZ : home.z + SCRAMBLE_REACH.dz + (Math.random() * 2 - 1) * SCRAMBLE_REACH.z;
           if (Math.hypot(x - s.x, z - s.z) > 0.7) {
             s.targetX = x;
             s.targetZ = z;
@@ -3339,7 +3378,7 @@ export class Simulator {
     }
     const seat = this.scrambleSeat;
     seat.x = s.x;
-    seat.y = home.y;
+    seat.y = deck ? deck.y : home.y;
     seat.z = s.z;
     seat.yaw = s.yaw;
     seat.sit = false;
@@ -3399,6 +3438,142 @@ export class Simulator {
     return true;
   }
 
+  private readonly onGunnerPointerMove = (event: PointerEvent): void => {
+    const gunner = this.gunner;
+    if (!gunner.active) return;
+    let dx = 0;
+    let dy = 0;
+    if (document.pointerLockElement === this.canvas) {
+      dx = event.movementX;
+      dy = event.movementY;
+    } else if (gunner.dragging) {
+      dx = event.clientX - gunner.lastX;
+      dy = event.clientY - gunner.lastY;
+    }
+    gunner.lastX = event.clientX;
+    gunner.lastY = event.clientY;
+    const sensitivity = event.pointerType === "touch" ? 0.0048 : 0.0022;
+    gunner.yaw = clamp(gunner.yaw - dx * sensitivity, -GUN_TRAVERSE, GUN_TRAVERSE);
+    gunner.pitch = clamp(gunner.pitch - dy * sensitivity, GUN_PITCH[0], GUN_PITCH[1]);
+  };
+
+  private readonly onGunnerPointerUp = (): void => {
+    this.gunner.firing = false;
+    this.gunner.dragging = false;
+  };
+
+  /** Space or a held key fires the mounted gun too. */
+  setGunnerTrigger(down: boolean): void {
+    if (this.gunner.active) this.gunner.firing = down;
+  }
+
+  /**
+   * Another hand at the wheel: the boat steered for the next waypoint (each
+   * passed within reach), the throttle eased off toward the last one.
+   */
+  private updatePilot(): void {
+    const pilot = this.pilot;
+    if (!pilot) return;
+    const position = this.physics.position;
+    let target = pilot.route[pilot.index]!;
+    while (pilot.index < pilot.route.length - 1 && Math.hypot(target.x - position.x, target.z - position.z) < PILOT_REACH) {
+      pilot.index += 1;
+      target = pilot.route[pilot.index]!;
+    }
+    const away = Math.hypot(target.x - position.x, target.z - position.z);
+    const last = pilot.index === pilot.route.length - 1;
+    const bearing = Math.atan2(target.x - position.x, target.z - position.z);
+    const error = Math.atan2(Math.sin(bearing - this.physics.heading), Math.cos(bearing - this.physics.heading));
+    this.state.controls.rudder = clamp(error * 2.4 - this.physics.yawRate * 0.8, -1, 1);
+    const slow = last ? clamp((away - 6) / 60, 0, 1) : 1;
+    // Round a sharp turn a little slower.
+    const turn = 1 - Math.min(0.35, Math.abs(error) * 0.3);
+    this.state.controls.throttle = pilot.speed * slow * turn;
+    if (last && away < 8) this.state.controls.throttle = 0;
+  }
+
+  /**
+   * The view from the mounted gun: behind its grips, along its barrel,
+   * which turns and lifts with his aim (and kicks with each round); the
+   * barrel's heat cools, the trigger fires while held.
+   */
+  private directGunner(delta: number): void {
+    const gunner = this.gunner;
+    const craft = this.vessel.craftModel;
+    const mount = craft?.mount;
+    const wanted = Boolean(mount && this.story?.active && this.story.flagged("gunner") && !this.diver?.active && !this.menuView && !this.story.cinematic);
+    if (gunner.active !== wanted) {
+      gunner.active = wanted;
+      gunner.firing = false;
+      gunner.yaw = 0;
+      gunner.pitch = 0.03;
+      if (!wanted && document.pointerLockElement === this.canvas) document.exitPointerLock?.();
+    }
+    gunner.heat = Math.max(0, gunner.heat - delta * (gunner.firing && !gunner.hot ? 0 : GUN_COOLING));
+    if (gunner.hot && gunner.heat <= GUN_COOL) gunner.hot = false;
+    gunner.kick = Math.max(0, gunner.kick - delta * 9);
+    if (!wanted || !mount || !craft) return;
+    mount.pivot.rotation.y = mount.aft + gunner.yaw + (Math.random() - 0.5) * gunner.kick * 0.01;
+    mount.cradle.rotation.x = -gunner.pitch - gunner.kick * 0.035;
+    mount.pivot.updateMatrixWorld(true);
+    this.gunnerScratch.copy(mount.eye);
+    mount.cradle.localToWorld(this.gunnerScratch);
+    this.gunnerShot.position.x = this.gunnerScratch.x;
+    this.gunnerShot.position.y = this.gunnerScratch.y;
+    this.gunnerShot.position.z = this.gunnerScratch.z;
+    this.gunnerForward.set(0, 0, 1).transformDirection(mount.cradle.matrixWorld);
+    this.gunnerShot.target.x = this.gunnerScratch.x + this.gunnerForward.x * 30;
+    this.gunnerShot.target.y = this.gunnerScratch.y + this.gunnerForward.y * 30;
+    this.gunnerShot.target.z = this.gunnerScratch.z + this.gunnerForward.z * 30;
+    this.camera.direct(this.gunnerShot, 1);
+    this.camera.camera.updateMatrixWorld();
+    gunner.next -= delta;
+    if (gunner.firing && !gunner.hot && gunner.next <= 0) {
+      gunner.next += GUN_INTERVAL;
+      if (gunner.next < 0) gunner.next = 0;
+      this.fireMountedGun(mount);
+    }
+    if (!gunner.firing) gunner.next = Math.max(gunner.next, 0);
+  }
+
+  /** One round from the mounted gun, along the view: at a boat, or into the sea. */
+  private fireMountedGun(mount: NonNullable<CraftModel["mount"]>): void {
+    const drones = this.drones;
+    const gunner = this.gunner;
+    gunner.heat = Math.min(1, gunner.heat + GUN_INTERVAL / GUN_BURST);
+    if (gunner.heat >= 1) gunner.hot = true;
+    gunner.kick = Math.min(1, gunner.kick + 0.5);
+    this.story?.notify("shot");
+    this.sinceGunfire = 0;
+    const camera = this.camera.camera;
+    const origin = this.muzzlePoint.copy(camera.position);
+    camera.getWorldDirection(this.shotDirection);
+    this.shotDirection.x += (Math.random() - 0.5) * 2 * GUN_SPREAD;
+    this.shotDirection.y += (Math.random() - 0.5) * 2 * GUN_SPREAD;
+    this.shotDirection.z += (Math.random() - 0.5) * 2 * GUN_SPREAD;
+    this.shotDirection.normalize();
+    const visual = this.visualMuzzle.copy(mount.muzzle);
+    mount.cradle.localToWorld(visual);
+    const effects = this.combatEffects;
+    effects?.flash(visual, 0.9);
+    effects?.muzzleSmoke(visual, this.shotDirection.x, this.shotDirection.y, this.shotDirection.z);
+    this.combatAudio?.gunshot("rifle");
+    this.combatShake = Math.max(this.combatShake, 0.16);
+    const result = drones?.shoot(origin, this.shotDirection, GUN_RANGE, 1) ?? null;
+    // Every third round a tracer.
+    const tracer = (this.lastHit.id % 3) === 0;
+    this.lastHit = { id: this.lastHit.id + 1, zone: result?.zone ?? "miss", armour: result?.armour ?? false, condition: result?.condition ?? null };
+    if (result) {
+      if (tracer) effects?.tracer(visual, result.point, false);
+      this.combatAudio?.impact(result.point, result.zone, result.armour);
+    } else {
+      const along = this.shotDirection.y < -0.002 ? Math.min(GUN_RANGE, origin.y / -this.shotDirection.y) : GUN_RANGE;
+      this.aimPoint.copy(this.shotDirection).multiplyScalar(along).add(origin);
+      if (tracer) effects?.tracer(visual, this.aimPoint, false);
+      if (along < GUN_RANGE) this.wake.splash(this.aimPoint.setY(this.ocean.sample(this.aimPoint.x, this.aimPoint.z).height), 0.35, "entry", undefined, false);
+    }
+  }
+
   /** Screen positions for the interface's waypoint and drone markers. */
   private updateOverlay(): void {
     const story = this.story;
@@ -3442,6 +3617,7 @@ export class Simulator {
     }
     frame.hit = this.lastHit;
     frame.rifle = this.armoury.drawn !== null;
+    frame.gunner = this.gunner.active ? { heat: this.gunner.heat, hot: this.gunner.hot } : null;
     const alarm = story.active ? drones.alarm() : { suspicion: 0, attacking: false };
     frame.alarm = alarm.suspicion;
     frame.attacking = alarm.attacking;
@@ -3450,6 +3626,20 @@ export class Simulator {
 
   private readonly onCanvasPointerDown = (event: PointerEvent): void => {
     this.pointerDown = { x: event.clientX, y: event.clientY, time: performance.now(), id: event.pointerId };
+    // At the mounted gun: the mouse is captured for aiming and its button is the trigger; a finger drags the aim and fires while held.
+    if (this.gunner.active) {
+      const gunner = this.gunner;
+      if (event.pointerType === "mouse") {
+        if (document.pointerLockElement !== this.canvas) void this.canvas.requestPointerLock?.()?.catch?.(() => undefined);
+        if (event.button === 0) gunner.firing = true;
+      } else {
+        gunner.firing = true;
+      }
+      gunner.dragging = true;
+      gunner.lastX = event.clientX;
+      gunner.lastY = event.clientY;
+      return;
+    }
     // On foot with the mouse held for looking, the button is the trigger.
     if (this.armoury.drawn && this.diver?.active && this.diver.looksWithMouse && event.button === 0) {
       this.fireRifle(0, 0);

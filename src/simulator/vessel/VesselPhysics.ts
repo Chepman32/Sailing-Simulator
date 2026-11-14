@@ -188,6 +188,7 @@ export const CRAFT_HANDLING = {
   catamaran: { thrust: 1, fade: 1, drag: 1, turn: 1, response: 1 },
   sport: { thrust: 5.6, fade: 2.8, drag: 1, turn: 1.05, response: 1.5 },
   skiff: { thrust: 0.62, fade: 0.6, drag: 1, turn: 1.55, response: 1.6 },
+  albatross: { thrust: 2.4, fade: 1.6, drag: 1, turn: 1.25, response: 1.5 },
 } as const;
 
 export const START_POSITION = { x: 0, z: -330 } as const;

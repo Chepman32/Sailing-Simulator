@@ -10,6 +10,7 @@ export const ASSET_MANIFEST: Readonly<Record<string, { v: string; bytes: number 
   "/models/fig-guard-a.glb": { v: "96466587e9", bytes: 1004112 },
   "/models/fig-guard-b.glb": { v: "f55600799c", bytes: 1405804 },
   "/models/fig-mark.glb": { v: "b8302b5e5d", bytes: 2937448 },
+  "/models/motoryacht-35.glb": { v: "e3471015d8", bytes: 901892 },
   "/models/seagull-animated.glb": { v: "c0fd7f132d", bytes: 107192 },
   "/models/shark-animated.glb": { v: "14c28c4a21", bytes: 815056 },
   "/models/ships/bulk-herve.glb": { v: "08f7b8d265", bytes: 727968 },

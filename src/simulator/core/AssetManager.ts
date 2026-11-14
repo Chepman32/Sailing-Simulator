@@ -52,7 +52,7 @@ const ASSETS = {
   // In the order they are wanted: the story's boats (the prologue's sport
   // yacht, the skiff of M01; drawn in code until they come), what is met
   // at sea, then ashore.
-  sportYacht: { url: "/models/sport-yacht.glb", label: "Loading the sport yacht", required: false, stage: "later" },
+  sportYacht: { url: "/models/motoryacht-35.glb", label: "Loading the sport yacht", required: false, stage: "later" },
   skiff: { url: "/models/skiff-center-console.glb", label: "Loading the skiff", required: false, stage: "later" },
   // The guns in the skipper's hands (first person), then the story's own people.
   viewPistol: { url: "/models/view-pistol.glb", label: "Loading weapons", required: false, stage: "later" },

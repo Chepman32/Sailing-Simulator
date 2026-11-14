@@ -33,6 +33,15 @@ export type CraftModel = {
   /** The outboard turned with the helm, the propeller spinning with the shaft. */
   update(delta: number, rudder: number, shaft: number): void;
   dispose(): void;
+  /** Open deck where people move about (the skipper's scramble as she floods): centre and half-extents, craft frame. */
+  deck?: { x: number; y: number; z: number; halfX: number; halfZ: number };
+  /**
+   * A gun on a mount (the Albatross's stern machine gun): its pivot turns
+   * about y (`yaw`) and its cradle about x (`pitch`), its muzzle and the
+   * gunner's eye are points in the cradle's frame; `aft` is its rest
+   * bearing (rad about y, 0 forward).
+   */
+  mount?: { pivot: THREE.Object3D; cradle: THREE.Object3D; muzzle: THREE.Vector3; eye: THREE.Vector3; aft: number; seat: CraftSeat };
   /** Built from the loaded model (`ModelCrafts`), not drawn in code as the stand-in. */
   modelled?: boolean;
   /** The helm's display: the alert the network puts on it (null: the chart). */
@@ -409,6 +418,160 @@ export function skiff(): CraftModel {
 }
 
 /** The craft's stand-in by id, drawn in code (`ModelCrafts.buildCraft` prefers the loaded model). */
-export function drawnCraft(craft: "sport" | "skiff"): CraftModel {
-  return craft === "sport" ? sportYacht() : skiff();
+export function drawnCraft(craft: "sport" | "skiff" | "albatross"): CraftModel {
+  return craft === "sport" ? sportYacht() : craft === "skiff" ? skiff() : albatross();
+}
+
+// --- The Albatross -----------------------------------------------------------------
+
+const ALBATROSS_LENGTH = 10.4;
+const ALBATROSS_SOLE = 0.62;
+
+function albatrossStation(s: number): Station {
+  const fore = Math.max(0, (s - 0.48) / 0.52);
+  const taper = Math.sqrt(Math.max(0, 1 - fore * fore * 0.96));
+  const beam = 1.58 * taper + 0.04;
+  return {
+    beam,
+    sheerY: 1.22 + 0.34 * Math.pow(s, 2.4),
+    chine: beam * 0.9,
+    chineY: 0.08 + 0.36 * Math.pow(s, 2.2),
+    keelY: -0.5 + 0.1 * s + 0.82 * Math.pow(fore, 3),
+  };
+}
+
+/**
+ * The Albatross (M02): the captain's 10 m workboat, the Free Bay's
+ * runner. A white hull worn grey at the chines, a faded blue band, her name
+ * on the bows; a wheelhouse forward (the captain at the wheel inside), an
+ * open after deck with benches along both sides for the people she takes
+ * off, a canvas awning over them, and on her transom a 12.7 mm machine gun
+ * on a pintle with a shield, an ammunition box and a hand rail round the
+ * gunner (`mount`). One big outboard pair on the transom.
+ */
+export function albatross(): CraftModel {
+  const kit = new Kit();
+  const group = new THREE.Group();
+  group.name = "Albatross";
+  const paint = kit.material(new THREE.MeshStandardMaterial({ color: 0xe9e7df, roughness: 0.42, envMapIntensity: 1.05, side: THREE.DoubleSide }));
+  const band = kit.material(new THREE.MeshStandardMaterial({ color: 0x2f6f9a, roughness: 0.55, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 }));
+  const bottom = kit.material(new THREE.MeshStandardMaterial({ color: 0x7a2f26, roughness: 0.75, side: THREE.DoubleSide }));
+  const deckMat = kit.material(new THREE.MeshStandardMaterial({ color: 0xb59f7c, roughness: 0.85, side: THREE.DoubleSide }));
+  const wood = kit.material(new THREE.MeshStandardMaterial({ color: 0x8a6a46, roughness: 0.8 }));
+  const canvas = kit.material(new THREE.MeshStandardMaterial({ color: 0xd8c9a2, roughness: 0.95, side: THREE.DoubleSide }));
+  const glass = kit.material(new THREE.MeshStandardMaterial({ color: 0x1a2a32, roughness: 0.05, metalness: 0.5, transparent: true, opacity: 0.55, envMapIntensity: 1.6 }));
+  const steel = kit.material(new THREE.MeshStandardMaterial({ color: 0xb9bec2, roughness: 0.3, metalness: 0.9 }));
+  const gunMetal = kit.material(new THREE.MeshStandardMaterial({ color: 0x2b2e2c, roughness: 0.45, metalness: 0.7 }));
+  const olive = kit.material(new THREE.MeshStandardMaterial({ color: 0x4d5440, roughness: 0.7, metalness: 0.2 }));
+  const engine = kit.material(new THREE.MeshStandardMaterial({ color: 0x24282c, roughness: 0.4, metalness: 0.3 }));
+  const hull = loftHull(ALBATROSS_LENGTH, albatrossStation, ALBATROSS_SOLE, 0.62);
+  sideUvs(hull.topsides, ALBATROSS_LENGTH, 2);
+  kit.mesh(group, kit.geometry(hull.topsides), paint);
+  kit.mesh(group, kit.geometry(hull.bottom), bottom);
+  kit.mesh(group, kit.geometry(hull.deck), paint);
+  kit.mesh(group, kit.geometry(hull.liner), deckMat);
+  kit.mesh(group, hullBand(ALBATROSS_LENGTH, albatrossStation, 0.02, 0.98, 0.3, 0.42), band, 0, 0, 0, false);
+  const half = ALBATROSS_LENGTH / 2;
+  const zAt = (s: number) => -half + s * ALBATROSS_LENGTH;
+
+  // The wheelhouse forward of the after deck: walls, windows, a flat roof with a mast and a light.
+  const house = new THREE.Group();
+  house.position.set(0, ALBATROSS_SOLE, zAt(0.66));
+  group.add(house);
+  kit.mesh(house, kit.geometry(new THREE.BoxGeometry(2.3, 1.15, 2.4)), paint, 0, 0.575, 0);
+  kit.mesh(house, kit.geometry(new THREE.BoxGeometry(2.36, 0.62, 2.0)), glass, 0, 1.46, 0.12);
+  for (const x of [1.16, -1.16]) kit.mesh(house, kit.geometry(new THREE.BoxGeometry(0.06, 0.62, 0.08)), paint, x, 1.46, -0.9);
+  kit.mesh(house, kit.geometry(new THREE.BoxGeometry(2.5, 0.1, 2.7)), paint, 0, 1.82, 0.05);
+  kit.mesh(house, kit.geometry(new THREE.CylinderGeometry(0.035, 0.045, 1.6, 8)), steel, 0.6, 2.62, -0.6);
+  kit.mesh(house, kit.geometry(new THREE.SphereGeometry(0.08, 10, 8)), steel, 0.6, 3.44, -0.6);
+  // The door aft into it (open: a dark doorway), the captain's seat at the wheel inside.
+  kit.mesh(house, kit.geometry(new THREE.BoxGeometry(0.8, 1.6, 0.04)), engine, 0.5, 0.8, -1.21);
+  // The after deck: benches along both sides, the awning on four posts.
+  for (const x of [1.12, -1.12]) {
+    kit.mesh(group, kit.geometry(new THREE.BoxGeometry(0.46, 0.44, 3.6)), wood, x, ALBATROSS_SOLE + 0.22, zAt(0.33));
+  }
+  for (const [x, s] of [[1.35, 0.14], [-1.35, 0.14], [1.35, 0.52], [-1.35, 0.52]] as const) {
+    kit.mesh(group, kit.geometry(new THREE.CylinderGeometry(0.03, 0.03, 2.1, 8)), steel, x, ALBATROSS_SOLE + 1.05, zAt(s));
+  }
+  const awning = kit.mesh(group, kit.geometry(new THREE.BoxGeometry(2.8, 0.04, 4.1)), canvas, 0, ALBATROSS_SOLE + 2.1, zAt(0.33), false);
+  awning.rotation.x = -0.03;
+  // Outboards on the transom.
+  for (const x of [0.5, -0.5]) {
+    kit.mesh(group, kit.geometry(new THREE.BoxGeometry(0.42, 0.62, 0.5)), engine, x, 0.82, -half - 0.3);
+    kit.mesh(group, kit.geometry(new THREE.BoxGeometry(0.12, 0.9, 0.22)), engine, x, 0.12, -half - 0.36);
+  }
+
+  // The gun on its pintle at the transom, facing aft, with a rail round the gunner.
+  const pivot = new THREE.Group();
+  pivot.position.set(0, ALBATROSS_SOLE, zAt(0.07));
+  pivot.rotation.y = Math.PI;
+  group.add(pivot);
+  kit.mesh(pivot, kit.geometry(new THREE.CylinderGeometry(0.08, 0.14, 1.0, 10)), gunMetal, 0, 0.5, 0);
+  const cradle = new THREE.Group();
+  cradle.position.set(0, 1.08, 0);
+  pivot.add(cradle);
+  // Receiver, barrel with its flash hider and carry handle, spade grips aft, the box on its left.
+  kit.mesh(cradle, kit.geometry(new THREE.BoxGeometry(0.2, 0.2, 0.86)), gunMetal, 0, 0, 0.05);
+  const barrel = kit.mesh(cradle, kit.geometry(new THREE.CylinderGeometry(0.03, 0.03, 1.15, 10)), gunMetal, 0, 0.02, 1.05);
+  barrel.rotation.x = Math.PI / 2;
+  const hider = kit.mesh(cradle, kit.geometry(new THREE.CylinderGeometry(0.05, 0.045, 0.16, 10)), gunMetal, 0, 0.02, 1.66);
+  hider.rotation.x = Math.PI / 2;
+  const jacket = kit.mesh(cradle, kit.geometry(new THREE.CylinderGeometry(0.055, 0.055, 0.42, 12)), olive, 0, 0.02, 0.62);
+  jacket.rotation.x = Math.PI / 2;
+  kit.mesh(cradle, kit.geometry(new THREE.BoxGeometry(0.03, 0.08, 0.3)), gunMetal, 0, 0.15, 0.2);
+  for (const x of [0.13, -0.13]) {
+    const grip = kit.mesh(cradle, kit.geometry(new THREE.CylinderGeometry(0.022, 0.022, 0.16, 8)), engine, x, -0.06, -0.43);
+    grip.rotation.x = 0.25;
+  }
+  kit.mesh(cradle, kit.geometry(new THREE.BoxGeometry(0.26, 0.04, 0.05)), gunMetal, 0, 0.0, -0.4);
+  kit.mesh(cradle, kit.geometry(new THREE.BoxGeometry(0.22, 0.24, 0.34)), olive, 0.24, -0.06, 0.05);
+  // The shield: a bent steel plate with a sighting slot.
+  const shield = new THREE.Shape();
+  shield.moveTo(-0.5, -0.32);
+  shield.lineTo(0.5, -0.32);
+  shield.lineTo(0.5, 0.3);
+  shield.lineTo(0.06, 0.3);
+  shield.lineTo(0.06, 0.08);
+  shield.lineTo(-0.06, 0.08);
+  shield.lineTo(-0.06, 0.3);
+  shield.lineTo(-0.5, 0.3);
+  shield.closePath();
+  const plate = kit.mesh(cradle, kit.geometry(new THREE.ExtrudeGeometry(shield, { depth: 0.02, bevelEnabled: false })), olive, 0, 0.02, 0.36);
+  plate.rotation.x = -0.12;
+  kit.tube(group, [
+    new THREE.Vector3(1.1, ALBATROSS_SOLE + 0.95, zAt(0.16)),
+    new THREE.Vector3(1.0, ALBATROSS_SOLE + 0.95, zAt(0.02)),
+    new THREE.Vector3(-1.0, ALBATROSS_SOLE + 0.95, zAt(0.02)),
+    new THREE.Vector3(-1.1, ALBATROSS_SOLE + 0.95, zAt(0.16)),
+  ], 0.025, steel);
+
+  const gunnerZ = zAt(0.07) + 0.6;
+  return {
+    group,
+    // The captain at the wheel, in the house.
+    eye: new THREE.Vector3(0.5, ALBATROSS_SOLE + 1.62, zAt(0.66) + 0.3),
+    seats: [
+      // The skipper: at the gun (behind its grips, facing aft) when she runs, else on the bench.
+      { x: 0, y: ALBATROSS_SOLE, z: gunnerZ, yaw: Math.PI, sit: false, seat: 0 },
+      // Along the benches: the people she carries.
+      { x: 1.0, y: ALBATROSS_SOLE, z: zAt(0.44), yaw: -Math.PI / 2, sit: true, seat: 0.44 },
+      { x: -1.0, y: ALBATROSS_SOLE, z: zAt(0.44), yaw: Math.PI / 2, sit: true, seat: 0.44 },
+      { x: 1.0, y: ALBATROSS_SOLE, z: zAt(0.34), yaw: -Math.PI / 2, sit: true, seat: 0.44 },
+      { x: -1.0, y: ALBATROSS_SOLE, z: zAt(0.34), yaw: Math.PI / 2, sit: true, seat: 0.44 },
+      { x: 1.0, y: ALBATROSS_SOLE, z: zAt(0.24), yaw: -Math.PI / 2, sit: true, seat: 0.44 },
+      { x: -1.0, y: ALBATROSS_SOLE, z: zAt(0.24), yaw: Math.PI / 2, sit: true, seat: 0.44 },
+      // The captain in the house, at the wheel.
+      { x: 0.5, y: ALBATROSS_SOLE, z: zAt(0.66) + 0.15, yaw: 0, sit: true, seat: 0.62 },
+    ],
+    mount: {
+      pivot,
+      cradle,
+      muzzle: new THREE.Vector3(0, 0.02, 1.74),
+      eye: new THREE.Vector3(0, 0.22, -0.78),
+      aft: Math.PI,
+      seat: { x: 0, y: ALBATROSS_SOLE, z: gunnerZ, yaw: Math.PI, sit: false, seat: 0 },
+    },
+    update: () => undefined,
+    dispose: () => kit.dispose(),
+  };
 }

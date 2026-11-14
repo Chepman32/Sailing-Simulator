@@ -2,17 +2,17 @@ import * as THREE from "three";
 import { drawnCraft, Kit, sportYacht as drawnSportYacht, type CraftModel } from "./CraftModels";
 
 /**
- * The story's boats from their models (`/models/sport-yacht.glb`,
+ * The story's boats from their models (`/models/motoryacht-35.glb`,
  * `/models/skiff-center-console.glb`), fitted to the craft frame of
  * `CraftModels` (bow +Z, up +Y, x to port, origin at the waterline
  * amidships):
  *
- * - **the sport yacht** of the prologue (and of the last chapter): an 11 m
- *   express cruiser, white (the model's red gelcoat whitened to the
- *   story's livery) with a black band, four outboards on
- *   her transom, a hardtop over the aft deck with a hatch and a ladder up.
- *   She is driven from the hardtop, where a flybridge helm (console, wheel,
- *   the display the network takes over, a bolster seat) is added;
+ * - **the sport yacht** of the prologue: an open 11 m cruiser
+ *   (`/models/motoryacht-35.glb`), her topsides whitened to the story's
+ *   livery (the patrol reads "white hull, black stripe on the stern" off
+ *   her), driven from the helm under her hardtop; the chart screen there is
+ *   the display the network takes over, and her open cockpit is where the
+ *   skipper runs about as she floods (`CraftModel.deck`);
  * - **the skiff** the skipper takes from Створ-9: a 6 m centre-console boat,
  *   the wheel behind a low windscreen, a leaning seat behind it, a padded
  *   seat in the bows and a bench aft, one outboard, turned with the helm.
@@ -21,7 +21,7 @@ import { drawnCraft, Kit, sportYacht as drawnSportYacht, type CraftModel } from 
  * `Vessel` swaps it for the model when it arrives.
  */
 
-export type CraftKind = "sport" | "skiff";
+export type CraftKind = "sport" | "skiff" | "albatross";
 type SceneSource = (craft: CraftKind) => THREE.Group | null;
 
 let source: SceneSource = () => null;
@@ -33,7 +33,8 @@ export function setCraftScenes(next: SceneSource | null): void {
 
 /** The boat by id: from her model when it has loaded, else drawn in code. */
 export function buildCraft(craft: CraftKind): CraftModel {
-  const scene = source(craft);
+  // The Albatross is drawn in code only.
+  const scene = craft === "albatross" ? null : source(craft);
   if (!scene) return drawnCraft(craft);
   return craft === "sport" ? modelSportYacht(scene) : modelSkiff(scene);
 }
@@ -190,132 +191,122 @@ function wrapLine(context: CanvasRenderingContext2D, text: string, x: number, y:
 
 // --- The sport yacht ---------------------------------------------------------------------
 
-/** The model's frame (metres, Y up, bow +Z): her length runs from z −0.71 to 10.65. */
-const SPORT_MID_Z = 4.97;
-/** Her waterline in the model (the keel at −0.43). */
-const SPORT_WATERLINE = 0.02;
-/** The hardtop's flat top, from just over the transom to where it falls to the windscreen. */
-const SPORT_ROOF = 3.5 - SPORT_WATERLINE;
+/**
+ * The model's frame (`/models/motoryacht-35.glb`): an open 35-foot
+ * cruiser 4.75 units long, bow toward −Z, Y up. Scaled to her 11.4 m and
+ * turned bow +Z.
+ */
+const SPORT_SCALE = 2.4;
+const SPORT_MID_Z = -0.077;
+/** Her waterline in the model (the boot top). */
+const SPORT_WATERLINE = 0.32;
+/** In the model: the cockpit's teak sole, the helm seat's top, the helm's centre line. */
+const SPORT_SOLE = 0.51;
+const SPORT_SEAT = 0.83;
+const SPORT_HELM = { x: 0.27, z: 0.04 };
+/** The model's point in the craft frame. */
+const sportPoint = (x: number, y: number, z: number) =>
+  new THREE.Vector3(-x * SPORT_SCALE, (y - SPORT_WATERLINE) * SPORT_SCALE, -(z - SPORT_MID_Z) * SPORT_SCALE);
 
 function tuneSportMaterials(scene: THREE.Object3D): void {
-  const whitened = new Map<THREE.Texture, THREE.Texture>();
   for (const material of materialsOf(scene)) {
     if (material.userData.craftTuned) continue;
     material.userData.craftTuned = true;
+    const name = material.name;
     // Her livery as the story has her (the patrol reads it off her: "white hull,
-    // black stripe on the stern"): the model's red gelcoat white, the black band kept.
-    if (material.map) {
-      let white = whitened.get(material.map);
-      if (!white) {
-        white = whitenRed(material.map);
-        whitened.set(material.map, white);
-      }
-      material.map = white;
-    } else if (isRed(material.color.r, material.color.g, material.color.b)) {
-      material.color.setRGB(0.92, 0.92, 0.9);
+    // black stripe on the stern"): the model's black topsides and hardtop white,
+    // her black trim (the band aft) kept.
+    if (name === "fiancate") material.color.setRGB(0.9, 0.91, 0.9);
+    if (name === "fiancate" || name === "coperta1") {
+      material.roughness = 0.28;
+      material.envMapIntensity = 1.2;
     }
-    // Exported dead matte: a gelcoat shines, the black band is near black glass.
-    const dark = material.color.r + material.color.g + material.color.b < 0.2 && !material.map;
-    material.roughness = dark ? 0.45 : 0.32;
+    if (material.transparent) {
+      // The windscreen and the hatches: tinted glass, seen through.
+      material.depthWrite = false;
+      material.roughness = 0.05;
+      material.opacity = Math.min(material.opacity, 0.45);
+    }
     material.metalness = 0;
-    material.envMapIntensity = 1.15;
     material.needsUpdate = true;
   }
 }
 
-function isRed(r: number, g: number, b: number): boolean {
-  return r > 0.3 && r > g * 1.6 && r > b * 1.6;
+/** The model's own flag (an Italian ensign on her hardtop) and its staff: not hers here. */
+function dropFlag(scene: THREE.Object3D): void {
+  const flag: THREE.Object3D[] = [];
+  scene.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const material = mesh.material as THREE.Material;
+    if (/^(lambert4|lambert5|lambert6|phongE4)$/u.test(material.name)) flag.push(mesh);
+  });
+  for (const mesh of flag) mesh.removeFromParent();
 }
 
-/**
- * A copy of a texture with its reds turned to white gelcoat, the grain of
- * the paint kept as a faint grey; everything else as it was. The texture
- * itself if its picture cannot be read (no canvas: a test).
- */
-function whitenRed(texture: THREE.Texture): THREE.Texture {
-  const image = texture.image as CanvasImageSource & { width: number; height: number };
-  if (typeof document === "undefined" || !image?.width) return texture;
-  const canvas = document.createElement("canvas");
-  canvas.width = image.width;
-  canvas.height = image.height;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) return texture;
-  context.drawImage(image, 0, 0);
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
-  const data = pixels.data;
-  let changed = 0;
-  for (let index = 0; index < data.length; index += 4) {
-    const r = data[index]!;
-    const g = data[index + 1]!;
-    const b = data[index + 2]!;
-    if (!isRed(r / 255, g / 255, b / 255)) continue;
-    // The red's own light and dark (its grain) round a bright white.
-    const shade = Math.max(206, Math.min(248, 232 + (r - 190) * 0.22));
-    data[index] = shade;
-    data[index + 1] = shade;
-    data[index + 2] = shade - 3;
-    changed += 1;
+/** The helm's chart screen in the model: the display the network takes over. */
+function helmScreen(scene: THREE.Object3D): THREE.Mesh | null {
+  let found: THREE.Mesh | null = null;
+  scene.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (mesh.isMesh && (mesh.material as THREE.Material).name === "lambert1") found = mesh;
+  });
+  return found;
+}
+
+/** Puts the display on the model's screen: its own copy of the quad, its corners mapped flat to the picture. */
+function fitDisplay(mesh: THREE.Mesh, material: THREE.Material, kit: Kit): void {
+  const geometry = mesh.geometry.clone();
+  kit.geometries.push(geometry);
+  const position = geometry.getAttribute("position");
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox!;
+  const size = box.getSize(new THREE.Vector3());
+  // The screen lies across x (its width) and rises along z/y (its height): map those.
+  const across = size.x >= size.z ? "x" : "z";
+  const up = size.y >= Math.min(size.x, size.z) ? "y" : across === "x" ? "z" : "x";
+  const uv = new Float32Array(position.count * 2);
+  for (let index = 0; index < position.count; index += 1) {
+    const u = (position.getComponent(index, across === "x" ? 0 : 2) - box.min[across]) / Math.max(1e-6, size[across]);
+    const v = (position.getComponent(index, up === "y" ? 1 : up === "z" ? 2 : 0) - box.min[up]) / Math.max(1e-6, size[up]);
+    uv[index * 2] = u;
+    uv[index * 2 + 1] = up === "z" ? 1 - v : v;
   }
-  if (changed === 0) return texture;
-  context.putImageData(pixels, 0, 0);
-  const white = texture.clone();
-  white.image = canvas;
-  white.needsUpdate = true;
-  return white;
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  mesh.geometry = geometry;
+  mesh.material = material;
 }
 
 function modelSportYacht(scene: THREE.Group): CraftModel {
   prepare(scene);
+  dropFlag(scene);
   tuneSportMaterials(scene);
   const kit = new Kit();
   const group = new THREE.Group();
   group.name = "SportYacht";
-  scene.position.set(0, -SPORT_WATERLINE, -SPORT_MID_Z);
-  group.add(scene);
+  const hull = new THREE.Group();
+  hull.add(scene);
+  hull.scale.setScalar(SPORT_SCALE);
+  hull.rotation.y = Math.PI;
+  hull.position.set(0, -SPORT_WATERLINE * SPORT_SCALE, SPORT_MID_Z * SPORT_SCALE);
+  group.add(hull);
 
-  // The flybridge helm on the hardtop: a console with the wheel and the display, a bolster seat.
-  const white = kit.material(new THREE.MeshStandardMaterial({ color: 0xf1f1ee, roughness: 0.3, envMapIntensity: 1.1 }));
-  const dark = kit.material(new THREE.MeshStandardMaterial({ color: 0x1d2125, roughness: 0.45, metalness: 0.35 }));
-  const steel = kit.material(new THREE.MeshStandardMaterial({ color: 0xdfe3e6, roughness: 0.16, metalness: 1, envMapIntensity: 1.3 }));
-  const cushion = kit.material(new THREE.MeshStandardMaterial({ color: 0xe9e1cf, roughness: 0.8 }));
   const display = new HelmDisplay();
   kit.textures.push(display.texture);
-  const screen = kit.material(new THREE.MeshBasicMaterial({ map: display.texture, toneMapped: false }));
-  const helmX = -0.42;
-  const consoleZ = -1.62;
-  const helm = new THREE.Group();
-  helm.position.set(helmX, SPORT_ROOF, consoleZ);
-  group.add(helm);
-  // The console: a raked box, its face toward the seat.
-  const body = kit.mesh(helm, new THREE.BoxGeometry(0.9, 0.82, 0.5), white, 0, 0.41, 0);
-  body.rotation.x = 0.12;
-  const face = kit.mesh(helm, new THREE.BoxGeometry(0.86, 0.06, 0.42), dark, 0, 0.84, -0.02);
-  face.rotation.x = -0.55;
-  // On the face, turned up and aft to the helmsman.
-  const glass = kit.mesh(helm, new THREE.PlaneGeometry(0.42, 0.26), screen, -0.13, 0.87, -0.04, false);
-  glass.rotation.set(-(Math.PI / 2 - 0.55), Math.PI, 0, "YXZ");
-  const wheel = kit.mesh(helm, new THREE.TorusGeometry(0.19, 0.022, 8, 24), dark, 0.2, 0.86, -0.3);
-  wheel.rotation.x = -0.75;
-  kit.mesh(helm, new THREE.CylinderGeometry(0.02, 0.02, 0.2, 8), steel, 0.2, 0.82, -0.2).rotation.x = Math.PI / 2 - 0.75;
-  const lever = kit.mesh(helm, new THREE.BoxGeometry(0.03, 0.18, 0.03), steel, -0.36, 0.95, -0.12);
-  lever.rotation.x = 0.4;
-  // A grab rail round the console.
-  kit.tube(group, [
-    new THREE.Vector3(helmX - 0.5, SPORT_ROOF, consoleZ + 0.2),
-    new THREE.Vector3(helmX - 0.5, SPORT_ROOF + 0.95, consoleZ + 0.12),
-    new THREE.Vector3(helmX + 0.5, SPORT_ROOF + 0.95, consoleZ + 0.12),
-    new THREE.Vector3(helmX + 0.5, SPORT_ROOF, consoleZ + 0.2),
-  ], 0.018, steel);
-  // The bolster seat behind it.
-  const seatZ = consoleZ - 0.82;
-  kit.mesh(group, new THREE.CylinderGeometry(0.05, 0.08, 0.5, 10), steel, helmX, SPORT_ROOF + 0.25, seatZ);
-  kit.mesh(group, new THREE.BoxGeometry(0.52, 0.12, 0.46), cushion, helmX, SPORT_ROOF + 0.56, seatZ);
-  kit.mesh(group, new THREE.BoxGeometry(0.52, 0.42, 0.1), cushion, helmX, SPORT_ROOF + 0.8, seatZ - 0.24).rotation.x = -0.12;
+  const screen = helmScreen(scene);
+  if (screen) fitDisplay(screen, kit.material(new THREE.MeshBasicMaterial({ map: display.texture, toneMapped: false })), kit);
 
+  // At the helm under the hardtop, on the starboard side: the bolster seat behind the wheel and the screen.
+  const seat = sportPoint(SPORT_HELM.x, SPORT_SOLE, SPORT_HELM.z);
+  const seatHeight = (SPORT_SEAT - SPORT_SOLE) * SPORT_SCALE * 0.82;
+  // The open cockpit aft of the helm: where he runs about when she strikes.
+  const forward = sportPoint(0, SPORT_SOLE, 0.3);
+  const aft = sportPoint(0, SPORT_SOLE, 1.55);
   return {
     group,
-    eye: new THREE.Vector3(helmX, SPORT_ROOF + 1.36, seatZ + 0.12),
-    seats: [{ x: helmX, y: SPORT_ROOF, z: seatZ + 0.04, yaw: 0, sit: true, seat: 0.6 }],
+    eye: new THREE.Vector3(seat.x, seat.y + seatHeight + 0.82, seat.z + 0.16),
+    seats: [{ x: seat.x, y: seat.y, z: seat.z, yaw: 0, sit: true, seat: seatHeight }],
+    deck: { x: 0, y: seat.y, z: (forward.z + aft.z) / 2, halfX: 0.55, halfZ: Math.abs(forward.z - aft.z) / 2 },
     update: (delta) => display.update(delta),
     dispose: () => kit.dispose(),
     modelled: true,
@@ -323,9 +314,10 @@ function modelSportYacht(scene: THREE.Group): CraftModel {
   };
 }
 
-/** The wreck: her model blackened by fire, torn aft, her hardtop askew. */
+/** The wreck: her model blackened by fire, torn aft. */
 function modelWreck(scene: THREE.Group): CraftModel {
   prepare(scene);
+  dropFlag(scene);
   tuneSportMaterials(scene);
   const kit = new Kit();
   const group = new THREE.Group();
@@ -349,15 +341,19 @@ function modelWreck(scene: THREE.Group): CraftModel {
     };
     mesh.material = Array.isArray(mesh.material) ? mesh.material.map(swap) : swap(mesh.material);
   });
-  scene.position.set(0, -SPORT_WATERLINE, -SPORT_MID_Z);
-  group.add(scene);
+  const hull = new THREE.Group();
+  hull.add(scene);
+  hull.scale.setScalar(SPORT_SCALE);
+  hull.rotation.y = Math.PI;
+  hull.position.set(0, -SPORT_WATERLINE * SPORT_SCALE, SPORT_MID_Z * SPORT_SCALE);
+  group.add(hull);
   // The transom stove in, a black scorch over the quarter.
   const char = kit.material(new THREE.MeshStandardMaterial({ color: 0x181614, roughness: 0.95 }));
   kit.mesh(group, new THREE.BoxGeometry(3.0, 1.3, 1.8), char, 0, 0.9, -5.0);
   kit.mesh(group, new THREE.BoxGeometry(1.4, 0.9, 1.2), char, 0.9, 1.6, -3.8).rotation.set(0.2, 0.3, 0.15);
   return {
     group,
-    eye: new THREE.Vector3(0, SPORT_ROOF + 1.3, -2),
+    eye: new THREE.Vector3(0, 2.2, -1),
     seats: [],
     update: () => undefined,
     dispose: () => kit.dispose(),

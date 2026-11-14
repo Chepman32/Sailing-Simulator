@@ -61,7 +61,7 @@ export function createCampaign(): CampaignState {
   };
 }
 
-const CRAFTS: readonly CraftId[] = ["catamaran", "sport", "skiff"];
+const CRAFTS: readonly CraftId[] = ["catamaran", "sport", "skiff", "albatross"];
 
 const strings = (value: unknown, limit = 64): string[] =>
   Array.isArray(value) ? Array.from(new Set(value.filter((entry): entry is string => typeof entry === "string"))).slice(0, limit) : [];

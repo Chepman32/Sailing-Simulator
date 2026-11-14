@@ -95,6 +95,8 @@ export type StoryHost = {
   freeze(on: boolean): void;
   /** Sets the rudder and the throttle. */
   steer(rudder?: number, throttle?: number): void;
+  /** The boat steered by another hand through world points (null: back to the player). */
+  pilot(route: readonly { x: number; z: number }[] | null, speed: number): void;
   /** The skipper's boat becomes this craft (her model, her handling). */
   craft(craft: CraftId): void;
   /** Moves the boat to (x, z) without the skipper (he stays where he is ashore). */
@@ -920,6 +922,23 @@ export class StorySystem {
       case "steer":
         this.host.steer(effect.rudder, effect.throttle);
         break;
+      case "pilot": {
+        if (!effect.route) {
+          this.host.pilot(null, 0);
+          break;
+        }
+        const points: { x: number; z: number }[] = [];
+        for (const way of effect.route) {
+          if (typeof way === "string") {
+            const at = this.point(way);
+            if (at) points.push({ x: at.x, z: at.z });
+          } else {
+            points.push({ x: -way[0], z: way[1] });
+          }
+        }
+        this.host.pilot(points, effect.speed ?? 0.8);
+        break;
+      }
       case "actor":
         this.direct(effect);
         break;
