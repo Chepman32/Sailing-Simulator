@@ -1029,8 +1029,8 @@ export class AudioSystem {
     low.frequency.exponentialRampToValueAtTime(120, start + 1.2);
     const gain = context.createGain();
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(level, start + 0.012);
-    gain.gain.exponentialRampToValueAtTime(level * 0.25, start + 0.35);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level), start + 0.012);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level * 0.25), start + 0.35);
     gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.9 + far);
     thud.connect(low).connect(gain).connect(panner);
     thud.start(start, Math.random() * 3);
@@ -1143,7 +1143,7 @@ export class AudioSystem {
     const peak = 0.9 * (1 - far * 0.6);
     const length = 4.5 + far * 3.5;
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(peak * (far > 0.5 ? 0.6 : 1), start + 0.03 + far * 0.6);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak * (far > 0.5 ? 0.6 : 1)), start + 0.03 + far * 0.6);
     // The roll: the sound swells again as each part of the channel is heard.
     let time = 0.4 + far * 0.5;
     const rolls = 3 + Math.round(far * 3);
@@ -1169,8 +1169,8 @@ export class AudioSystem {
       band.frequency.value = 900;
       const crackGain = context.createGain();
       crackGain.gain.setValueAtTime(0.0001, start);
-      crackGain.gain.exponentialRampToValueAtTime(0.75 * near, start + 0.008);
-      crackGain.gain.exponentialRampToValueAtTime(0.25 * near, start + 0.09);
+      crackGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.75 * near), start + 0.008);
+      crackGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.25 * near), start + 0.09);
       crackGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.5 + near * 0.4);
       crack.connect(band).connect(crackGain).connect(destination);
       crack.start(start, Math.random() * 2);
@@ -1653,7 +1653,7 @@ export class AudioSystem {
     thud.frequency.exponentialRampToValueAtTime(70, now + 0.16);
     const thudGain = this.context.createGain();
     thudGain.gain.setValueAtTime(0.0001, now);
-    thudGain.gain.exponentialRampToValueAtTime(0.32 * strength, now + 0.01);
+    thudGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.32 * strength), now + 0.01);
     thudGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
     thud.connect(thudGain).connect(this.wildlifeBus);
     thud.start(now);
@@ -1667,7 +1667,7 @@ export class AudioSystem {
     rattleFilter.Q.value = 0.8;
     const rattleGain = this.context.createGain();
     rattleGain.gain.setValueAtTime(0.0001, now);
-    rattleGain.gain.exponentialRampToValueAtTime(0.035 * strength, now + 0.006);
+    rattleGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.035 * strength), now + 0.006);
     rattleGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
     rattle.connect(rattleFilter).connect(rattleGain).connect(this.wildlifeBus);
     rattle.start(now);
@@ -1740,7 +1740,7 @@ export class AudioSystem {
         thump.frequency.exponentialRampToValueAtTime(62, now + 0.35);
         const thumpGain = this.context.createGain();
         thumpGain.gain.setValueAtTime(0.0001, now);
-        thumpGain.gain.exponentialRampToValueAtTime(0.28 * level, now + 0.01);
+        thumpGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.28 * level), now + 0.01);
         thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
         thump.connect(thumpGain).connect(output);
         thump.start(now);
@@ -2252,7 +2252,7 @@ export class AudioSystem {
       tone.frequency.exponentialRampToValueAtTime(to * pitch, t0 + length);
       const envelope = context.createGain();
       envelope.gain.setValueAtTime(0.0001, t0);
-      envelope.gain.exponentialRampToValueAtTime(0.16 * loudness, t0 + 0.02);
+      envelope.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.16 * loudness), t0 + 0.02);
       envelope.gain.setValueAtTime(0.16 * loudness, t0 + length * 0.6);
       envelope.gain.exponentialRampToValueAtTime(0.0001, t0 + length);
       tone.connect(envelope);
@@ -2265,7 +2265,7 @@ export class AudioSystem {
       breath.buffer = this.createNoiseBuffer(length + 0.05, "white");
       const breathGain = context.createGain();
       breathGain.gain.setValueAtTime(0.0001, t0);
-      breathGain.gain.exponentialRampToValueAtTime(0.05 * loudness, t0 + 0.02);
+      breathGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.05 * loudness), t0 + 0.02);
       breathGain.gain.exponentialRampToValueAtTime(0.0001, t0 + length);
       breath.connect(breathGain).connect(formantB);
       breath.start(t0);

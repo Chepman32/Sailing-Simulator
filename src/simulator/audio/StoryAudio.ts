@@ -68,6 +68,14 @@ export class StoryAudio {
     return mixer;
   }
 
+  /** A clip decoded and ready to play now (false while it is still on its way; true with no sound at all, nothing to wait for). */
+  ready(clip: string): boolean {
+    if (!this.audio.mixer) return true;
+    if (this.buffers.has(clip)) return true;
+    void this.buffer(clip);
+    return false;
+  }
+
   /** Starts fetching clips that will be wanted soon (the lines just queued). */
   prefetch(clips: readonly string[]): void {
     for (const clip of clips) void this.fetchBytes(clip);

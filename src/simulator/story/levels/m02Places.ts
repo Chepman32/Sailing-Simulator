@@ -348,8 +348,9 @@ function buildVillage(b: LevelBuilder): void {
   // --- Camera spots for the scenes -----------------------------------------------------
   b.spot("cam-mateo", [-24.5, -96.5, 2.4], 225);
   b.spot("cam-mateo-look", [-29.5, -101, 1.9], 0);
-  b.spot("cam-shelter", [53, -44, SHELTER + 1.7], 120);
-  b.spot("cam-shelter-look", [59.5, -47, SHELTER + 1.2], 0);
+  // Inside, from its far corner: the five in the half-light, the open door behind them.
+  b.spot("cam-shelter", [63, -49.4, SHELTER + 1.75], 300);
+  b.spot("cam-shelter-look", [58.6, -45.6, SHELTER + 1.0], 0);
   b.spot("cam-jetty", [76, -58, 3.8], 50);
   b.spot("cam-jetty-look", [90, -51, 1.6], 0);
 

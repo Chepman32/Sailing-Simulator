@@ -91,7 +91,7 @@ abstract class Sequenced {
     body.frequency.exponentialRampToValueAtTime(low, time + 0.09);
     const gain = this.context.createGain();
     gain.gain.setValueAtTime(0.0001, time);
-    gain.gain.exponentialRampToValueAtTime(level, time + 0.004);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level), time + 0.004);
     gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.32);
     body.connect(gain).connect(destination);
     body.start(time);
@@ -116,7 +116,7 @@ abstract class Sequenced {
     filter.Q.value = q;
     const gain = this.context.createGain();
     gain.gain.setValueAtTime(0.0001, time);
-    gain.gain.exponentialRampToValueAtTime(level, time + 0.003);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level), time + 0.003);
     gain.gain.exponentialRampToValueAtTime(0.0001, time + length);
     source.connect(filter).connect(gain).connect(destination);
     source.start(time, Math.random() * 0.5);
@@ -138,7 +138,7 @@ abstract class Sequenced {
     oscillator.frequency.value = frequency;
     const gain = this.context.createGain();
     gain.gain.setValueAtTime(0.0001, time);
-    gain.gain.exponentialRampToValueAtTime(level, time + attack);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level), time + attack);
     gain.gain.setValueAtTime(level, time + Math.max(attack, length - release));
     gain.gain.exponentialRampToValueAtTime(0.0001, time + length + release);
     oscillator.connect(gain).connect(destination);

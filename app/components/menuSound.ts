@@ -42,7 +42,7 @@ function voice(ctx: AudioContext, at: number, from: number, to: number, length: 
   filter.Q.value = 0.4;
   const gain = ctx.createGain();
   gain.gain.setValueAtTime(0.0001, at);
-  gain.gain.exponentialRampToValueAtTime(level, at + 0.008);
+  gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level), at + 0.008);
   gain.gain.exponentialRampToValueAtTime(0.0001, at + length);
   oscillator.connect(filter).connect(gain).connect(ctx.destination);
   oscillator.start(at);

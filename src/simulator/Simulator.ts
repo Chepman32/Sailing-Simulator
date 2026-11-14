@@ -2455,6 +2455,7 @@ export class Simulator {
     sfx: (clip, volume) => this.storyAudio?.effect(clip, volume),
     bed: (clip, volume) => this.storyAudio?.setBed(clip, volume),
     voices: (clips) => this.storyAudio?.prefetch(clips),
+    voiceReady: (clip) => this.storyAudio?.ready(clip) ?? true,
     look: (x, z) => {
       const diver = this.diver;
       if (!diver?.active || diver.mode !== "land") return;

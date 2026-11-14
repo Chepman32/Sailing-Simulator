@@ -89,6 +89,8 @@ export type StoryHost = {
   sfx(clip: string, volume: number): void;
   bed(clip: string | null, volume: number): void;
   voices(clips: readonly string[]): void;
+  /** Whether a recording is decoded and can start at once (absent: no sound to wait for). */
+  voiceReady?(clip: string): boolean;
   /** Turns the skipper on foot toward (x, z). */
   look(x: number, z: number): void;
   /** Holds the player's controls (a scene, a moment of danger) or frees them. */
@@ -1132,9 +1134,14 @@ export class StorySystem {
     return this.line;
   }
 
+  private voiceWait = 0;
+
   private updateLines(delta: number): void {
     if (this.line) {
-      this.line.elapsed += delta;
+      // A voiced line waits (a moment at most) for its recording to be in hand, so the words and the voice start together.
+      const waiting = this.line.voice && this.line.elapsed < 0.05 && this.voiceWait < 1.5 && this.host.voiceReady?.(this.line.voice) === false;
+      this.voiceWait = waiting ? this.voiceWait + delta : 0;
+      if (!waiting) this.line.elapsed += delta;
       if (this.line.elapsed >= this.line.duration) {
         const spoken = this.line.id;
         for (let index = 0; index < this.afterLine.length; ) {

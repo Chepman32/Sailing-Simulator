@@ -98,7 +98,7 @@ export class CombatAudio {
     filter.Q.value = q;
     const gain = context.createGain();
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(level, start + 0.002);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level), start + 0.002);
     gain.gain.exponentialRampToValueAtTime(0.0001, start + length);
     source.connect(filter).connect(gain).connect(destination);
     source.start(start, Math.random() * 1.2);
@@ -112,7 +112,7 @@ export class CombatAudio {
     osc.frequency.exponentialRampToValueAtTime(frequency * 0.6, start + length);
     const gain = context.createGain();
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(level, start + 0.004);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level), start + 0.004);
     gain.gain.exponentialRampToValueAtTime(0.0001, start + length);
     osc.connect(gain).connect(destination);
     osc.start(start);
@@ -747,7 +747,7 @@ export class CombatAudio {
         osc.frequency.exponentialRampToValueAtTime(base * 0.8, at + 0.07);
         const tone = context.createGain();
         tone.gain.setValueAtTime(0.0001, at);
-        tone.gain.exponentialRampToValueAtTime(0.05 * target + 0.0002, at + 0.012);
+        tone.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.05 * target + 0.0002), at + 0.012);
         tone.gain.exponentialRampToValueAtTime(0.0001, at + 0.08);
         osc.connect(tone).connect(master);
         osc.start(at);
