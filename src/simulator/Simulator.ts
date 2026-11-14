@@ -1,7 +1,9 @@
 import * as THREE from "three";
 import { AudioSystem, type AudioWeather } from "./audio/AudioSystem";
 import { CameraController } from "./camera/CameraController";
-import { AssetManager, ASSET_LOAD_TOTAL, LOAD_STEPS_TOTAL, SCENE_LOAD_STEPS, TRADER_MODEL_KEYS } from "./core/AssetManager";
+import { AssetManager, ASSET_LOAD_TOTAL, AUTHORED_FIGURE_KEY, LOAD_STEPS_TOTAL, SCENE_LOAD_STEPS, TRADER_MODEL_KEYS } from "./core/AssetManager";
+import type { ActorModel } from "./actors/ActorLooks";
+import type { CraftSeat } from "./vessel/CraftModels";
 import { PostProcessing } from "./core/PostProcessing";
 import { QualityManager } from "./core/QualityManager";
 import { CanvasSizeGate, contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
@@ -101,8 +103,9 @@ import { DiveFish } from "./diver/DiveFish";
 import { HelmStation, HULL_TRANSOM_Z } from "./vessel/HelmStation";
 import { CombatAudio } from "./audio/CombatAudio";
 import { StoryAudio } from "./audio/StoryAudio";
-import { CombatEffects } from "./combat/CombatEffects";
-import { engineKnockedOut, HULL_PER_HIT, leakSpeedFactor, SMOKING_HULL, stepEngineHeat, yachtSignature, DOME_CENTRE, JET_CENTRES, droneToWorld, type HitZone, type DroneCondition } from "./combat/CombatMath";
+import { CombatEffects, type ImpactMaterial } from "./combat/CombatEffects";
+import { WeaponView } from "./combat/WeaponView";
+import { HULL_PER_HIT, leakSpeedFactor, SMOKING_HULL, stepEngineHeat, yachtSignature, DOME_CENTRE, JET_CENTRES, droneToWorld, type HitZone, type DroneCondition } from "./combat/CombatMath";
 import { DroneSystem, type DroneContact } from "./combat/DroneSystem";
 import { Armoury, WEAPON_ORDER, type WeaponId } from "./combat/Firearms";
 import type { Place } from "./story/AtlasMath";
@@ -150,6 +153,14 @@ const SHIP_LOD_STEPS = [
   { ratio: 0.3, below: 0.025 },
 ] as const;
 
+/** How near her the skipper must be to take the wheel in the story, m. */
+const HELM_REACH = 28;
+/** Where he dashes about in a panic (`scrambleSeats`): half-extents and the centre's offset from his seat, m (clear of the console ahead of it). */
+const SCRAMBLE_REACH = { x: 0.75, z: 0.55, dx: 0.35, dz: -0.25 };
+/** The longest a turn of his head to what the story shows him takes, s. */
+const STORY_LOOK_SECONDS = 1.6;
+/** How fast he dashes, m/s. */
+const SCRAMBLE_SPEED = 3.2;
 const STORAGE_KEY = "sailing-simulator-pro-preferences-v2";
 /** The explored sea is saved apart from the preferences: it changes often and grows. */
 const CHART_KEY = "sailing-simulator-chart-v1";
@@ -277,6 +288,8 @@ export class Simulator {
   /** The skipper's party in the story's boats (he at the tiller, Mark and Luis aboard). */
   private boatParty: BoatParty | null = null;
   private heroStand: BoatParty | null = null;
+  private readonly heroStandAt = { x: 0, z: 0 };
+  private heroStandSpeed = 0;
   private readonly heroSeat = [{ x: 0, y: 0, z: 0, yaw: 0, sit: false, seat: 0.45 }];
   /** The story's afternoon held at a real day's pace: the hour it was held at, and when. */
   private storyClock: { hour: number; since: number } | null = null;
@@ -284,9 +297,14 @@ export class Simulator {
   private stillTime = 0;
   /** Seconds since a gun was last fired near (the birds and insects go quiet). */
   private sinceGunfire = 99;
-  /** The story's figures, from the islanders' rigged models. */
-  private readonly figureSource = (model: "man" | "woman") => {
-    const key = model === "woman" ? "traderWoman" : "traderMan";
+  /**
+   * The story's figures: the authored characters once they have come
+   * (`figMark`, `figGuardA`, `figGuardB`), the islanders' rigged models
+   * otherwise (and for everyone else).
+   */
+  private readonly figureSource = (model: ActorModel) => {
+    const authored = AUTHORED_FIGURE_KEY[model];
+    const key = authored && this.assets.has(authored) ? authored : model === "woman" ? "traderWoman" : "traderMan";
     if (!this.assets.has(key)) return null;
     const asset = this.assets.animated(key);
     return asset ? { scene: asset.scene, animations: asset.animations } : null;
@@ -356,6 +374,11 @@ export class Simulator {
   private engineHeat = 0;
   private combatShake = 0;
   private damageSmokeClock = 0;
+  /** The gun in his hands, seen through his eyes. */
+  private weaponView?: WeaponView;
+  private readonly visualMuzzle = new THREE.Vector3();
+  /** Muzzle climb still to be let back down, rad. */
+  private recoilClimb = 0;
   private storyWeather: { kind: WeatherKind; until: number } | null = null;
   private readonly droneContacts: DroneContact[] = [];
   private readonly droneEngines: { x: number; y: number; z: number; speed: number }[] = [];
@@ -790,7 +813,8 @@ export class Simulator {
       this.storyAudio = new StoryAudio(this.audio);
       this.storyProps = new StoryProps(this.scene);
       this.storyCast = new Traders(this.scene, this.traderModels());
-      this.mirrorHidden.push(this.storyCast.group, this.combatEffects.group);
+      this.weaponView = new WeaponView(this.scene);
+      this.mirrorHidden.push(this.storyCast.group, this.combatEffects.group, this.weaponView.root);
       this.actors = new ActorSystem(this.actorHost, this.levels);
       this.scene.add(this.actors.group);
       this.mirrorHidden.push(this.actors.group);
@@ -825,10 +849,11 @@ export class Simulator {
           seabedDepth: (x, z) => -this.groundBase(x, z),
           floatLine: this.swimFloatLine,
           drift: (x, z, depth, out) => this.ocean.orbital(x, z, depth, out),
-          // A passing ship's side is a wall to a swimmer as much as to the yacht.
-          obstacle: (x, z, normal) => nearestHullClearance(this.ships.ships, x, z, normal),
+          // A passing ship's side is a wall to a swimmer as much as to the yacht; so are the rocks standing in the shallows.
+          obstacle: (x, z, normal) => this.swimObstacle(x, z, normal),
           // A whale, a shark or a dolphin is a body to bump into, not a ghost.
-          bodies: (x, y, z, normal) => this.wildlife.bodyClearance(x, y, z, normal),
+          // And so are the reef's boulders and hard corals, the rocks at the shore, and a crab.
+          bodies: (x, y, z, normal) => this.swimBodies(x, y, z, normal),
         },
         { offsetX: HULL_OFFSET_X, centreZ: HULL_CENTER_Z, halfLength: HULL_HALF_LENGTH, halfBeam: HULL_HALF_BEAM + 0.2, draught: 1.25, freeboard: 1.4 },
         {
@@ -1713,6 +1738,43 @@ export class Simulator {
     this.vessel.setSonar(this.sonarContacts, level, level > 0 ? sonarRange(level) : 0);
   }
 
+
+  private readonly swimNormal2 = { x: 0, z: 0 };
+  private readonly swimNormal3 = { x: 0, y: 1, z: 0 };
+
+  /** Walls to a swimmer: ships' sides and the boulders that stand in the shallows. */
+  private swimObstacle(x: number, z: number, normal: { x: number; z: number }): number {
+    let best = nearestHullClearance(this.ships.ships, x, z, normal);
+    const rock = this.islands.obstacleClearance(x, z, this.swimNormal2);
+    if (rock < best) {
+      best = rock;
+      normal.x = this.swimNormal2.x;
+      normal.z = this.swimNormal2.z;
+    }
+    return best;
+  }
+
+  /** Bodies in the water: animals, the reef's rocks and hard corals, crabs. */
+  private swimBodies(x: number, y: number, z: number, normal: { x: number; y: number; z: number }): number {
+    let best = this.wildlife.bodyClearance(x, y, z, normal);
+    const scratch = this.swimNormal3;
+    const reef = this.underwaterWorld?.solidClearance(x, y, z, scratch, best) ?? best;
+    if (reef < best) {
+      best = reef;
+      normal.x = scratch.x;
+      normal.y = scratch.y;
+      normal.z = scratch.z;
+    }
+    const crab = this.crabs?.clearance(x, y, z, this.groundBase, scratch, best) ?? best;
+    if (crab < best) {
+      best = crab;
+      normal.x = scratch.x;
+      normal.y = scratch.y;
+      normal.z = scratch.z;
+    }
+    return best;
+  }
+
   /** What a walker bumps into ashore: rocks, trunks, buildings, and the traders themselves. */
   private landObstacle(x: number, z: number, normal: { x: number; z: number }): number {
     let best = this.islands.obstacleClearance(x, z, normal);
@@ -1727,6 +1789,18 @@ export class Simulator {
       normal.x = length > 1e-6 ? dx / length : 1;
       normal.z = length > 1e-6 ? dz / length : 0;
     }
+    // The story's people stand in his way as the islanders do.
+    for (const spot of this.story?.castStanding ?? []) {
+      const dx = x - spot.x;
+      const dz = z - spot.z;
+      if (Math.abs(dx) > 2 || Math.abs(dz) > 2) continue;
+      const length = Math.hypot(dx, dz);
+      if (length - 0.3 >= best) continue;
+      best = length - 0.3;
+      normal.x = length > 1e-6 ? dx / length : 1;
+      normal.z = length > 1e-6 ? dz / length : 0;
+    }
+    if (this.actors && this.diver?.active) best = this.actors.clearance(x, z, this.diver.walk.y, normal, best);
     return best;
   }
 
@@ -1964,6 +2038,7 @@ export class Simulator {
     this.story?.dispose();
     this.drones?.dispose();
     this.combatEffects?.dispose();
+    this.weaponView?.dispose();
     this.combatAudio?.dispose();
     this.storyAudio?.dispose();
     this.storyProps?.dispose();
@@ -2168,6 +2243,7 @@ export class Simulator {
     if (flare) this.environment.setFlare(flare.position, flare.brightness, flare.rgb, flareBoost(this.economy.upgrades.flare).reach);
     else if (fireworkLight) this.environment.setFlare(fireworkLight.position, fireworkLight.brightness * FIREWORK_LIGHT, fireworkLight.rgb);
     else if (eruptionLight) this.environment.setFlare(eruptionLight.position, eruptionLight.brightness, ERUPTION_RGB);
+    else if (this.combatEffects?.light) this.environment.setFlare(this.combatEffects.light.position, this.combatEffects.light.brightness, this.combatEffects.light.rgb);
     else this.environment.setFlare(null, 0, ERUPTION_RGB);
     // The sun's shadows are drawn round whoever the player is: the yacht, or
     // the skipper ashore (where the palms, the islanders and his own figure
@@ -2238,6 +2314,7 @@ export class Simulator {
     audioWeather.wind = weather.wind;
     audioWeather.storm = weather.storm;
     audioWeather.trueWind = Math.hypot(this.physics.wind.x, this.physics.wind.z);
+    this.audio.setEngineCloseUp(this.story?.cinematic ?? false);
     this.audio.update(
       delta,
       Math.abs(this.physics.telemetry.forwardSpeed),
@@ -2307,6 +2384,16 @@ export class Simulator {
       this.health.bandages = this.story?.bandages() ?? 0;
       this.hud.emit(this.snapshot());
     },
+    drawGun: (gun, inspect) => {
+      if (!this.owns(gun)) return;
+      this.armoury.drawn = gun;
+      if (inspect) {
+        this.weaponView?.inspect();
+        // He works the slide as he looks it over.
+        if (gun === "pistol") this.storyAudio?.effect("m01/sfx/FX061_pistol_slide", 0.8);
+      }
+      this.hud.emit(this.snapshot());
+    },
     ground: (x, z) => this.groundWalk(x, z),
     seabed: (x, z) => this.groundBase(x, z),
     radio: (kind) => this.combatAudio?.radio(kind),
@@ -2328,9 +2415,8 @@ export class Simulator {
     look: (x, z) => {
       const diver = this.diver;
       if (!diver?.active || diver.mode !== "land") return;
-      diver.yaw = Math.atan2(x - diver.walk.x, z - diver.walk.z);
-      // Level with a face across the way.
-      diver.pitch = 0;
+      // He turns his head there (eased, `updateStoryLook`), level with a face across the way.
+      this.storyLook = { yaw: Math.atan2(x - diver.walk.x, z - diver.walk.z), pitch: 0, left: STORY_LOOK_SECONDS };
     },
     freeze: (on) => {
       this.storyFrozen = on;
@@ -2412,9 +2498,11 @@ export class Simulator {
   private impactAt(at: THREE.Vector3, material: string): void {
     const effects = this.combatEffects;
     if (!effects) return;
-    if (material === "metal") effects.sparks(at, 8, 1);
-    else if (material === "wood") effects.splinters(at);
-    else effects.puff(at, 0.35, 0.6, 0.86, 0.84, 0.8, 0.6, 0.6);
+    const kind: ImpactMaterial = material === "metal" || material === "wood" || material === "fabric" || material === "sand" ? material : "stone";
+    // Thrown back toward whoever fired; chips and sparks bounce on the ground he stands on.
+    const from = this.camera.camera.position;
+    const floor = this.diver?.active && this.diver.mode !== "swim" ? this.diver.walk.y : undefined;
+    effects.impact(at, kind, from.x - at.x, from.y - at.y, from.z - at.z, floor);
     this.combatAudio?.ricochet(at, material);
   }
 
@@ -2879,6 +2967,26 @@ export class Simulator {
     this.shotDirection.z += (Math.random() - 0.5) * 2 * sway;
     this.shotDirection.normalize();
     const effects = this.combatEffects;
+    // What is seen comes from the gun in his hands; what is hit, from his eye's line.
+    const view = this.weaponView;
+    const inHand = Boolean(firstPerson && view?.visible);
+    const visual = this.visualMuzzle;
+    if (inHand && view) {
+      view.attach(camera);
+      view.muzzle(visual);
+      view.fire();
+      effects?.muzzleSmoke(visual, this.shotDirection.x, this.shotDirection.y, this.shotDirection.z);
+      // The muzzle climbs with the shot and is let back down over the next moments.
+      const climb = gun.spec.id === "rifle" ? 0.034 : 0.019;
+      if (this.diver?.active) {
+        this.diver.pitch = Math.min(1.45, this.diver.pitch + climb);
+        this.diver.yaw += (Math.random() - 0.5) * climb * 0.7;
+        this.recoilClimb += climb * 0.8;
+      }
+      this.combatShake = Math.max(this.combatShake, gun.spec.id === "rifle" ? 0.2 : 0.1);
+    } else {
+      visual.copy(this.muzzlePoint);
+    }
     // People and walls first (on foot, ashore): a guard, a wall, the ground.
     if (this.actors && this.diver?.active) {
       const damage = gun.spec.id === "pistol" ? 34 : 70;
@@ -2886,9 +2994,11 @@ export class Simulator {
       const distance = struck.at.distanceTo(this.muzzlePoint);
       if (struck.id || distance < range - 0.5) {
         this.combatAudio?.gunshot(gun.spec.id);
-        this.projectScratch.copy(this.muzzlePoint).addScaledVector(this.shotDirection, 0.9);
-        effects?.flash(this.projectScratch, 0.35);
-        effects?.tracer(this.muzzlePoint, struck.at, false);
+        if (!inHand) {
+          this.projectScratch.copy(this.muzzlePoint).addScaledVector(this.shotDirection, 0.9);
+          effects?.flash(this.projectScratch, 0.35);
+        }
+        effects?.tracer(visual, struck.at, false);
         if (!struck.id) this.impactAt(struck.at, struck.material);
         this.lastHit = { id: this.lastHit.id + 1, zone: struck.id ? "hull" : "miss", armour: false, condition: null };
         return true;
@@ -2896,23 +3006,50 @@ export class Simulator {
     }
     const result = drones.shoot(this.muzzlePoint, this.shotDirection, range, power);
     this.combatAudio?.gunshot(gun.spec.id);
-    if (effects) {
+    if (effects && !inHand) {
       // In his own eyes the flash is out at the muzzle, not in them.
       this.projectScratch.copy(this.muzzlePoint).addScaledVector(this.shotDirection, firstPerson ? 0.9 : 0.4);
       effects.flash(this.projectScratch, firstPerson ? 0.35 : 0.6);
     }
     this.lastHit = { id: this.lastHit.id + 1, zone: result?.zone ?? "miss", armour: result?.armour ?? false, condition: result?.condition ?? null };
     if (result) {
-      effects?.tracer(this.muzzlePoint, result.point, false);
+      effects?.tracer(visual, result.point, false);
       this.combatAudio?.impact(result.point, result.zone, result.armour);
     } else {
       // Into the sea, or away over it.
       const along = this.shotDirection.y < -0.002 ? Math.min(range, this.muzzlePoint.y / -this.shotDirection.y) : range;
       this.aimPoint.copy(this.shotDirection).multiplyScalar(along).add(this.muzzlePoint);
-      effects?.tracer(this.muzzlePoint, this.aimPoint, false);
+      effects?.tracer(visual, this.aimPoint, false);
       if (along < range) this.wake.splash(this.aimPoint.setY(this.ocean.sample(this.aimPoint.x, this.aimPoint.z).height), 0.22, "entry", undefined, false);
     }
     return true;
+  }
+
+  /** The gun in his hands for this frame: what he holds, how he moves, where the reload stands. */
+  private updateWeaponView(delta: number): void {
+    const view = this.weaponView;
+    if (!view) return;
+    const diver = this.diver;
+    const onFoot = Boolean(diver?.active && (diver.mode === "land" || diver.mode === "deck"));
+    const firstPerson = (onFoot || (!diver?.active && this.state.cameraMode === "helm")) && !this.story?.cinematic && !this.menuView && this.downClock < 0;
+    const gun = this.armoury.current;
+    const walk = diver?.walk;
+    view.setPrewarm(false);
+    view.update(delta, this.camera.camera, {
+      weapon: gun && this.owns(gun.spec.id) ? gun.spec.id : null,
+      firstPerson,
+      speed: onFoot && walk ? Math.hypot(walk.vx, walk.vz) : 0,
+      crouched: diver?.crouched ?? false,
+      ammo: gun?.ammo ?? 0,
+      reload: gun?.reloadProgress ?? 1,
+      floor: onFoot && walk ? walk.y : this.camera.camera.position.y - 1.6,
+    });
+    // The climb of the last shots comes back down, quickly at first.
+    if (this.recoilClimb > 0 && diver?.active) {
+      const back = Math.min(this.recoilClimb, (this.recoilClimb * 6 + 0.02) * delta);
+      diver.pitch -= back;
+      this.recoilClimb -= back;
+    }
   }
 
   /** Moves the aim onto the nearest weak spot of a drone within `pixels` of it. */
@@ -2984,12 +3121,12 @@ export class Simulator {
     for (const hit of drones.consumeHits()) {
       effects.splinters(hit.point);
       this.combatAudio?.hullHit(hit.point);
-      const fromStern = Math.atan2(hit.fromX - yacht.x, hit.fromZ - yacht.z) - (this.physics.heading + Math.PI);
       // The skiff's chase is to be outrun, not lost to one round in the outboard.
       if (this.vessel.craft === "skiff") story.damage(HULL_PER_HIT * 0.25, false);
       // The prologue's run is a run, not a sinking: the reef ends it, not the guns.
       else if (this.vessel.craft === "sport") story.damage(HULL_PER_HIT * 0.35, false);
-      else story.damage(HULL_PER_HIT, engineKnockedOut(Math.atan2(Math.sin(fromStern), Math.cos(fromStern)), Math.random()));
+      // The engine dies only where the story says so (a scripted effect), never to a chance round.
+      else story.damage(HULL_PER_HIT, false);
       this.combatShake = Math.max(this.combatShake, 0.25);
     }
     for (const shot of drones.consumeShots()) {
@@ -2999,17 +3136,28 @@ export class Simulator {
     // A badly holed yacht smokes from her stern.
     const hull = story.hull;
     this.damageSmokeClock -= delta;
-    if (story.active && hull < SMOKING_HULL && this.damageSmokeClock <= 0) {
-      this.damageSmokeClock = 0.14 + hull * 0.6;
+    // …and the prologue's yacht from the moment she is struck, whatever is left of her hull.
+    const struck = story.flagged("stern-smoke") && this.vessel.craft === "sport";
+    if (story.active && (hull < SMOKING_HULL || struck) && this.damageSmokeClock <= 0) {
+      this.damageSmokeClock = struck ? 0.07 : 0.14 + hull * 0.6;
       const stern = this.projectScratch.set(yacht.x - Math.sin(this.physics.heading) * 3.6, yacht.y + 1.1, yacht.z - Math.cos(this.physics.heading) * 3.6);
-      effects.smokeFrom(stern, 0.6 * (1 - hull / SMOKING_HULL) + 0.25, wind.x, wind.z);
+      effects.smokeFrom(stern, struck ? 0.9 : 0.6 * (1 - hull / SMOKING_HULL) + 0.25, wind.x, wind.z);
+      if (struck && Math.random() < 0.3) effects.fire(stern, 0.35);
     }
-    {
-      const camera = this.camera.camera;
-      effects.setPixelScale(this.renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)));
-      effects.setAmbient(this.environment.current.palette.ambientColor);
-    }
+    effects.setAmbient(this.environment.current.palette.ambientColor);
+    effects.setSun(this.environment.current.palette.lightColor);
     effects.update(delta);
+    this.updateWeaponView(delta);
+    // A blast's shock wave bends the picture as it crosses the view.
+    const shock = effects.shock;
+    if (shock) {
+      const projected = this.projectScratch.copy(shock.position).project(this.camera.camera);
+      const ahead = projected.z < 1;
+      const near = THREE.MathUtils.clamp(14 / Math.max(4, shock.position.distanceTo(this.camera.camera.position)), 0.15, 1);
+      this.post.setShock(projected.x * 0.5 + 0.5, projected.y * 0.5 + 0.5, shock.progress * 0.9, ahead ? (1 - shock.progress) * shock.strength * near : 0);
+    } else {
+      this.post.setShock(0.5, 0.5, 0, 0);
+    }
     this.storyProps?.update(delta);
     this.combatAudio?.updateEngines(drones.engines(this.droneEngines));
   }
@@ -3106,6 +3254,13 @@ export class Simulator {
         seat.y = walker.y;
         seat.z = walker.z;
         seat.yaw = diver.yaw;
+        // Walking through a scene he strides, not slides.
+        const moved = Math.hypot(walker.x - this.heroStandAt.x, walker.z - this.heroStandAt.z);
+        this.heroStandAt.x = walker.x;
+        this.heroStandAt.z = walker.z;
+        const pace = delta > 1e-4 && moved < 3 ? moved / delta : 0;
+        this.heroStandSpeed += (pace - this.heroStandSpeed) * Math.min(1, delta * 8);
+        stand.setSpeed("hero", this.heroStandSpeed);
         // Not when the camera is in his own eyes (a shot through them).
         const eye = this.camera.camera.position;
         const inside = Math.hypot(eye.x - walker.x, eye.y - walker.y - 1.6, eye.z - walker.z) < 0.9;
@@ -3122,12 +3277,104 @@ export class Simulator {
         party.set([{ id: "hero", look: HERO_LOOK }, ...story.party()]);
         const visible = !diver?.active && (this.state.cameraMode !== "helm" || this.flareCamera.blend > 0.3 || this.photo.blend > 0.3 || story.cinematic);
         party.group.position.copy(craft.group.position);
-        party.update(delta, craft.seats, visible, this.physics.guard.output.rudder, this.elapsed);
+        const seats = story.flagged("scramble") && craft.seats.length > 0 ? this.scrambleSeats(delta, craft.seats) : craft.seats;
+        if (seats === craft.seats) this.scramble.active = false;
+        party.setSpeed("hero", this.scramble.active ? this.scramble.speed : 0);
+        party.update(delta, seats, visible, this.physics.guard.output.rudder, this.elapsed);
       } else {
         party.set([]);
       }
     }
   }
+
+  /**
+   * The skipper off his seat in a panic (the story's `scramble` flag, as she
+   * strikes and floods): dashing from one spot of the deck round his seat to
+   * another, stopping short, turning, dashing again, never twice the same
+   * way. The spots lie on the deck his seat stands on, within `SCRAMBLE_REACH`.
+   */
+  private scrambleSeats(delta: number, seats: readonly CraftSeat[]): CraftSeat[] {
+    const home = seats[0]!;
+    const s = this.scramble;
+    if (!s.active) {
+      s.active = true;
+      s.x = home.x;
+      s.z = home.z;
+      s.pause = 0.15;
+      s.targetX = home.x;
+      s.targetZ = home.z;
+      s.yaw = home.yaw;
+    }
+    const toX = s.targetX - s.x;
+    const toZ = s.targetZ - s.z;
+    const far = Math.hypot(toX, toZ);
+    if (far < 0.08) {
+      s.speed += (0 - s.speed) * Math.min(1, delta * 12);
+      s.pause -= delta;
+      // A glance about while he stands: short, jerky turns.
+      s.yaw += Math.sin(this.elapsed * 9.3) * delta * 2.2;
+      if (s.pause <= 0) {
+        // The next spot: somewhere else on the deck, a good stride away.
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+          const x = home.x + SCRAMBLE_REACH.dx + (Math.random() * 2 - 1) * SCRAMBLE_REACH.x;
+          const z = home.z + SCRAMBLE_REACH.dz + (Math.random() * 2 - 1) * SCRAMBLE_REACH.z;
+          if (Math.hypot(x - s.x, z - s.z) > 0.7) {
+            s.targetX = x;
+            s.targetZ = z;
+            break;
+          }
+        }
+        s.pause = 0.25 + Math.random() * 0.55;
+      }
+    } else {
+      const wanted = Math.min(SCRAMBLE_SPEED, far * 6);
+      s.speed += (wanted - s.speed) * Math.min(1, delta * 10);
+      const step = Math.min(far, s.speed * delta);
+      s.x += (toX / far) * step;
+      s.z += (toZ / far) * step;
+      const heading = Math.atan2(toX, toZ);
+      let turn = heading - s.yaw;
+      turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+      s.yaw += turn * Math.min(1, delta * 14);
+    }
+    const seat = this.scrambleSeat;
+    seat.x = s.x;
+    seat.y = home.y;
+    seat.z = s.z;
+    seat.yaw = s.yaw;
+    seat.sit = false;
+    seat.seat = home.seat;
+    this.scrambleList.length = 0;
+    this.scrambleList.push(seat, ...seats.slice(1));
+    return this.scrambleList;
+  }
+
+  /** Where the story has turned his head (`look`): eased there over a moment, not snapped. */
+  private storyLook: { yaw: number; pitch: number; left: number } | null = null;
+
+  private updateStoryLook(delta: number): void {
+    const look = this.storyLook;
+    const diver = this.diver;
+    if (!look) return;
+    if (!diver?.active || diver.mode !== "land") {
+      this.storyLook = null;
+      return;
+    }
+    look.left -= delta;
+    const turn = Math.atan2(Math.sin(look.yaw - diver.yaw), Math.cos(look.yaw - diver.yaw));
+    // A head turned with a little hesitation, then settling: fast in the middle, soft at the end.
+    const rate = Math.min(1, delta * 5.5);
+    diver.yaw += turn * rate;
+    diver.pitch += (look.pitch - diver.pitch) * rate;
+    if (look.left <= 0 || (Math.abs(turn) < 0.004 && Math.abs(look.pitch - diver.pitch) < 0.004)) {
+      diver.yaw += turn * (look.left <= 0 ? 1 : 0);
+      this.storyLook = null;
+    }
+  }
+
+  private readonly scramble = { active: false, x: 0, z: 0, targetX: 0, targetZ: 0, yaw: 0, speed: 0, pause: 0 };
+  private readonly scrambleSeat: CraftSeat = { x: 0, y: 0, z: 0, yaw: 0, sit: false, seat: 0 };
+  private readonly scrambleList: CraftSeat[] = [];
 
   /** C on foot (or the touch button): down into a crouch, or up out of it. */
   toggleCrouch(): void {
@@ -3359,8 +3606,19 @@ export class Simulator {
 
   /** Back to the wheel (from anywhere: a quick way home from a dive). */
   returnToHelm(): void {
-    if (!this.diver?.active || this.story?.boatLocked) return;
-    this.diver.takeHelm();
+    const diver = this.diver;
+    if (!diver?.active || this.story?.boatLocked) return;
+    // In the story the wheel is taken where the boat is, not from across the
+    // island: a key press ashore used to put him at her helm kilometres away.
+    if (this.story?.active && diver.mode !== "deck") {
+      const at = diver.mode === "swim" ? diver.swim : diver.walk;
+      const yacht = this.physics.position;
+      if (Math.hypot(at.x - yacht.x, at.z - yacht.z) > HELM_REACH) {
+        this.options.onKeyAction?.("helm-far");
+        return;
+      }
+    }
+    diver.takeHelm();
   }
 
   /** Touch joystick: x right, y forward (−1…1). */
@@ -3446,6 +3704,7 @@ export class Simulator {
     if (diver.mode === "swim") this.islands.prepareWalls(diver.swim.x, diver.swim.z);
     else if (diver.mode === "land") this.islands.prepareWalls(diver.walk.x, diver.walk.z);
     diver.update(delta, this.vessel.root, this.physics.velocity, this.physics.heading, this.deckField, HelmStation.STAND_FEET);
+    this.updateStoryLook(delta);
     // His own shadow as he walks: on the sand ashore, and on the deck aboard
     // (away from the wheel the skipper's figure is not drawn, so without
     // this nothing of him would fall on the teak).
@@ -3727,6 +3986,9 @@ export class Simulator {
   private async prewarmShaders(): Promise<void> {
     try {
       this.update(1 / 60);
+      // The gun in his hands is hidden until it is drawn: shown here so its shaders compile now, not at the first shot.
+      this.weaponView?.setPrewarm(true);
+      this.weaponView?.attach(this.camera.camera);
       const previousTarget = this.renderer.getRenderTarget();
       this.renderer.setRenderTarget(this.post.sceneTarget);
       // One part of the scene at a time, with a frame in between, so the
@@ -3777,6 +4039,10 @@ export class Simulator {
         if (key === "shark" || key === "whale" || key === "fishSchool") this.wildlife.adoptLateAssets(this.assets);
         else if (key === "sportYacht" || key === "skiff") this.vessel?.refreshCrafts();
         else if (key === "crabRed" || key === "crabBlue") this.buildCrabs();
+        else if (key === "viewPistol" || key === "viewRifle") {
+          const asset = this.assets.animated(key);
+          if (asset) this.weaponView?.setModels(key === "viewPistol" ? { pistol: asset } : { rifle: asset });
+        }
         else if ((TRADER_MODEL_KEYS as readonly string[]).includes(key)) {
           this.traders?.setModels(this.traderModels());
           this.storyCast?.setModels(this.traderModels());
@@ -3872,6 +4138,7 @@ export class Simulator {
       camera.position.add(this.shakeOffset);
       camera.updateMatrixWorld();
     }
+    this.weaponView?.attach(camera);
     // From under the water the mirror image of the world above is never seen.
     if (this.underwaterAmount < 0.5) this.renderReflection();
     if (this.quality.settings.godRays) this.aimSunShafts(camera);

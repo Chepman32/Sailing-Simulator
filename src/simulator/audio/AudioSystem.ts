@@ -5,8 +5,12 @@ import { BoatVoices } from "./BoatVoices";
 import { BELL_RING, ringBell } from "./BellSynth";
 import { windSoundLevels, windWander } from "./WindSoundMath";
 import { engineAirCutoff, engineDistanceGain, enginePan } from "./EngineSoundMath";
+
 import { hornLength, openSeaImpulse, playHorn, type HornSpec } from "./HornSynth";
 import { HouseGroove, ShantyBand } from "./MusicSynth";
+
+/** How far off the engine is mixed in a story scene, metres. */
+const ENGINE_SCENE_DISTANCE = 8;
 
 type WebkitAudioWindow = Window & {
   webkitAudioContext?: typeof AudioContext;
@@ -157,6 +161,12 @@ export class AudioSystem {
   private listenerRightZ = 0;
   /** Engine level heard at the camera, 0…1 (smoothed). */
   private engineHeard = 1;
+  private engineCloseUp = false;
+
+  /** In a story scene the engine is heard as from nearby, wherever the camera stands. */
+  setEngineCloseUp(on: boolean): void {
+    this.engineCloseUp = on;
+  }
   private environmentBus?: GainNode;
   private wildlifeBus?: GainNode;
   private engineFiring?: OscillatorNode;
@@ -2358,7 +2368,9 @@ export class AudioSystem {
     const dx = this.engineSourceX - this.listenerX;
     const dy = this.engineSourceY - this.listenerY;
     const dz = this.engineSourceZ - this.listenerZ;
-    const distance = Math.hypot(dx, dy, dz);
+    // A scene's camera stands well off the yacht, but the film still hears
+    // her engine: it is mixed as from close by.
+    const distance = this.engineCloseUp ? Math.min(Math.hypot(dx, dy, dz), ENGINE_SCENE_DISTANCE) : Math.hypot(dx, dy, dz);
     const target = engineDistanceGain(distance);
     // A camera that jumps (a new mode) glides the level over a fraction of a second.
     const previous = this.engineHeard;

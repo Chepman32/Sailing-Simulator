@@ -278,6 +278,8 @@ export const PROLOGUE: Mission = {
         { do: "blast", strength: 1.4 },
         { do: "damage", hull: 0.3, engine: true },
         { do: "fade", seconds: 6 },
+        // Up from the wheel, dashing about her deck as the water comes in.
+        { do: "flag", flag: "scramble" },
         { do: "sound", sound: "flooding" },
         sfx("FX033_water_entering_cabin", 0.9),
         sfx("EXFX0036_engine_water_choke", 0.8),
@@ -298,6 +300,7 @@ export const PROLOGUE: Mission = {
       objective: { kind: "when", when: { stepTime: 3, quiet: true } },
       onStart: [
         { do: "cut" },
+        { do: "flag", flag: "scramble", off: true },
         sfx("FX036_cabin_hatch_open", 0.8),
         sfx("FX037_submerged_bubbles", 0.9),
         lines(hero("Дыши. Только дыши.", "Breathe. Just breathe.")),
@@ -334,7 +337,7 @@ export const PROLOGUE: Mission = {
       ],
     },
     // The chase: what is said aboard, and what the patrol says on its channel.
-    { id: "pr-hit", when: { steps: ["escape"], event: "struck" }, do: [sfx("FX021_bullet_metal_hits", 0.7), lines(hero("Чёрт! Попали в борт!", "Damn! They hit the side!"))] },
+    { id: "pr-hit", when: { steps: ["escape"], event: "struck" }, do: [{ do: "flag", flag: "stern-smoke" }, sfx("FX021_bullet_metal_hits", 0.7), lines(hero("Чёрт! Попали в борт!", "Damn! They hit the side!"))] },
     {
       id: "pr-closing",
       when: { steps: ["escape"], stepTime: 6, quiet: true },

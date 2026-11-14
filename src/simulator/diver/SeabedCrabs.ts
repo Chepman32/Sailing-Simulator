@@ -432,6 +432,28 @@ export class SeabedCrabs {
     });
   }
 
+/**
+   * A crab is a small solid body: the clearance (m) from a point to the
+   * nearest one's shell, if nearer than `best`, with the way out in `normal`.
+   */
+  clearance(x: number, y: number, z: number, ground: (x: number, z: number) => number, normal: { x: number; y: number; z: number }, best = Number.POSITIVE_INFINITY): number {
+    for (const crab of this.crabs) {
+      if (crab.gone) continue;
+      const dx = x - crab.x;
+      const dz = z - crab.z;
+      const radius = 0.15 * crab.size;
+      if (Math.abs(dx) > radius + 1 || Math.abs(dz) > radius + 1) continue;
+      const dy = y - (ground(crab.x, crab.z) + 0.07 * crab.size);
+      const length = Math.hypot(dx, dy, dz);
+      if (length - radius >= best) continue;
+      best = length - radius;
+      normal.x = length > 1e-6 ? dx / length : 0;
+      normal.y = length > 1e-6 ? dy / length : 1;
+      normal.z = length > 1e-6 ? dz / length : 0;
+    }
+    return best;
+  }
+
   dispose(): void {
     this.group.removeFromParent();
     for (const list of this.meshes) {

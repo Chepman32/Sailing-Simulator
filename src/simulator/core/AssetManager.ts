@@ -6,12 +6,23 @@ import { assetBytes, assetUrl } from "./assetManifest";
 import { createGltfLoader } from "./GltfLoading";
 import { takePrefetchedModel } from "./startAssets";
 import { injectAfter, patchMaterialShader } from "./ShaderPatch";
+import type { ActorModel } from "../actors/ActorLooks";
+import { retargetGait, standFigure } from "../actors/FigureAdapt";
 
 export type AnimatedAssetKey =
   | "dolphin" | "shark" | "whale" | "fishSchool" | "seagull"
-  | "traderMan" | "traderWoman" | "traderPirate" | "crabRed" | "crabBlue";
+  | "traderMan" | "traderWoman" | "traderPirate" | "crabRed" | "crabBlue"
+  | "figMark" | "figGuardA" | "figGuardB" | "viewPistol" | "viewRifle";
 /** The island traders' models, in the order they are handed out. */
 export const TRADER_MODEL_KEYS = ["traderMan", "traderWoman", "traderPirate"] as const satisfies readonly AnimatedAssetKey[];
+/**
+ * The authored story characters (Mark, the two Vanguard soldiers), by the
+ * figure a look asks for. Each is stood in the game's frame and given the
+ * islanders' walk and run once, when it arrives (`adaptAuthoredFigure`).
+ */
+export const AUTHORED_FIGURE_KEY: Partial<Record<ActorModel, AnimatedAssetKey>> = { mark: "figMark", guardA: "figGuardA", guardB: "figGuardB" };
+const AUTHORED_FIGURE_KEYS: readonly AssetKey[] = ["figMark", "figGuardA", "figGuardB"];
+
 export type StaticAssetKey = "yacht" | "sportYacht" | "skiff";
 export type AssetKey = StaticAssetKey | AnimatedAssetKey;
 
@@ -43,6 +54,12 @@ const ASSETS = {
   // at sea, then ashore.
   sportYacht: { url: "/models/sport-yacht.glb", label: "Loading the sport yacht", required: false, stage: "later" },
   skiff: { url: "/models/skiff-center-console.glb", label: "Loading the skiff", required: false, stage: "later" },
+  // The guns in the skipper's hands (first person), then the story's own people.
+  viewPistol: { url: "/models/view-pistol.glb", label: "Loading weapons", required: false, stage: "later" },
+  viewRifle: { url: "/models/view-rifle.glb", label: "Loading weapons", required: false, stage: "later" },
+  figMark: { url: "/models/fig-mark.glb", label: "Loading characters", required: false, stage: "later" },
+  figGuardA: { url: "/models/fig-guard-a.glb", label: "Loading characters", required: false, stage: "later" },
+  figGuardB: { url: "/models/fig-guard-b.glb", label: "Loading characters", required: false, stage: "later" },
   shark: { url: "/models/shark-animated.glb", label: "Loading sharks", required: false, stage: "later" },
   whale: { url: "/models/blue-whale-rigged-pbr-v2.glb", label: "Loading whale", required: false, stage: "later" },
   crabRed: { url: "/models/crab-red.glb", label: "Loading crabs", required: false, stage: "later" },
@@ -117,6 +134,7 @@ export class AssetManager {
     asset ??= await this.loader.loadAsync(assetUrl(definition.url), (event) => onBytes?.(event.loaded));
     if (this.disposed) return;
     if ((TRADER_MODEL_KEYS as readonly string[]).includes(key)) brightenFigure(asset.scene);
+    if (AUTHORED_FIGURE_KEYS.includes(key)) adaptAuthoredFigure(asset, this.assets.get("traderMan") ?? null);
     this.assets.set(key, asset);
   }
 
@@ -253,6 +271,33 @@ export class AssetManager {
       ready,
     });
   }
+}
+
+/**
+ * An authored character made ready for `ActorBody`: stood facing +Z on the
+ * ground at a person's height, marked as authored (drawn as made, no
+ * repaint and no kit), and given the islanders' walk and run retargeted
+ * onto its own skeleton (`source`, the islander, in his rest pose). Without
+ * the islander it keeps no clips and the body poses it by IK alone.
+ */
+function adaptAuthoredFigure(asset: GLTF, source: GLTF | null): void {
+  standFigure(asset.scene);
+  asset.scene.userData.authoredFigure = true;
+  asset.scene.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      if (material instanceof THREE.MeshStandardMaterial) material.envMapIntensity = 1.4;
+    }
+  });
+  if (!source) {
+    asset.animations = [];
+    return;
+  }
+  const rest = cloneSkinned(source.scene);
+  asset.animations = retargetGait({ scene: rest, animations: source.animations }, asset.scene);
 }
 
 /**

@@ -251,6 +251,12 @@ export type Effect =
   /** Gear (`rifle`) or a story item into the skipper's keeping. */
   | { do: "give"; what: string }
   | { do: "take"; item: string }
+  /**
+   * The skipper takes a gun he has in hand (`inspect`: and looks it over,
+   * turning it in a straight arm). Carried out when the line said just
+   * before it in the same list has been spoken, so it follows the words.
+   */
+  | { do: "draw"; gun: "pistol" | "rifle"; inspect?: boolean }
   | { do: "pay"; coins: number }
   /** The engine's state at the helm (the prologue starts under way). */
   | { do: "engine"; running: boolean; throttle?: number }

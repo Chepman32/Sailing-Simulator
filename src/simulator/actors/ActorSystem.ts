@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { ActorBody, restPose, type BodyPose } from "./ActorBody";
 import { ActorBrain, GUARD_TUNING, hitChance, sightOf, type Bark, type Senses, type Vec2 } from "./ActorBrain";
-import type { ActorLook, GunKind } from "./ActorLooks";
+import type { ActorLook, ActorModel, GunKind } from "./ActorLooks";
 import type { LevelSystem } from "../level/LevelSystem";
 import type { WorldPoint } from "../level/LevelBuilder";
 
@@ -66,7 +66,7 @@ export type ActorHost = {
   /** The natural ground (terrain, sea floor), for a line of sight over a hill. */
   terrain(x: number, z: number): number;
   /** The figure model and its clips, or null until loaded. */
-  model(model: "man" | "woman"): { scene: THREE.Object3D; animations: readonly THREE.AnimationClip[] } | null;
+  model(model: ActorModel): { scene: THREE.Object3D; animations: readonly THREE.AnimationClip[] } | null;
   /** The player on foot: feet, eyes, speed, crouched; null when not on foot (at a wheel). */
   player(): { x: number; y: number; z: number; eye: number; speed: number; crouched: boolean; boat: boolean } | null;
   /** A round struck the player. */
@@ -84,6 +84,9 @@ export type ActorHost = {
   /** The difficulty: 0.7 easy, 1 normal, 1.3 hard. */
   skill(): number;
 };
+
+/** How wide a standing person is to a walker, m (his radius). */
+const BODY_BLOCK = 0.34;
 
 type Status = "active" | "down" | "surrendered";
 
@@ -117,6 +120,8 @@ type Actor = {
   /** The companion: who he follows, and his own fight. */
   follow: { leader: "player"; distance: number } | null;
   companionClock: number;
+  /** Seconds he keeps running after the player last ran. */
+  hurry: number;
   /** Lines said once already. */
   said: Set<string>;
   /** Seconds since the player last shot at or near him (he is under fire). */
@@ -190,6 +195,7 @@ export class ActorSystem {
       recoil: 0,
       follow: null,
       companionClock: 0,
+      hurry: 0,
       said: new Set(),
       underFire: 99,
       hitFrom: null,
@@ -269,6 +275,27 @@ export class ActorSystem {
     actor.yaw = at.yaw;
     actor.path = [];
     actor.pathGoal = null;
+  }
+
+  /**
+   * People are solid to a walker: the clearance (m) from (x, z) to the
+   * nearest one on his feet, if nearer than `best`, with the way out of
+   * him in `normal`. Someone lying down is stepped over.
+   */
+  clearance(x: number, z: number, feetY: number, normal: { x: number; z: number }, best: number): number {
+    for (const actor of this.actors.values()) {
+      if (actor.status === "down" || !actor.body) continue;
+      const dx = x - actor.x;
+      const dz = z - actor.z;
+      if (Math.abs(dx) > 2 || Math.abs(dz) > 2 || Math.abs(feetY - actor.y) > 1.6) continue;
+      const length = Math.hypot(dx, dz);
+      const clearance = length - BODY_BLOCK;
+      if (clearance >= best) continue;
+      best = clearance;
+      normal.x = length > 1e-6 ? dx / length : 1;
+      normal.z = length > 1e-6 ? dz / length : 0;
+    }
+    return best;
   }
 
   /** Sends him somewhere (a spot) at a pace; he stops there facing its way, posed as `then` says. */
@@ -708,7 +735,17 @@ export class ActorSystem {
       if (actor.pose.aim) actor.yaw = turnToward(actor.yaw, Math.atan2(actor.pose.aim.x - actor.x, actor.pose.aim.z - actor.z), dt * 3.5);
       return;
     }
-    const wanted = pace === "run" ? 3.6 : pace === "creep" ? 1.1 : 1.35;
+    let wanted = pace === "run" ? 3.6 : pace === "creep" ? 1.1 : 1.35;
+    // The story's friends keep the player's pace: a brisk walk beside a
+    // walking player, a run once he runs (held a moment, so they do not
+    // break stride at every stumble of his).
+    if (actor.spec.faction === "ally" && pace !== "creep") {
+      const player = this.host.player();
+      const playerSpeed = player && !player.boat ? player.speed : 0;
+      if (playerSpeed > 3.6) actor.hurry = 1.2;
+      else if (playerSpeed < 2) actor.hurry = Math.max(0, actor.hurry - dt);
+      wanted = actor.hurry > 0 ? 4.3 : pace === "run" ? 3.9 : 2.3;
+    }
     actor.speed += (wanted - actor.speed) * Math.min(1, dt * 4);
     // The way there: straight if nothing stands between, else along the level's way-points.
     actor.pathClock -= dt;

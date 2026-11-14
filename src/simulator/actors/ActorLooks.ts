@@ -11,7 +11,19 @@ import * as THREE from "three";
  * or a pistol in the hands.
  */
 
-export type ActorModel = "man" | "woman";
+/**
+ * The base figures (`man`, `woman`: repainted per look, kit added on the
+ * bones) and the authored characters, drawn as their artists made them
+ * (`mark`, and the two Vanguard men, `guardA`, `guardB`; see
+ * `public/models/README.md`). An authored model that has not loaded yet is
+ * stood in for by the base man in the look's colours.
+ */
+export type ActorModel = "man" | "woman" | "mark" | "guardA" | "guardB";
+
+/** Whether a model is one of the authored characters (no repaint, no kit). */
+export function isAuthoredModel(model: ActorModel): boolean {
+  return model === "mark" || model === "guardA" || model === "guardB";
+}
 
 export type Headgear = "none" | "helmet" | "panama" | "cap" | "headset";
 

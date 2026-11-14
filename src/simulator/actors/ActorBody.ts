@@ -42,6 +42,9 @@ export function restPose(): BodyPose {
 
 const WALK_SPEED = 1.35;
 const RUN_SPEED = 3.7;
+/** Ground covered by one cycle of each clip at its own speed, m. */
+const WALK_STRIDE = 1.35;
+const RUN_STRIDE = 2.33;
 
 const v0 = new THREE.Vector3();
 const v1 = new THREE.Vector3();
@@ -81,6 +84,8 @@ export class ActorBody {
   private readonly gun: GunModel | null;
   private readonly scale: number;
   private phase = 0;
+  /** Where in the stride he is (0…1), shared by the walk and the run. */
+  private gait = 0;
   private dropped = false;
   /** The gun's muzzle in the world (after the last update). */
   readonly muzzle = new THREE.Vector3();
@@ -92,8 +97,11 @@ export class ActorBody {
   private readonly footR = new THREE.Vector3();
 
   constructor(model: THREE.Object3D, clips: readonly THREE.AnimationClip[], look: ActorLook, gun: GunKind | null) {
+    // An authored character (`AssetManager` marks it) is drawn as it was made:
+    // its own textures and clothes, no repaint and no kit on the bones.
+    const authored = model.userData.authoredFigure === true;
     // Its own material, in the look's colours.
-    model.traverse((object) => {
+    if (!authored) model.traverse((object) => {
       const mesh = object as THREE.SkinnedMesh;
       if (!mesh.isSkinnedMesh) return;
       const source = mesh.material as THREE.MeshStandardMaterial;
@@ -119,7 +127,7 @@ export class ActorBody {
     // The kit, ridden on its bones (placed at rest, in the figure's frame).
     const fit = this.rig.height / 1.78;
     this.root.updateMatrixWorld(true);
-    for (const piece of wornPieces(look)) {
+    for (const piece of authored ? [] : wornPieces(look)) {
       const holder = new THREE.Group();
       holder.add(piece.object);
       holder.scale.setScalar(fit);
@@ -176,17 +184,24 @@ export class ActorBody {
     this.root.position.set(x, y, z);
     this.root.rotation.set(0, yaw, 0);
     rig.resetPose();
-    // The gait: blend walk into run by speed, each at the pace that keeps the feet from sliding.
+    // The gait: walk blended into run by speed, both clips held on one
+    // stride phase (their feet strike together, so the blend never shuffles)
+    // at the pace that keeps the feet from sliding.
     const speed = pose.down > 0.01 || pose.sit > 0.01 ? 0 : pose.speed;
     const moving = Math.min(1, speed / 0.5);
     const runWeight = THREE.MathUtils.clamp((speed - WALK_SPEED) / (RUN_SPEED - WALK_SPEED), 0, 1);
+    const stride = WALK_STRIDE + (RUN_STRIDE - WALK_STRIDE) * runWeight;
+    const cadence = Math.max(0.45, speed) / stride * (pose.crouch > 0.5 ? 0.85 : 1);
+    if (moving > 0.001) this.gait = (this.gait + dt * cadence) % 1;
     if (this.walk) {
       this.walk.setEffectiveWeight(moving * (1 - runWeight));
-      this.walk.timeScale = Math.max(0.4, speed / WALK_SPEED) * (pose.crouch > 0.5 ? 0.8 : 1);
+      this.walk.timeScale = 0;
+      this.walk.time = this.gait * this.walk.getClip().duration;
     }
     if (this.run) {
       this.run.setEffectiveWeight(moving * runWeight);
-      this.run.timeScale = Math.max(0.6, speed / RUN_SPEED);
+      this.run.timeScale = 0;
+      this.run.time = this.gait * this.run.getClip().duration;
     }
     this.mixer.update(dt);
     this.root.updateMatrixWorld(true);
@@ -266,8 +281,36 @@ export class ActorBody {
       }
     } else {
       this.placeGun(pose, false);
+      if (!this.hasGun) this.hangArms(1 - moving, pose.sit);
     }
     this.measure();
+  }
+
+  /**
+   * Empty hands: at his sides (on his knees when sitting) while he stands,
+   * handed over to the clip's swing as he gets going. Without it a figure
+   * with no clip playing stands in the model's bind pose, arms out.
+   */
+  private hangArms(weight: number, sit: number): void {
+    if (weight < 0.01) return;
+    const rig = this.rig;
+    const s = rig.height / 1.8;
+    const sway = Math.sin(this.phase * 1.35) * 0.004;
+    for (const side of ["Left", "Right"] as const) {
+      const sign = side === "Left" ? 1 : -1;
+      const shoulder = rig.restPoint.get(`${side}Arm`)!;
+      // In the figure's frame: the hand by the thigh, a little forward; sitting, on the knee.
+      v2.set(shoulder.x + sign * 0.035 * s, shoulder.y - 0.52 * s + sway, shoulder.z + 0.06 * s);
+      if (sit > 0.01) v2.lerp(v3.set(shoulder.x - sign * 0.02 * s, shoulder.y - 0.36 * s, shoulder.z + 0.3 * s), sit);
+      rig.toWorld(v2, v2);
+      if (weight < 0.99) {
+        // Part way: from where the clip has the hand toward the side.
+        rig.bone(`${side}Hand`).getWorldPosition(v0);
+        v2.lerp(v0, 1 - weight);
+      }
+      rig.toWorld(v3.set(shoulder.x + sign * 0.15, shoulder.y - 0.25 * s, shoulder.z - 0.6), v3);
+      rig.solveLimb(`${side}Arm`, `${side}ForeArm`, `${side}Hand`, v2, v3);
+    }
   }
 
   /** The gun in the hands: low and across the body, or up at the shoulder at the mark; the arms to it. */

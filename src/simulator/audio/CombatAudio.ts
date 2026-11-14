@@ -119,56 +119,111 @@ export class CombatAudio {
     osc.stop(start + length + 0.02);
   }
 
-  /** The skipper's own rifle, right by his ear. */
-  /** A shot from his own gun: the rifle's heavy crack and bolt, or the pistol's sharp snap. */
+  /**
+   * A shot from his own gun, built the way a game's weapon sound is layered
+   * (every shot a little different in pitch and colour, so a string of them
+   * never sounds like a loop):
+   *
+   * - the **crack**: a few milliseconds of full-band pressure, driven into a
+   *   soft clipper so it hits like a real report on small speakers too;
+   * - the **punch**: a low sine falling fast (the chest thump) under a short
+   *   burst of low noise;
+   * - the **blast**: the mid-band roar of the propellant, decaying in a tenth
+   *   of a second (longer for the rifle);
+   * - the **mechanism**: the slide or the bolt carrier slamming back and home,
+   *   as small metallic transients with their own resonances;
+   * - the **tail**: the report rolling away over the island (a long, dark
+   *   decay), the slap-back off the nearest slope, and the reverb;
+   * - the **case**: the spent brass ringing as it lands, half a second later.
+   */
   gunshot(weapon: "pistol" | "rifle"): void {
-    if (weapon === "rifle") {
-      this.rifle();
-      return;
-    }
     const mixer = this.ready();
     if (!mixer) return;
     const { context, master } = mixer;
-    const now = context.currentTime + 0.005;
+    const rifle = weapon === "rifle";
+    const now = context.currentTime + 0.004;
+    const pitch = 1 + (Math.random() * 2 - 1) * 0.045;
+    // Everything goes through a soft clipper and a fast compressor: loud, dense, never harsh.
+    const drive = context.createWaveShaper();
+    drive.curve = this.clipCurve();
+    drive.oversample = "2x";
+    const glue = context.createDynamicsCompressor();
+    glue.threshold.value = -14;
+    glue.knee.value = 6;
+    glue.ratio.value = 6;
+    glue.attack.value = 0.001;
+    glue.release.value = 0.12;
     const out = context.createGain();
-    out.gain.value = 0.7;
-    out.connect(master);
+    out.gain.value = rifle ? 0.95 : 0.8;
+    drive.connect(glue).connect(out).connect(master);
     out.connect(this.slapBack(context, master));
-    this.burstOfNoise(context, out, now, 0.025, 0.85, "highpass", 2200, 0.7, 1.6);
-    this.burstOfNoise(context, out, now, 0.09, 0.45, "bandpass", 1300, 1.2);
-    this.thump(context, out, now, 160, 0.08, 0.45);
-    // The slide, and a case ringing on the deck.
-    this.burstOfNoise(context, out, now + 0.05, 0.02, 0.07, "bandpass", 3600, 5);
-    this.burstOfNoise(context, out, now + 0.36, 0.012, 0.035, "bandpass", 5200, 9);
+    const dry = context.createGain();
+    dry.gain.value = 1.6;
+    dry.connect(drive);
+
+    // Crack.
+    this.burstOfNoise(context, dry, now, 0.006, 1.2, "highpass", 1800 * pitch, 0.5, 1.8);
+    this.burstOfNoise(context, dry, now, rifle ? 0.03 : 0.022, 0.9, "highpass", 3200 * pitch, 0.7, 1.5);
+    // Punch.
+    this.thump(context, dry, now, (rifle ? 78 : 112) * pitch, rifle ? 0.2 : 0.13, rifle ? 1.1 : 0.85);
+    this.burstOfNoise(context, dry, now, rifle ? 0.07 : 0.05, 0.75, "lowpass", (rifle ? 420 : 620) * pitch, 0.9, 0.7);
+    // Blast.
+    this.burstOfNoise(context, dry, now + 0.002, rifle ? 0.17 : 0.1, rifle ? 0.7 : 0.55, "bandpass", (rifle ? 950 : 1350) * pitch, 0.9);
+    this.burstOfNoise(context, dry, now + 0.004, rifle ? 0.26 : 0.16, 0.28, "bandpass", (rifle ? 2400 : 2900) * pitch, 1.4);
+    // Mechanism.
+    const metal = (at: number, frequency: number, level: number, length = 0.025) =>
+      this.burstOfNoise(context, out, now + at, length, level, "bandpass", frequency * pitch, 9);
+    if (rifle) {
+      metal(0.028, 2700, 0.16, 0.03);
+      metal(0.034, 4300, 0.1);
+      metal(0.062, 3100, 0.14, 0.035);
+      metal(0.068, 1900, 0.1, 0.04);
+    } else {
+      metal(0.018, 3900, 0.14);
+      metal(0.024, 6200, 0.08, 0.015);
+      metal(0.046, 3300, 0.12, 0.03);
+    }
+    // Tail: the report rolling off over the land.
+    const tail = context.createGain();
+    tail.gain.value = 1;
+    tail.connect(out);
+    this.burstOfNoise(context, tail, now + 0.03, rifle ? 1.25 : 0.85, rifle ? 0.24 : 0.16, "lowpass", rifle ? 520 : 700, 0.7, 0.55);
+    this.thump(context, tail, now + 0.06, rifle ? 52 : 64, rifle ? 0.6 : 0.4, rifle ? 0.22 : 0.14);
+    // The case landing: two or three bright pings, then nothing.
+    const land = now + (rifle ? 0.48 : 0.42) + Math.random() * 0.12;
+    const ring = (at: number, frequency: number, level: number) =>
+      this.burstOfNoise(context, out, land + at, 0.05, level, "bandpass", frequency, 28);
+    ring(0, 5200 + Math.random() * 600, 0.05);
+    ring(0.07 + Math.random() * 0.03, 6100 + Math.random() * 500, 0.03);
+    if (Math.random() < 0.6) ring(0.15 + Math.random() * 0.05, 5600, 0.018);
     if (mixer.reverb) {
       const wet = context.createGain();
-      wet.gain.value = 0.25;
+      wet.gain.value = rifle ? 0.42 : 0.3;
       out.connect(wet).connect(mixer.reverb);
     }
-    window.setTimeout(() => out.disconnect(), 1200);
+    window.setTimeout(() => {
+      dry.disconnect();
+      out.disconnect();
+    }, 1900);
   }
 
+  /** The rifle's shot (kept for callers that name it). */
   rifle(): void {
-    const mixer = this.ready();
-    if (!mixer) return;
-    const { context, master } = mixer;
-    const now = context.currentTime + 0.005;
-    const out = context.createGain();
-    out.gain.value = 0.9;
-    out.connect(master);
-    out.connect(this.slapBack(context, master));
-    this.burstOfNoise(context, out, now, 0.035, 0.9, "highpass", 1400, 0.7, 1.4);
-    this.burstOfNoise(context, out, now, 0.16, 0.6, "lowpass", 900, 0.7, 0.8);
-    this.thump(context, out, now, 95, 0.18, 0.7);
-    // The bolt cycling a beat later.
-    this.burstOfNoise(context, out, now + 0.32, 0.03, 0.08, "bandpass", 3200, 4);
-    this.burstOfNoise(context, out, now + 0.41, 0.025, 0.07, "bandpass", 2600, 4);
-    if (mixer.reverb) {
-      const wet = context.createGain();
-      wet.gain.value = 0.35;
-      out.connect(wet).connect(mixer.reverb);
+    this.gunshot("rifle");
+  }
+
+  private clipCurveCache: Float32Array<ArrayBuffer> | null = null;
+
+  /** A soft clipper (tanh), shared. */
+  private clipCurve(): Float32Array<ArrayBuffer> {
+    if (this.clipCurveCache) return this.clipCurveCache;
+    const curve = new Float32Array(1024);
+    for (let index = 0; index < curve.length; index += 1) {
+      const x = (index / (curve.length - 1)) * 2 - 1;
+      curve[index] = Math.tanh(x * 2.6) / Math.tanh(2.6);
     }
-    window.setTimeout(() => out.disconnect(), 1500);
+    this.clipCurveCache = curve;
+    return curve;
   }
 
   /** One round of a drone's burst, from where it was fired. */

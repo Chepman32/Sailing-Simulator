@@ -39,24 +39,29 @@ function smoke(b: LevelBuilder, at: LP, height: number): void {
   context.fillStyle = gradient;
   context.fillRect(0, 0, 64, 64);
   const texture = b.own(new THREE.CanvasTexture(canvas));
-  const material = b.own(new THREE.SpriteMaterial({ map: texture, color: 0x5d5b58, transparent: true, depthWrite: false, opacity: 0.5 }));
+  const material = b.own(new THREE.SpriteMaterial({ map: texture, color: 0x4a4846, transparent: true, depthWrite: false, opacity: 0.5 }));
   const group = new THREE.Group();
   const puffs: { sprite: THREE.Sprite; phase: number }[] = [];
-  for (let index = 0; index < 14; index += 1) {
+  const count = 22;
+  for (let index = 0; index < count; index += 1) {
     const sprite = new THREE.Sprite(material.clone());
+    sprite.material.rotation = index * 2.39;
     b.own(sprite.material);
     group.add(sprite);
-    puffs.push({ sprite, phase: index / 14 });
+    puffs.push({ sprite, phase: index / count });
   }
   b.object(group, at);
   b.animate((delta, elapsed) => {
     for (const puff of puffs) {
-      const t = (puff.phase + elapsed * 0.035) % 1;
-      const size = 2 + t * 14;
+      const t = (puff.phase + elapsed * 0.04) % 1;
+      // Dense and dark where it leaves the water, spreading and paling as it climbs.
+      const size = 3 + t * 19;
       puff.sprite.scale.set(size, size, 1);
       // Leaning downwind as it rises.
       puff.sprite.position.set(t * t * 18, t * height, t * 6 + Math.sin(elapsed * 0.3 + puff.phase * 9) * 1.2);
-      (puff.sprite.material as THREE.SpriteMaterial).opacity = 0.42 * Math.sin(Math.PI * Math.min(1, t * 1.25)) * (1 - t * 0.5);
+      const material = puff.sprite.material as THREE.SpriteMaterial;
+      material.opacity = 0.62 * Math.sin(Math.PI * Math.min(1, t * 1.6 + 0.08)) * (1 - t * 0.45);
+      material.color.setScalar(0.22 + t * 0.2);
     }
   });
 }
@@ -178,7 +183,8 @@ function buildKosaya(b: LevelBuilder): void {
   jelly.scale.y = 0.45;
   b.object(jelly, ground(b, 12, 15.5, -0.01));
   // Where he comes to, looking out at the smoke; where Mark waits, under the palms above him.
-  b.spot("wake", ground(b, 0, 9), 15);
+  // He comes to looking along the beach, the smoke off to one side: "where's the yacht?" turns him to it.
+  b.spot("wake", ground(b, 0, 9), 34);
   b.spot("mark-hidden", ground(b, 34, -48), 200);
   b.spot("mark-beach", ground(b, 5, -5), 190);
   b.area("beach", [0, 6], 60, 26, { height: 6 });
@@ -198,6 +204,8 @@ function buildKosaya(b: LevelBuilder): void {
   const wreck = wreckedSportYacht();
   boatProp(b, wreck, [-20, 125, -0.9], 140, 0.36, -0.12);
   smoke(b, [-21, 123, 1.5], 46);
+  // Where he looks to find her: the foot of the smoke, a little above the water.
+  b.spot("wreck-smoke", [-19, 124, 6], 0);
 
   // --- The trail -------------------------------------------------------------------------
   b.spot("mark-trail1", ground(b, 28, -20), 230);

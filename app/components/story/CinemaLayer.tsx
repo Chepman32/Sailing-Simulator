@@ -111,7 +111,8 @@ function SkipControl({ language, touch, onSkip }: { language: LanguageCode; touc
   useEffect(() => {
     const { start, stop } = controls.current;
     const timer = window.setTimeout(() => setOffered(true), 2200);
-    const isSkipKey = (event: KeyboardEvent) => event.code === "Space" || event.code === "Enter" || event.code === "Escape";
+    // Escape is not a skip key: it opens the pause menu, in a scene as anywhere.
+    const isSkipKey = (event: KeyboardEvent) => event.code === "Space" || event.code === "Enter";
     const onDown = (event: KeyboardEvent) => {
       if (!isSkipKey(event)) {
         setOffered(true);

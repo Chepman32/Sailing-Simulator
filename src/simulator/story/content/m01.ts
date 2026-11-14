@@ -310,7 +310,12 @@ export const M01: Mission = {
         { do: "sound", sound: "surf" },
         { do: "title", style: "chapter", title: t("Ты должен был погибнуть", "You Should Be Dead"), subtitle: t("Мёртвый прилив · Косая отмель · 16:45", "Dead Tide · the Slant Shoal · 16:45") },
       ],
-      onComplete: [{ do: "freeze", on: false }, lines(hero("Чёрт… Где яхта?", "Hell… Where's the yacht?"))],
+      onComplete: [
+        { do: "freeze", on: false },
+        lines(hero("Чёрт… Где яхта?", "Hell… Where's the yacht?")),
+        // His head turns a little aside: smoke rising off the water, not far out.
+        { do: "look", at: "kosaya:wreck-smoke" },
+      ],
     },
     {
       id: "shore",
@@ -368,14 +373,15 @@ export const M01: Mission = {
       marker: "@actor:mark",
       checkpoint: { yacht: "stvor9:skiff", skipper: "ashore", spot: "kosaya:meet-hero" },
       onStart: [
+        { do: "give", what: "pistol" },
+        sfx("FX060_pistol_hand_over"),
+        lines(mark("Держи. Не новый, зато стреляет прямо.", "Here. Not new, but it shoots straight.")),
+        // In his hand as soon as Mark has said it, turned over and looked at while they talk.
+        { do: "draw", gun: "pistol", inspect: true },
         lines(
-          mark("Держи. Не новый, зато стреляет прямо.", "Here. Not new, but it shoots straight."),
           hero("Ты каждому встречному раздаёшь оружие?", "You hand out guns to everybody you meet?"),
           mark("Только тем, кого уже пытались убить на моих глазах.", "Only to people somebody's already tried to kill in front of me."),
         ),
-        { do: "give", what: "pistol" },
-        sfx("FX060_pistol_hand_over"),
-        sfx("FX061_pistol_slide", 0.8),
         { do: "give", what: "knife" },
         { do: "actor", id: "mark", to: "kosaya:mark-trail1", pace: "walk" },
       ],
@@ -888,7 +894,6 @@ export const M01: Mission = {
     { id: "bandage-sound", when: { event: "bandage" }, every: 1, do: [sfx("FX062_medicine_bandage")] },
     { id: "copied-sound", when: { steps: ["attachment"] }, do: [sfx("EXFX0083_server_copy_success", 0.8)] },
     // The trail: a word now and then on the way up (all voiced).
-    { id: "trail-dry", when: { steps: ["follow"], stepTime: 22, quiet: true }, do: [lines(mark("Иди по сухим камням — там не оставишь следов.", "Keep to the dry stones — you won't leave tracks there."))] },
     { id: "trail-heat", when: { steps: ["follow"], stepTime: 40, quiet: true }, do: [lines(hero("Жара будто воздух глотает.", "This heat swallows the air."), mark("Привыкай. Ночью здесь не намного легче.", "Get used to it. Nights here aren't much better."))] },
     {
       id: "trail-smoke",
@@ -896,7 +901,6 @@ export const M01: Mission = {
       do: [lines(mark("Видишь дым? Там у них полевой лагерь.", "See the smoke? That's their field camp."), hero("По запаху — жарят что-то съедобное.", "Smells like they're grilling something edible."), mark("Ещё одно доказательство, что жизнь несправедлива.", "One more proof life isn't fair."))],
     },
     { id: "trail-plan", when: { steps: ["follow"], stepTime: 84, quiet: true }, do: [lines(hero("А у нас план вообще есть?", "Do we even have a plan?"), mark("Есть. Не умереть до заката.", "We do. Don't die before sunset."))] },
-    { id: "trail-soft", when: { steps: ["follow"], stepTime: 104, quiet: true }, do: [lines(mark("Ноги ставь мягче. Слышишь, как хрустит известняк?", "Softer on your feet. Hear the limestone crunch?"))] },
     // Inside the wire, while nobody has seen them.
     { id: "in-base", when: { steps: S04, stepTime: 24, not: ["alert:suspicious", "alert:combat"], quiet: true }, do: [lines(hero("У них здесь целая база.", "They've got a whole base here."), mark("А нам нужен только архив.", "And all we need is the archive."))] },
     { id: "in-quiet", when: { steps: S04, stepTime: 58, not: ["alert:suspicious", "alert:combat"], quiet: true }, do: [lines(hero("Слишком тихо.", "Too quiet."), mark("Тихо — это хорошо, пока тебя не заметили.", "Quiet is good, as long as nobody's spotted you."))] },

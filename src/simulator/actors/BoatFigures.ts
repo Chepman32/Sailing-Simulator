@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { ActorBody, restPose, type BodyPose } from "./ActorBody";
-import type { ActorLook, GunKind } from "./ActorLooks";
+import type { ActorLook, ActorModel, GunKind } from "./ActorLooks";
 import type { DroneCrew } from "../combat/DroneSystem";
 import type { CrewSeat } from "../combat/PatrolBoatModel";
 import type { CraftSeat } from "../vessel/CraftModels";
@@ -13,7 +13,7 @@ import type { CraftSeat } from "../vessel/CraftModels";
  * figures (`ActorBody`), parented to the boat and posed in her frame.
  */
 
-export type FigureSource = (model: "man" | "woman") => { scene: THREE.Object3D; animations: readonly THREE.AnimationClip[] } | null;
+export type FigureSource = (model: ActorModel) => { scene: THREE.Object3D; animations: readonly THREE.AnimationClip[] } | null;
 
 const local = new THREE.Vector3();
 
@@ -134,6 +134,12 @@ export class BoatParty {
       const yaw = seat.yaw + (index === 0 ? -rudder * 0.25 : Math.sin(time * 0.6 + index) * 0.15);
       body.update(delta, seat.x, seat.y, seat.z, yaw, pose);
     });
+  }
+
+  /** How fast `id` is moving over the ground (a figure walked through a scene): his clips follow it. */
+  setSpeed(id: string, speed: number): void {
+    const entry = this.bodies.get(id);
+    if (entry) entry.pose.speed = speed;
   }
 
   dispose(): void {

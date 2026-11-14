@@ -87,6 +87,9 @@ const FinishShader = {
     uGradeVignette: { value: 0 },
     // A diver's view: the mask's edge, the water's wobble, 0 in air … 1 under.
     uUnderwater: { value: 0 },
+    // A blast's shock wave: where it is on screen (uv), how far it has spread, how hard it bends the picture.
+    uShock: { value: new THREE.Vector4(0.5, 0.5, 0, 0) },
+    uAspect: { value: 1 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -107,6 +110,8 @@ const FinishShader = {
     uniform float uGradeSaturation;
     uniform float uGradeVignette;
     uniform float uUnderwater;
+    uniform vec4 uShock;
+    uniform float uAspect;
     varying vec2 vUv;
 
     ${SANE_COLOR_GLSL}
@@ -119,6 +124,13 @@ const FinishShader = {
 
     void main() {
       vec2 uv = vUv;
+      // A ring of bent air spreading from a blast.
+      if (uShock.w > 0.0) {
+        vec2 away = uv - uShock.xy;
+        away.x *= uAspect;
+        float ring = length(away) - uShock.z;
+        uv -= normalize(away + 1e-5) * exp(-ring * ring * 160.0) * uShock.w * 0.045;
+      }
       // Under water the image swims a little (the water's own density
       // ripples), most toward the edges of the mask.
       if (uUnderwater > 0.0) {
@@ -178,6 +190,8 @@ export function hardenBrightPass(source: string): string {
   if (!source.includes(read)) return source;
   return `${SANE_COLOR_GLSL}\n${source.replace(read, "vec4 texel = texture2D( tDiffuse, vUv ); texel.rgb = saneColor(texel.rgb);")}`;
 }
+
+const shockSize = new THREE.Vector2();
 
 export class PostProcessing {
   private readonly composer: EffectComposer;
@@ -376,6 +390,13 @@ export class PostProcessing {
     (uniforms.uGradeShadows!.value as THREE.Vector3).set(shadows[0]!, shadows[1]!, shadows[2]!);
     uniforms.uGradeSaturation!.value = saturation;
     uniforms.uGradeVignette!.value = vignette;
+  }
+
+  /** A blast's shock wave crossing the picture: its centre (uv), radius (screen heights) and strength (0: none). */
+  setShock(u: number, v: number, radius: number, strength: number): void {
+    (this.finish.uniforms.uShock!.value as THREE.Vector4).set(u, v, radius, strength);
+    const size = this.renderer.getDrawingBufferSize(shockSize);
+    this.finish.uniforms.uAspect!.value = size.y > 0 ? size.x / size.y : 1;
   }
 
   /** A diver's view under the water (0 … 1). */

@@ -208,7 +208,6 @@ export function StoryHud({ view, combat, language, touch, atHelm, onAct, onSkip,
               {line.via === "broadcast" && <span className="story-line-via">{messages.viaBroadcast}</span>}
             </span>
             <span className="story-line-text">{textIn(line.text, lang)}</span>
-            <span className="story-line-time" aria-hidden="true" style={{ animationDuration: `${line.duration}s` }} />
           </span>
         </button>
       )}

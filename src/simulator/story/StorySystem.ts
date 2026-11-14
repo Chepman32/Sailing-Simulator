@@ -73,6 +73,8 @@ export type StoryHost = {
   /** The hull or the engine changed: the yacht's handling and looks follow. */
   conditionChanged(): void;
   gearChanged(): void;
+  /** Puts a gun he has in his hands (`inspect`: looked over first). */
+  drawGun(gun: "pistol" | "rifle", inspect: boolean): void;
   ground(x: number, z: number): number;
   seabed(x: number, z: number): number;
   radio(kind: "radio" | "broadcast"): void;
@@ -375,6 +377,7 @@ export class StorySystem {
   private resetRun(): void {
     this.clearWorld();
     this.queue.length = 0;
+    this.afterLine.length = 0;
     this.line = null;
     this.titles.length = 0;
     this.title = null;
@@ -609,6 +612,7 @@ export class StorySystem {
     this.fadeTarget = 0;
     if (this.checkpointState) this.state = structuredClone(this.checkpointState);
     this.queue.length = 0;
+    this.afterLine.length = 0;
     this.line = null;
     this.scene = null;
     this.using = null;
@@ -846,6 +850,13 @@ export class StorySystem {
       case "give":
         this.host.gearChanged();
         break;
+      case "draw": {
+        // After the line queued last (the words that go with it), or now if nothing is to be said.
+        const last = this.queue.length ? this.queue[this.queue.length - 1]!.id : this.line?.id;
+        if (last === undefined) this.host.drawGun(effect.gun, effect.inspect ?? false);
+        else this.afterLine.push({ line: last, gun: effect.gun, inspect: effect.inspect ?? false });
+        break;
+      }
       case "pay":
         this.host.pay(effect.coins);
         break;
@@ -897,7 +908,8 @@ export class StorySystem {
         this.wakeSerial += 1;
         break;
       case "look": {
-        const at = this.anchorFrame(effect.at.startsWith("npc:") ? effect.at : `place:${effect.at}`);
+        // A person, a place of the chart, or a spot of a level (`kosaya:wreck-smoke`).
+        const at = effect.at.startsWith("npc:") ? this.anchorFrame(effect.at) : (this.anchorFrame(`place:${effect.at}`) ?? this.point(effect.at));
         if (at) this.host.look(at.x, at.z);
         break;
       }
@@ -1022,7 +1034,9 @@ export class StorySystem {
       scene.cued += 1;
       for (const effect of shot.cue ?? []) this.cue(effect);
     }
-    // What was being said and shown goes too: it belonged to the scene.
+    // What was being said and shown goes too: it belonged to the scene
+    // (what was to follow a line happens now).
+    for (const waiting of this.afterLine.splice(0)) this.host.drawGun(waiting.gun, waiting.inspect);
     this.queue.length = 0;
     this.line = null;
     this.titles.length = 0;
@@ -1103,6 +1117,14 @@ export class StorySystem {
     if (this.line) {
       this.line.elapsed += delta;
       if (this.line.elapsed >= this.line.duration) {
+        const spoken = this.line.id;
+        for (let index = 0; index < this.afterLine.length; ) {
+          const waiting = this.afterLine[index]!;
+          if (waiting.line <= spoken) {
+            this.afterLine.splice(index, 1);
+            this.host.drawGun(waiting.gun, waiting.inspect);
+          } else index += 1;
+        }
         this.line = null;
         this.lineGap = 0.35;
       }
@@ -1123,6 +1145,8 @@ export class StorySystem {
     this.lastWho = next.who;
   }
 
+  /** Guns to be taken in hand once a line has been spoken (`draw`). */
+  private readonly afterLine: { line: number; gun: "pistol" | "rifle"; inspect: boolean }[] = [];
   private lastVia: Line["via"] | null = null;
   private lastWho = "";
 
@@ -1526,6 +1550,16 @@ export class StorySystem {
     if (!this.state.flags.includes("bandage-used")) this.state.flags.push("bandage-used");
     this.events.add("bandage");
     this.dirty = true;
+  }
+
+  /** Whether the story has set this flag. */
+  flagged(name: string): boolean {
+    return this.active && this.state.flags.includes(name);
+  }
+
+  /** The story's people standing about (not the actors): solid to a walker. */
+  get castStanding(): readonly TraderSpot[] {
+    return this.active ? this.castSpots : [];
   }
 
   /** The skipper has this gear. */

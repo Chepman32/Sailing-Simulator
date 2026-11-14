@@ -1,4 +1,4 @@
-import { SKIN, UNIFORM, type ActorLook } from "../../actors/ActorLooks";
+import { SKIN, UNIFORM, type ActorLook, type ActorModel } from "../../actors/ActorLooks";
 
 /**
  * How the story's people look (docs/campaign/missions/m01.md §3): clothes
@@ -10,7 +10,7 @@ export const HERO_LOOK: ActorLook = { model: "man", skin: SKIN.light, shirt: 0xe
 
 /** Mark Holloway: a faded olive shirt, a mended sand plate carrier, cargo trousers, a pale panama, his old platoon's band on the wrist. */
 export const MARK_LOOK: ActorLook = {
-  model: "man",
+  model: "mark",
   skin: SKIN.olive,
   shirt: 0x6e7150,
   trousers: 0x6a6150,
@@ -31,7 +31,22 @@ export const MAYA_LOOK: ActorLook = { model: "woman", skin: SKIN.brown, shirt: 0
 /** The commander: a pale sand field shirt, a grey-green vest, short hair. */
 export const COMMANDER_LOOK: ActorLook = { model: "man", skin: SKIN.light, shirt: 0xcbb88f, trousers: 0x8b7d5c, hair: 0x2c241e, vest: 0x5f6a5c, head: "none", scale: 1.06 };
 
-/** A Vanguard contractor in the light uniform: shirt, trousers, vest, headgear varied. */
+/** A small hash of a look's colours and headgear (which soldier a man is). */
+function lookHash(skin: number, shirt: number, hair: number, head: string): number {
+  let hash = 2166136261;
+  for (const value of [skin, shirt, hair, head.length * 977 + head.charCodeAt(0)]) {
+    hash = Math.imul(hash ^ (value & 0xffffff), 16777619);
+    hash ^= hash >>> 13;
+  }
+  return hash >>> 0;
+}
+
+/**
+ * A Vanguard contractor in the light uniform: shirt, trousers, vest,
+ * headgear varied. The men are the two authored soldiers (camouflage and
+ * kit of their own), chosen from the look so a man is always the same one;
+ * the colours stay as the stand-in's until the model has come.
+ */
 export function contractor(
   model: "man" | "woman",
   skin: number,
@@ -39,7 +54,8 @@ export function contractor(
   head: ActorLook["head"],
   extra: Partial<ActorLook> = {},
 ): ActorLook {
-  return { model, skin, shirt, trousers: extra.trousers ?? UNIFORM.khaki, hair: extra.hair ?? 0x2a2018, vest: extra.vest === undefined ? UNIFORM.greyGreen : extra.vest, head, ...extra };
+  const figure: ActorModel = model === "woman" ? "woman" : lookHash(skin, shirt, extra.hair ?? 0, head) % 2 === 0 ? "guardA" : "guardB";
+  return { model: figure, skin, shirt, trousers: extra.trousers ?? UNIFORM.khaki, hair: extra.hair ?? 0x2a2018, vest: extra.vest === undefined ? UNIFORM.greyGreen : extra.vest, head, ...extra };
 }
 
 /** The crews of the patrol boats. */

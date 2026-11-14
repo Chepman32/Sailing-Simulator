@@ -181,12 +181,12 @@ export function propellerThrust(shaft: number, forwardSpeed: number, boost: { th
  */
 /**
  * The story's boats as handling (see `VesselPhysics.handling`): the sport
- * yacht runs at about 32 kn and answers quickly; the skiff makes about 15 kn
+ * yacht runs at about 47 kn and answers quickly; the skiff makes about 15 kn
  * with her tired outboard but turns on a coin.
  */
 export const CRAFT_HANDLING = {
   catamaran: { thrust: 1, fade: 1, drag: 1, turn: 1, response: 1 },
-  sport: { thrust: 2.6, fade: 1.6, drag: 1, turn: 1.05, response: 1.4 },
+  sport: { thrust: 5.6, fade: 2.8, drag: 1, turn: 1.05, response: 1.5 },
   skiff: { thrust: 0.62, fade: 0.6, drag: 1, turn: 1.55, response: 1.6 },
 } as const;
 

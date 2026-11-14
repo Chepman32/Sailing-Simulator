@@ -181,7 +181,8 @@ test("every id is unique and every reference names something that exists", () =>
       if (effect.do === "give") assert.ok(items.has(effect.what) || GEAR.has(effect.what), `${where}: give ${effect.what}`);
       if (effect.do === "take") assert.ok(items.has(effect.item), `${where}: take ${effect.item}`);
       if (effect.do === "cutscene") assert.ok(scenes.has(effect.scene), `${where}: cutscene ${effect.scene}`);
-      if (effect.do === "look") assert.ok(effect.at.startsWith("npc:") ? characters.has(effect.at.slice(4)) : locations.has(effect.at), `${where}: look at ${effect.at}`);
+      if (effect.do === "look") assert.ok(effect.at.startsWith("npc:") ? characters.has(effect.at.slice(4)) : locations.has(effect.at) || Boolean(levelPoint(effect.at)), `${where}: look at ${effect.at}`);
+      if (effect.do === "draw") assert.ok(GEAR.has(effect.gun), `${where}: draw ${effect.gun}`);
       if (effect.do === "actor") {
         assert.ok(ROSTER.has(effect.id), `${where}: actor ${effect.id}`);
         for (const spot of [effect.to, effect.put]) if (spot) assert.ok(levelPoint(spot), `${where}: ${effect.id} to ${spot}`);

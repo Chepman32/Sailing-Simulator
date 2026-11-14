@@ -30,7 +30,7 @@ export const RUN_SPEED = 4.5;
 /** Stride, m: footsteps and the bob of the head follow it. */
 export const WALK_STRIDE = 1.0;
 export const RUN_STRIDE = 1.5;
-export const JUMP_SPEED = 3.7;
+export const JUMP_SPEED = 4.26;
 export const GRAVITY = 9.81;
 /** The highest step taken without a jump (a coaming, a cockpit step). */
 export const STEP_UP = 0.42;
@@ -517,8 +517,11 @@ export function stepWalk(state: WalkState, input: WalkInput, world: GroundWorld,
     }
     // Trunks, towers, rocks and walls: pushed back out, the speed into them lost.
     if (world.obstacle) {
-      const clearance = world.obstacle(state.x, state.z, normal) - BODY_RADIUS;
-      if (clearance < 0) {
+      // A few passes: pushed out of one rock he may stand in its neighbour
+      // (boulders lie in clusters); one pass a step left him caught between them.
+      for (let pass = 0; pass < 3; pass += 1) {
+        const clearance = world.obstacle(state.x, state.z, normal) - BODY_RADIUS;
+        if (clearance >= 0) break;
         state.x -= normal.x * clearance;
         state.z -= normal.z * clearance;
         const inward = state.vx * normal.x + state.vz * normal.z;

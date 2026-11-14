@@ -1072,6 +1072,7 @@ export function SailingSimulator() {
       else if (action === "trader-charted") showNotice(voyage.traderCharted);
       else if (action === "bag-full") showNotice(shopWords.bagFull);
       else if (action === "engine-broken") showNotice(storyWords.engineBroken);
+      else if (action === "helm-far") showNotice(storyWords.helmFar);
     },
     discovery: (discovery) => {
       discoveryId.current += 1;
@@ -1662,18 +1663,27 @@ export function SailingSimulator() {
           saved={snapshot.story.saved}
           onNew={() => {
             leaveMainMenu();
+            // The story is told with sound: it starts inside this press.
+            simulatorRef.current?.setSoundEnabled(true);
+            simulatorRef.current?.startAudioFromUser();
             simulatorRef.current?.startCampaign();
           }}
           onContinue={() => {
             leaveMainMenu();
+            simulatorRef.current?.setSoundEnabled(true);
+            simulatorRef.current?.startAudioFromUser();
             simulatorRef.current?.continueCampaign();
           }}
           onLoad={(slot) => {
             leaveMainMenu();
+            simulatorRef.current?.setSoundEnabled(true);
+            simulatorRef.current?.startAudioFromUser();
             simulatorRef.current?.loadGame(slot);
           }}
           onFree={() => {
             leaveMainMenu();
+            // Free sailing starts quiet; the sound button is one press away.
+            simulatorRef.current?.setSoundEnabled(false);
             simulatorRef.current?.chooseFreeSail();
             openGuideIfPending();
           }}
