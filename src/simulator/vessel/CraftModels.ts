@@ -567,7 +567,8 @@ export function albatross(): CraftModel {
       pivot,
       cradle,
       muzzle: new THREE.Vector3(0, 0.02, 1.74),
-      eye: new THREE.Vector3(0, 0.22, -0.78),
+      // Over the shield, not into it: the plate low in the view, the barrel running out to the sight.
+      eye: new THREE.Vector3(0, 0.5, -1.2),
       aft: Math.PI,
       seat: { x: 0, y: ALBATROSS_SOLE, z: gunnerZ, yaw: Math.PI, sit: false, seat: 0 },
     },

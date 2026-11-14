@@ -168,6 +168,8 @@ const GUN_PITCH: readonly [number, number] = [-0.22, 0.38];
 const GUN_INTERVAL = 0.09;
 const GUN_SPREAD = 0.0055;
 const GUN_RANGE = 820;
+/** The range the gunner's view is true at, m. */
+const GUN_ZERO = 160;
 /** Seconds of fire that heat the barrel through, how fast it cools (per s), and the heat it must cool to before it fires again. */
 const GUN_BURST = 6;
 const GUN_COOLING = 0.32;
@@ -340,6 +342,7 @@ export class Simulator {
    * time to the next round, the trigger, his kick.
    */
   private readonly gunner = { active: false, yaw: 0, pitch: 0.03, heat: 0, hot: false, next: 0, firing: false, kick: 0, locked: false, lastX: 0, lastY: 0, dragging: false };
+  private readonly gunnerAim = new THREE.Vector3();
   private readonly gunnerShot = { position: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 }, fov: 62 };
   /** At the yard crane's controls (the story's `crane` flag, the crane's level standing): the keys held, the view. */
   private craneMode = false;
@@ -407,6 +410,8 @@ export class Simulator {
   private damageSmokeClock = 0;
   /** The gun in his hands, seen through his eyes. */
   private weaponView?: WeaponView;
+  /** A gun just handed over: once he has looked it over, it goes back down (put away until it is wanted). */
+  private holsterAfterInspect = false;
   private readonly visualMuzzle = new THREE.Vector3();
   /** Muzzle climb still to be let back down, rad. */
   private recoilClimb = 0;
@@ -2430,6 +2435,7 @@ export class Simulator {
     drawGun: (gun, inspect) => {
       if (!this.owns(gun)) return;
       this.armoury.drawn = gun;
+      this.holsterAfterInspect = inspect;
       if (inspect) {
         this.weaponView?.inspect();
         // He works the slide as he looks it over.
@@ -3095,6 +3101,14 @@ export class Simulator {
       reload: gun?.reloadProgress ?? 1,
       floor: onFoot && walk ? walk.y : this.camera.camera.position.y - 1.6,
     });
+    // Looked over: lowered and put away, not carried about until there is a use for it.
+    if (this.holsterAfterInspect && !view.inspecting) {
+      this.holsterAfterInspect = false;
+      if (this.armoury.drawn) {
+        this.armoury.drawn = null;
+        this.hud.emit(this.snapshot());
+      }
+    }
     // The climb of the last shots comes back down, quickly at first.
     if (this.recoilClimb > 0 && diver?.active) {
       const back = Math.min(this.recoilClimb, (this.recoilClimb * 6 + 0.02) * delta);
@@ -3612,9 +3626,12 @@ export class Simulator {
     this.gunnerShot.position.y = this.gunnerScratch.y;
     this.gunnerShot.position.z = this.gunnerScratch.z;
     this.gunnerForward.set(0, 0, 1).transformDirection(mount.cradle.matrixWorld);
-    this.gunnerShot.target.x = this.gunnerScratch.x + this.gunnerForward.x * 30;
-    this.gunnerShot.target.y = this.gunnerScratch.y + this.gunnerForward.y * 30;
-    this.gunnerShot.target.z = this.gunnerScratch.z + this.gunnerForward.z * 30;
+    // The eye sits over the bore: it looks at where the rounds go at the sight's range (the middle of the view is true there).
+    this.gunnerAim.copy(mount.muzzle);
+    mount.cradle.localToWorld(this.gunnerAim);
+    this.gunnerShot.target.x = this.gunnerAim.x + this.gunnerForward.x * GUN_ZERO;
+    this.gunnerShot.target.y = this.gunnerAim.y + this.gunnerForward.y * GUN_ZERO;
+    this.gunnerShot.target.z = this.gunnerAim.z + this.gunnerForward.z * GUN_ZERO;
     this.camera.direct(this.gunnerShot, 1);
     this.camera.camera.updateMatrixWorld();
     gunner.next -= delta;
@@ -3647,7 +3664,7 @@ export class Simulator {
     const effects = this.combatEffects;
     effects?.flash(visual, 0.9);
     effects?.muzzleSmoke(visual, this.shotDirection.x, this.shotDirection.y, this.shotDirection.z);
-    this.combatAudio?.gunshot("rifle");
+    this.combatAudio?.gunshot("heavy");
     this.combatShake = Math.max(this.combatShake, 0.16);
     const result = drones?.shoot(origin, this.shotDirection, GUN_RANGE, 1) ?? null;
     // Every third round a tracer.

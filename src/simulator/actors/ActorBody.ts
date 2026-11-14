@@ -45,6 +45,10 @@ const RUN_SPEED = 3.7;
 /** Ground covered by one cycle of each clip at its own speed, m. */
 const WALK_STRIDE = 1.35;
 const RUN_STRIDE = 2.33;
+/** Up to this speed, m/s, the gait is all walk. */
+const JOG_FROM = 2.45;
+/** The most of the run clip ever blended in. */
+const RUN_MIX = 0.82;
 
 const v0 = new THREE.Vector3();
 const v1 = new THREE.Vector3();
@@ -189,8 +193,12 @@ export class ActorBody {
     // at the pace that keeps the feet from sliding.
     const speed = pose.down > 0.01 || pose.sit > 0.01 ? 0 : pose.speed;
     const moving = Math.min(1, speed / 0.5);
-    const runWeight = THREE.MathUtils.clamp((speed - WALK_SPEED) / (RUN_SPEED - WALK_SPEED), 0, 1);
-    const stride = WALK_STRIDE + (RUN_STRIDE - WALK_STRIDE) * runWeight;
+    // A brisk walk stays a walk (longer steps, not a jog); past it the run
+    // comes in, never quite all of it: the clip's own run lifts the knees
+    // like a sprinter's, a little of the walk kept under it makes a jog.
+    const runWeight = RUN_MIX * THREE.MathUtils.clamp((speed - JOG_FROM) / (RUN_SPEED - JOG_FROM), 0, 1);
+    const walkStride = WALK_STRIDE * Math.sqrt(THREE.MathUtils.clamp(speed / WALK_SPEED, 0.8, 1.75));
+    const stride = walkStride + (RUN_STRIDE - walkStride) * (runWeight / RUN_MIX);
     const cadence = Math.max(0.45, speed) / stride * (pose.crouch > 0.5 ? 0.85 : 1);
     if (moving > 0.001) this.gait = (this.gait + dt * cadence) % 1;
     if (this.walk) {

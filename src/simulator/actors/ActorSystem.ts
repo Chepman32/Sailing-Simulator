@@ -744,7 +744,7 @@ export class ActorSystem {
       const playerSpeed = player && !player.boat ? player.speed : 0;
       if (playerSpeed > 3.6) actor.hurry = 1.2;
       else if (playerSpeed < 2) actor.hurry = Math.max(0, actor.hurry - dt);
-      wanted = actor.hurry > 0 ? 4.3 : pace === "run" ? 3.9 : 2.3;
+      wanted = actor.hurry > 0 ? 4.3 : pace === "run" ? 3.9 : 2.4;
     }
     actor.speed += (wanted - actor.speed) * Math.min(1, dt * 4);
     // The way there: straight if nothing stands between, else along the level's way-points.

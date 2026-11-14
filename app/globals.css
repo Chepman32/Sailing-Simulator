@@ -5564,7 +5564,7 @@ html.rifle-drawn .simulator-canvas {
 :root { --cinema-bar: min(11.5vh, 110px); }
 
 /* A cut scene: everything but the picture, its words and its titles steps aside. */
-.simulator-shell.is-cinematic > :not(.simulator-canvas):not(.cinema-bars):not(.cinema-skip):not(.cinema-wake):not(.story-line):not(.story-title):not(.story-fade):not(.notice-stack) {
+.simulator-shell.is-cinematic > :not(.simulator-canvas):not(.cinema-bars):not(.cinema-skip):not(.cinema-wake):not(.story-line):not(.story-title):not(.story-fade):not(.notice-stack):not(.pause-backdrop) {
   visibility: hidden !important;
   opacity: 0 !important;
   pointer-events: none !important;

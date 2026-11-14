@@ -136,11 +136,13 @@ export class CombatAudio {
    *   decay), the slap-back off the nearest slope, and the reverb;
    * - the **case**: the spent brass ringing as it lands, half a second later.
    */
-  gunshot(weapon: "pistol" | "rifle"): void {
+  gunshot(weapon: "pistol" | "rifle" | "heavy"): void {
     const mixer = this.ready();
     if (!mixer) return;
     const { context, master } = mixer;
-    const rifle = weapon === "rifle";
+    // The heavy machine gun is the rifle's report, deeper, longer and louder.
+    const heavy = weapon === "heavy";
+    const rifle = weapon === "rifle" || heavy;
     const now = context.currentTime + 0.004;
     const pitch = 1 + (Math.random() * 2 - 1) * 0.045;
     // Everything goes through a soft clipper and a fast compressor: loud, dense, never harsh.
@@ -154,7 +156,7 @@ export class CombatAudio {
     glue.attack.value = 0.001;
     glue.release.value = 0.12;
     const out = context.createGain();
-    out.gain.value = rifle ? 0.95 : 0.8;
+    out.gain.value = heavy ? 1.05 : rifle ? 0.95 : 0.8;
     drive.connect(glue).connect(out).connect(master);
     out.connect(this.slapBack(context, master));
     const dry = context.createGain();
@@ -165,10 +167,10 @@ export class CombatAudio {
     this.burstOfNoise(context, dry, now, 0.006, 1.2, "highpass", 1800 * pitch, 0.5, 1.8);
     this.burstOfNoise(context, dry, now, rifle ? 0.03 : 0.022, 0.9, "highpass", 3200 * pitch, 0.7, 1.5);
     // Punch.
-    this.thump(context, dry, now, (rifle ? 78 : 112) * pitch, rifle ? 0.2 : 0.13, rifle ? 1.1 : 0.85);
-    this.burstOfNoise(context, dry, now, rifle ? 0.07 : 0.05, 0.75, "lowpass", (rifle ? 420 : 620) * pitch, 0.9, 0.7);
+    this.thump(context, dry, now, (heavy ? 54 : rifle ? 78 : 112) * pitch, heavy ? 0.3 : rifle ? 0.2 : 0.13, heavy ? 1.3 : rifle ? 1.1 : 0.85);
+    this.burstOfNoise(context, dry, now, heavy ? 0.1 : rifle ? 0.07 : 0.05, heavy ? 0.9 : 0.75, "lowpass", (heavy ? 300 : rifle ? 420 : 620) * pitch, 0.9, 0.7);
     // Blast.
-    this.burstOfNoise(context, dry, now + 0.002, rifle ? 0.17 : 0.1, rifle ? 0.7 : 0.55, "bandpass", (rifle ? 950 : 1350) * pitch, 0.9);
+    this.burstOfNoise(context, dry, now + 0.002, heavy ? 0.22 : rifle ? 0.17 : 0.1, rifle ? 0.7 : 0.55, "bandpass", (heavy ? 720 : rifle ? 950 : 1350) * pitch, 0.9);
     this.burstOfNoise(context, dry, now + 0.004, rifle ? 0.26 : 0.16, 0.28, "bandpass", (rifle ? 2400 : 2900) * pitch, 1.4);
     // Mechanism.
     const metal = (at: number, frequency: number, level: number, length = 0.025) =>
@@ -187,15 +189,17 @@ export class CombatAudio {
     const tail = context.createGain();
     tail.gain.value = 1;
     tail.connect(out);
-    this.burstOfNoise(context, tail, now + 0.03, rifle ? 1.25 : 0.85, rifle ? 0.24 : 0.16, "lowpass", rifle ? 520 : 700, 0.7, 0.55);
-    this.thump(context, tail, now + 0.06, rifle ? 52 : 64, rifle ? 0.6 : 0.4, rifle ? 0.22 : 0.14);
+    this.burstOfNoise(context, tail, now + 0.03, heavy ? 1.6 : rifle ? 1.25 : 0.85, heavy ? 0.3 : rifle ? 0.24 : 0.16, "lowpass", heavy ? 420 : rifle ? 520 : 700, 0.7, 0.55);
+    this.thump(context, tail, now + 0.06, heavy ? 44 : rifle ? 52 : 64, heavy ? 0.8 : rifle ? 0.6 : 0.4, heavy ? 0.3 : rifle ? 0.22 : 0.14);
     // The case landing: two or three bright pings, then nothing.
     const land = now + (rifle ? 0.48 : 0.42) + Math.random() * 0.12;
     const ring = (at: number, frequency: number, level: number) =>
       this.burstOfNoise(context, out, land + at, 0.05, level, "bandpass", frequency, 28);
-    ring(0, 5200 + Math.random() * 600, 0.05);
-    ring(0.07 + Math.random() * 0.03, 6100 + Math.random() * 500, 0.03);
-    if (Math.random() < 0.6) ring(0.15 + Math.random() * 0.05, 5600, 0.018);
+    // A heavy case is a lower, duller clank on the deck.
+    const brass = heavy ? 0.55 : 1;
+    ring(0, (5200 + Math.random() * 600) * brass, 0.05);
+    ring(0.07 + Math.random() * 0.03, (6100 + Math.random() * 500) * brass, 0.03);
+    if (Math.random() < 0.6) ring(0.15 + Math.random() * 0.05, 5600 * brass, 0.018);
     if (mixer.reverb) {
       const wet = context.createGain();
       wet.gain.value = rifle ? 0.42 : 0.3;
@@ -204,7 +208,7 @@ export class CombatAudio {
     window.setTimeout(() => {
       dry.disconnect();
       out.disconnect();
-    }, 1900);
+    }, heavy ? 2300 : 1900);
   }
 
   /** The rifle's shot (kept for callers that name it). */

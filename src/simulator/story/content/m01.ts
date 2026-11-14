@@ -433,6 +433,8 @@ export const M01: Mission = {
       objective: { kind: "when", when: { area: "stvor9:hq" } },
       marker: "stvor9:hq-door",
       checkpoint: { yacht: "stvor9:skiff", skipper: "ashore", spot: "stvor9:overlook" },
+      // Down off the ledge toward the wire: Mark's pistol comes out again.
+      onStart: [{ do: "draw", gun: "pistol" }],
     },
 
     // --- S05 · The white block, the archive, Luis ------------------------------------------
