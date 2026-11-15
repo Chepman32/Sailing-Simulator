@@ -71,6 +71,57 @@ function installDirectFinish(): void {
   );
 }
 
+/**
+ * The sun in the lens. A real lens answers a light source in the frame with
+ * faint reflections between its elements (ghosts strung along the line
+ * through the middle of the picture), a streak, diffraction spikes round
+ * the source and a veil of stray light. Drawn analytically in the finish
+ * pass: no extra pass, and nothing at all while there is no sun in frame.
+ *
+ * The lens only answers a sun it can see. Whether it can is read from the
+ * picture itself: the solar disc is a saturated gold no sail, cloud or
+ * island has (red far above blue), so a disc hidden behind any of them
+ * gives no flare, and one behind thin cloud a weak one.
+ */
+export const LENS_FLARE_GLSL = /* glsl */ `
+  float flareGhost(vec2 p, vec2 centre, float radius) {
+    float d = length(p - centre) / radius;
+    // A soft disc with a brighter rim, as an out-of-focus reflection of the aperture is.
+    return (1.0 - smoothstep(0.78, 1.0, d)) * (0.3 + 0.7 * smoothstep(0.25, 0.98, d));
+  }
+
+  vec3 lensFlare(vec2 uv, sampler2D picture, vec3 flare, vec3 tint, float aspect, vec2 texel) {
+    vec2 sunUv = flare.xy;
+    vec3 disc =
+      texture2D(picture, sunUv).rgb +
+      texture2D(picture, sunUv + texel * vec2(3.0, 2.0)).rgb + texture2D(picture, sunUv + texel * vec2(-3.0, 2.0)).rgb +
+      texture2D(picture, sunUv + texel * vec2(2.0, -3.0)).rgb + texture2D(picture, sunUv + texel * vec2(-2.0, -3.0)).rgb;
+    disc = saneColor(disc * 0.2);
+    float seen = smoothstep(0.45, 1.7, disc.r - disc.b) * flare.z;
+    if (seen <= 0.001) return vec3(0.0);
+    vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
+    vec2 s = (sunUv - 0.5) * vec2(aspect, 1.0);
+    vec2 d = p - s;
+    float range = length(d);
+    vec3 light = vec3(0.0);
+    // Ghosts on the far side of the frame's centre, each a different coating's colour.
+    light += vec3(0.45, 0.8, 1.0) * flareGhost(p, s * -0.38, 0.03) * 0.05;
+    light += vec3(1.0, 0.72, 0.4) * flareGhost(p, s * -0.72, 0.062) * 0.028;
+    light += vec3(0.55, 1.0, 0.7) * flareGhost(p, s * -1.18, 0.11) * 0.018;
+    light += vec3(0.75, 0.62, 1.0) * flareGhost(p, s * -1.75, 0.19) * 0.012;
+    light += vec3(1.0, 0.9, 0.7) * flareGhost(p, s * 0.42, 0.018) * 0.06;
+    // The streak a wide aperture draws across a bright source.
+    light += vec3(0.55, 0.75, 1.0) * exp(-abs(d.y) * 120.0) / (1.0 + abs(d.x) * 5.5) * 0.11;
+    // Diffraction spikes from the blades of the iris, close round the disc.
+    float angle = atan(d.y, d.x);
+    float spikes = pow(abs(cos(angle * 3.0 + 0.5)), 28.0) + 0.5 * pow(abs(cos(angle * 3.0 + 1.55)), 40.0);
+    light += vec3(1.0, 0.92, 0.78) * spikes / (1.0 + range * range * 260.0) * 0.16;
+    // Stray light: the whole picture lifts a little toward the sun.
+    light += vec3(1.0, 0.9, 0.74) * 0.035 / (1.0 + range * range * 9.0);
+    return light * tint * seen;
+  }
+`;
+
 const FinishShader = {
   name: "LensFinish",
   uniforms: {
@@ -90,6 +141,12 @@ const FinishShader = {
     // A blast's shock wave: where it is on screen (uv), how far it has spread, how hard it bends the picture.
     uShock: { value: new THREE.Vector4(0.5, 0.5, 0, 0) },
     uAspect: { value: 1 },
+    // The sun in the lens: where it is on screen (uv, xy) and how strongly the lens answers it (z; 0: no flare).
+    uFlare: { value: new THREE.Vector3(0.5, 0.5, 0) },
+    uFlareTint: { value: new THREE.Color(1, 1, 1) },
+    // Contrast-adaptive sharpening (0: off) and the size of a texel of the picture.
+    uSharpen: { value: 0 },
+    uTexel: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -112,9 +169,14 @@ const FinishShader = {
     uniform float uUnderwater;
     uniform vec4 uShock;
     uniform float uAspect;
+    uniform vec3 uFlare;
+    uniform vec3 uFlareTint;
+    uniform float uSharpen;
+    uniform vec2 uTexel;
     varying vec2 vUv;
 
     ${SANE_COLOR_GLSL}
+    ${LENS_FLARE_GLSL}
 
     float grainHash(vec2 p) {
       vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -152,6 +214,22 @@ const FinishShader = {
         texture2D(tDiffuse, uv + fringe).b
       );
       color = saneColor(color);
+      // Sharpening: the picture is drawn at a budgeted resolution and
+      // resolved from four samples a pixel, which softens fine texture
+      // (rope, sailcloth seams, foam lace, palm fronds). Each pixel is
+      // pushed away from the mean of its four neighbours, in a compressed
+      // brightness so a sun glint does not ring, and by a bounded amount.
+      if (uSharpen > 0.0) {
+        vec3 around =
+          texture2D(tDiffuse, uv + vec2(uTexel.x, 0.0)).rgb + texture2D(tDiffuse, uv - vec2(uTexel.x, 0.0)).rgb +
+          texture2D(tDiffuse, uv + vec2(0.0, uTexel.y)).rgb + texture2D(tDiffuse, uv - vec2(0.0, uTexel.y)).rgb;
+        float here = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        float mean = dot(saneColor(around * 0.25), vec3(0.2126, 0.7152, 0.0722));
+        float detail = here / (1.0 + here) - mean / (1.0 + mean);
+        color *= clamp(1.0 + uSharpen * 4.0 * detail / (here / (1.0 + here) + 0.06), 0.72, 1.4);
+      }
+      // The sun in the lens: ghosts, a streak and a veil, only while the disc itself is in sight.
+      if (uFlare.z > 0.0) color += lensFlare(uv, tDiffuse, uFlare, uFlareTint, uAspect, uTexel);
       float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
       color = max(mix(vec3(luminance), color, uSaturation * uGradeSaturation), 0.0);
       // Mood: a tint over the whole image and a lift of the shadows' colour.
@@ -207,6 +285,8 @@ export class PostProcessing {
   private depthTextures = false;
   /** Sun shafts are on in this preset (the pass itself is off while the sun is hidden). */
   private godRays = false;
+  /** Strength of the lens flare at this preset (0: none). */
+  private lensFlare = 0;
   /** False on the rare GPU that cannot render to a half-float target. */
   private readonly supported: boolean;
   private active: boolean;
@@ -267,6 +347,20 @@ export class PostProcessing {
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.finish);
     this.applyDepthPasses(quality);
+    this.applyLens(quality);
+  }
+
+  /** The finish pass's lens: flare strength and sharpening for the preset. */
+  private applyLens(quality: QualitySettings): void {
+    this.lensFlare = quality.lensFlare;
+    this.finish.uniforms.uSharpen!.value = quality.sharpen;
+    if (quality.lensFlare <= 0) (this.finish.uniforms.uFlare!.value as THREE.Vector3).z = 0;
+  }
+
+  /** The size of one texel of the picture the finish pass reads. */
+  private applyTexel(): void {
+    const target = this.composer.renderTarget1;
+    (this.finish.uniforms.uTexel!.value as THREE.Vector2).set(1 / Math.max(1, target.width), 1 / Math.max(1, target.height));
   }
 
   /**
@@ -298,10 +392,22 @@ export class PostProcessing {
   }
 
   /**
-   * The sun for the shafts: its place on screen (uv), how much of it shines
-   * (0 below the horizon, behind the camera or at night … 1) and its colour.
+   * The sun for the shafts and the lens flare: its place on screen (uv),
+   * how much of it shines for the shafts (0 below the horizon, behind the
+   * camera or at night … 1), its colour, and how much of it is inside the
+   * frame for the lens (0 off screen … 1).
    */
-  setSun(x: number, y: number, visibility: number, color: THREE.Color): void {
+  setSun(x: number, y: number, visibility: number, color: THREE.Color, inFrame = 0): void {
+    // The lens flare: only for a sun inside the picture (`inFrame` 0…1).
+    const flare = this.finish.uniforms.uFlare!.value as THREE.Vector3;
+    flare.set(Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y)), this.lensFlare * inFrame);
+    if (flare.z > 0) {
+      // The sun's own tint, without its brightness.
+      const peak = Math.max(color.r, color.g, color.b, 1e-4);
+      (this.finish.uniforms.uFlareTint!.value as THREE.Color).setRGB(color.r / peak, color.g / peak, color.b / peak);
+      const size = this.renderer.getDrawingBufferSize(shockSize);
+      this.finish.uniforms.uAspect!.value = size.y > 0 ? size.x / size.y : 1;
+    }
     this.shafts.sun.set(x, y);
     this.shafts.visibility = visibility;
     // No sun to stream: the pass (and its full-screen copy) is skipped altogether.
@@ -361,7 +467,9 @@ export class PostProcessing {
       this.composer.renderTarget2.dispose();
     }
     this.applyDepthPasses(quality);
+    this.applyLens(quality);
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
+    this.applyTexel();
   }
 
   /**
@@ -381,6 +489,7 @@ export class PostProcessing {
     this.height = Math.max(1, height);
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
     this.composer.setSize(this.width, this.height);
+    this.applyTexel();
   }
 
   /** The radio's mood grade (already eased by the caller). */

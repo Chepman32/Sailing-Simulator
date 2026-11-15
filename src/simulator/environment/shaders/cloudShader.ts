@@ -37,6 +37,38 @@ export const CLOUD_MAP_GLSL = /* glsl */ `
   }
 `;
 
+/**
+ * The clouds' shadows on the sea: how much of the sun a cloud takes from a
+ * point of the water (0…1). The cloud volume's density where the ray from
+ * the point to the light crosses the clouds' widest level; see
+ * `cloudShadowAt` in `CloudMap.ts`, the same arithmetic on the CPU. Needs
+ * `SKY_UNIFORM_DECLARATIONS` and `cameraPosition`.
+ */
+/** Height above the cloud base (as a part of the slab) at which a cumulus is widest: where its shadow is taken. */
+export const CLOUD_SHADOW_LEVEL = 0.09;
+
+const shadowWeatherGlsl = WEATHER_LAYERS.map(
+    (layer) =>
+      `texture(uCloudNoise, vec3(p.x / ${layer.scale.toFixed(1)} + ${layer.offsetX.toFixed(3)}, ${layer.level.toFixed(3)}, p.y / ${layer.scale.toFixed(1)} + ${layer.offsetZ.toFixed(3)})).b * ${layer.weight.toFixed(3)}`,
+  ).join(" + ");
+
+export const CLOUD_SHADOW_GLSL = /* glsl */ `
+  float cloudShadowAt(vec2 worldXZ) {
+    if (uCloudShadow.z <= 0.0) return 0.0;
+    float level = ${CLOUD_BASE.toFixed(1)} + uCloudShadow.y * ${CLOUD_SHADOW_LEVEL.toFixed(3)};
+    vec2 p = worldXZ - cameraPosition.xz + uCloudDrift + uLightDirection.xz * (level / max(uLightDirection.y, 0.12));
+    float weather = ${shadowWeatherGlsl};
+    float field = smoothstep(uCloudShadow.x - 0.01, uCloudShadow.x + 0.085, weather);
+    if (field <= 0.0) return 0.0;
+    float closing = smoothstep(0.58, 0.94, uCloudCover);
+    vec3 at = vec3(p.x + level * 0.35, level, p.y + level * 0.2);
+    float body = clamp((texture(uCloudNoise, at / 5600.0).r - 0.45) / 0.47, 0.0, 1.0);
+    float low = 1.0 - mix(mix(0.3, 0.54, field), 0.93, closing) * smoothstep(0.0, 0.25, field);
+    float high = low + mix(0.3, 0.42, closing);
+    return clamp((body - low) / max(high - low, 1.0e-4), 0.0, 1.0) * uCloudShadow.z;
+  }
+`;
+
 export const cloudMarchVertex = /* glsl */ `
   varying vec2 vUv;
   void main() {

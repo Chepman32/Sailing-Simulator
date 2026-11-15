@@ -34,6 +34,9 @@ const SUN_DISC_RADIANCE = 2.0;
  */
 export const SUN_DISC_GOLD = [3.0, 1.06, 0.0] as const;
 
+/** The part of the direct light a cloud's shadow takes from the scene (the rest comes through and round it). */
+export const CLOUD_SHADE_DEPTH = 0.55;
+
 export class EnvironmentSystem {
   private readonly sky: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
   private readonly skyUniforms: SkyUniforms;
@@ -56,6 +59,8 @@ export class EnvironmentSystem {
   private readonly clouds: CloudMap;
   /** The cloud pass count the lighting was last captured at (the first pass changes the sky's light). */
   private capturedClouds = false;
+  /** How much of the sun a cloud is taking from the yacht just now, 0…1 (eased). */
+  private cloudShade = 0;
   private cloudClock = 0;
   private readonly flashColor = new THREE.Color();
   private readonly keyDirection = new THREE.Vector3();
@@ -444,7 +449,12 @@ export class EnvironmentSystem {
     setLinearColor(this.sunLight.color, palette.lightColor);
     // Direct sun is several times the sky's light on a clear day; with a
     // weaker key the sky fill tints every white surface blue and flattens it.
-    this.sunLight.intensity = 1.3;
+    // A cloud passing over the yacht takes the sun off her, as it does off
+    // the sea round her (the ocean draws the same shadow): eased, because
+    // the edge of a cloud's shadow is a few seconds wide at a yacht's speed.
+    const shade = this.clouds.shadowAt(focus.x, focus.z);
+    this.cloudShade += (shade - this.cloudShade) * (1 - Math.exp(-delta / 0.7));
+    this.sunLight.intensity = 1.3 * (1 - CLOUD_SHADE_DEPTH * this.cloudShade);
     // Lightning: a cold light from above the clouds, for an instant as
     // bright as day, and the sky's own light (the environment) flares too.
     if (this.flash > 0.005) {

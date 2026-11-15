@@ -176,3 +176,68 @@ test("every consumer of the sky reads its clouds from the one map", () => {
   // The march writes plain scene-linear radiance into the map: no tone curve in it.
   assert.ok(!cloudMarchFragment.includes("tonemapping_fragment"));
 });
+
+test("clouds lay their shadows where they stand, and a closed sky lays none of its own", async () => {
+  const { cloudShadowAt, cloudShadowStrength } = await import("../../src/simulator/environment/CloudMap");
+  const { CLOUD_SHADOW_GLSL, CLOUD_SHADOW_LEVEL } = await import("../../src/simulator/environment/shaders/cloudShader");
+  const { oceanFragmentShader } = await import("../../src/simulator/environment/shaders/oceanShader");
+  const thresholds = weatherThresholds(noise);
+  const light = { x: 0.39, y: 0.48, z: 0.78 };
+  const shadeOver = (cover: number): { shaded: number; deep: number } => {
+    const threshold = weatherThresholdFor(thresholds, cover);
+    let shaded = 0;
+    let deep = 0;
+    const count = 60;
+    for (let j = 0; j < count; j += 1) {
+      for (let i = 0; i < count; i += 1) {
+        const value = cloudShadowAt(noise, size, threshold, cover, i * 610 + 37, j * 590 - 1200, light.x, light.y, light.z);
+        assert.ok(value >= 0 && value <= 1 && Number.isFinite(value));
+        if (value > 0.02) shaded += 1;
+        if (value > 0.9) deep += 1;
+      }
+    }
+    return { shaded: shaded / (count * count), deep: deep / (count * count) };
+  };
+  assert.equal(shadeOver(0).shaded, 0, "no cover, no shadow");
+  const fair = shadeOver(WEATHER_PRESETS.clear.cloudCover);
+  const cloudy = shadeOver(WEATHER_PRESETS.cloudy.cloudCover);
+  const storm = shadeOver(WEATHER_PRESETS.storm.cloudCover);
+  // A sunny day's few cumulus shade a small part of the sea; a cloudy day's far more, with sunlit sea between.
+  assert.ok(fair.shaded > 0.005 && fair.shaded < WEATHER_PRESETS.clear.cloudCover, `fair: ${(fair.shaded * 100).toFixed(1)} % shaded`);
+  assert.ok(cloudy.shaded > fair.shaded * 2 && cloudy.shaded < 0.6, `cloudy: ${(cloudy.shaded * 100).toFixed(1)} % shaded`);
+  assert.ok(storm.shaded > 0.85, "a storm's deck stands over nearly all of the sea");
+  // …but its even gloom is the palette's, not a shadow drawn on top of it.
+  assert.equal(cloudShadowStrength(WEATHER_PRESETS.storm.cloudCover, 0), 0);
+  assert.equal(cloudShadowStrength(WEATHER_PRESETS.rain.cloudCover, 0) < 0.15, true);
+  assert.equal(cloudShadowStrength(WEATHER_PRESETS.clear.cloudCover, 0), 1);
+  assert.ok(cloudShadowStrength(WEATHER_PRESETS.cloudy.cloudCover, 0) > 0.95);
+  assert.ok(cloudShadowStrength(WEATHER_PRESETS.clear.cloudCover, 1) < 0.35, "moonlight casts them faintly");
+  // The sea draws the shadow with the same arithmetic, and takes its direct light by it.
+  assert.ok(CLOUD_SHADOW_GLSL.includes(CLOUD_SHADOW_LEVEL.toFixed(3)) && CLOUD_SHADOW_GLSL.includes("/ 5600.0"));
+  for (const layer of WEATHER_LAYERS) assert.ok(CLOUD_SHADOW_GLSL.includes(layer.scale.toFixed(1)));
+  assert.ok(oceanFragmentShader.includes("cloudShadowAt(vWorldPosition.xz)"));
+  assert.ok(/sunLit = uLightColor \* shipShade \* \(1\.0 - [0-9.]+ \* cloudShade\)/.test(oceanFragmentShader));
+});
+
+test("the lens answers only a sun it can see, and the finish pass is bounded", async () => {
+  const { LENS_FLARE_GLSL } = await import("../../src/simulator/core/PostProcessing");
+  // The disc is told from sails and clouds by its colour, and nothing is added without it.
+  assert.ok(LENS_FLARE_GLSL.includes("disc.r - disc.b"));
+  assert.ok(LENS_FLARE_GLSL.includes("if (seen <= 0.001) return vec3(0.0);"));
+  assert.ok(LENS_FLARE_GLSL.includes("saneColor("), "an overflowed pixel at the sun cannot flood the frame");
+  assert.equal(QUALITY_SETTINGS.low.lensFlare, 0);
+  assert.equal(QUALITY_SETTINGS.low.sharpen, 0);
+  for (const preset of ["medium", "high", "ultra"] as const) {
+    const settings = QUALITY_SETTINGS[preset];
+    assert.ok(settings.postProcessing, "both live in the HDR finish pass");
+    assert.ok(settings.lensFlare > 0 && settings.lensFlare <= 1);
+    assert.ok(settings.sharpen > 0 && settings.sharpen <= 0.35, "sharpening stays a finish, never an effect");
+  }
+});
+
+test("the sea's chop has rounded crests", async () => {
+  const { oceanFragmentShader } = await import("../../src/simulator/environment/shaders/oceanShader");
+  // A creased ridge (1 − |2n − 1|) puts a hard line between facets: the sea read as cut paper.
+  assert.ok(oceanFragmentShader.includes("float chopRidge(float n)"));
+  assert.ok(!/1\.0 - abs\(skyNoise\(q[^)]*\) \* 2\.0 - 1\.0\)/.test(oceanFragmentShader.split("void chopLayer")[1]!.split("float foamMarble")[0]!));
+});

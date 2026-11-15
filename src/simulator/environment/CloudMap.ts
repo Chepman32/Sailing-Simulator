@@ -1,9 +1,9 @@
 import * as THREE from "three";
 import { FullScreenQuad } from "three/addons/postprocessing/Pass.js";
 import { clamp, smoothstep } from "../math";
-import { buildCloudNoise, CLOUD_NOISE_SIZE, weatherThresholdFor, weatherThresholds } from "./CloudNoise";
+import { buildCloudNoise, CLOUD_NOISE_SIZE, cloudWeatherAt, sampleCloudNoise, weatherThresholdFor, weatherThresholds } from "./CloudNoise";
 import type { SkyUniforms } from "./SkyUniforms";
-import { CLOUD_BASE, CLOUD_MAP_RIM, cloudMarchFragment, cloudMarchVertex } from "./shaders/cloudShader";
+import { CLOUD_BASE, CLOUD_MAP_RIM, CLOUD_SHADOW_LEVEL, cloudMarchFragment, cloudMarchVertex } from "./shaders/cloudShader";
 
 /**
  * The map of the sky's clouds.
@@ -32,9 +32,6 @@ export function cloudTilesFor(size: number): number {
 }
 /** Clouds drift this fast in the trade wind (m/s per unit of cloud clock), toward +x and a little +z. */
 export const CLOUD_DRIFT = { x: 9.5, z: 5.2 } as const;
-
-/** The dome's detail noise is laid at the drift modulo this (m), so its coordinates stay small enough for 32-bit floats. */
-const DRIFT_WRAP = 65536;
 
 /** Where a direction of the sky (unit, y up) lies in the map, 0…1 each way. */
 export function cloudMapUv(x: number, y: number, z: number): { u: number; v: number } {
@@ -72,6 +69,55 @@ export function cloudAerialFor(cover: number, night: number): number {
   return (34000 - 16000 * smoothstep(0.45, 0.95, clamp(cover, 0, 1))) * (1 - 0.25 * clamp(night, 0, 1));
 }
 
+/**
+ * How much of the sun a cloud takes from a point of the sea, 0 (open sun) …
+ * 1 (under the middle of a cloud): the density of the cloud volume where the
+ * ray from that point to the light crosses the clouds' widest level. The
+ * same arithmetic as `cloudShadowAt` in the shader (`CLOUD_SHADOW_GLSL` in `shaders/cloudShader.ts`),
+ * which draws the shadows on the sea; this one dims the key light as a
+ * cloud passes over the yacht.
+ *
+ * @param x, z the point in cloud space (m): its place over the sea plus the wind's drift
+ * @param lightX, lightY, lightZ unit vector toward the light
+ */
+export function cloudShadowAt(
+  noise: Uint8Array,
+  noiseSize: number,
+  threshold: number,
+  cover: number,
+  x: number,
+  z: number,
+  lightX: number,
+  lightY: number,
+  lightZ: number,
+): number {
+  const slab = cloudTopFor(cover) - CLOUD_BASE;
+  const level = CLOUD_BASE + slab * CLOUD_SHADOW_LEVEL;
+  const run = level / Math.max(lightY, 0.12);
+  const px = x + lightX * run;
+  const pz = z + lightZ * run;
+  const weather = cloudWeatherAt(noise, noiseSize, px, pz);
+  const field = smoothstep(threshold - 0.01, threshold + 0.085, weather);
+  if (field <= 0) return 0;
+  const closing = smoothstep(0.58, 0.94, cover);
+  const ax = px + level * 0.35;
+  const az = pz + level * 0.2;
+  const body = clamp((sampleCloudNoise(noise, noiseSize, ax / 5600, level / 5600, az / 5600, 0) - 0.45) / 0.47, 0, 1);
+  const closed = (0.3 + 0.24 * field) * (1 - closing) + 0.93 * closing;
+  const low = 1 - closed * smoothstep(0, 0.25, field);
+  const high = low + 0.3 + 0.12 * closing;
+  return clamp((body - low) / Math.max(high - low, 1e-4), 0, 1);
+}
+
+/**
+ * How strongly cloud shadows are drawn, 0…1. Broken cloud throws shadows; a
+ * closed sky (overcast and worse) throws none of its own, because its dim,
+ * even light is already in the palette. Moonlight casts them faintly.
+ */
+export function cloudShadowStrength(cover: number, night: number): number {
+  return (1 - smoothstep(0.55, 0.85, clamp(cover, 0, 1))) * (1 - 0.7 * clamp(night, 0, 1));
+}
+
 /** Ray-march steps for a map of this size: the finer map earns the finer march. */
 export function cloudStepsFor(size: number): number {
   return size >= 1400 ? 64 : size >= 900 ? 52 : 40;
@@ -92,10 +138,14 @@ export class CloudMap {
   private passes = 0;
   private size = 0;
   private readonly viewport = new THREE.Vector4();
+  private readonly noiseData: Uint8Array;
+  private eyeX = 0;
+  private eyeZ = 0;
   private readonly drift = new THREE.Vector2();
 
   constructor(private readonly sky: SkyUniforms) {
     const data = buildCloudNoise(CLOUD_NOISE_SIZE);
+    this.noiseData = data;
     this.thresholds = weatherThresholds(data, CLOUD_NOISE_SIZE);
     this.noise = new THREE.Data3DTexture(data, CLOUD_NOISE_SIZE, CLOUD_NOISE_SIZE, CLOUD_NOISE_SIZE);
     this.noise.format = THREE.RGBAFormat;
@@ -132,6 +182,7 @@ export class CloudMap {
       fog: false,
     });
     this.quad = new FullScreenQuad(this.material);
+    sky.uCloudNoise.value = this.noise;
     this.placeholder = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1);
     this.placeholder.needsUpdate = true;
     this.show();
@@ -193,9 +244,14 @@ export class CloudMap {
   update(renderer: THREE.WebGLRenderer, eyeX: number, eyeZ: number): void {
     if (this.size <= 0) return;
     // The dome's fine detail rides with the clouds as they are now.
-    this.sky.uCloudDrift.value.set(
-      (eyeX + this.sky.uCloudTime.value * CLOUD_DRIFT.x) % DRIFT_WRAP,
-      (eyeZ + this.sky.uCloudTime.value * CLOUD_DRIFT.z) % DRIFT_WRAP,
+    this.eyeX = eyeX;
+    this.eyeZ = eyeZ;
+    this.sky.uCloudDrift.value.set(eyeX + this.sky.uCloudTime.value * CLOUD_DRIFT.x, eyeZ + this.sky.uCloudTime.value * CLOUD_DRIFT.z);
+    // The clouds' shadows on the sea are cast by the sky as it is now.
+    this.sky.uCloudShadow.value.set(
+      weatherThresholdFor(this.thresholds, this.sky.uCloudCover.value),
+      cloudTopFor(this.sky.uCloudCover.value) - CLOUD_BASE,
+      this.active ? cloudShadowStrength(this.sky.uCloudCover.value, this.sky.uNight.value) : 0,
     );
     const perSide = cloudTilesFor(this.size);
     const count = perSide * perSide;
@@ -207,10 +263,14 @@ export class CloudMap {
     renderer.autoClear = false;
     const tiles = first ? count : 1;
     for (let step = 0; step < tiles; step += 1) {
+      // Whole texels, and the uv rectangle of exactly those texels: tiles meet without a seam at any size.
       const tile = cloudTile(this.tile, perSide);
-      (this.material.uniforms.uTile!.value as THREE.Vector4).set(tile.x, tile.y, tile.size, tile.size);
-      const edge = Math.round(this.size * tile.size);
-      this.viewport.set(Math.round(tile.x * this.size), Math.round(tile.y * this.size), edge, edge);
+      const x0 = Math.round(tile.x * this.size);
+      const y0 = Math.round(tile.y * this.size);
+      const x1 = Math.round((tile.x + tile.size) * this.size);
+      const y1 = Math.round((tile.y + tile.size) * this.size);
+      (this.material.uniforms.uTile!.value as THREE.Vector4).set(x0 / this.size, y0 / this.size, (x1 - x0) / this.size, (y1 - y0) / this.size);
+      this.viewport.set(x0, y0, x1 - x0, y1 - y0);
       target.viewport.copy(this.viewport);
       target.scissor.copy(this.viewport);
       target.scissorTest = true;
@@ -236,6 +296,27 @@ export class CloudMap {
       }
     }
     this.show();
+  }
+
+  /**
+   * How much of the sun the clouds take from a point of the sea (world
+   * metres), 0…1; 0 while the volume is off. See `cloudShadowAt`.
+   */
+  shadowAt(x: number, z: number): number {
+    if (!this.active) return 0;
+    const sky = this.sky;
+    const light = sky.uLightDirection.value;
+    return sky.uCloudShadow.value.z * cloudShadowAt(
+      this.noiseData,
+      CLOUD_NOISE_SIZE,
+      sky.uCloudShadow.value.x,
+      sky.uCloudCover.value,
+      x - this.eyeX + sky.uCloudDrift.value.x,
+      z - this.eyeZ + sky.uCloudDrift.value.y,
+      light.x,
+      light.y,
+      light.z,
+    );
   }
 
   /** One pass is drawn from one moment's light, cover and wind. */
@@ -266,6 +347,7 @@ export class CloudMap {
       sky.uCloudMapPrev.value = this.placeholder;
       sky.uCloudMapBlend.value = 1;
       sky.uCloudVolume.value = 0;
+      sky.uCloudShadow.value.z = 0;
       return;
     }
     sky.uCloudMap.value = this.targets[this.current]!.texture;

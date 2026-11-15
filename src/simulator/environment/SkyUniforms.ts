@@ -35,6 +35,10 @@ export type SkyUniforms = {
   uCloudVolume: THREE.IUniform<number>;
   /** Where the clouds have drifted to over the viewer (m): fine detail is laid on the cloud base with it. */
   uCloudDrift: THREE.IUniform<THREE.Vector2>;
+  /** The cloud volume's noise (`CloudNoise`), for the clouds' shadows on the sea. */
+  uCloudNoise: THREE.IUniform<THREE.Data3DTexture | null>;
+  /** Cloud shadows: the weather threshold (x), the slab's depth in metres (y) and their strength, 0 off (z). */
+  uCloudShadow: THREE.IUniform<THREE.Vector3>;
 };
 
 export function createSkyUniforms(): SkyUniforms {
@@ -58,6 +62,8 @@ export function createSkyUniforms(): SkyUniforms {
     uCloudMapBlend: { value: 1 },
     uCloudVolume: { value: 0 },
     uCloudDrift: { value: new THREE.Vector2() },
+    uCloudNoise: { value: null },
+    uCloudShadow: { value: new THREE.Vector3(1, 1500, 0) },
   };
 }
 

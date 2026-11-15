@@ -110,6 +110,9 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `src/simulator/environment/shaders/oceanShader.ts` | Ocean GLSL generated from the shared spectra and island definitions |
 | `src/simulator/environment/shaders/skyShader.ts` | Analytic sky and clouds shared by the dome, the lighting capture, and ocean reflections |
 | `src/simulator/environment/SkyUniforms.ts` | Uniform objects shared by reference between sky and ocean |
+| `src/simulator/environment/CloudNoise.ts` | Pure: the tileable 3D noise the cloud volume is carved from (Perlin–Worley body, cell-noise erosion, weather), its CPU sampler, and the weather thresholds that make a cover fraction mean that fraction of the sea |
+| `src/simulator/environment/shaders/cloudShader.ts` | The cloud volume's ray march into the map of the sky, the map's chart (`cloudMapUv`), and the clouds' shadow on the sea (`CLOUD_SHADOW_GLSL`) |
+| `src/simulator/environment/CloudMap.ts` | Owns the map of the sky the clouds are marched into (three targets, a tile a frame, two passes blended), its pure helpers and the CPU twin of the cloud shadow (`cloudShadowAt`) |
 | `src/simulator/environment/EnvironmentMath.ts` | Pure day/night state derivation |
 | `src/simulator/environment/EnvironmentPalette.ts` | Pure scene-linear colour palette for day, dusk, and night |
 | `src/simulator/environment/WindMath.ts` | Pure, deterministic true-wind gusts and shifts |
@@ -251,6 +254,7 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 | `tests/unit/chart.test.ts` | The chart's fog (reveal, save and restore), the track; island characters, the furnished home islands, hills kept off the beach, the pier footprint; jib sheeting |
 | `tests/unit/places.test.ts` | Loot placement, reach and contents; the one volcano, east of the start, and its eruptions; the places near the start and their footprints; towing to open water; shanty notes and radio stations |
 | `tests/unit/postprocessing.test.ts` | Bloom bright-pass and finish guarded against NaN and half-float overflow |
+| `tests/unit/clouds.test.ts` | Cloud noise (range, seamless tiling), cover fraction against the weather thresholds, the sky map's chart and tiles, cloud tops and haze, presets (none on low, none on a phone below high), cloud shadows (where they fall, none of its own under a closed sky), the lens flare's guard, rounded chop crests |
 | `tests/unit/characters.test.ts` | Mark and the Vanguard men drawn as the authored characters (each contractor always the same soldier, both used); the look over a gun just handed over goes out, turns it and comes back, and a shot ends it |
 | `tests/unit/framepacer.test.ts`, `gestures.test.ts` | Frame cap and resynchronisation; double-tap recognition |
 | `tests/rendered-html.test.mjs` | Built-route smoke test |
@@ -375,6 +379,8 @@ The GPU moves each vertex sideways as well as up, so `sampleOcean` first inverts
 `SurfaceImpacts.ts` adds up to eight ring-wave impacts (`OceanSystem.addImpact`): a group of crests spreading from each splash and a glassy slick behind it that damps the wind ripples, lasting up to about twenty seconds for a fluke slap. Like the detail spectrum they only shape the normal. If a wave parameter changes, verify GPU and CPU calculations still use the same direction, amplitude, wavelength, speed, steepness, phase convention, and world coordinates, and keep `maximumOceanSlope()` under the tested limit.
 
 Passing ships add their wakes to the same surface (`ShipMath`, uniforms `uShipPose`/`uShipShape`, four slots): the vertex stage displaces it by the Kelvin waves' height wherever the grid can carry them, `OceanSystem.sample` adds the same height and slope (so a ship's wake really rocks the yacht and moves the camera floor), and the fragment stage shades their slope like the swell and draws their foam and slick through the yacht's wake path. The yacht's wet band (`OCEAN_SURFACE_HEIGHT_GLSL`) does not include ship wakes.
+
+The wind-sea chop (`chopLayer`) has narrow crests, not creased ones: `chopRidge` rounds the ridge of its noise over a tenth of its width. A true crease (`1 − |2n − 1|`) puts a hard line between the facet that mirrors the sky and the one that faces the eye, and the whole sea reads as cut paper with outlined patches; likewise the change from a facet mirroring the sky to one mirroring the sea (`mirrorsSea`) widens with roughness. Under broken cloud the sea carries the clouds' shadows (see "Volumetric clouds").
 
 `OCEAN_DETAIL_WAVES` are shorter waves that only perturb the shading normal. They have no CPU companion on purpose: they are too small to move the yacht.
 
@@ -565,11 +571,32 @@ Do not independently set `scene.background`, fog, sky dome, ocean colours, light
 
 The diver sees the sea from below through the ocean's back faces (`oceanShader`, `!gl_FrontFacing`, only when `uCameraUnder`, set as soon as the eyes are under at all): Snell's window as a soft-edged luminous glow bent by the swell (the ripples only shimmer in it; at a grazing look it does not open), total internal reflection outside it shading the water column below rather than a mirror sheet, wake foam as a lace. From below the surface writes depth, so nothing drawn after it from above — fireworks, ash and glow, flares, contrails — shows through. From just over the water a swimmer's sea leans facets turned away from the eye back toward it and lets downward glances mirror the sea, not the pale horizon. The diver's detailed seabed (sand with wandering ripples, grit, shell, burrows, sea-grass meadows, litter of shells, pebbles, sea cucumbers, sand dollars and coral rubble, all faded to their average where finer than a pixel) is drawn only under the surface. `Simulator.updateUnderwater` drives the underwater amount, water colour and fog density from depth and daylight into `EnvironmentSystem.setUnderwater` (FogExp2, sky hidden), `OceanSystem.setUnderside`, `UnderwaterLight.setView`, `PostProcessing.setUnderwater` (wobble, aberration), `AudioSystem.setUnderwater` (low-pass, hum) and `IslandSystem.setDeepSeabedVisible` (the flat far seabed is hidden while the diver's own seabed is drawn). Planar reflection is skipped under water.
 
+### Volumetric clouds
+
+From the medium preset on a desktop (`QualitySettings.cloudMapSize`, `cloudMapSizeFor`: 768, 1024, 1536 texels; 0 on low, and on a phone or tablet below high) the clouds are a volume, not a pattern on the dome. A slab of air between `CLOUD_BASE` (900 m) and the tops (`cloudTopFor`: 1.5 km deep in fair weather, 3.8 km under a storm) is wrapped round the Earth (`EARTH_RADIUS`), so the deck comes down to the horizon in true perspective. Its density is carved from one tileable 64³ noise texture (`CloudNoise.buildCloudNoise`, built once, about a third of a second):
+
+- the **weather** (B channel, two layers, `WEATHER_LAYERS`) says where cloud fields stand; `weatherThresholds` turns `WeatherSample.cloudCover` into the threshold above which exactly that fraction of the sea lies, so "0.19" still means a few cumulus and "0.94" a closed sky;
+- inside a field the **body** (R, Perlin–Worley) separates single cumulus with sky between them; a closing sky (`smoothstep(0.58, 0.94, cover)`) joins them into a deck that keeps thin places;
+- a height **profile** gives each cloud a flat base and a rounded head, tallest in the middle of a field;
+- **erosion** (G, cell noise) moves the surface itself: wisps at the base, cauliflower heads above.
+
+`cloudMarchFragment` marches it: long strides find a cloud (a probe without erosion, never less than the real density), then the march steps back a stride and walks the cloud in quarter steps, so an edge is where it is and no dither grain shows. Every lit sample marches five steps toward the light; the light reaching it is three octaves of Beer's law (multiple scattering), mixed between the palette's `cloudShade` (darker at the flat base) and `cloudLit`, plus a silver lining toward the sun and aerial perspective into the horizon's colour (`cloudAerialFor`). The colours stay the palette's: storms, dusk and night need no second set.
+
+Marching a volume per pixel of the screen, of the sea's mirror and of the lighting capture is far too dear, and clouds change slowly. `CloudMap` marches them into a **map of the sky** instead: a stereographic chart of the upper hemisphere (`cloudMapUv`; conformal, one piece, finest at the horizon), premultiplied radiance in rgb and cover in alpha, half-float with a mip chain. One tile is drawn a frame (`cloudTilesFor`² tiles to a pass, at most about 65 000 texels a frame; the first pass all at once so the sky never opens empty), every tile of a pass from one snapshot of light, cover and wind. Three targets go round: the last two passes are on show, blended by how far the pass in hand has come (`uCloudMapBlend`), so the sky moves smoothly however long a pass takes. The viewer's own position is part of the drift, so clouds are passed under way.
+
+`skyClouds` in `skyShader.ts` is the only reader (`skyCloudVolume`, chosen by the uniform `uCloudVolume`, so nothing recompiles when the volume is switched): the dome reads mip 0 and cuts the map's soft edges overhead into wisps with fine noise laid on the cloud base (`uCloudDrift`); the sea's mirror reads a blurred mip, more blurred with distance; the lighting capture mip 3. All three therefore agree on where a cloud is, and the mirror costs two texture reads instead of a noise fbm. Lightning and the moon's lining are added at the read, so a flash needs no new pass.
+
+**Cloud shadows.** `CLOUD_SHADOW_GLSL` (`cloudShadowAt`) evaluates the volume's density where the ray from a point of the sea to the light crosses the clouds' widest level (`CLOUD_SHADOW_LEVEL`): the ocean takes up to 82 % of its direct light there (the glitter goes out, the body darkens). `CloudMap.shadowAt`, the same arithmetic on the CPU, dims the key light by up to `CLOUD_SHADE_DEPTH` as a cloud passes over the yacht (eased over 0.7 s). Only broken cloud throws shadows (`cloudShadowStrength`): a closed sky's even gloom is already in the palette, and dimming it again would double it.
+
+Rules: the march writes scene-linear radiance (no tone curve) into the map; keep `cloudDensity`'s probe (coarse) never less than its eroded value; keep the shader's and `CloudNoise.cloudWeatherAt`'s weather layers one table; a new consumer of the sky gets its clouds through `skyClouds`, never by marching.
+
 ### Presentation pipeline
 
 `PostProcessing` renders the scene into a multisampled half-float target, applies bloom only to pixels brighter than `BLOOM_THRESHOLD`, then runs one finishing pass: slight corner fringing, saturation, vignette, the renderer's ACES tone curve, the display transfer, and fine grain. On the low preset, or on a GPU that cannot render to half-float, the scene renders directly and every material tone-maps itself. Custom shaders must therefore output scene-linear colour and end with `#include <tonemapping_fragment>` and `#include <colorspace_fragment>`.
 
 Values above 1 are meaningful: the solar disc, sun glitter, and lamp lenses are deliberately brighter than white so they bloom. Do not mark such materials `toneMapped: false`.
+
+The finish pass is also the lens. **Sharpening** (`QualitySettings.sharpen`, 0.16/0.24/0.28 on medium/high/ultra): each pixel is pushed away from the mean of its four neighbours, in a compressed brightness (so a sun glint does not ring) and by a bounded factor; it gives back the fine texture a budgeted resolution and the multisample resolve soften. **Lens flare** (`QualitySettings.lensFlare`, `LENS_FLARE_GLSL`): a few faint ghosts along the line through the frame's centre, a streak, diffraction spikes round the disc and a veil of stray light, drawn analytically in the same pass (no extra pass, nothing while the sun is out of frame: `PostProcessing.setSun(…, inFrame)`, from `Simulator.aimSunShafts`, which now runs whenever the pipeline does). The lens answers only a sun it can see, and reads that from the picture: the solar disc is a saturated gold nothing else has (red far above blue at the sun's place), so a disc behind a sail, a cloud or an island gives no flare.
 
 ### Weather, sea state and the day cycle
 
@@ -843,6 +870,8 @@ Arabic, Persian, Hebrew, and Urdu set document direction to RTL. Adding a UI mes
 | Ultra | 1.75 | 3.4 MP | 288 | 4096 | 1.00 | 6 / 6 | 120% | 1.00 + capillaries | 1 | on + GTAO + sun shafts (half res) | 0.30 | 4× |
 
 **Ultra** is only ever the player's choice (not offered on touch devices; automatic mode tops out at high and steps down from ultra to high, `stepDown`). On top of high it adds: mirror at 0.6 of the screen, capillary ripple octaves in the ocean normal up close (`uMicro`), ground-truth ambient occlusion (`AmbientOcclusion.ts`: three's GTAO on the scene's own resolved depth, normals rebuilt from depth, applied only to surfaces above the water line because the sea writes no depth), sun shafts (`SunShafts.ts`: open sky round the sun above the horizon, radially blurred at half resolution, added in linear HDR before bloom; `Simulator.aimSunShafts` hides them below the horizon, at night, under water, behind the camera and under heavy cloud), 16× anisotropic filtering (`Simulator.applyTextureQuality`, never lowering what a texture asked for; also 2/4/8× on low/medium/high), meshes at full detail (`ScreenLod.fullDetail`), and the densest grass. 4× MSAA is used rather than TAA (no ghosting on moving waves and wakes) and planar reflections rather than SSR (the sea is one plane; SSR would miss everything off screen).
+
+**Clouds and lens by preset.** Volumetric cloud map: none on low, 768 on medium (desktop only), 1024 on high, 1536 on ultra, with 40/52/64 march strides. Lens flare 0/0.7/0.85/1 and sharpening 0/0.16/0.24/0.28. All three need the HDR pipeline's half-float targets.
 
 **Dense grass** (`GrassField.ts`, medium and up: reach 22/32/46 m, density 0.45/0.72/1): instanced clumps of curved blades on a jittered world grid, worked out per 8 m tile (three a frame, nearest first, cached), rich clumps within 13 m and sparse ones beyond, the field sinking into the ground at its edge, root and clump-centre occlusion, gusts rolling along the trade wind, back-lit translucency. `IslandSystem.turfAt` decides where it grows (the islands' grass line, thinning into clearings, never on rocks).
 
@@ -1176,6 +1205,8 @@ The following are known constraints, not invitations to bypass the architecture:
 - audio is synthesized rather than based on recorded engine/wave/gull stems (no licensed recordings were reachable from the build environment); the radio's three internet stations need the network and SomaFM's servers, show no track titles (the stream's metadata is not exposed to the page), and on iOS their volume follows the device buttons only;
 - the volcano's cone is island terrain and casts no sun shadow; lava, the barge's lights and the monolith's glyphs do not light their surroundings (only flares and lightning do);
 - the yacht force model is intentionally lightweight and not a full six-degree-of-freedom naval solver: sails are sheeted automatically, the two engines are not independently controllable, and heave, pitch, and roll are oscillators driven by the water plane rather than integrated hull pressures;
+- the volumetric clouds are seen from sea level only: the map is a view from the water, so a camera high above the sea (the drone, a flare shot) sees the same sky, and nothing flies through a cloud; cloud shadows fall on the sea and dim the key light for the whole scene at once, so an island a kilometre off is not shaded separately from the yacht;
+- the lens flare knows the sun by its colour in the picture; a sun reddened and dimmed at the horizon gives a weaker flare than a physical lens would;
 - ocean reflections combine the analytic sky with a planar mirror of everything above the sea at mean sea level (bent by the ripples, not by the swell's real geometry); there is no refraction or depth-based absorption because the scene depth is not sampled;
 - whitecaps are a function of the instantaneous wave field and leave no persistent foam history;
 - the wake and the surf only shade the water (normal, foam, colour); like the detail spectrum they do not move the yacht or the camera floor;
@@ -1218,6 +1249,9 @@ Never knowingly ship any of these regressions:
 - the whale near the yacht shows its torso, repeats a display back to back, or splashes without its fluke contacting water; a breach happens close to the yacht or often;
 - the shore guard holds the helm without the course being blocked, or circles in front of a beach;
 - the sun or moon is drawn in front of clouds, or clouds cover the sky most of the time;
+- with the volumetric map on, clouds are flat blobs again, show dither grain or tile seams, pop from pass to pass, differ between the sky and the sea's mirror, or a fair day's sky fills with cloud;
+- the sea shows outlined, cut-paper patches (creased chop crests), or a cloud's shadow is drawn under a closed, stormy sky on top of the palette's own gloom;
+- the lens flares for a sun hidden behind a sail, a cloud or an island, or its ghosts are bright enough to read as objects;
 - a dolphin leaps at low speed, leaves the water outside a leap, or passes through a hull;
 - an animal is hidden or revealed by a material trick instead of the water;
 - procedural primitive animals replace failed GLBs;

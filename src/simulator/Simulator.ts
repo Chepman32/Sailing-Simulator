@@ -4442,7 +4442,7 @@ export class Simulator {
     this.weaponView?.attach(camera);
     // From under the water the mirror image of the world above is never seen.
     if (this.underwaterAmount < 0.5) this.renderReflection();
-    if (this.quality.settings.godRays) this.aimSunShafts(camera);
+    if (this.post.enabled) this.aimSunShafts(camera);
     this.post.render(this.frameDelta, this.elapsed);
     this.sizeGate.drawn();
     if (shaken) {
@@ -4478,7 +4478,10 @@ export class Simulator {
     const up = smoothstep(-0.03, 0.1, sun.y);
     const clear = 1 - smoothstep(0.55, 0.95, sky.uCloudCover.value) * 0.8;
     const visibility = inFront * onScreen * up * (1 - sky.uNight.value) * clear * (1 - this.underwaterAmount);
-    this.post.setSun(x, y, visibility, sky.uSunColor.value);
+    // The lens flares only for a sun inside the frame, and not through a closed sky.
+    const inFrame = 1 - smoothstep(0, 0.03, outside);
+    const lens = inFront * inFrame * up * (1 - sky.uNight.value) * (1 - this.underwaterAmount) * (1 - smoothstep(0.6, 0.9, sky.uCloudCover.value));
+    this.post.setSun(x, y, visibility, sky.uSunColor.value, lens);
   }
 
   private readonly sunScreen = new THREE.Vector3();

@@ -52,6 +52,10 @@ export type QualitySettings = {
    * marched into; 0 keeps the flat procedural clouds. See `cloudMapSizeFor`.
    */
   cloudMapSize: number;
+  /** Strength of the sun's lens flare in the finish pass (0: none; needs the HDR pipeline). */
+  lensFlare: number;
+  /** Contrast-adaptive sharpening in the finish pass (0: off; needs the HDR pipeline). */
+  sharpen: number;
 };
 
 export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
@@ -83,6 +87,8 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassDensity: 0.28,
     fullDetail: false,
     cloudMapSize: 0,
+    lensFlare: 0,
+    sharpen: 0,
   },
   medium: {
     maxDpr: 1.25,
@@ -111,6 +117,8 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassDensity: 0.45,
     fullDetail: false,
     cloudMapSize: 768,
+    lensFlare: 0.7,
+    sharpen: 0.16,
   },
   high: {
     maxDpr: 1.5,
@@ -138,6 +146,8 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassDensity: 0.72,
     fullDetail: false,
     cloudMapSize: 1024,
+    lensFlare: 0.85,
+    sharpen: 0.24,
   },
   /**
    * Everything at its best, for a desktop GPU with room to spare: never
@@ -172,6 +182,8 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassDensity: 1,
     fullDetail: true,
     cloudMapSize: 1536,
+    lensFlare: 1,
+    sharpen: 0.28,
   },
 };
 

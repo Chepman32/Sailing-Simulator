@@ -33,6 +33,8 @@ export const SKY_UNIFORM_DECLARATIONS = /* glsl */ `
   uniform float uCloudMapBlend;
   uniform float uCloudVolume;
   uniform vec2 uCloudDrift;
+  uniform sampler3D uCloudNoise;
+  uniform vec3 uCloudShadow;
 `;
 
 export const SKY_FUNCTIONS = /* glsl */ `

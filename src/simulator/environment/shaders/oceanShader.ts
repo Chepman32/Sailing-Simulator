@@ -5,6 +5,7 @@ import { BREAK_START, SURF_GLSL } from "../SurfMath";
 import { SHIP_WAKE_GLSL } from "../../ships/ShipMath";
 import { SHIP_SHADOW_GLSL } from "../../ships/ShipShadowMath";
 import { SKY_FUNCTIONS, SKY_UNIFORM_DECLARATIONS } from "./skyShader";
+import { CLOUD_SHADOW_GLSL } from "./cloudShader";
 
 /**
  * Ocean surface shaders.
@@ -289,6 +290,7 @@ export const oceanFragmentShader = /* glsl */ `
   const float HULL_HALF_BEAM = ${glsl(HULL_HALF_BEAM)};
 
   ${SKY_FUNCTIONS}
+  ${CLOUD_SHADOW_GLSL}
   ${SURFACE_IMPACT_GLSL}
   ${SURF_GLSL}
   ${SHIP_WAKE_GLSL}
@@ -727,7 +729,9 @@ ${detailCalls}
     vec3 reflected = reflect(-viewDirection, normal);
     // A ray glancing off a wave face downward meets the next wave, not the
     // sky: from low over the water those facets mirror the sea itself.
-    float mirrorsSea = smoothstep(0.03, -0.1, reflected.y);
+    // (Every pixel holds a spread of facets: the change from sky to sea is
+    // a gradual one, wider the rougher the water.)
+    float mirrorsSea = smoothstep(0.05 + roughness * 0.25, -0.14 - roughness * 0.3, reflected.y);
     // Eyes just over the water see every facet at a glancing angle; the
     // pale band of sky at the horizon would whiten half the sea. Ripples too
     // small to resolve tilt those glances up into the bluer sky, and spread
@@ -772,7 +776,11 @@ ${detailCalls}
     // A big ship's shadow on the water takes the direct light off it: no
     // glitter, a duller body, greyer foam (see ShipShadows).
     float shipShade = uShipShadowCount > 0 ? shipShadowAt(vWorldPosition) : 1.0;
-    vec3 sunLit = uLightColor * shipShade;
+    // Clouds lay their shadows on the sea: under one the water loses most of
+    // its direct light, so the glitter goes out and the body darkens, and
+    // the sunlit sea beyond it shines the brighter for it.
+    float cloudShade = cloudShadowAt(vWorldPosition.xz);
+    vec3 sunLit = uLightColor * shipShade * (1.0 - 0.82 * cloudShade);
     float shore = shoreHere.x;
     float depth = min(${glsl(OPEN_WATER_DEPTH)}, ${glsl(SHORE_DEPTH)} + max(shore, 0.0) * ${glsl(SHELF_SLOPE)});
     float shallow = exp(-depth * 0.2);
@@ -788,7 +796,7 @@ ${detailCalls}
     body *= irradiance * 0.55;
     // Most of the light deep water sends back is sunlight scattered inside
     // it: in a ship's shadow the water is visibly darker, by day.
-    body *= mix(1.0, 0.5 + 0.5 * shipShade, clamp(dot(uLightColor, vec3(0.333)) * 1.2, 0.0, 1.0));
+    body *= mix(1.0, (0.5 + 0.5 * shipShade) * (1.0 - 0.3 * cloudShade), clamp(dot(uLightColor, vec3(0.333)) * 1.2, 0.0, 1.0));
     // A gale's water is dark grey-green and opaque with churned air; thin
     // crests let the little light there is through as a bottle green.
     float gale = smoothstep(0.09, 0.3, uBreaking);
