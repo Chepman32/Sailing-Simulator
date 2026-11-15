@@ -1,3 +1,5 @@
+import { CLOUD_BASE, CLOUD_MAP_GLSL } from "./cloudShader";
+
 /**
  * Analytic sky shared by every consumer of sky radiance:
  *
@@ -26,6 +28,11 @@ export const SKY_UNIFORM_DECLARATIONS = /* glsl */ `
   uniform float uFlash;
   uniform vec3 uFlashDirection;
   uniform float uFlashFocus;
+  uniform sampler2D uCloudMap;
+  uniform sampler2D uCloudMapPrev;
+  uniform float uCloudMapBlend;
+  uniform float uCloudVolume;
+  uniform vec2 uCloudDrift;
 `;
 
 export const SKY_FUNCTIONS = /* glsl */ `
@@ -114,10 +121,52 @@ export const SKY_FUNCTIONS = /* glsl */ `
     return sky;
   }
 
+  ${CLOUD_MAP_GLSL}
+
+  // Volumetric clouds, read from the map of the sky they were marched into
+  // (CloudMap.ts): bodies with sunlit heads, grey bases and a silver lining,
+  // in true perspective down to the horizon. The dome reads the map as it
+  // is; the sea's rippled mirror (detail < 0) and the small lighting capture
+  // (detail 0) read it blurred, through its mip chain.
+  vec4 skyCloudVolume(vec3 direction, float detail) {
+    vec2 uv = cloudMapUv(direction);
+    // (A mirror may ask for more blur still: detail −1 reads mip 2, −3 mip 4.)
+    float lod = detail > 0.5 ? 0.0 : (detail < -0.5 ? 1.0 - detail : 3.0);
+    vec4 volume = mix(textureLod(uCloudMapPrev, uv, lod), textureLod(uCloudMap, uv, lod), uCloudMapBlend);
+    if (volume.a <= 0.003) return vec4(0.0);
+    vec3 cloud = volume.rgb / volume.a;
+    float density = volume.a;
+    // The map is coarser than the screen overhead, where clouds are near: a
+    // cloud's edge there is a soft ramp a few pixels wide. Fine noise, fixed
+    // to the clouds (laid on the cloud base, drifting with them), cuts that
+    // ramp into wisps and billows at the screen's own sharpness, and grains
+    // the body a little. The dome only: nothing else looks that closely.
+    float lift = detail > 0.5 ? smoothstep(0.04, 0.24, direction.y) : 0.0;
+    if (lift > 0.0) {
+      vec2 lay = (direction.xz / direction.y * ${CLOUD_BASE.toFixed(1)} + uCloudDrift) / 260.0;
+      float grain = skyFbm3(lay);
+      float cut = grain * 0.6;
+      density = mix(density, smoothstep(cut, cut + 0.42, density), lift);
+      cloud *= 1.0 + (grain - 0.5) * 0.22 * lift;
+    }
+    // Night: moonlight catches the cloud nearest the moon, brightest where
+    // it thins to an edge.
+    if (uNight > 0.01) {
+      float moonSide = max(dot(direction, uMoonDirection), 0.0);
+      cloud += vec3(0.42, 0.5, 0.68) * uNight * (pow(moonSide, 6.0) * 0.09 + pow(moonSide, 36.0) * (1.0 - density) * 0.85);
+    }
+    // A stroke of lightning lights the cloud base from inside.
+    cloud += vec3(0.8, 0.9, 1.35) * uFlash * skyFlashShape(direction) * (0.35 + 0.65 * density);
+    return vec4(cloud, density * smoothstep(0.003, 0.022, direction.y) * mix(0.97, 0.995, uNight));
+  }
+
   // Fair-weather cumulus on a flattened dome. rgb = cloud radiance,
-  // a = coverage. detail > 0.5 selects the five-octave shape.
+  // a = coverage. detail > 0.5 selects the five-octave shape. Where the
+  // volumetric map is drawn (uCloudVolume), the clouds come from it instead.
   vec4 skyClouds(vec3 direction, float detail) {
-    if (direction.y <= 0.012 || uCloudCover <= 0.001) return vec4(0.0);
+    if (uCloudCover <= 0.001) return vec4(0.0);
+    if (uCloudVolume > 0.5) return direction.y <= 0.003 ? vec4(0.0) : skyCloudVolume(direction, detail);
+    if (direction.y <= 0.012) return vec4(0.0);
     vec2 uv = direction.xz / (direction.y + 0.17);
     uv = uv * 1.55 + vec2(uCloudTime * 0.0062, uCloudTime * 0.0038);
     vec2 warp = vec2(skyNoise(uv * 0.6 + 11.3), skyNoise(uv * 0.6 - 7.1)) - 0.5;

@@ -351,6 +351,15 @@ export const oceanFragmentShader = /* glsl */ `
     lostVariance += 0.25 * strength * strength * (1.0 - resolved * resolved);
   }
 
+  // A crest is narrow, not a knife edge: the ridge of the noise is rounded
+  // over a tenth of its width. A true crease puts a hard line between the
+  // facet that mirrors the sky and the one that faces the eye, and the sea
+  // reads as cut paper.
+  float chopRidge(float n) {
+    float d = n * 2.0 - 1.0;
+    return 1.0 - sqrt(d * d + 0.03);
+  }
+
   // Wind-sea chop with sharp crests: the height is the square of a ridged
   // noise (1 − |2n − 1|), so crests are narrow lines and troughs broad, and
   // the crest lines run long across the wind (stretch). Shading only.
@@ -363,9 +372,9 @@ export const oceanFragmentShader = /* glsl */ `
     if (resolved > 0.001) {
       const float STEP = 0.18;
       vec2 q = vec2(dot(position, RIPPLE_ACROSS), dot(position, RIPPLE_CREST) * stretch);
-      float r0 = 1.0 - abs(skyNoise(q) * 2.0 - 1.0);
-      float rx = 1.0 - abs(skyNoise(q + vec2(STEP, 0.0)) * 2.0 - 1.0);
-      float rz = 1.0 - abs(skyNoise(q + vec2(0.0, STEP)) * 2.0 - 1.0);
+      float r0 = chopRidge(skyNoise(q));
+      float rx = chopRidge(skyNoise(q + vec2(STEP, 0.0)));
+      float rz = chopRidge(skyNoise(q + vec2(0.0, STEP)));
       vec2 gradient = vec2(rx * rx - r0 * r0, rz * rz - r0 * r0);
       slope += (RIPPLE_ACROSS * gradient.x + RIPPLE_CREST * gradient.y * stretch) * (strength * resolved / STEP);
     }
@@ -741,7 +750,9 @@ ${detailCalls}
       vec3 calmNormal = normalize(mix(normal, vec3(0.0, 1.0, 0.0), 0.5));
       vec3 calmReflected = reflect(-viewDirection, calmNormal);
       calmReflected.y = abs(calmReflected.y) + 0.02;
-      vec4 clouds = skyClouds(normalize(calmReflected), -1.0);
+      // Far water is a thousand facets to the pixel: what it mirrors of a
+      // cloud is a soft brightening, not the cloud's outline stood on end.
+      vec4 clouds = skyClouds(normalize(calmReflected), -1.0 - clamp(viewDistance / 140.0, 0.0, 3.5));
       reflection = mix(reflection, clouds.rgb, clouds.a * 0.85 * (1.0 - mirrorsSea));
     }
     // The yacht, the islands and the birds, mirrored and bent by the waves.

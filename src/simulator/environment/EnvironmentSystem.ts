@@ -5,6 +5,7 @@ import { CYCLE_DAY_START, CYCLE_NIGHT_START, dayCycleState, deriveTimeOfDay, typ
 import { deriveEnvironmentPalette, LIGHTNING_COLOR, litByLightning, type EnvironmentPalette } from "./EnvironmentPalette";
 import type { OceanSystem } from "./OceanSystem";
 import { applySkyPalette, setLinearColor, type SkyUniforms } from "./SkyUniforms";
+import { CloudMap } from "./CloudMap";
 import { skyFragmentShader, skyVertexShader } from "./shaders/skyShader";
 import { createWeather, settleWeather, stepWeather, type WeatherKind, type WeatherSample } from "./WeatherMath";
 import { LightningSystem, type StrikeEvent } from "./LightningSystem";
@@ -51,6 +52,10 @@ export class EnvironmentSystem {
   private settleWeatherNext = true;
   private flash = 0;
   private readonly lightningSystem: LightningSystem;
+  /** The volumetric clouds' map of the sky (off until `setCloudMapSize`). */
+  private readonly clouds: CloudMap;
+  /** The cloud pass count the lighting was last captured at (the first pass changes the sky's light). */
+  private capturedClouds = false;
   private cloudClock = 0;
   private readonly flashColor = new THREE.Color();
   private readonly keyDirection = new THREE.Vector3();
@@ -96,6 +101,7 @@ export class EnvironmentSystem {
     this.skyUniforms.uSunDirection.value = this.sunDirection;
     this.skyUniforms.uMoonDirection.value = this.moonDirection;
     this.skyUniforms.uLightDirection.value = this.celestialLightDirection;
+    this.clouds = new CloudMap(this.skyUniforms);
 
     this.sky = new THREE.Mesh(
       new THREE.SphereGeometry(920, 48, 24),
@@ -281,6 +287,17 @@ export class EnvironmentSystem {
   }
 
   /**
+   * Volumetric clouds: the side of the map of the sky they are marched into
+   * (0: the flat procedural clouds). Needs a GPU that can draw into
+   * half-float targets, like the HDR pipeline.
+   */
+  setCloudMapSize(size: number): void {
+    const supported =
+      this.renderer.extensions.has("EXT_color_buffer_half_float") || this.renderer.extensions.has("EXT_color_buffer_float");
+    this.clouds.setSize(supported ? size : 0);
+  }
+
+  /**
    * How far round the focus the sun's shadows reach (m): the yacht's deck
    * at the helm, a walker's surroundings (the palms, the islanders, his own
    * figure) ashore.
@@ -382,7 +399,11 @@ export class EnvironmentSystem {
     );
     this.ocean.setEnvironment(lit);
 
-    if (camera) this.sky.position.copy(camera.position);
+    if (camera) {
+      this.sky.position.copy(camera.position);
+      // The next tile of the clouds' map, from the light and cover just set.
+      this.clouds.update(this.renderer, camera.position.x, camera.position.z);
+    }
 
     // The disc sinks into the sea at sunset: the dome is centred on the camera,
     // so the horizon line itself cuts it.
@@ -469,7 +490,8 @@ export class EnvironmentSystem {
     if (
       Number.isNaN(this.capturedNight) ||
       (drift > CAPTURE_THRESHOLD && this.captureCooldown <= 0) ||
-      (settled && drift > 0.0005)
+      (settled && drift > 0.0005) ||
+      this.capturedClouds !== this.clouds.active
     ) {
       this.captureLighting(night);
     }
@@ -499,6 +521,7 @@ export class EnvironmentSystem {
     this.captureSky.material.dispose();
     this.captureTarget?.dispose();
     this.captureTarget = null;
+    this.clouds.dispose();
     this.pmrem.dispose();
     this.sunLight.shadow.map?.dispose();
   }
@@ -507,6 +530,7 @@ export class EnvironmentSystem {
   invalidateLighting(): void {
     this.capturedNight = Number.NaN;
     this.captureCooldown = 0;
+    this.clouds.invalidate();
   }
 
   private captureLighting(night: number): void {
@@ -522,6 +546,7 @@ export class EnvironmentSystem {
     this.captureTarget?.dispose();
     this.captureTarget = next;
     this.capturedNight = night;
+    this.capturedClouds = this.clouds.active;
     this.captureCooldown = CAPTURE_INTERVAL;
   }
 }

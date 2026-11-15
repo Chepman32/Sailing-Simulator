@@ -5,7 +5,7 @@ import { AssetManager, ASSET_LOAD_TOTAL, AUTHORED_FIGURE_KEY, LOAD_STEPS_TOTAL, 
 import type { ActorModel } from "./actors/ActorLooks";
 import type { CraftModel, CraftSeat } from "./vessel/CraftModels";
 import { PostProcessing } from "./core/PostProcessing";
-import { QualityManager } from "./core/QualityManager";
+import { cloudMapSizeFor, isHandheld, QualityManager } from "./core/QualityManager";
 import { CanvasSizeGate, contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
 import { ShipShadows } from "./ships/ShipShadows";
 import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
@@ -654,6 +654,7 @@ export class Simulator {
         }
         this.environment?.setShadowMapSize(this.quality.settings.shadowMapSize);
         this.environment?.setSkyDetail(this.quality.settings.skyDetail);
+        this.environment?.setCloudMapSize(cloudMapSizeFor(this.quality.current, isHandheld()));
         this.ocean?.setQuality(this.quality.settings);
         this.islands?.setGrass(this.quality.settings.grassRadius, this.quality.settings.grassDensity);
         this.lod.fullDetail = this.quality.settings.fullDetail;
@@ -687,6 +688,7 @@ export class Simulator {
       this.environment.setWeatherKind(this.currentWeatherKind(), true);
       this.environment.setShadowMapSize(this.quality.settings.shadowMapSize);
       this.environment.setSkyDetail(this.quality.settings.skyDetail);
+      this.environment.setCloudMapSize(cloudMapSizeFor(this.quality.current, isHandheld()));
       // The story's built places: their levelled ground is the terrain's before any island is built.
       this.levels = new LevelSystem(STORY_LEVELS, (x, z) => this.groundBase(x, z));
       this.scene.add(this.levels.group);

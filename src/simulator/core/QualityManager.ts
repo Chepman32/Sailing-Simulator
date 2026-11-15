@@ -47,6 +47,11 @@ export type QualitySettings = {
   grassDensity: number;
   /** Meshes keep their full detail at any size on screen (no simplified levels). */
   fullDetail: boolean;
+  /**
+   * Volumetric clouds: the side (texels) of the map of the sky they are ray
+   * marched into; 0 keeps the flat procedural clouds. See `cloudMapSizeFor`.
+   */
+  cloudMapSize: number;
 };
 
 export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
@@ -77,6 +82,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassRadius: 11,
     grassDensity: 0.28,
     fullDetail: false,
+    cloudMapSize: 0,
   },
   medium: {
     maxDpr: 1.25,
@@ -104,6 +110,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassRadius: 22,
     grassDensity: 0.45,
     fullDetail: false,
+    cloudMapSize: 768,
   },
   high: {
     maxDpr: 1.5,
@@ -130,6 +137,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassRadius: 32,
     grassDensity: 0.72,
     fullDetail: false,
+    cloudMapSize: 1024,
   },
   /**
    * Everything at its best, for a desktop GPU with room to spare: never
@@ -163,6 +171,7 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassRadius: 40,
     grassDensity: 1,
     fullDetail: true,
+    cloudMapSize: 1536,
   },
 };
 
@@ -196,6 +205,16 @@ export function maxDprFor(settings: QualitySettings, handheld: boolean): number 
   return handheld ? Math.max(settings.maxDpr, HANDHELD_MIN_DPR) : settings.maxDpr;
 }
 export const HANDHELD_MIN_DPR = 1.5;
+
+/**
+ * The side of the volumetric clouds' map at a preset. A phone or tablet
+ * marches clouds only at the presets its owner has to choose (high, ultra):
+ * the march is a steady load its battery would pay for all day.
+ */
+export function cloudMapSizeFor(preset: QualityPreset, handheld: boolean): number {
+  if (handheld && preset !== "high" && preset !== "ultra") return 0;
+  return QUALITY_SETTINGS[preset].cloudMapSize;
+}
 
 /** The next preset down (the automatic mode's step when frames run slow). */
 export function stepDown(preset: QualityPreset): QualityPreset {
