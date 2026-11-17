@@ -168,16 +168,13 @@ input:focus-visible {
 }
 
 .loading-mark {
-  width: 54px;
-  height: 54px;
+  width: 64px;
+  aspect-ratio: 214 / 248;
   margin: 0 auto 16px;
-  color: var(--accent);
-  font-size: 45px;
-  line-height: 54px;
-  animation: sail-spin 1.8s linear infinite;
+  background: url("/assets/loading-spinner-a90f09314dcb.gif") center / contain no-repeat;
+  /* Preserve the GIF's timing and transparency; make its dark strokes legible on the glass. */
+  filter: invert(1);
 }
-
-@keyframes sail-spin { to { transform: rotate(360deg); } }
 
 .loading-track {
   height: 5px;

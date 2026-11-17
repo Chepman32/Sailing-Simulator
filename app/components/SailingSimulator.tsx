@@ -1736,7 +1736,7 @@ export function SailingSimulator({ storyEnabled = false }: { storyEnabled?: bool
 
         {!loading.ready && !error && (
           <section className="loading-screen" aria-live="polite">
-            <div className="loading-mark" aria-hidden="true">◒</div>
+            <div className="loading-mark" aria-hidden="true" />
             <p className="eyebrow">Sailing Simulator Pro</p>
             <h1>{messages.loadingTitle}</h1>
             <div className="loading-track"><span style={{ width: `${progress}%` }} /></div>
