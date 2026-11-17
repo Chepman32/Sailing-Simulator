@@ -4,6 +4,7 @@ import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import type { LoadingState } from "../types";
 import { assetBytes, assetUrl } from "./assetManifest";
 import { createGltfLoader } from "./GltfLoading";
+import { disposeModel } from "./ModelResources";
 import { takePrefetchedModel } from "./startAssets";
 import { injectAfter, patchMaterialShader } from "./ShaderPatch";
 import type { ActorModel } from "../actors/ActorLooks";
@@ -72,6 +73,11 @@ const ASSETS = {
 const ASSET_ENTRIES = Object.entries(ASSETS) as Array<[AssetKey, AssetDefinition]>;
 const START_ENTRIES = ASSET_ENTRIES.filter(([, definition]) => definition.stage === "start");
 const LATER_ENTRIES = ASSET_ENTRIES.filter(([, definition]) => definition.stage === "later");
+const STORY_ASSETS = new Set<AssetKey>(["sportYacht", "skiff", "viewPistol", "viewRifle", ...AUTHORED_FIGURE_KEYS]);
+
+export function laterAssetKeys(storyEnabled: boolean): readonly AssetKey[] {
+  return LATER_ENTRIES.filter(([key]) => storyEnabled || !STORY_ASSETS.has(key)).map(([key]) => key);
+}
 
 /** The models fetched before the first frame (the rest follow, `loadLater`). */
 export const START_ASSET_KEYS: readonly AssetKey[] = START_ENTRIES.map(([key]) => key);
@@ -132,7 +138,10 @@ export class AssetManager {
       }
     }
     asset ??= await this.loader.loadAsync(assetUrl(definition.url), (event) => onBytes?.(event.loaded));
-    if (this.disposed) return;
+    if (this.disposed) {
+      disposeModel(asset.scenes);
+      return;
+    }
     if ((TRADER_MODEL_KEYS as readonly string[]).includes(key)) brightenFigure(asset.scene);
     if (AUTHORED_FIGURE_KEYS.includes(key)) adaptAuthoredFigure(asset, this.assets.get("traderMan") ?? null);
     this.assets.set(key, asset);
@@ -185,14 +194,15 @@ export class AssetManager {
    * arrives as soon as it can (`onAsset` hears of each). Safe to call again:
    * the same load is returned.
    */
-  loadLater(onAsset?: (key: AssetKey) => void): Promise<void> {
+  loadLater(onAsset?: (key: AssetKey) => void | Promise<void>, storyEnabled = true): Promise<void> {
     this.laterLoad ??= (async () => {
-      for (const [key, definition] of LATER_ENTRIES) {
+      for (const key of laterAssetKeys(storyEnabled)) {
+        const definition = ASSETS[key];
         if (this.disposed) return;
         if (this.assets.has(key)) continue;
         try {
           await this.fetch(key, definition);
-          if (!this.disposed) onAsset?.(key);
+          if (!this.disposed) await onAsset?.(key);
         } catch (error) {
           console.warn(`Optional 3D asset \"${key}\" could not be loaded and will be skipped.`, error);
         }
@@ -235,20 +245,9 @@ export class AssetManager {
   }
 
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
-    this.assets.forEach((asset) => {
-      asset.scene.traverse((object) => {
-        if (!(object instanceof THREE.Mesh)) return;
-        object.geometry.dispose();
-        const materials = Array.isArray(object.material) ? object.material : [object.material];
-        materials.forEach((material) => {
-          Object.values(material).forEach((value) => {
-            if (value instanceof THREE.Texture) value.dispose();
-          });
-          material.dispose();
-        });
-      });
-    });
+    disposeModel([...this.assets.values()].flatMap((asset) => asset.scenes));
     this.assets.clear();
   }
 

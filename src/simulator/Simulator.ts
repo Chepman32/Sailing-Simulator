@@ -6,7 +6,7 @@ import type { ActorModel } from "./actors/ActorLooks";
 import type { CraftModel, CraftSeat } from "./vessel/CraftModels";
 import { PostProcessing } from "./core/PostProcessing";
 import { cloudMapSizeFor, isHandheld, QualityManager } from "./core/QualityManager";
-import { CanvasSizeGate, contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
+import { CanvasSizeGate, ContextRecoveryClock, contextRecovery, FlatFrameWatch, type PixelSample } from "./core/RenderHealth";
 import { ShipShadows } from "./ships/ShipShadows";
 import { PhotoDirector, photoShot, type PhotoShot, type PhotoSubject } from "./camera/PhotoDirector";
 import { FlareCamera } from "./camera/FlareCamera";
@@ -287,6 +287,8 @@ export class Simulator {
   private contextLostAt = Number.NaN;
   private restoreRequested = false;
   private recoveryTimer?: number;
+  private readonly recoveryClock = new ContextRecoveryClock();
+  private readonly graphicsWaiters = new Set<(ready: boolean) => void>();
   private readonly governor = new GpuGovernor(AUTO_GPU_TARGET_MS);
   /** The render scale where GPU time cannot be measured (Safari): follows the frame rate. */
   private readonly frameGovernor = new FrameRateGovernor();
@@ -635,6 +637,7 @@ export class Simulator {
     this.radio.setMuted(!this.state.soundEnabled);
     canvas.addEventListener("webglcontextlost", this.onContextLost, false);
     canvas.addEventListener("webglcontextrestored", this.onContextRestored, false);
+    document.addEventListener("visibilitychange", this.onGraphicsVisibility);
   }
 
   async init(): Promise<void> {
@@ -676,6 +679,7 @@ export class Simulator {
       this.gpuTimer = new GpuTimer(this.renderer.getContext());
       this.resize();
       await this.assets.load();
+      if (!(await this.waitForGraphics())) return;
       this.ocean = new OceanSystem(this.scene, this.quality.settings);
       // The storm swell dies out over the island shelves, for the CPU sampler as for the GPU.
       setShoalField(cachedField(stormShoalAt, 4));
@@ -952,6 +956,7 @@ export class Simulator {
       this.resize();
       this.reportLoading(1, "Preparing the graphics");
       await this.prewarmShaders();
+      if (!(await this.waitForGraphics())) return;
       this.sizeGate.goLive();
       this.loop = new RenderLoop({
         fixedUpdate: this.fixedUpdate,
@@ -959,7 +964,7 @@ export class Simulator {
         render: this.render,
         onFps: this.onFps,
         onPauseChange: (paused) => {
-          this.status = paused ? "paused" : "running";
+          this.status = paused || !Number.isNaN(this.contextLostAt) ? "paused" : "running";
           // The first frames back from the background are no measure of the GPU.
           this.frameGovernor.pause(3);
           this.quality.noteDisruption();
@@ -980,6 +985,7 @@ export class Simulator {
         this.loadInBackground();
       }));
     } catch (error) {
+      if (this.disposed) return;
       this.status = "error";
       const message = error instanceof Error ? error.message : "The simulator could not start.";
       this.options.onError?.(message);
@@ -2068,7 +2074,13 @@ export class Simulator {
   }
 
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
+    this.releaseGraphicsWaiters();
+    window.clearInterval(this.recoveryTimer);
+    document.removeEventListener("visibilitychange", this.onGraphicsVisibility);
+    this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
+    this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
     if (this.chartDirty) this.saveChart();
     this.pendingCaptures.splice(0).forEach((resolve) => resolve(null));
     this.loop?.dispose();
@@ -2126,9 +2138,11 @@ export class Simulator {
     setCraftScenes(null);
     this.assets.dispose();
     this.renderer.dispose();
-    window.clearInterval(this.recoveryTimer);
-    this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
-    this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
+    // Release a removed route's context, but allow React to reuse the same
+    // connected canvas when it re-runs an effect (including Strict Mode).
+    queueMicrotask(() => {
+      if (!this.canvas.isConnected) this.renderer.forceContextLoss();
+    });
     this.initialized = false;
   }
 
@@ -4297,6 +4311,7 @@ export class Simulator {
       // loading bar moves while a tablet compiles for several seconds.
       const parts = [...this.scene.children];
       for (let index = 0; index < parts.length; index += 1) {
+        if (!(await this.waitForGraphics())) return;
         await compileSafely(this.renderer, parts[index]!, this.camera.camera, this.scene);
         this.reportLoading(1 + Math.round(((index + 1) / parts.length) * (SCENE_LOAD_STEPS - 2)), "Preparing the graphics");
         await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -4336,8 +4351,8 @@ export class Simulator {
    */
   private loadInBackground(): void {
     void this.assets
-      .loadLater((key) => {
-        if (this.disposed) return;
+      .loadLater(async (key) => {
+        if (!(await this.waitForGraphics())) return;
         if (key === "shark" || key === "whale" || key === "fishSchool") this.wildlife.adoptLateAssets(this.assets);
         else if (key === "sportYacht" || key === "skiff") this.vessel?.refreshCrafts();
         else if (key === "crabRed" || key === "crabBlue") this.buildCrabs();
@@ -4353,9 +4368,10 @@ export class Simulator {
         // into), not on the frame they first come into sight.
         const previous = this.renderer.getRenderTarget();
         this.renderer.setRenderTarget(this.post.sceneTarget);
-        void compileSafely(this.renderer, this.scene, this.camera.camera).catch(() => undefined);
+        const compiled = compileSafely(this.renderer, this.scene, this.camera.camera);
         this.renderer.setRenderTarget(previous);
-      })
+        await compiled.catch(() => undefined);
+      }, Boolean(this.options.storyEnabled))
       .then(() => {
         if (!this.disposed) return this.ships.loadModelsInBackground();
       });
@@ -4592,7 +4608,7 @@ export class Simulator {
 
   /** Frees and redraws everything the GPU holds that is not geometry: targets, captures, shadow maps. */
   private rebuildView(): void {
-    this.post.rebuild();
+    this.post?.rebuild();
     this.reflection?.dispose();
     this.reflection?.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
     this.mirrorStale = true;
@@ -4910,41 +4926,64 @@ export class Simulator {
       base.collectedLoot = strings(saved.collectedLoot, MAX_REMEMBERED_LOOT);
       this.legacyChart = strings((saved as { exploredCells?: unknown }).exploredCells, 6000);
     } catch {
-      localStorage.removeItem(STORAGE_KEY);
+      try { localStorage.removeItem(STORAGE_KEY); } catch { /* Storage is unavailable. */ }
     }
     return base;
   }
 
   private persistState(): void {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        lightingMode: this.state.lightingMode,
-        autoTime: this.state.autoTime,
-        autoTimeChosen: this.autoTimeChosen || undefined,
-        weatherMode: this.state.weatherMode,
-        weather: this.state.weather,
-        cameraMode: this.state.cameraMode,
-        qualityChoice: this.chosenQuality ?? undefined,
-        soundEnabled: this.state.soundEnabled,
-        engineMuted: this.state.engineMuted,
-        helmReturnsToCentre: this.state.autoCenterHelm,
-        steadyHelmView: this.state.steadyHelmView,
-        sailColor: this.state.sailColor,
-        unlockedSails: this.state.unlockedSails,
-        doubloons: this.state.doubloons,
-        flamingos: this.state.flamingos,
-        discoveredPlaces: this.state.discoveredPlaces,
-        collectedLoot: this.state.collectedLoot.slice(-MAX_REMEMBERED_LOOT),
-      }),
-    );
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          lightingMode: this.state.lightingMode,
+          autoTime: this.state.autoTime,
+          autoTimeChosen: this.autoTimeChosen || undefined,
+          weatherMode: this.state.weatherMode,
+          weather: this.state.weather,
+          cameraMode: this.state.cameraMode,
+          qualityChoice: this.chosenQuality ?? undefined,
+          soundEnabled: this.state.soundEnabled,
+          engineMuted: this.state.engineMuted,
+          helmReturnsToCentre: this.state.autoCenterHelm,
+          steadyHelmView: this.state.steadyHelmView,
+          sailColor: this.state.sailColor,
+          unlockedSails: this.state.unlockedSails,
+          doubloons: this.state.doubloons,
+          flamingos: this.state.flamingos,
+          discoveredPlaces: this.state.discoveredPlaces,
+          collectedLoot: this.state.collectedLoot.slice(-MAX_REMEMBERED_LOOT),
+        }),
+      );
+    } catch {
+      // A full or blocked store must not interrupt rendering or GPU teardown.
+    }
   }
+
+  private waitForGraphics(): Promise<boolean> {
+    if (this.disposed) return Promise.resolve(false);
+    if (!document.hidden && Number.isNaN(this.contextLostAt)) return Promise.resolve(true);
+    return new Promise((resolve) => this.graphicsWaiters.add(resolve));
+  }
+
+  private releaseGraphicsWaiters(): void {
+    if (!this.disposed && (document.hidden || !Number.isNaN(this.contextLostAt))) return;
+    for (const resolve of this.graphicsWaiters) resolve(!this.disposed);
+    this.graphicsWaiters.clear();
+  }
+
+  private readonly onGraphicsVisibility = (): void => {
+    if (!Number.isNaN(this.contextLostAt)) this.recoveryClock.read(performance.now(), !document.hidden);
+    this.releaseGraphicsWaiters();
+  };
 
   private readonly onContextLost = (event: Event): void => {
     event.preventDefault();
+    if (this.disposed) return;
     this.loop?.stop();
     this.status = "paused";
     this.contextLostAt = performance.now();
+    this.recoveryClock.start(this.contextLostAt, !document.hidden);
     this.restoreRequested = false;
     // Some browsers (phones above all) never send "restored" by themselves:
     // ask for it, and if that fails too, tell the player to reload.
@@ -4953,11 +4992,13 @@ export class Simulator {
   };
 
   private readonly checkRecovery = (): void => {
-    if (Number.isNaN(this.contextLostAt)) {
+    if (this.disposed || Number.isNaN(this.contextLostAt)) {
       window.clearInterval(this.recoveryTimer);
       return;
     }
-    const step = contextRecovery((performance.now() - this.contextLostAt) / 1000, this.restoreRequested);
+    const lostFor = this.recoveryClock.read(performance.now(), !document.hidden);
+    if (document.hidden) return;
+    const step = contextRecovery(lostFor, this.restoreRequested);
     if (step === "restore") {
       this.restoreRequested = true;
       const loseContext = this.renderer.getContext().getExtension("WEBGL_lose_context");
@@ -4973,6 +5014,7 @@ export class Simulator {
   };
 
   private readonly onContextRestored = (): void => {
+    if (this.disposed) return;
     window.clearInterval(this.recoveryTimer);
     // The probe's buffer and fence belonged to the lost context.
     this.probe = null;
@@ -4983,9 +5025,16 @@ export class Simulator {
     // render-to-texture buffers and the timer queries.
     this.gpuTimer?.dispose();
     this.gpuTimer = new GpuTimer(this.renderer.getContext());
+    // A lost context is stronger evidence than FPS that the memory budget
+    // was too high. Recover on the direct path, without allocating HDR/MSAA.
+    this.chosenQuality = "low";
+    this.quality?.setPreset("low");
+    this.quality?.setAdaptive(false);
     this.rebuildView();
-    this.status = "running";
+    this.options.onError?.(null);
+    this.status = this.initialized ? (document.hidden ? "paused" : "running") : "loading";
     this.nextProbe = this.elapsed + 3;
-    this.loop?.start();
+    this.releaseGraphicsWaiters();
+    if (this.initialized) this.loop?.start();
   };
 }

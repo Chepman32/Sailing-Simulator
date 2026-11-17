@@ -834,8 +834,9 @@ export function SailingSimulator({ storyEnabled = false }: { storyEnabled?: bool
             if (state.ready && !storyEnabled) openGuideIfPending();
           },
           onError: (message) => {
-            exitPhotoMode();
-            setError(message);
+            if (disposed) return;
+            if (message) exitPhotoMode();
+            setError(message ?? "");
           },
           onSceneDoubleTap: () => {
             if (!photoModeRef.current) return false;

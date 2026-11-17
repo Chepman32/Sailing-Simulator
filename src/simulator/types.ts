@@ -170,7 +170,7 @@ export type SimulatorOptions = {
   storyEnabled?: boolean;
   onSnapshot?: (snapshot: SimulationSnapshot) => void;
   onLoading?: (state: LoadingState) => void;
-  onError?: (message: string) => void;
+  onError?: (message: string | null) => void;
   /** Return true when the interface handles the gesture instead of recentering. */
   onSceneDoubleTap?: () => boolean;
   /** Something the keyboard did by itself that the interface should show (e.g. "engine-on"). */

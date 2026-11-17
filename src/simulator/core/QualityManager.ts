@@ -238,8 +238,6 @@ export class QualityManager {
   private slowWindows = 0;
   private gpuMeasured = false;
   private fastWindows = 0;
-  /** Whether automatic mode has lowered the preset in this session. */
-  private steppedDown = false;
   /**
    * A phone or a tablet: its *main* pointer is a finger. (A laptop with a
    * touch screen is a computer: it used to count as a phone here, which
@@ -302,8 +300,7 @@ export class QualityManager {
     this.gpuMeasured = true;
     if (verdict === "overloaded" && this.preset !== "low") {
       this.apply(stepDown(this.preset), true);
-      this.steppedDown = true;
-    } else if (verdict === "idle" && (this.preset === "low" || this.preset === "medium") && !(this.coarseDevice && this.steppedDown)) {
+    } else if (verdict === "idle" && (this.preset === "low" || this.preset === "medium") && !this.coarseDevice) {
       const nextPreset = this.preset === "low" ? "medium" : "high";
       if (!(this.coarseDevice && nextPreset === "high")) this.apply(nextPreset, true);
     }
@@ -339,14 +336,13 @@ export class QualityManager {
     if (this.slowWindows >= SLOW_WINDOWS_TO_STEP_DOWN && this.preset !== "low") {
       this.apply(stepDown(this.preset), true);
       this.slowWindows = 0;
-      this.steppedDown = true;
     } else if (
       this.fastWindows >= 30 &&
       (this.preset === "low" || this.preset === "medium") &&
       !this.gpuMeasured &&
-      // On a phone a step down and back up is two recompiles of every shader
-      // (seconds of frozen picture each); once lowered, the level stays.
-      !(this.coarseDevice && this.steppedDown)
+      // FPS does not measure available memory. Do not automatically allocate
+      // the HDR targets on a phone just because the direct path runs smoothly.
+      !this.coarseDevice
     ) {
       // Without GPU timing a smooth frame rate is the only hint of headroom.
       const nextPreset = this.preset === "low" ? "medium" : "high";
