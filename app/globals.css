@@ -169,11 +169,20 @@ input:focus-visible {
 
 .loading-mark {
   width: 64px;
-  aspect-ratio: 214 / 248;
+  height: 64px;
   margin: 0 auto 16px;
-  background: url("/assets/loading-spinner-a90f09314dcb.gif") center / contain no-repeat;
-  /* Preserve the GIF's timing and transparency; make its dark strokes legible on the glass. */
+  background: url("/assets/loading-mark-1b314d752342.svg") center / contain no-repeat;
+  /* The supplied mark is centered and static; only this transform animates. */
+  transform-origin: 50% 50%;
+  animation: loading-mark-spin 1.08s linear infinite;
+  will-change: transform;
   filter: invert(1);
+}
+
+@keyframes loading-mark-spin { to { transform: rotate(1turn); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-mark { animation: none; will-change: auto; }
 }
 
 .loading-track {

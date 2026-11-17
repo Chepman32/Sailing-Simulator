@@ -24,7 +24,7 @@ const ASSETS = `assets-${VERSION}`;
 const STATIC = `static-${VERSION}`;
 const KEEP = new Set([SHELL, ASSETS, STATIC]);
 
-const PRECACHE = ["/", "/story", "/assets/loading-spinner-a90f09314dcb.gif", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png", "/favicon.ico", "/favicon-32.png"];
+const PRECACHE = ["/", "/story", "/assets/loading-mark-1b314d752342.svg", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png", "/favicon.ico", "/favicon-32.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
