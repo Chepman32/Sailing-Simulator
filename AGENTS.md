@@ -59,7 +59,8 @@ The repository is intentionally self-contained at runtime. Three.js and applicat
 
 | Path | Responsibility |
 | --- | --- |
-| `app/page.tsx` | Top-level route; renders the simulator component |
+| `app/page.tsx` | Root route; starts free sailing directly |
+| `app/story/page.tsx` | Campaign route; enables story gameplay and opens its main menu |
 | `app/layout.tsx` | Document metadata and root layout |
 | `app/components/SailingSimulator.tsx` | Canvas lifecycle, responsive HUD, controls, settings, sound-unlock affordance, simulator bridge |
 | `app/components/SoundPrompt.tsx` | The “tap for sound” capsule and its fine-dust dissolve (canvas) into the corner sound button |
@@ -1417,7 +1418,7 @@ Now and then the whole scene vanished for up to several seconds, leaving the int
 
 ## Story campaign "Aquilon" (src/simulator/story, src/simulator/combat, app/components/story)
 
-The game opens on its **main menu** (`MainMenu`: new game, continue, load, free sailing, settings) over a camera drifting round the yacht in a held low sun (`Simulator.enterMainMenu`/`setMenuView`; `StorySystem.enterMenu` stops the story without losing it). Two modes are played: the **campaign** (a story with missions, Vanguard's crewed patrol boats and armed people on foot, damage, guns) and **free sailing** (the sandbox as before: no story, no drones). The campaign's live progress is kept under `sailing-campaign-v1`; the pause menu (Esc, at the helm too, or the "Menu" scene action) saves to three slots and the story autosaves after each step at a quiet moment (`SaveGames`, pure and tested: campaign state, yacht and skipper pose, hour, weather, a 320×180 JPEG). Saving is refused during a cut scene, under fire and in a fade (`saveBlock`).
+Only **`/story` opens the main menu** (`MainMenu`: new game, continue, load, free sailing, settings) over a camera drifting round the yacht in a held low sun (`Simulator.enterMainMenu`/`setMenuView`; `StorySystem.enterMenu` stops the story without losing it). The root route `/` starts free sailing directly, regardless of `sailing-mode` in storage. `SimulatorOptions.storyEnabled` defaults to false and gates campaign entry commands; only `/story` passes true. The main menu’s free-sailing button navigates to `/`, and the free-sailing pause menu’s main-menu button navigates to `/story`. The first-visit controls card opens once the free scene is ready. The service worker caches each route’s HTML separately, including offline launches with query strings or a trailing slash. Two modes are played: the **campaign** (a story with missions, Vanguard's crewed patrol boats and armed people on foot, damage, guns) and **free sailing** (the sandbox as before: no story, no drones). The campaign's live progress is kept under `sailing-campaign-v1`; the pause menu (Esc, at the helm too, or the "Menu" scene action) saves to three slots and the story autosaves after each step at a quiet moment (`SaveGames`, pure and tested: campaign state, yacht and skipper pose, hour, weather, a 320×180 JPEG). Saving is refused during a cut scene, under fire and in a fade (`saveBlock`).
 
 The living design document is `docs/campaign/` (Russian, the owner's language). It is the spec: when the owner sends new notes, update the document first, then the data. `docs/campaign/map.svg` is drawn from the game's own data by `npm run campaign:map`; regenerate it whenever a border or a place moves.
 

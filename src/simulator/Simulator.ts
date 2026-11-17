@@ -968,8 +968,9 @@ export class Simulator {
       });
       this.initialized = true;
       this.status = "running";
-      // The game opens on its main menu (a campaign under way is continued from there).
-      this.enterMainMenu();
+      // The route decides the experience, even when a campaign was played last.
+      if (this.options.storyEnabled) this.enterMainMenu();
+      else this.chooseFreeSail();
       this.hud.emit(this.snapshot());
       this.loop.start();
       // The interface appears with the first frame actually on screen.
@@ -2713,7 +2714,7 @@ export class Simulator {
 
   /** Starts a new campaign from the prologue. */
   startCampaign(): void {
-    if (!this.initialized || !this.story) return;
+    if (!this.options.storyEnabled || !this.initialized || !this.story) return;
     this.setMenuView(false);
     this.menuSky = null;
     this.armoury.reset();
@@ -2724,7 +2725,7 @@ export class Simulator {
 
   /** Back into the campaign where it was left. */
   continueCampaign(): void {
-    if (!this.initialized || !this.story) return;
+    if (!this.options.storyEnabled || !this.initialized || !this.story) return;
     this.setMenuView(false);
     this.menuSky = null;
     this.story.resume();
@@ -2786,7 +2787,7 @@ export class Simulator {
 
   /** Loads the save in `slot`; false if there is none to load. */
   loadGame(slot: SaveSlotId): boolean {
-    if (!this.initialized || !this.story) return false;
+    if (!this.options.storyEnabled || !this.initialized || !this.story) return false;
     const game = readSave(localStorage, slot, this.story.campaign);
     if (!game) return false;
     this.armoury.reset();
@@ -2926,7 +2927,7 @@ export class Simulator {
    * at the wheel, and the camera drifts round her in the evening light.
    */
   enterMainMenu(): void {
-    if (!this.story) return;
+    if (!this.options.storyEnabled || !this.story) return;
     this.story.enterMenu();
     this.setCraft("catamaran");
     this.storyClock = null;

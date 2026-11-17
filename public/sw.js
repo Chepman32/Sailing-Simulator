@@ -18,13 +18,13 @@
  * Bump VERSION when this file's caching rules change; old caches are dropped
  * on activation.
  */
-const VERSION = "v2-packed";
+const VERSION = "v3-routes";
 const SHELL = `shell-${VERSION}`;
 const ASSETS = `assets-${VERSION}`;
 const STATIC = `static-${VERSION}`;
 const KEEP = new Set([SHELL, ASSETS, STATIC]);
 
-const PRECACHE = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png", "/favicon.ico", "/favicon-32.png"];
+const PRECACHE = ["/", "/story", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png", "/favicon.ico", "/favicon-32.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -76,13 +76,16 @@ self.addEventListener("fetch", (event) => {
 
 async function networkFirstPage(event) {
   const cache = await caches.open(SHELL);
+  // Keep each route's HTML separate; query strings and trailing slashes do
+  // not change the experience. In particular, /story must never replace /.
+  const path = new URL(event.request.url).pathname.replace(/\/+$/, "") || "/";
   try {
     const preloaded = await event.preloadResponse;
     const response = preloaded || (await fetch(event.request));
-    if (response.ok) event.waitUntil(cache.put("/", response.clone()));
+    if (response.ok) event.waitUntil(cache.put(path, response.clone()));
     return response;
   } catch (error) {
-    const cached = (await cache.match(event.request)) || (await cache.match("/"));
+    const cached = await cache.match(path);
     if (cached) return cached;
     throw error;
   }

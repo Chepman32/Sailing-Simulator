@@ -318,7 +318,7 @@ if (typeof window !== "undefined") {
   void loadSimulatorModule().catch(() => undefined);
 }
 
-export function SailingSimulator() {
+export function SailingSimulator({ storyEnabled = false }: { storyEnabled?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const rudderRef = useRef<HTMLElement | null>(null);
@@ -398,8 +398,8 @@ export function SailingSimulator() {
   const [coarsePointer, setCoarsePointer] = useState(false);
   // The campaign: its journal, the choice of campaign or free sailing (from the menus), and the per-frame overlay.
   const [journalOpen, setJournalOpen] = useState(false);
-  // The main menu (the game opens on it), its settings, and the controls card held back until a voyage starts.
-  const [mainMenu, setMainMenu] = useState(true);
+  // Only /story opens the main menu; the root route goes straight to sea.
+  const [mainMenu, setMainMenu] = useState(storyEnabled);
   const [menuSettings, setMenuSettings] = useState(false);
   const guidePending = useRef(false);
   const overlayListener = useRef<((frame: StoryOverlayFrame) => void) | null>(null);
@@ -687,12 +687,12 @@ export function SailingSimulator() {
     simulatorRef.current?.setStoryLanguage(language === "ru" ? "ru" : "en");
   }, [language, loading.ready]);
   /** The first free voyage shows the controls card once. */
-  const openGuideIfPending = () => {
+  const openGuideIfPending = useCallback(() => {
     if (!guidePending.current) return;
     guidePending.current = false;
     setControlsOpen(true);
     setControlsFirst(true);
-  };
+  }, []);
   const leaveMainMenu = () => {
     setMainMenu(false);
     setMenuSettings(false);
@@ -700,6 +700,10 @@ export function SailingSimulator() {
     setChartOpen(false);
   };
   const toMainMenu = () => {
+    if (!storyEnabled) {
+      window.location.assign("/story");
+      return;
+    }
     setPauseOpen(false);
     setJournalOpen(false);
     setChartOpen(false);
@@ -810,10 +814,11 @@ export function SailingSimulator() {
         // Client-only facts, read once the page is in the browser.
         setCoarsePointer(window.matchMedia("(pointer: coarse)").matches);
         if (!readGuideDone()) {
-          // The controls card waits for the first free voyage (the main menu comes first).
+          // The controls card waits until the free-sailing scene is ready.
           guidePending.current = true;
         }
         simulator = new simulatorModule.Simulator(canvas, {
+          storyEnabled,
           onSnapshot: (nextSnapshot) => {
             // A transition: React renders the interface in short slices and
             // yields to the next animation frame, so the HUD's refresh several
@@ -823,7 +828,11 @@ export function SailingSimulator() {
               setEngineInput(nextSnapshot.engineRunning);
             });
           },
-          onLoading: setLoading,
+          onLoading: (state) => {
+            if (disposed) return;
+            setLoading(state);
+            if (state.ready && !storyEnabled) openGuideIfPending();
+          },
           onError: (message) => {
             exitPhotoMode();
             setError(message);
@@ -862,7 +871,7 @@ export function SailingSimulator() {
       simulator?.dispose();
       if (simulatorRef.current === simulator) simulatorRef.current = null;
     };
-  }, [exitPhotoMode]);
+  }, [exitPhotoMode, openGuideIfPending, storyEnabled]);
 
   const progress = loading.total > 0 ? Math.round((loading.loaded / loading.total) * 100) : 0;
   const compass = useMemo(() => `${snapshot.headingDegrees.toFixed(0).padStart(3, "0")}°`, [snapshot.headingDegrees]);
@@ -1410,6 +1419,7 @@ export function SailingSimulator() {
     <main
       ref={shellRef}
       className={`simulator-shell ${panelMinimized ? "" : "settings-open"}${ready && mainMenu ? " is-main-menu" : ""}${!mainMenu && snapshot.story?.cinematic ? " is-cinematic" : ""}${!mainMenu && !away && snapshot.story?.alert ? " is-blackout" : ""}`}
+      data-experience={storyEnabled ? "story" : "free"}
       aria-label={`Sailing Simulator Pro · ${messages.sailingControls}`}
       dir={isRtlLanguage(language) ? "rtl" : "ltr"}
       onPointerDownCapture={() => simulatorRef.current?.resumeAudioFromGesture()}
@@ -1576,14 +1586,14 @@ export function SailingSimulator() {
                 })
               : "no-campaign"
           }
-          onLoad={(slot) => {
+          onLoad={storyEnabled ? (slot) => {
             setPauseOpen(false);
             setJournalOpen(false);
             setChartOpen(false);
             const simulator = simulatorRef.current;
             simulator?.setPaused(false);
             simulator?.loadGame(slot);
-          }}
+          } : undefined}
           onMainMenu={toMainMenu}
           onBackToHelm={() => {
             setPauseOpen(false);
@@ -1634,11 +1644,11 @@ export function SailingSimulator() {
       )}
 
       {/* The campaign: markers pinned to the scene, the story's screen, its menus. */}
-      {ready && !photoMode && <StoryOverlay listenerRef={overlayListener} language={language} active={snapshot.story?.mode === "campaign" && !mainMenu && !snapshot.story.cinematic} crane={(control, down) => simulatorRef.current?.setCraneControl(control, down)} />}
+      {storyEnabled && ready && !photoMode && <StoryOverlay listenerRef={overlayListener} language={language} active={snapshot.story?.mode === "campaign" && !mainMenu && !snapshot.story.cinematic} crane={(control, down) => simulatorRef.current?.setCraneControl(control, down)} />}
       {ready && !photoMode && !mainMenu && snapshot.story?.mode === "campaign" && (
         <CinemaLayer view={snapshot.story} language={language} touch={coarsePointer} atHelm={!away} onSkip={() => simulatorRef.current?.skipCutscene()} />
       )}
-      {ready && !photoMode && !mainMenu && snapshot.story && (
+      {storyEnabled && ready && !photoMode && !mainMenu && snapshot.story && (
         <StoryHud
           view={snapshot.story}
           combat={snapshot.combat}
@@ -1657,7 +1667,7 @@ export function SailingSimulator() {
           }}
         />
       )}
-      {ready && mainMenu && !menuSettings && snapshot.story && (
+      {storyEnabled && ready && mainMenu && !menuSettings && snapshot.story && (
         <MainMenu
           language={language}
           saved={snapshot.story.saved}
@@ -1681,11 +1691,7 @@ export function SailingSimulator() {
             simulatorRef.current?.loadGame(slot);
           }}
           onFree={() => {
-            leaveMainMenu();
-            // Free sailing starts quiet; the sound button is one press away.
-            simulatorRef.current?.setSoundEnabled(false);
-            simulatorRef.current?.chooseFreeSail();
-            openGuideIfPending();
+            window.location.assign("/");
           }}
           onSettings={() => setMenuSettings(true)}
         />

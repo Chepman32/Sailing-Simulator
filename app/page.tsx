@@ -1,5 +1,5 @@
 import { SailingSimulator } from "./components/SailingSimulator";
 
 export default function Home() {
-  return <SailingSimulator />;
+  return <SailingSimulator key="free" />;
 }

@@ -166,6 +166,8 @@ export type StoryOverlayFrame = {
 export type FindEvent = { kind: string; tier: 1 | 2 | 3; value: number; chest: boolean };
 
 export type SimulatorOptions = {
+  /** Only /story enables the campaign and opens its main menu. Defaults to free sailing. */
+  storyEnabled?: boolean;
   onSnapshot?: (snapshot: SimulationSnapshot) => void;
   onLoading?: (state: LoadingState) => void;
   onError?: (message: string) => void;
