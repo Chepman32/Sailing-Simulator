@@ -69,10 +69,14 @@
 
 Требуется Node **22.13+**.
 
+На macOS `npm start` запускает предпросмотр версии Unreal с перезагрузкой при сохранении. `npm run build` собирает DMG, а `npm run installapp` устанавливает приложение. [Запуск и установка версии Unreal](desktop/README.md#build-and-run-on-macos)
+
+Для браузерной версии:
+
 ```bash
 npm ci
-npm start            # Соберёт при необходимости, запустит порт 3000 и откроет браузер
-# или yarn start, если зависимости установлены через Yarn
+npm run start:web    # Соберёт при необходимости, запустит порт 3000 и откроет браузер
+# или yarn start:web, если зависимости установлены через Yarn
 # Для разработки с горячим обновлением: npm run dev / yarn dev (URL выведется в консоль)
 ```
 
@@ -81,15 +85,15 @@ npm start            # Соберёт при необходимости, зап�
 | `npm test` | Юнит-тесты (`node --test` + `tsx`, `tests/unit/*.test.ts`) |
 | `npm run typecheck` | `tsc --noEmit` в окружении `scripts/sites-env.sh` |
 | `npm run lint` | ESLint |
-| `npm run build` | Продакшен-сборка через `scripts/build-verified.sh` |
+| `npm run build:web` | Продакшен-сборка веб-версии через `scripts/build-verified.sh` |
 | `npm run test:rendered` | Smoke-тест собранного маршрута |
-| `npm start` / `yarn start` | Запуск на порту 3000 и открытие браузера после готовности сервера. Устаревшая, отсутствующая или непроверенная сборка выполняется заново |
+| `npm run start:web` / `yarn start:web` | Запуск на порту 3000 и открытие браузера после готовности сервера. Устаревшая, отсутствующая или непроверенная сборка выполняется заново |
 
 Отдельного HTML-файла симулятора нет: React-приложение динамически импортирует браузерный модуль `src/simulator`.
 
 Повторный запуск использует проверенную сборку, пока исходники, ресурсы и конфигурация сборки совпадают. Для горячего обновления используйте режим `dev`. Сборка работает на macOS и Linux без GNU `timeout`, а ограничение времени и остановку подпроцессов обеспечивает Node.js.
 
-Браузер открывается один раз в системе по умолчанию, с фактическим портом сервера (`yarn start --port 3100` или `PORT=3100 yarn start`). Для запуска без браузера: `BROWSER=none yarn start`; в CI он также не открывается.
+Браузер открывается один раз в системе по умолчанию, с фактическим портом сервера (`yarn start:web --port 3100` или `PORT=3100 yarn start:web`). Для запуска без браузера используйте `BROWSER=none yarn start:web`. В CI он также не открывается.
 
 ---
 
@@ -427,13 +431,13 @@ scripts/        build-verified.sh, sites-env.sh, install-ci.sh
 | `i18n.test.ts` | 30 языков, полнота ключей, алиасы, приоритет ручного выбора, RTL |
 | `framepacer.test.ts`, `gestures.test.ts` | Ограничение частоты кадров, двойной тап |
 
-Перед коммитом поведенческих изменений: `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `git diff --check`. Визуальная приёмка (раскладка на 13 размерах экрана, день/ночь, животные, длительный прогон) — ручная, список сценариев в AGENTS.md §22.
+Перед коммитом поведенческих изменений веб-версии: `npm test`, `npm run typecheck`, `npm run lint`, `npm run build:web`, `git diff --check`. Визуальная приёмка (раскладка на 13 размерах экрана, день/ночь, животные, длительный прогон) — ручная, список сценариев в AGENTS.md §22.
 
 ---
 
 ## 11. Сборка и развёртывание
 
-- Продакшен-сборка: `npm run build` → `scripts/build-verified.sh` (Vinext/Vite, Cloudflare-совместимый вывод).
+- Продакшен-сборка веб-версии: `npm run build:web` → `scripts/build-verified.sh` (Vinext/Vite, Cloudflare-совместимый вывод).
 - Точка входа воркера: `worker/index.ts` (оптимизация изображений + app-router Vinext).
 - Публикация — через ChatGPT Sites (`.openai/hosting.json`); ожидаемый адрес — `https://enhanced-sailing-simulator-pro.anton-chepur.chatgpt.site`.
 - Репозиторий: `https://github.com/Chepman32/Sailing-Simulator`. Force-push запрещён; правила синхронизации — AGENTS.md §25–26.

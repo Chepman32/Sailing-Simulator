@@ -1,0 +1,13 @@
+{
+    "FileVersion": 3,
+    "EngineAssociation": "5.8",
+    "Category": "Games",
+    "Description": "Sailing Simulator Pro desktop sea trial",
+    "Modules": [
+        { "Name": "SailingSimulatorDesktop", "Type": "Runtime", "LoadingPhase": "Default" }
+    ],
+    "Plugins": [
+        { "Name": "ProceduralMeshComponent", "Enabled": true },
+        { "Name": "PythonScriptPlugin", "Enabled": true, "TargetAllowList": ["Editor"] }
+    ]
+}

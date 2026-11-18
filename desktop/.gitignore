@@ -1,0 +1,13 @@
+/Binaries/
+/DerivedDataCache/
+/Intermediate/
+/Saved/
+/Build/Mac/FileOpenOrder/
+/Build/Mac/*.PackageVersionCounter
+/.idea/
+/.vs/
+/*.sln
+/*.xcworkspace
+/*.xcodeproj
+*.pyd
+__pycache__/

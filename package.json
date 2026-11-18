@@ -8,8 +8,11 @@
   "scripts": {
     "install:ci": "bash scripts/install-ci.sh",
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
-    "build": "bash scripts/build-verified.sh",
-    "start": "bash scripts/start.sh",
+    "build": "bash desktop/Tools/macos.sh build",
+    "start": "node desktop/Tools/watch.mjs",
+    "installapp": "bash desktop/Tools/macos.sh install",
+    "build:web": "bash scripts/build-verified.sh",
+    "start:web": "bash scripts/start.sh",
     "test": "node --import tsx --test tests/unit/*.test.ts",
     "test:rendered": "node --test tests/rendered-html.test.mjs",
     "typecheck": "bash scripts/sites-env.sh -- tsc --noEmit",
