@@ -63,6 +63,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
+        <link rel="preload" as="image" href="/assets/loading-mark-1b314d752342.svg" />
         <link rel="manifest" href="/manifest.webmanifest" />
       </head>
       <body>{children}</body>

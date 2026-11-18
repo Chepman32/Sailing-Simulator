@@ -4,15 +4,27 @@ import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import type { LoadingState } from "../types";
 import { assetBytes, assetUrl } from "./assetManifest";
 import { createGltfLoader } from "./GltfLoading";
+import { disposeModel } from "./ModelResources";
 import { takePrefetchedModel } from "./startAssets";
 import { injectAfter, patchMaterialShader } from "./ShaderPatch";
+import type { ActorModel } from "../actors/ActorLooks";
+import { retargetGait, standFigure } from "../actors/FigureAdapt";
 
 export type AnimatedAssetKey =
   | "dolphin" | "shark" | "whale" | "fishSchool" | "seagull"
-  | "traderMan" | "traderWoman" | "traderPirate" | "crabRed" | "crabBlue";
+  | "traderMan" | "traderWoman" | "traderPirate" | "crabRed" | "crabBlue"
+  | "figMark" | "figGuardA" | "figGuardB" | "viewPistol" | "viewRifle";
 /** The island traders' models, in the order they are handed out. */
 export const TRADER_MODEL_KEYS = ["traderMan", "traderWoman", "traderPirate"] as const satisfies readonly AnimatedAssetKey[];
-export type StaticAssetKey = "yacht";
+/**
+ * The authored story characters (Mark, the two Vanguard soldiers), by the
+ * figure a look asks for. Each is stood in the game's frame and given the
+ * islanders' walk and run once, when it arrives (`adaptAuthoredFigure`).
+ */
+export const AUTHORED_FIGURE_KEY: Partial<Record<ActorModel, AnimatedAssetKey>> = { mark: "figMark", guardA: "figGuardA", guardB: "figGuardB" };
+const AUTHORED_FIGURE_KEYS: readonly AssetKey[] = ["figMark", "figGuardA", "figGuardB"];
+
+export type StaticAssetKey = "yacht" | "sportYacht" | "skiff";
 export type AssetKey = StaticAssetKey | AnimatedAssetKey;
 
 export type AnimatedAssetInstance = {
@@ -38,7 +50,17 @@ const ASSETS = {
   dolphin: { url: "/models/dolphin-animated.glb", label: "Loading dolphins", required: true, stage: "start" },
   seagull: { url: "/models/seagull-animated.glb", label: "Loading seabirds", required: false, stage: "start" },
   traderMan: { url: "/models/trader-man.glb", label: "Loading the skipper", required: false, stage: "start" },
-  // In the order they are wanted: what is met at sea first, then ashore.
+  // In the order they are wanted: the story's boats (the prologue's sport
+  // yacht, the skiff of M01; drawn in code until they come), what is met
+  // at sea, then ashore.
+  sportYacht: { url: "/models/motoryacht-35.glb", label: "Loading the sport yacht", required: false, stage: "later" },
+  skiff: { url: "/models/skiff-center-console.glb", label: "Loading the skiff", required: false, stage: "later" },
+  // The guns in the skipper's hands (first person), then the story's own people.
+  viewPistol: { url: "/models/view-pistol.glb", label: "Loading weapons", required: false, stage: "later" },
+  viewRifle: { url: "/models/view-rifle.glb", label: "Loading weapons", required: false, stage: "later" },
+  figMark: { url: "/models/fig-mark.glb", label: "Loading characters", required: false, stage: "later" },
+  figGuardA: { url: "/models/fig-guard-a.glb", label: "Loading characters", required: false, stage: "later" },
+  figGuardB: { url: "/models/fig-guard-b.glb", label: "Loading characters", required: false, stage: "later" },
   shark: { url: "/models/shark-animated.glb", label: "Loading sharks", required: false, stage: "later" },
   whale: { url: "/models/blue-whale-rigged-pbr-v2.glb", label: "Loading whale", required: false, stage: "later" },
   crabRed: { url: "/models/crab-red.glb", label: "Loading crabs", required: false, stage: "later" },
@@ -51,6 +73,11 @@ const ASSETS = {
 const ASSET_ENTRIES = Object.entries(ASSETS) as Array<[AssetKey, AssetDefinition]>;
 const START_ENTRIES = ASSET_ENTRIES.filter(([, definition]) => definition.stage === "start");
 const LATER_ENTRIES = ASSET_ENTRIES.filter(([, definition]) => definition.stage === "later");
+const STORY_ASSETS = new Set<AssetKey>(["sportYacht", "skiff", "viewPistol", "viewRifle", ...AUTHORED_FIGURE_KEYS]);
+
+export function laterAssetKeys(storyEnabled: boolean): readonly AssetKey[] {
+  return LATER_ENTRIES.filter(([key]) => storyEnabled || !STORY_ASSETS.has(key)).map(([key]) => key);
+}
 
 /** The models fetched before the first frame (the rest follow, `loadLater`). */
 export const START_ASSET_KEYS: readonly AssetKey[] = START_ENTRIES.map(([key]) => key);
@@ -111,8 +138,12 @@ export class AssetManager {
       }
     }
     asset ??= await this.loader.loadAsync(assetUrl(definition.url), (event) => onBytes?.(event.loaded));
-    if (this.disposed) return;
+    if (this.disposed) {
+      disposeModel(asset.scenes);
+      return;
+    }
     if ((TRADER_MODEL_KEYS as readonly string[]).includes(key)) brightenFigure(asset.scene);
+    if (AUTHORED_FIGURE_KEYS.includes(key)) adaptAuthoredFigure(asset, this.assets.get("traderMan") ?? null);
     this.assets.set(key, asset);
   }
 
@@ -163,14 +194,15 @@ export class AssetManager {
    * arrives as soon as it can (`onAsset` hears of each). Safe to call again:
    * the same load is returned.
    */
-  loadLater(onAsset?: (key: AssetKey) => void): Promise<void> {
+  loadLater(onAsset?: (key: AssetKey) => void | Promise<void>, storyEnabled = true): Promise<void> {
     this.laterLoad ??= (async () => {
-      for (const [key, definition] of LATER_ENTRIES) {
+      for (const key of laterAssetKeys(storyEnabled)) {
+        const definition = ASSETS[key];
         if (this.disposed) return;
         if (this.assets.has(key)) continue;
         try {
           await this.fetch(key, definition);
-          if (!this.disposed) onAsset?.(key);
+          if (!this.disposed) await onAsset?.(key);
         } catch (error) {
           console.warn(`Optional 3D asset \"${key}\" could not be loaded and will be skipped.`, error);
         }
@@ -181,6 +213,11 @@ export class AssetManager {
 
   yacht(): THREE.Group {
     return this.cloneScene("yacht", false);
+  }
+
+  /** A copy of a model that may not have come yet (null until it has). */
+  scene(key: StaticAssetKey): THREE.Group | null {
+    return this.assets.has(key) ? this.cloneScene(key, false) : null;
   }
 
 
@@ -208,20 +245,9 @@ export class AssetManager {
   }
 
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
-    this.assets.forEach((asset) => {
-      asset.scene.traverse((object) => {
-        if (!(object instanceof THREE.Mesh)) return;
-        object.geometry.dispose();
-        const materials = Array.isArray(object.material) ? object.material : [object.material];
-        materials.forEach((material) => {
-          Object.values(material).forEach((value) => {
-            if (value instanceof THREE.Texture) value.dispose();
-          });
-          material.dispose();
-        });
-      });
-    });
+    disposeModel([...this.assets.values()].flatMap((asset) => asset.scenes));
     this.assets.clear();
   }
 
@@ -244,6 +270,33 @@ export class AssetManager {
       ready,
     });
   }
+}
+
+/**
+ * An authored character made ready for `ActorBody`: stood facing +Z on the
+ * ground at a person's height, marked as authored (drawn as made, no
+ * repaint and no kit), and given the islanders' walk and run retargeted
+ * onto its own skeleton (`source`, the islander, in his rest pose). Without
+ * the islander it keeps no clips and the body poses it by IK alone.
+ */
+function adaptAuthoredFigure(asset: GLTF, source: GLTF | null): void {
+  standFigure(asset.scene);
+  asset.scene.userData.authoredFigure = true;
+  asset.scene.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      if (material instanceof THREE.MeshStandardMaterial) material.envMapIntensity = 1.4;
+    }
+  });
+  if (!source) {
+    asset.animations = [];
+    return;
+  }
+  const rest = cloneSkinned(source.scene);
+  asset.animations = retargetGait({ scene: rest, animations: source.animations }, asset.scene);
 }
 
 /**

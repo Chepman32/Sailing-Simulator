@@ -1,3 +1,4 @@
+import type { StoryView } from "./story/StorySystem";
 export type CameraMode = "chase" | "helm" | "orbit" | "drone";
 export type QualityPreset = "low" | "medium" | "high" | "ultra";
 /** What the player picked. Only "auto" lets the simulator change the level by itself. */
@@ -83,7 +84,7 @@ export type SimulationSnapshot = {
     /** Air left in the tank, 0…1. */
     air: number;
     /** What the interact key would do here. */
-    prompt: "helm" | "board" | "pickup" | "trade" | null;
+    prompt: "helm" | "board" | "pickup" | "trade" | "story" | null;
     /** What the prompt is about: the kind of find within reach (for "pickup"). */
     promptDetail: string | null;
     torch: boolean;
@@ -106,17 +107,70 @@ export type SimulationSnapshot = {
     /** Contacts the sonar has on the sea floor now. */
     sonarContacts: number;
   };
+  /** The campaign (see `StorySystem.view`). */
+  story: StoryView | null;
+  /** The skipper's rifle and the drones' alarm, in the campaign. */
+  combat: {
+    /** He carries a gun. */
+    rifle: boolean;
+    /** The guns he carries, and the one in his hands (null: holstered). */
+    guns: ("pistol" | "rifle")[];
+    weapon: "pistol" | "rifle" | null;
+    drawn: boolean;
+    ammo: number;
+    magazine: number;
+    reload: number;
+    /** 0 unseen … 1 found; and whether a drone is attacking now. */
+    alarm: number;
+    attacking: boolean;
+    /** Rounds carried besides the magazine (null: no count kept). */
+    reserve: number | null;
+    /** His health 0…1, seconds since he was last hit, and from where (radians off his view, + to his right). */
+    health: number;
+    sinceHit: number;
+    hitFrom: number;
+    bandages: number;
+    bandaging: boolean;
+    /** Crouched ashore. */
+    crouched: boolean;
+    /** The guards: quiet, looking, fighting. */
+    alert: "quiet" | "suspicious" | "combat";
+  };
   fps: number;
   status: "loading" | "running" | "paused" | "error";
+};
+
+/**
+ * Where things are on the screen this frame, for the waypoint and the drone
+ * markers (handed over every frame, so the interface moves them smoothly
+ * without re-rendering; the object is reused).
+ */
+export type StoryOverlayFrame = {
+  width: number;
+  height: number;
+  /** The waypoint: pixels, whether in front of the camera, and how far it is (m). */
+  marker: { x: number; y: number; front: boolean; distance: number; side: number } | null;
+  drones: { x: number; y: number; front: boolean; distance: number; aware: boolean; condition: string; salvage: number; hostile: boolean }[];
+  /** The latest rifle shot's result (`id` grows with each shot). */
+  hit: { id: number; zone: "dome" | "jet" | "hull" | "miss"; armour: boolean; condition: string | null };
+  rifle: boolean;
+  alarm: number;
+  attacking: boolean;
+  /** At the mounted gun: the barrel's heat (0…1) and whether it must cool before firing again. */
+  gunner: { heat: number; hot: boolean } | null;
+  /** In the yard crane's cab: whether a load hangs on the hook. */
+  crane: { holding: boolean } | null;
 };
 
 /** Something taken from the sea floor: what, its tier, and gold (paid at once for a chest). */
 export type FindEvent = { kind: string; tier: 1 | 2 | 3; value: number; chest: boolean };
 
 export type SimulatorOptions = {
+  /** Only /story enables the campaign and opens its main menu. Defaults to free sailing. */
+  storyEnabled?: boolean;
   onSnapshot?: (snapshot: SimulationSnapshot) => void;
   onLoading?: (state: LoadingState) => void;
-  onError?: (message: string) => void;
+  onError?: (message: string | null) => void;
   /** Return true when the interface handles the gesture instead of recentering. */
   onSceneDoubleTap?: () => boolean;
   /** Something the keyboard did by itself that the interface should show (e.g. "engine-on"). */
@@ -131,6 +185,10 @@ export type SimulatorOptions = {
   onTrade?: () => void;
   /** On foot, the browser let go of the mouse by itself (Esc): the pause menu opens. */
   onPointerLost?: () => void;
+  /** Every frame, in the campaign: where the waypoint and the drones are on the screen. */
+  onOverlay?: (frame: StoryOverlayFrame) => void;
+  /** The story's autosave was written. */
+  onAutosave?: () => void;
 };
 
 export type Discovery = {

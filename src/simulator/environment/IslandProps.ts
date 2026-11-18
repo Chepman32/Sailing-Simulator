@@ -1,3 +1,4 @@
+import { terrainPads } from "./TerrainPads";
 import * as THREE from "three";
 import { leafGeometry, leafMass, type LeafBuffers } from "./IslandVegetation";
 import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
@@ -22,7 +23,25 @@ import { islandEdgeNoise, type IslandDefinition } from "./IslandMath";
 export type IslandCharacter = "cay" | "lush" | "hilly" | "rocky";
 
 export type Hill = { x: number; z: number; height: number; sigma: number };
-export type Clearing = { x: number; z: number; radius: number };
+/**
+ * Ground where nothing grows (island-local metres): a circle, or — a story's
+ * levelled pad (`TerrainPads`) — a rectangle `halfX` × `halfZ` turned by
+ * `angle`, with `radius` the margin kept clear round it.
+ */
+export type Clearing = { x: number; z: number; radius: number; halfX?: number; halfZ?: number; angle?: number };
+
+/** Signed distance from (x, z) to a clearing's edge (negative inside), island-local metres. */
+export function clearingEdge(clearing: Clearing, x: number, z: number): number {
+  if (clearing.halfX === undefined || clearing.halfZ === undefined) return Math.hypot(x - clearing.x, z - clearing.z) - clearing.radius;
+  const dx = x - clearing.x;
+  const dz = z - clearing.z;
+  const cos = Math.cos(clearing.angle ?? 0);
+  const sin = Math.sin(clearing.angle ?? 0);
+  const u = Math.abs(dx * cos + dz * sin) - clearing.halfX;
+  const v = Math.abs(-dx * sin + dz * cos) - clearing.halfZ;
+  const outside = Math.hypot(Math.max(u, 0), Math.max(v, 0));
+  return (outside > 0 ? outside : Math.max(u, v)) - clearing.radius;
+}
 
 export type IslandProfile = {
   character: IslandCharacter;
@@ -180,11 +199,17 @@ export function islandClearings(island: IslandDefinition, profile: IslandProfile
     const tower = islandPoint(island, 0.5, profile.lighthouseAngle);
     clearings.push({ ...tower, radius: 6 + 4.2 * LIGHTHOUSE_SCALE });
   }
+  // The story's levelled ground (an outpost's yard, a camp).
+  const reach = island.beachRadius * Math.max(1, island.scaleZ) * 1.2;
+  for (const pad of terrainPads()) {
+    if (Math.abs(pad.x - island.centerX) > reach + pad.halfX + pad.halfZ || Math.abs(pad.z - island.centerZ) > reach + pad.halfX + pad.halfZ) continue;
+    clearings.push({ x: pad.x - island.centerX, z: pad.z - island.centerZ, radius: pad.clear ?? 2, halfX: pad.halfX, halfZ: pad.halfZ, angle: pad.angle });
+  }
   return clearings;
 }
 
 export function inClearing(clearings: readonly Clearing[], x: number, z: number, margin = 0): boolean {
-  return clearings.some((clearing) => Math.hypot(x - clearing.x, z - clearing.z) < clearing.radius + margin);
+  return clearings.some((clearing) => clearingEdge(clearing, x, z) < margin);
 }
 
 // --- Geometry helpers -----------------------------------------------------------
@@ -328,7 +353,8 @@ function addBoulders(island: IslandDefinition, profile: IslandProfile, surface: 
       const tone = hash(id, 500 + seed) < 0.4 ? pink : granite;
       const geometry = blob(size, 0.62 + hash(id, 600 + seed) * 0.25, seed * 1.7 + id * 0.01, 2, 0.16);
       transformed(geometry, point.x, ground + size * 0.25, point.z, hash(id, 700 + seed) * 6.28, (hash(id, 800 + seed) - 0.5) * 0.5);
-      parts.stones.push({ x: point.x, z: point.z, radius: size * 0.85 });
+      // As wide as the boulder is drawn at a walker's waist (a smaller ring let him walk into its side).
+      parts.stones.push({ x: point.x, z: point.z, radius: size * 1.0 });
       parts.solid.push(
         painted(geometry, (x, y, z, out) => {
           const n = Math.sin(x * 2.1 + z * 1.7 + seed) * 0.5 + 0.5;
@@ -352,7 +378,7 @@ function addBoulders(island: IslandDefinition, profile: IslandProfile, surface: 
         const a = Math.atan2(z / island.scaleZ, x);
         const geometry = blob(size, 0.75, seed * 2.3 + index, 2, 0.14);
         transformed(geometry, x, surface(radial, a) + size * 0.35, z, hash(id, 930 + seed) * 6.28, 0.2);
-        parts.stones.push({ x, z, radius: size * 0.8 });
+        parts.stones.push({ x, z, radius: size * 0.98 });
         parts.solid.push(painted(geometry, (px, py, pz, out) => {
           const n = Math.sin(px * 1.9 - pz * 2.3 + seed) * 0.5 + 0.5;
           out.copy(granite).multiplyScalar(0.88 + n * 0.2).lerp(lichen, smoothstep(0.6, 1, n) * 0.4);

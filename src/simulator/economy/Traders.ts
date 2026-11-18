@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { FOREARM_LENGTH, HumanFigure, SHIN_LENGTH, THIGH_LENGTH, UPPER_ARM_LENGTH, type FigureOutfit } from "../vessel/HumanFigure";
 import { RiggedFigure } from "./RiggedFigure";
+import { armedKit } from "../story/StoryKit";
 
 /**
  * The island traders: one stands on the sand in front of the stilt hut on
@@ -19,7 +20,14 @@ import { RiggedFigure } from "./RiggedFigure";
  * figure (the skipper's rig in other clothes) stands in.
  */
 
-export type TraderSpot = { id: number; x: number; z: number; facing: number };
+export type TraderSpot = {
+  id: number;
+  x: number;
+  z: number;
+  facing: number;
+  /** What he carries besides his clothes (a story person: `armed`, a vest and a rifle across the chest). */
+  kit?: "armed";
+};
 
 /** Reach for the trade key, m (from the trader's feet to the player's). */
 export const TRADE_REACH = 3.2;
@@ -166,6 +174,7 @@ export class Traders {
           figure.mesh.name = `Trader_${spot.id}`;
           figure.mesh.castShadow = true;
         }
+        if (spot.kit === "armed") object.add(armedKit());
         this.group.add(object);
         const seed = Math.abs(spot.id) % 97;
         trader = {
@@ -251,7 +260,8 @@ export class Traders {
     const close = distance < 5.5;
     if (noticed && !trader.greeted && distance < 12) {
       trader.greeted = true;
-      trader.wave = 0;
+      // An armed man on watch nods; he does not wave.
+      if (trader.spot.kit !== "armed") trader.wave = 0;
       trader.nod = 0;
     } else if (distance > 26) {
       trader.greeted = false;
@@ -407,7 +417,7 @@ export class Traders {
         lookPitch = Math.atan2(visitor.y - (trader.ground + 1.6), Math.max(distance, 0.5)) * 0.7;
         if (!trader.greeted && distance < 9) {
           trader.greeted = true;
-          trader.wave = 0;
+          if (trader.spot.kit !== "armed") trader.wave = 0;
         }
       } else if (distance > 24) {
         trader.greeted = false;

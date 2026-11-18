@@ -23,6 +23,9 @@ import { SampleBank, type SampleGroup } from "./SampleBank";
 
 export type FootSurface = "sand" | "wetSand" | "grass" | "wood" | "rock" | "deck";
 
+/** How loud a footstep is beside what it was recorded and synthesised at. */
+const FOOT_LEVEL = 0.5;
+
 /** The recorded footsteps of each surface (see `SampleBank`). */
 const FOOT_SAMPLES: Record<FootSurface, SampleGroup> = {
   sand: "ground",
@@ -182,7 +185,8 @@ export class BodySounds {
     // Two steps can never overlap into one (a landing right after a step).
     if (now - this.lastFoot < 0.06) return;
     this.lastFoot = now;
-    const force = (running ? 1.45 : 1) * (0.85 + Math.random() * 0.3);
+    // Footsteps sit well under the sea and the voices: heard, never in the way.
+    const force = FOOT_LEVEL * (running ? 1.45 : 1) * (0.85 + Math.random() * 0.3);
     // Heel then the roll onto the toe, a few hundredths of a second apart.
     const roll = (running ? 0.045 : 0.075) * (0.85 + Math.random() * 0.3);
     if (this.recordedStep(surface, running, force, roll)) return;

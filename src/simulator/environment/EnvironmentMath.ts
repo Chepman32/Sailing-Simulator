@@ -65,3 +65,17 @@ export function dayCycleState(cycleTime: number): { progress: number; sunArc: nu
   if (t < CYCLE_NIGHT_START + NIGHT_HOLD_SECONDS) return { progress: 1, sunArc: 0 };
   return { progress: 1 - (t - CYCLE_NIGHT_START - NIGHT_HOLD_SECONDS) / DAWN_SECONDS, sunArc: 0 };
 }
+
+/**
+ * The automatic cycle's clock for an hour of a story's day (0…24): the day
+ * proper from 06:00 to 18:00 (the sun at its lowest at either end), dusk
+ * to 19:30, the night to 04:30, dawn to 06:00.
+ */
+export function cycleTimeForHour(hour: number): number {
+  const h = ((hour % 24) + 24) % 24;
+  if (h >= 6 && h < 18) return ((h - 6) / 12) * DAY_HOLD_SECONDS;
+  if (h >= 18 && h < 19.5) return DAY_HOLD_SECONDS + ((h - 18) / 1.5) * DUSK_SECONDS;
+  if (h >= 4.5 && h < 6) return CYCLE_NIGHT_START + NIGHT_HOLD_SECONDS + ((h - 4.5) / 1.5) * DAWN_SECONDS;
+  const night = h >= 19.5 ? h - 19.5 : h + 4.5;
+  return CYCLE_NIGHT_START + (night / 9) * NIGHT_HOLD_SECONDS;
+}

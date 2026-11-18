@@ -589,6 +589,11 @@ const PALETTES: Record<PropKind, readonly number[]> = {
   tube: [0xffffff, 0xffc890, 0xc0a0ff, 0xffa0a0],
 };
 
+/** The reef's things a swimmer cannot pass through (soft corals, fans and grass give way). */
+const SOLID_KINDS: ReadonlySet<PropKind> = new Set<PropKind>(["rock", "brain", "staghorn", "table", "sponge", "tube", "clam"]);
+/** A collider is a little inside what is drawn (the shapes are knobbly, not ellipsoids). */
+const SOLID_FIT = 0.86;
+
 type PropLayer = { kind: PropKind; mesh: THREE.InstancedMesh; count: number };
 
 const scratchMatrix = new THREE.Matrix4();
@@ -717,6 +722,9 @@ export class UnderwaterWorld {
   private seabedX = Number.NaN;
   private seabedZ = Number.NaN;
   private readonly props: PropLayer[] = [];
+  /** What a swimmer cannot pass through: the boulders and hard corals now placed, as half-buried ellipsoids. */
+  private readonly solids: { x: number; y: number; z: number; across: number; up: number }[] = [];
+  private readonly extents = new Map<PropKind, { radius: number; top: number }>();
   private reefX = Number.NaN;
   private reefZ = Number.NaN;
   private readonly shafts: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial>;
@@ -788,6 +796,11 @@ export class UnderwaterWorld {
       mesh.setColorAt(0, new THREE.Color(1, 1, 1));
       this.group.add(mesh);
       this.props.push({ kind, mesh, count: 0 });
+      if (SOLID_KINDS.has(kind)) {
+        geometry.computeBoundingBox();
+        const box = geometry.boundingBox!;
+        this.extents.set(kind, { radius: Math.max(-box.min.x, box.max.x, -box.min.z, box.max.z), top: box.max.y });
+      }
     }
 
     // --- Light shafts ------------------------------------------------------
@@ -1309,6 +1322,7 @@ export class UnderwaterWorld {
     this.reefX = x;
     this.reefZ = z;
     for (const layer of this.props) layer.count = 0;
+    this.solids.length = 0;
     const byKind = new Map(this.props.map((layer) => [layer.kind, layer]));
     const c0x = Math.floor((x - REEF_RADIUS) / REEF_CELL);
     const c1x = Math.floor((x + REEF_RADIUS) / REEF_CELL);
@@ -1461,7 +1475,47 @@ export class UnderwaterWorld {
     scratchColor.set(palette[Math.floor(hash(Math.floor(seed * 1e6), 5, 40) * palette.length) % palette.length]!);
     layer.mesh.setColorAt(layer.count, scratchColor);
     layer.count += 1;
+    const extent = this.extents.get(kind);
+    if (extent) this.solids.push({ x, y: scratchPosition.y, z, across: extent.radius * size * SOLID_FIT, up: Math.max(0.15, extent.top * size * squash * SOLID_FIT) });
     return scratchPosition.y + size * squash * 0.92;
+  }
+
+  /**
+   * Rocks and hard corals are solid: the clearance (m) from a point in the
+   * water to the nearest one's surface (negative inside), if nearer than
+   * `best`, with the way out in `normal`.
+   */
+  solidClearance(x: number, y: number, z: number, normal: { x: number; y: number; z: number }, best = Number.POSITIVE_INFINITY): number {
+    for (const solid of this.solids) {
+      const dx = x - solid.x;
+      const dz = z - solid.z;
+      const reach = solid.across + 1;
+      if (dx > reach || dx < -reach || dz > reach || dz < -reach) continue;
+      const dy = y - solid.y;
+      if (dy > solid.up + 1 || dy < -solid.up) continue;
+      // Distance in the ellipsoid's own measure (1 on its surface).
+      const sx = dx / solid.across;
+      const sy = dy / solid.up;
+      const sz = dz / solid.across;
+      const length = Math.hypot(sx, sy, sz);
+      const clearance = (length - 1) * Math.min(solid.across, solid.up);
+      if (clearance >= best) continue;
+      best = clearance;
+      const nx = sx / solid.across;
+      const ny = sy / solid.up;
+      const nz = sz / solid.across;
+      const n = Math.hypot(nx, ny, nz);
+      if (n > 1e-6) {
+        normal.x = nx / n;
+        normal.y = ny / n;
+        normal.z = nz / n;
+      } else {
+        normal.x = 0;
+        normal.y = 1;
+        normal.z = 0;
+      }
+    }
+    return best;
   }
 
   dispose(): void {

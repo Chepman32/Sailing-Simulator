@@ -34,6 +34,7 @@ const HYSTERESIS = 1.18;
 
 type Entry = {
   mesh: THREE.Mesh;
+  scene: THREE.Object3D;
   full: THREE.BufferGeometry;
   levels: THREE.BufferGeometry[] | null;
   steps: readonly LodStep[];
@@ -129,6 +130,7 @@ export class ScreenLod {
       const skinned = object instanceof THREE.SkinnedMesh ? skinnedWorldRadius(object) : null;
       const entry: Entry = {
         mesh: object,
+        scene: topParent(object),
         full: geometry,
         levels: null,
         steps,
@@ -146,6 +148,17 @@ export class ScreenLod {
   fullDetail = false;
 
   update(camera: THREE.PerspectiveCamera): void {
+    // A streamed-out character/ship is still parented to its own group.
+    // Checking mesh.parent alone retained every old nested model forever.
+    for (let index = this.entries.length - 1; index >= 0; index--) {
+      const entry = this.entries[index]!;
+      if (topParent(entry.mesh) === entry.scene) continue;
+      entry.mesh.geometry = entry.full;
+      this.entries.splice(index, 1);
+      const waiting = this.waiting.indexOf(entry);
+      if (waiting >= 0) this.waiting.splice(waiting, 1);
+      if (!this.entries.some((other) => other.full === entry.full)) this.releaseLevels(entry.full);
+    }
     this.buildPending();
     const focal = 1 / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
     let full = 0;
@@ -153,12 +166,6 @@ export class ScreenLod {
     for (let index = this.entries.length - 1; index >= 0; index -= 1) {
       const entry = this.entries[index]!;
       const mesh = entry.mesh;
-      if (!mesh.parent) {
-        // Removed from the scene (a ship replaced, an animal omitted): forget it.
-        mesh.geometry = entry.full;
-        this.entries.splice(index, 1);
-        continue;
-      }
       if (!entry.levels) continue;
       this.centre.copy(entry.full.boundingSphere!.center).applyMatrix4(mesh.matrixWorld);
       const radius = entry.worldRadius ? entry.radius : entry.radius * mesh.matrixWorld.getMaxScaleOnAxis();
@@ -182,14 +189,29 @@ export class ScreenLod {
   }
 
   dispose(): void {
-    for (const entry of this.entries) entry.mesh.geometry = entry.full;
+    for (const entry of this.entries) {
+      entry.mesh.geometry = entry.full;
+      this.releaseLevels(entry.full);
+    }
     this.entries.length = 0;
+    this.waiting.length = 0;
     this.worker?.terminate();
     this.worker = null;
     this.inFlight = null;
-    // The levels share their attributes with the source geometry, which its
-    // owner disposes; disposing a level would free those buffers too, so the
-    // levels are left to the garbage collector.
+  }
+
+  private releaseLevels(source: THREE.BufferGeometry): void {
+    const levels = this.cache.get(source);
+    this.cache.delete(source);
+    if (!levels) return;
+    for (const level of new Set(levels.values())) {
+      if (level === source) continue;
+      // Free only each LOD's own index/VAO; attributes still belong to the
+      // source and may be used by another scene instance.
+      for (const name of Object.keys(level.attributes)) level.deleteAttribute(name);
+      level.morphAttributes = {};
+      level.dispose();
+    }
   }
 
   /**
@@ -256,6 +278,7 @@ export class ScreenLod {
     const job = this.inFlight;
     if (!job || job.id !== event.data.id) return;
     this.inFlight = null;
+    if (!this.entries.some((entry) => entry.full === job.source)) return;
     const byRatio = this.levelsOf(job.source);
     job.ratios.forEach((ratio, index) => {
       const data = event.data.levels?.[index];
@@ -291,6 +314,11 @@ export class ScreenLod {
     }
     entry.levels = levels;
   }
+}
+
+function topParent(object: THREE.Object3D): THREE.Object3D {
+  while (object.parent) object = object.parent;
+  return object;
 }
 
 function triangleCount(geometry: THREE.BufferGeometry): number {

@@ -66,7 +66,7 @@ export function ringBell(
         gain.gain.setValueAtTime(0.00001, at);
         gain.gain.linearRampToValueAtTime(peak, at + 0.0025);
         // −60 dB at `decay`: exponential ramps are exact and end on their own.
-        gain.gain.exponentialRampToValueAtTime(peak * 0.001, at + decay);
+        gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak * 0.001), at + decay);
         partial.connect(gain).connect(output);
         partial.start(at);
         partial.stop(at + decay + 0.02);

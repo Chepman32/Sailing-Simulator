@@ -47,6 +47,15 @@ export type QualitySettings = {
   grassDensity: number;
   /** Meshes keep their full detail at any size on screen (no simplified levels). */
   fullDetail: boolean;
+  /**
+   * Volumetric clouds: the side (texels) of the map of the sky they are ray
+   * marched into; 0 keeps the flat procedural clouds. See `cloudMapSizeFor`.
+   */
+  cloudMapSize: number;
+  /** Strength of the sun's lens flare in the finish pass (0: none; needs the HDR pipeline). */
+  lensFlare: number;
+  /** Contrast-adaptive sharpening in the finish pass (0: off; needs the HDR pipeline). */
+  sharpen: number;
 };
 
 export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
@@ -77,6 +86,9 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassRadius: 11,
     grassDensity: 0.28,
     fullDetail: false,
+    cloudMapSize: 0,
+    lensFlare: 0,
+    sharpen: 0,
   },
   medium: {
     maxDpr: 1.25,
@@ -104,6 +116,9 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassRadius: 22,
     grassDensity: 0.45,
     fullDetail: false,
+    cloudMapSize: 768,
+    lensFlare: 0.7,
+    sharpen: 0.16,
   },
   high: {
     maxDpr: 1.5,
@@ -130,6 +145,9 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassRadius: 32,
     grassDensity: 0.72,
     fullDetail: false,
+    cloudMapSize: 1024,
+    lensFlare: 0.85,
+    sharpen: 0.24,
   },
   /**
    * Everything at its best, for a desktop GPU with room to spare: never
@@ -163,6 +181,9 @@ export const QUALITY_SETTINGS: Record<QualityPreset, QualitySettings> = {
     grassRadius: 40,
     grassDensity: 1,
     fullDetail: true,
+    cloudMapSize: 1536,
+    lensFlare: 1,
+    sharpen: 0.28,
   },
 };
 
@@ -197,6 +218,16 @@ export function maxDprFor(settings: QualitySettings, handheld: boolean): number 
 }
 export const HANDHELD_MIN_DPR = 1.5;
 
+/**
+ * The side of the volumetric clouds' map at a preset. A phone or tablet
+ * marches clouds only at the presets its owner has to choose (high, ultra):
+ * the march is a steady load its battery would pay for all day.
+ */
+export function cloudMapSizeFor(preset: QualityPreset, handheld: boolean): number {
+  if (handheld && preset !== "high" && preset !== "ultra") return 0;
+  return QUALITY_SETTINGS[preset].cloudMapSize;
+}
+
 /** The next preset down (the automatic mode's step when frames run slow). */
 export function stepDown(preset: QualityPreset): QualityPreset {
   return preset === "ultra" ? "high" : preset === "high" ? "medium" : "low";
@@ -207,8 +238,6 @@ export class QualityManager {
   private slowWindows = 0;
   private gpuMeasured = false;
   private fastWindows = 0;
-  /** Whether automatic mode has lowered the preset in this session. */
-  private steppedDown = false;
   /**
    * A phone or a tablet: its *main* pointer is a finger. (A laptop with a
    * touch screen is a computer: it used to count as a phone here, which
@@ -271,8 +300,7 @@ export class QualityManager {
     this.gpuMeasured = true;
     if (verdict === "overloaded" && this.preset !== "low") {
       this.apply(stepDown(this.preset), true);
-      this.steppedDown = true;
-    } else if (verdict === "idle" && (this.preset === "low" || this.preset === "medium") && !(this.coarseDevice && this.steppedDown)) {
+    } else if (verdict === "idle" && (this.preset === "low" || this.preset === "medium") && !this.coarseDevice) {
       const nextPreset = this.preset === "low" ? "medium" : "high";
       if (!(this.coarseDevice && nextPreset === "high")) this.apply(nextPreset, true);
     }
@@ -308,14 +336,13 @@ export class QualityManager {
     if (this.slowWindows >= SLOW_WINDOWS_TO_STEP_DOWN && this.preset !== "low") {
       this.apply(stepDown(this.preset), true);
       this.slowWindows = 0;
-      this.steppedDown = true;
     } else if (
       this.fastWindows >= 30 &&
       (this.preset === "low" || this.preset === "medium") &&
       !this.gpuMeasured &&
-      // On a phone a step down and back up is two recompiles of every shader
-      // (seconds of frozen picture each); once lowered, the level stays.
-      !(this.coarseDevice && this.steppedDown)
+      // FPS does not measure available memory. Do not automatically allocate
+      // the HDR targets on a phone just because the direct path runs smoothly.
+      !this.coarseDevice
     ) {
       // Without GPU timing a smooth frame rate is the only hint of headroom.
       const nextPreset = this.preset === "low" ? "medium" : "high";

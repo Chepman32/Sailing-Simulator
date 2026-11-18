@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { assetUrl } from "../core/assetManifest";
 import { createGltfLoader } from "../core/GltfLoading";
+import { disposeModel } from "../core/ModelResources";
 import { batchStaticMeshes } from "../core/StaticBatching";
 import { SHIP_SHADOW_LAYER } from "./ShipShadows";
 import { SHIP_SPECS, type ShipKind } from "./ShipMath";
@@ -74,7 +75,10 @@ export class ShipModels {
       if (this.disposed) return;
       try {
         const gltf = await loader.loadAsync(assetUrl(source.url));
-        if (this.disposed) return;
+        if (this.disposed) {
+          disposeModel(gltf.scenes);
+          return;
+        }
         this.prototypes.set(`${kind}:${variant}`, this.prepare(gltf.scene, kind, source, variant));
       } catch (error: unknown) {
         console.warn(`Ship model ${source.url} could not be loaded; the procedural ship is used.`, error);
@@ -99,14 +103,22 @@ export class ShipModels {
   }
 
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
+    const images = new Set<{ close?: () => void }>();
     this.geometries.forEach((geometry) => geometry.dispose());
     this.materials.forEach((material) => {
       Object.values(material).forEach((value) => {
-        if (value instanceof THREE.Texture) value.dispose();
+        if (value instanceof THREE.Texture) {
+          if (value.source.data) images.add(value.source.data);
+          value.dispose();
+        }
       });
       material.dispose();
     });
+    for (const image of images) image.close?.();
+    this.geometries.clear();
+    this.materials.clear();
     this.prototypes.clear();
   }
 

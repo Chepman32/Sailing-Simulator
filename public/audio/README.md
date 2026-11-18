@@ -17,3 +17,21 @@ the sand; in a film of water at the edge the wading recording comes in
 quietly through a low-pass that opens with the depth (`wadeTone`), so
 nothing bright crackles underfoot where the sea meets the sand.
 `stroke-*` stays as the fallback for a swimming stroke.
+
+## The story's recordings (`story/`)
+
+The voiced lines and the scenes' sound effects of the prologue and M01,
+supplied by the project's author for this game (archive `audio_output_v4`).
+
+- `story/<chapter>/<id>_<speaker>.mp3` — the voices, by the voice script's
+  ids (PR — the prologue, D — M01's dialogue, E — the outpost's people,
+  L — Luis, EXD — extra lines); re-encoded to 80 kbit/s mono;
+- `story/<chapter>/radio/…_radio.mp3` — the same lines through a radio set
+  (the dispatcher, the patrol's channel, the network's broadcast);
+- `story/<chapter>/sfx/…` — the effects and the place beds (loops), as supplied.
+
+Which recording speaks which line is `src/simulator/story/content/voices.ts`
+(matched by the Russian words); the effects and beds are named in the
+missions (`sfx`, `bed`) and played by `StoryAudio`. Not every line of the
+scenario is recorded yet: the rest stay subtitles until it is.
+

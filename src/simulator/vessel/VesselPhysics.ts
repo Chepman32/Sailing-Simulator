@@ -179,6 +179,18 @@ export function propellerThrust(shaft: number, forwardSpeed: number, boost: { th
  * Where the yacht starts (and returns to on reset): open water south of the
  * home islands, about 250 m off the nearest beach, with the archipelago ahead.
  */
+/**
+ * The story's boats as handling (see `VesselPhysics.handling`): the sport
+ * yacht runs at about 47 kn and answers quickly; the skiff makes about 15 kn
+ * with her tired outboard but turns on a coin.
+ */
+export const CRAFT_HANDLING = {
+  catamaran: { thrust: 1, fade: 1, drag: 1, turn: 1, response: 1 },
+  sport: { thrust: 5.6, fade: 2.8, drag: 1, turn: 1.05, response: 1.5 },
+  skiff: { thrust: 0.62, fade: 0.6, drag: 1, turn: 1.55, response: 1.6 },
+  albatross: { thrust: 2.4, fade: 1.6, drag: 1, turn: 1.25, response: 1.5 },
+} as const;
+
 export const START_POSITION = { x: 0, z: -330 } as const;
 
 export class VesselPhysics {
@@ -206,6 +218,16 @@ export class VesselPhysics {
   engineShaft = 0;
   /** The engine upgrade: more thrust, a higher top speed, a quicker answer (see `EconomyMath.engineBoost`). */
   engineBoost = { thrust: 1, fade: 1, response: 1 };
+  /** Water in a holed hull: her resistance is this many times what it was (1 = dry; see `CombatMath.leakSpeedFactor`). */
+  leakDrag = 1;
+  /** What is left of her sail's drive (1 whole; rags after the rig is shot away). */
+  sailPower = 1;
+  /**
+   * The boat she is, as her handling: thrust and how late it fades (her top
+   * speed), hull resistance, how quickly she turns. The catamaran is all 1s;
+   * the story's sport yacht and skiff set their own (see `CRAFT_HANDLING`).
+   */
+  handling = { thrust: 1, fade: 1, drag: 1, turn: 1, response: 1 };
   /** Collision avoidance near islands and ships; `guard.output` is what the helm actually does. */
   readonly guard: ShoreGuardState = createShoreGuard();
   /** Distance to the nearest ship's hull, if ships exist; the guard avoids it like a shore. */
@@ -305,8 +327,8 @@ export class VesselPhysics {
     // Lift acts square to the apparent wind, on the side that drives the bow.
     const liftForward = Math.abs(dragRight);
     const liftRight = -leewardSide * dragForward;
-    const sailDrive = this.sail.lift * liftForward + this.sail.drag * dragForward;
-    const sailSide = this.sail.lift * liftRight + this.sail.drag * dragRight;
+    const sailDrive = (this.sail.lift * liftForward + this.sail.drag * dragForward) * this.sailPower;
+    const sailSide = (this.sail.lift * liftRight + this.sail.drag * dragRight) * this.sailPower;
     const windageForward = WINDAGE_FRONTAL * apparentWindSpeed * airForward;
     const windageRight = WINDAGE_LATERAL * apparentWindSpeed * airRight;
 
@@ -316,15 +338,18 @@ export class VesselPhysics {
     this.engineShaft = moveToward(
       this.engineShaft,
       shaftTarget,
-      (spoolingUp ? SHAFT_SPOOL_UP : SHAFT_SPOOL_DOWN) * this.engineBoost.response * delta,
+      (spoolingUp ? SHAFT_SPOOL_UP : SHAFT_SPOOL_DOWN) * this.engineBoost.response * this.handling.response * delta,
     );
-    const thrust = propellerThrust(this.engineShaft, forwardSpeed, this.engineBoost);
+    const thrust = propellerThrust(this.engineShaft, forwardSpeed, {
+      thrust: this.engineBoost.thrust * this.handling.thrust,
+      fade: this.engineBoost.fade * this.handling.fade,
+    });
 
     // --- Hull --------------------------------------------------------------
     // Shallow water does not drag her to a stop: she never runs aground (see
     // the shallows' push below), `grounding` only says how close she came.
     const grounding = smoothstep(GROUNDING_START_DEPTH, GROUNDING_FULL_DEPTH, depth);
-    const hullDrag = -(SURGE_DRAG_QUADRATIC * forwardSpeed * Math.abs(forwardSpeed) + SURGE_DRAG_LINEAR * forwardSpeed);
+    const hullDrag = -(SURGE_DRAG_QUADRATIC * forwardSpeed * Math.abs(forwardSpeed) + SURGE_DRAG_LINEAR * forwardSpeed) * this.leakDrag * this.handling.drag;
     // The keels are lifting foils: they only resist leeway once water flows
     // along them, and they stall if asked for too much.
     const keelLimit = KEEL_STALL * waterSpeedSquared;
@@ -391,7 +416,7 @@ export class VesselPhysics {
     // the propellers' race) still decides whether she answers at all, and
     // going astern reverses it.
     const helmGrip = smoothstep(0.12, 2.2, Math.abs(rawRudderFlow));
-    const helmTarget = clamp(controls.rudder, -1, 1) * ARCADE_TURN_RATE * helmGrip * Math.sign(rawRudderFlow || 1);
+    const helmTarget = clamp(controls.rudder, -1, 1) * ARCADE_TURN_RATE * this.handling.turn * helmGrip * Math.sign(rawRudderFlow || 1);
     this.yawRate += (helmTarget - this.yawRate) * (1 - Math.exp(-ARCADE_HELM_RESPONSE * helmGrip * delta));
     if (this.hoveTo) {
       // Nobody at the helm: the sheets are let fly and a drogue streamed, so

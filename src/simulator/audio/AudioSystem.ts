@@ -5,8 +5,12 @@ import { BoatVoices } from "./BoatVoices";
 import { BELL_RING, ringBell } from "./BellSynth";
 import { windSoundLevels, windWander } from "./WindSoundMath";
 import { engineAirCutoff, engineDistanceGain, enginePan } from "./EngineSoundMath";
+
 import { hornLength, openSeaImpulse, playHorn, type HornSpec } from "./HornSynth";
 import { HouseGroove, ShantyBand } from "./MusicSynth";
+
+/** How far off the engine is mixed in a story scene, metres. */
+const ENGINE_SCENE_DISTANCE = 8;
 
 type WebkitAudioWindow = Window & {
   webkitAudioContext?: typeof AudioContext;
@@ -157,6 +161,12 @@ export class AudioSystem {
   private listenerRightZ = 0;
   /** Engine level heard at the camera, 0…1 (smoothed). */
   private engineHeard = 1;
+  private engineCloseUp = false;
+
+  /** In a story scene the engine is heard as from nearby, wherever the camera stands. */
+  setEngineCloseUp(on: boolean): void {
+    this.engineCloseUp = on;
+  }
   private environmentBus?: GainNode;
   private wildlifeBus?: GainNode;
   private engineFiring?: OscillatorNode;
@@ -266,6 +276,22 @@ export class AudioSystem {
 
   isReady(): boolean {
     return this.ready && this.context?.state === "running";
+  }
+
+  /**
+   * The graph for sounds made outside this class (the fight, the story's
+   * radio): the context, the master mix (not ducked by the engine), the
+   * music bus and the open-sea reverb's input; null until sound is running.
+   */
+  get mixer(): { context: AudioContext; master: AudioNode; music: AudioNode; reverb: AudioNode | null } | null {
+    const context = this.context;
+    if (!this.isReady() || !this.enabled || !context || !this.master || !this.musicBus) return null;
+    return { context, master: this.master, music: this.musicBus, reverb: this.seaReverb ?? null };
+  }
+
+  /** Listener position (the camera), as last set. */
+  get listener(): { x: number; y: number; z: number } {
+    return { x: this.listenerX, y: this.listenerY, z: this.listenerZ };
   }
 
   /** The player's own request for sound: arms the graph and starts it inside the gesture. */
@@ -1003,8 +1029,8 @@ export class AudioSystem {
     low.frequency.exponentialRampToValueAtTime(120, start + 1.2);
     const gain = context.createGain();
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(level, start + 0.012);
-    gain.gain.exponentialRampToValueAtTime(level * 0.25, start + 0.35);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level), start + 0.012);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level * 0.25), start + 0.35);
     gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.9 + far);
     thud.connect(low).connect(gain).connect(panner);
     thud.start(start, Math.random() * 3);
@@ -1117,7 +1143,7 @@ export class AudioSystem {
     const peak = 0.9 * (1 - far * 0.6);
     const length = 4.5 + far * 3.5;
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(peak * (far > 0.5 ? 0.6 : 1), start + 0.03 + far * 0.6);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak * (far > 0.5 ? 0.6 : 1)), start + 0.03 + far * 0.6);
     // The roll: the sound swells again as each part of the channel is heard.
     let time = 0.4 + far * 0.5;
     const rolls = 3 + Math.round(far * 3);
@@ -1143,8 +1169,8 @@ export class AudioSystem {
       band.frequency.value = 900;
       const crackGain = context.createGain();
       crackGain.gain.setValueAtTime(0.0001, start);
-      crackGain.gain.exponentialRampToValueAtTime(0.75 * near, start + 0.008);
-      crackGain.gain.exponentialRampToValueAtTime(0.25 * near, start + 0.09);
+      crackGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.75 * near), start + 0.008);
+      crackGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.25 * near), start + 0.09);
       crackGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.5 + near * 0.4);
       crack.connect(band).connect(crackGain).connect(destination);
       crack.start(start, Math.random() * 2);
@@ -1627,7 +1653,7 @@ export class AudioSystem {
     thud.frequency.exponentialRampToValueAtTime(70, now + 0.16);
     const thudGain = this.context.createGain();
     thudGain.gain.setValueAtTime(0.0001, now);
-    thudGain.gain.exponentialRampToValueAtTime(0.32 * strength, now + 0.01);
+    thudGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.32 * strength), now + 0.01);
     thudGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
     thud.connect(thudGain).connect(this.wildlifeBus);
     thud.start(now);
@@ -1641,7 +1667,7 @@ export class AudioSystem {
     rattleFilter.Q.value = 0.8;
     const rattleGain = this.context.createGain();
     rattleGain.gain.setValueAtTime(0.0001, now);
-    rattleGain.gain.exponentialRampToValueAtTime(0.035 * strength, now + 0.006);
+    rattleGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.035 * strength), now + 0.006);
     rattleGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
     rattle.connect(rattleFilter).connect(rattleGain).connect(this.wildlifeBus);
     rattle.start(now);
@@ -1714,7 +1740,7 @@ export class AudioSystem {
         thump.frequency.exponentialRampToValueAtTime(62, now + 0.35);
         const thumpGain = this.context.createGain();
         thumpGain.gain.setValueAtTime(0.0001, now);
-        thumpGain.gain.exponentialRampToValueAtTime(0.28 * level, now + 0.01);
+        thumpGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.28 * level), now + 0.01);
         thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
         thump.connect(thumpGain).connect(output);
         thump.start(now);
@@ -2226,7 +2252,7 @@ export class AudioSystem {
       tone.frequency.exponentialRampToValueAtTime(to * pitch, t0 + length);
       const envelope = context.createGain();
       envelope.gain.setValueAtTime(0.0001, t0);
-      envelope.gain.exponentialRampToValueAtTime(0.16 * loudness, t0 + 0.02);
+      envelope.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.16 * loudness), t0 + 0.02);
       envelope.gain.setValueAtTime(0.16 * loudness, t0 + length * 0.6);
       envelope.gain.exponentialRampToValueAtTime(0.0001, t0 + length);
       tone.connect(envelope);
@@ -2239,7 +2265,7 @@ export class AudioSystem {
       breath.buffer = this.createNoiseBuffer(length + 0.05, "white");
       const breathGain = context.createGain();
       breathGain.gain.setValueAtTime(0.0001, t0);
-      breathGain.gain.exponentialRampToValueAtTime(0.05 * loudness, t0 + 0.02);
+      breathGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.05 * loudness), t0 + 0.02);
       breathGain.gain.exponentialRampToValueAtTime(0.0001, t0 + length);
       breath.connect(breathGain).connect(formantB);
       breath.start(t0);
@@ -2342,7 +2368,9 @@ export class AudioSystem {
     const dx = this.engineSourceX - this.listenerX;
     const dy = this.engineSourceY - this.listenerY;
     const dz = this.engineSourceZ - this.listenerZ;
-    const distance = Math.hypot(dx, dy, dz);
+    // A scene's camera stands well off the yacht, but the film still hears
+    // her engine: it is mixed as from close by.
+    const distance = this.engineCloseUp ? Math.min(Math.hypot(dx, dy, dz), ENGINE_SCENE_DISTANCE) : Math.hypot(dx, dy, dz);
     const target = engineDistanceGain(distance);
     // A camera that jumps (a new mode) glides the level over a fraction of a second.
     const previous = this.engineHeard;

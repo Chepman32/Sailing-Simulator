@@ -393,9 +393,30 @@ export class HelmStation {
   /** Where the skipper's feet are: on the deck behind the wheel (vessel space). */
   static readonly STAND_FEET = new THREE.Vector3(HELM_X, DECK_Y, HELM_EYE.z);
 
+  /** The alert on every display while the network has her electronics (null: they work). */
+  private lockdown: readonly string[] | null = null;
+  private lockdownClock = 0;
+  private monitorLevel = 0;
+
+  /**
+   * Her electronics taken over: the stock displays come back in place of a
+   * fitted wide one and all show the alert, blinking red, the speed and wind
+   * pages lost in static. Null gives them back.
+   */
+  setLockdown(lines: readonly string[] | null): void {
+    this.lockdown = lines;
+    this.lockdownClock = 0;
+    if (this.wide) {
+      this.wide.setLevel(lines ? 0 : this.monitorLevel);
+      if (this.screens) this.screens.visible = !this.wide.active;
+    }
+    this.displayClock = DISPLAY_INTERVAL;
+  }
+
   /** The monitor upgrade's level: from the first, one wide display in place of the stock three. */
   setMonitorLevel(level: number): void {
-    if (!this.wide) return;
+    this.monitorLevel = level;
+    if (!this.wide || this.lockdown) return;
     this.wide.setLevel(level);
     if (this.screens) this.screens.visible = !this.wide.active;
     this.displayClock = DISPLAY_INTERVAL;
@@ -428,6 +449,15 @@ export class HelmStation {
     this.screenMaterial.emissiveIntensity = THREE.MathUtils.lerp(1.05, 0.42, night);
     (this.card.material as THREE.MeshStandardMaterial).emissiveIntensity = night * 0.35;
 
+    if (this.lockdown) {
+      this.lockdownClock += delta;
+      this.displayClock += delta;
+      if (!this.context || !this.texture || this.displayClock < 0.08) return;
+      this.displayClock = 0;
+      this.drawLockdown(this.lockdown, this.lockdownClock);
+      this.texture.needsUpdate = true;
+      return;
+    }
     if (this.wide?.active) {
       this.wide.update(delta, { x: data.x, z: data.z, heading: data.heading, speed: data.speed, depth: data.depth, night, sonarLevel: this.sonarLevel, sonarRange: this.sonarReach }, data.readable, data.live === true);
       return;
@@ -475,6 +505,71 @@ export class HelmStation {
   }
 
   // --- Displays ---------------------------------------------------------------------
+
+  /** The alert, blinking, on the chart plotter; static where the speed and the wind were. */
+  private drawLockdown(lines: readonly string[], time: number): void {
+    const context = this.context!;
+    const blink = Math.floor(time * 2.2) % 2 === 0;
+    {
+      const { x: left, y: top, w: width, h: height } = MFD;
+      context.fillStyle = blink ? "#5a0508" : "#2a0204";
+      context.fillRect(left, top, width, height);
+      context.strokeStyle = blink ? "#ff3b3b" : "#a01515";
+      context.lineWidth = 10;
+      context.strokeRect(left + 8, top + 8, width - 16, height - 16);
+      // A warning triangle.
+      const cx = left + width / 2;
+      context.fillStyle = blink ? "#ff4a4a" : "#c42a2a";
+      context.beginPath();
+      context.moveTo(cx, top + 40);
+      context.lineTo(cx + 46, top + 120);
+      context.lineTo(cx - 46, top + 120);
+      context.closePath();
+      context.fill();
+      context.fillStyle = "#2a0204";
+      context.font = "800 56px system-ui, -apple-system, Segoe UI, sans-serif";
+      context.textAlign = "center";
+      context.textBaseline = "alphabetic";
+      context.fillText("!", cx, top + 113);
+      context.fillStyle = "#ffe3e0";
+      let y = top + 180;
+      lines.forEach((line, index) => {
+        context.font = `${index === 0 ? 800 : 650} ${index === 0 ? 34 : 24}px system-ui, -apple-system, Segoe UI, sans-serif`;
+        // Wrapped to the screen's width.
+        const words = line.split(" ");
+        let row = "";
+        for (const word of words) {
+          const next = row ? `${row} ${word}` : word;
+          if (context.measureText(next).width > width - 60 && row) {
+            context.fillText(row, cx, y);
+            y += index === 0 ? 40 : 30;
+            row = word;
+          } else {
+            row = next;
+          }
+        }
+        if (row) context.fillText(row, cx, y);
+        y += index === 0 ? 54 : 34;
+      });
+      context.textAlign = "left";
+    }
+    for (const region of [SPEED, WIND]) {
+      const { x: left, y: top, w: width, h: height } = region;
+      context.fillStyle = "#050505";
+      context.fillRect(left, top, width, height);
+      // Snow.
+      for (let index = 0; index < 900; index += 1) {
+        const shade = Math.floor(Math.random() * 120);
+        context.fillStyle = `rgb(${shade},${shade},${shade})`;
+        context.fillRect(left + Math.random() * width, top + Math.random() * height, 3, 2);
+      }
+      context.fillStyle = "#ff5a5a";
+      context.font = "800 28px system-ui, -apple-system, Segoe UI, sans-serif";
+      context.textAlign = "center";
+      context.fillText("NO SIGNAL", left + width / 2, top + height / 2 + 10);
+      context.textAlign = "left";
+    }
+  }
 
   private drawChart(data: HelmData, night: boolean): void {
     const context = this.context!;

@@ -47,6 +47,26 @@ export function contextRecovery(lostFor: number, restoreRequested: boolean): Rec
   return "none";
 }
 
+/** Time in a suspended/background tab must not exhaust the recovery timeout. */
+export class ContextRecoveryClock {
+  private elapsed = 0;
+  private last = 0;
+  private visible = false;
+
+  start(now: number, visible: boolean): void {
+    this.elapsed = 0;
+    this.last = now;
+    this.visible = visible;
+  }
+
+  read(now: number, visible: boolean): number {
+    if (this.visible) this.elapsed += Math.max(0, now - this.last) / 1000;
+    this.last = now;
+    this.visible = visible;
+    return this.elapsed;
+  }
+}
+
 /** Counts flat readings in a row; `true` when it is time to rebuild the view. */
 export class FlatFrameWatch {
   private streak = 0;

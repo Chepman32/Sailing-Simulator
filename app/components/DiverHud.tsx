@@ -28,6 +28,10 @@ type Props = {
   wallet: { gold: number; bag: number };
   touch: boolean;
   actions: DiverActions;
+  /** The story's words for its own prompt ("Talk to Holloway", "Patch the hull"). */
+  storyPrompt?: string | null;
+  /** The boat is out of his reach for now (the story's): no way back to the helm. */
+  helmLocked?: boolean;
 };
 
 /** Seconds the controls hint stays up after leaving the helm. */
@@ -38,7 +42,7 @@ const HINT_SECONDS = 9;
  * interact key would do here, the way back to the helm, and on a touch
  * screen a movement stick and buttons to rise, dive and use.
  */
-export function DiverHud({ diver, messages, shop, wallet, touch, actions }: Props) {
+export function DiverHud({ diver, messages, shop, wallet, touch, actions, storyPrompt = null, helmLocked = false }: Props) {
   const [hint, setHint] = useState(true);
   const leaping = diver.mode === "leap";
   useEffect(() => {
@@ -60,7 +64,9 @@ export function DiverHud({ diver, messages, shop, wallet, touch, actions }: Prop
         ? diver.wading > 0.15 ? messages.wading : messages.ashore
         : diving ? messages.diving : messages.swimming;
   const promptText =
-    diver.prompt === "helm"
+    diver.prompt === "story"
+      ? storyPrompt
+      : diver.prompt === "helm"
       ? messages.takeHelm
       : diver.prompt === "board"
         ? messages.board
@@ -112,10 +118,12 @@ export function DiverHud({ diver, messages, shop, wallet, touch, actions }: Prop
         </button>
       )}
 
-      <button type="button" className="diver-helm" onClick={actions.returnToHelm} title={`${messages.backToHelm} (T)`}>
-        <span aria-hidden="true" className="diver-helm-wheel" />
-        <span>{messages.backToHelm}</span>
-      </button>
+      {!helmLocked && (
+        <button type="button" className="diver-helm" onClick={actions.returnToHelm} title={`${messages.backToHelm} (T)`}>
+          <span aria-hidden="true" className="diver-helm-wheel" />
+          <span>{messages.backToHelm}</span>
+        </button>
+      )}
 
       {!touch && diver.pointerLocked && <span className="diver-crosshair" aria-hidden="true" />}
 

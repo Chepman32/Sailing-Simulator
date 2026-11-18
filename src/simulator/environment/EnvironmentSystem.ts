@@ -5,6 +5,7 @@ import { CYCLE_DAY_START, CYCLE_NIGHT_START, dayCycleState, deriveTimeOfDay, typ
 import { deriveEnvironmentPalette, LIGHTNING_COLOR, litByLightning, type EnvironmentPalette } from "./EnvironmentPalette";
 import type { OceanSystem } from "./OceanSystem";
 import { applySkyPalette, setLinearColor, type SkyUniforms } from "./SkyUniforms";
+import { CloudMap } from "./CloudMap";
 import { skyFragmentShader, skyVertexShader } from "./shaders/skyShader";
 import { createWeather, settleWeather, stepWeather, type WeatherKind, type WeatherSample } from "./WeatherMath";
 import { LightningSystem, type StrikeEvent } from "./LightningSystem";
@@ -33,6 +34,9 @@ const SUN_DISC_RADIANCE = 2.0;
  */
 export const SUN_DISC_GOLD = [3.0, 1.06, 0.0] as const;
 
+/** The part of the direct light a cloud's shadow takes from the scene (the rest comes through and round it). */
+export const CLOUD_SHADE_DEPTH = 0.55;
+
 export class EnvironmentSystem {
   private readonly sky: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
   private readonly skyUniforms: SkyUniforms;
@@ -51,6 +55,12 @@ export class EnvironmentSystem {
   private settleWeatherNext = true;
   private flash = 0;
   private readonly lightningSystem: LightningSystem;
+  /** The volumetric clouds' map of the sky (off until `setCloudMapSize`). */
+  private readonly clouds: CloudMap;
+  /** The cloud pass count the lighting was last captured at (the first pass changes the sky's light). */
+  private capturedClouds = false;
+  /** How much of the sun a cloud is taking from the yacht just now, 0…1 (eased). */
+  private cloudShade = 0;
   private cloudClock = 0;
   private readonly flashColor = new THREE.Color();
   private readonly keyDirection = new THREE.Vector3();
@@ -96,6 +106,7 @@ export class EnvironmentSystem {
     this.skyUniforms.uSunDirection.value = this.sunDirection;
     this.skyUniforms.uMoonDirection.value = this.moonDirection;
     this.skyUniforms.uLightDirection.value = this.celestialLightDirection;
+    this.clouds = new CloudMap(this.skyUniforms);
 
     this.sky = new THREE.Mesh(
       new THREE.SphereGeometry(920, 48, 24),
@@ -223,6 +234,13 @@ export class EnvironmentSystem {
     this.flareRgb = rgb;
   }
 
+  /** Sea fog over a sector (the reef belt's), 0…1: it thickens the haze over everything. */
+  private seaFog = 0;
+
+  setSeaFog(amount: number): void {
+    this.seaFog = Math.max(0, Math.min(1, amount));
+  }
+
   /** The weather the sky is easing toward. */
   setWeatherKind(kind: WeatherKind, immediate = false): void {
     this.weatherKind = kind;
@@ -237,6 +255,21 @@ export class EnvironmentSystem {
     if (enabled === this.autoCycle) return;
     this.autoCycle = enabled;
     if (enabled) this.cycleTime = this.transition >= 0.5 ? CYCLE_NIGHT_START : CYCLE_DAY_START;
+  }
+
+  /**
+   * Sets the clock of the automatic cycle (and turns the cycle on), the sky
+   * jumping straight there: a story's hour (a sunset, a dawn on the shoal).
+   */
+  setClock(cycleTime: number): void {
+    this.autoCycle = true;
+    this.cycleTime = cycleTime;
+    this.transition = dayCycleState(cycleTime).progress;
+  }
+
+  /** The automatic cycle's clock (seconds into the cycle), for a saved game. */
+  get clock(): number {
+    return this.cycleTime;
   }
 
   /** Direction toward the dominant light (sun by day, moon by night). */
@@ -256,6 +289,17 @@ export class EnvironmentSystem {
 
   setSkyDetail(detail: number): void {
     this.skyDetail.value = detail;
+  }
+
+  /**
+   * Volumetric clouds: the side of the map of the sky they are marched into
+   * (0: the flat procedural clouds). Needs a GPU that can draw into
+   * half-float targets, like the HDR pipeline.
+   */
+  setCloudMapSize(size: number): void {
+    const supported =
+      this.renderer.extensions.has("EXT_color_buffer_half_float") || this.renderer.extensions.has("EXT_color_buffer_float");
+    this.clouds.setSize(supported ? size : 0);
   }
 
   /**
@@ -360,7 +404,11 @@ export class EnvironmentSystem {
     );
     this.ocean.setEnvironment(lit);
 
-    if (camera) this.sky.position.copy(camera.position);
+    if (camera) {
+      this.sky.position.copy(camera.position);
+      // The next tile of the clouds' map, from the light and cover just set.
+      this.clouds.update(this.renderer, camera.position.x, camera.position.z);
+    }
 
     // The disc sinks into the sea at sunset: the dome is centred on the camera,
     // so the horizon line itself cuts it.
@@ -401,7 +449,12 @@ export class EnvironmentSystem {
     setLinearColor(this.sunLight.color, palette.lightColor);
     // Direct sun is several times the sky's light on a clear day; with a
     // weaker key the sky fill tints every white surface blue and flattens it.
-    this.sunLight.intensity = 1.3;
+    // A cloud passing over the yacht takes the sun off her, as it does off
+    // the sea round her (the ocean draws the same shadow): eased, because
+    // the edge of a cloud's shadow is a few seconds wide at a yacht's speed.
+    const shade = this.clouds.shadowAt(focus.x, focus.z);
+    this.cloudShade += (shade - this.cloudShade) * (1 - Math.exp(-delta / 0.7));
+    this.sunLight.intensity = 1.3 * (1 - CLOUD_SHADE_DEPTH * this.cloudShade);
     // Lightning: a cold light from above the clouds, for an instant as
     // bright as day, and the sky's own light (the environment) flares too.
     if (this.flash > 0.005) {
@@ -429,7 +482,7 @@ export class EnvironmentSystem {
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.color.copy(this.fogColor);
       // Sunshine means clean, dry air: the far islands stand out crisply.
-      this.scene.fog.density = (0.0008 + night * 0.0001) * (1 + this.weather.haze * 3.4) * (1 - 0.4 * palette.sunshine);
+      this.scene.fog.density = (0.0008 + night * 0.0001) * (1 + this.weather.haze * 3.4) * (1 - 0.4 * palette.sunshine) * (1 + this.seaFog * 4.5);
     }
     this.scene.background = this.fogColor;
     if (this.underwater > 0 && this.scene.fog instanceof THREE.FogExp2) {
@@ -447,7 +500,8 @@ export class EnvironmentSystem {
     if (
       Number.isNaN(this.capturedNight) ||
       (drift > CAPTURE_THRESHOLD && this.captureCooldown <= 0) ||
-      (settled && drift > 0.0005)
+      (settled && drift > 0.0005) ||
+      this.capturedClouds !== this.clouds.active
     ) {
       this.captureLighting(night);
     }
@@ -477,6 +531,7 @@ export class EnvironmentSystem {
     this.captureSky.material.dispose();
     this.captureTarget?.dispose();
     this.captureTarget = null;
+    this.clouds.dispose();
     this.pmrem.dispose();
     this.sunLight.shadow.map?.dispose();
   }
@@ -485,6 +540,7 @@ export class EnvironmentSystem {
   invalidateLighting(): void {
     this.capturedNight = Number.NaN;
     this.captureCooldown = 0;
+    this.clouds.invalidate();
   }
 
   private captureLighting(night: number): void {
@@ -500,6 +556,7 @@ export class EnvironmentSystem {
     this.captureTarget?.dispose();
     this.captureTarget = next;
     this.capturedNight = night;
+    this.capturedClouds = this.clouds.active;
     this.captureCooldown = CAPTURE_INTERVAL;
   }
 }

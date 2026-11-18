@@ -11,10 +11,15 @@ import {
   RESERVED_KEYS,
   type BindingAction,
 } from "@/src/simulator/input/KeyBindings";
+import { moveMenuFocus, useMenuNavigation } from "./menuNavigation";
+import { menuBack } from "./menuSound";
 import { LANGUAGE_OPTIONS, type LanguageCode } from "./i18n";
 import type { PauseMessages } from "./pauseMessages";
+import type { SaveBlock, SaveSlotId } from "@/src/simulator/story/SaveGames";
+import { SaveSlots } from "./story/SaveSlots";
+import { storyMessages } from "./story/storyMessages";
 
-type Page = "main" | "graphics" | "keys" | "language";
+type Page = "main" | "graphics" | "keys" | "language" | "save" | "load" | "leave";
 
 type Props = {
   messages: PauseMessages;
@@ -32,6 +37,18 @@ type Props = {
   onQuality: (choice: QualityChoice) => void;
   onLanguage: (language: LanguageCode) => void;
   onSound: () => void;
+  /** The campaign's journal (in a campaign). */
+  campaignLabel?: string;
+  onCampaign?: () => void;
+  /** Not at the wheel: the way back to it is offered. */
+  away?: boolean;
+  /** Saving (in a campaign), and why it cannot be done just now. */
+  onSave?: (slot: SaveSlotId) => Promise<"saved" | "full" | SaveBlock>;
+  saveBlocked?: SaveBlock | null;
+  onLoad?: (slot: SaveSlotId) => void;
+  onMainMenu?: () => void;
+  /** Opened from the main menu: the settings alone, with the way back. */
+  settingsOnly?: boolean;
 };
 
 const QUALITY_ORDER: QualityChoice[] = ["auto", "low", "medium", "high", "ultra"];
@@ -56,7 +73,30 @@ function useBindings() {
  * stands still behind it. Resume, graphics, key bindings and the mouse,
  * the language, sound, and the way back to the helm.
  */
-export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, language, soundOn, touch, onResume, onBackToHelm, onQuality, onLanguage, onSound }: Props) {
+export function PauseMenu({
+  messages,
+  labels,
+  qualityLabels,
+  quality,
+  ultra,
+  language,
+  soundOn,
+  touch,
+  onResume,
+  onBackToHelm,
+  onQuality,
+  onLanguage,
+  onSound,
+  campaignLabel,
+  onCampaign,
+  away = true,
+  onSave,
+  saveBlocked = null,
+  onLoad,
+  onMainMenu,
+  settingsOnly = false,
+}: Props) {
+  const story = storyMessages(language);
   const [page, setPage] = useState<Page>("main");
   const [listening, setListening] = useState<BindingAction | null>(null);
   const { keys, look } = useBindings();
@@ -72,6 +112,7 @@ export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, lan
   useEffect(() => {
     cardRef.current?.querySelector<HTMLElement>("button, select, input")?.focus({ preventScroll: true });
   }, [page]);
+  useMenuNavigation(cardRef, page);
 
   // Esc: stop listening for a key, or go back a page, or resume. Captured
   // before the game's own key handlers, which must not see it.
@@ -88,18 +129,35 @@ export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, lan
         event.preventDefault();
         event.stopImmediatePropagation();
         if (performance.now() - openedAt.current < 350) return;
+        menuBack();
         if (page !== "main") setPage("main");
         else onResume();
         return;
       }
-      // Nothing behind the menu hears a key while it is open (Tab still moves focus).
+      // The arrows move through the menu; nothing behind it hears a key while it is open (Tab still moves focus).
+      moveMenuFocus(cardRef.current, event);
       if (event.code !== "Tab") event.stopImmediatePropagation();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [listening, page, onResume]);
 
-  const title = page === "main" ? messages.paused : page === "graphics" ? messages.graphics : page === "keys" ? labels.controls : labels.language;
+  const title =
+    page === "main"
+      ? settingsOnly
+        ? story.menuSettings
+        : messages.paused
+      : page === "graphics"
+        ? messages.graphics
+        : page === "keys"
+          ? labels.controls
+          : page === "save"
+            ? story.saveTitle
+            : page === "load"
+              ? story.loadTitle
+              : page === "leave"
+                ? story.menuMain
+                : labels.language;
 
   return (
     <div
@@ -113,7 +171,7 @@ export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, lan
       <section ref={cardRef} className="pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
         <header className="pause-head">
           {page !== "main" && (
-            <button type="button" className="pause-back" onClick={() => setPage("main")} aria-label={messages.back}>
+            <button type="button" className="pause-back" data-sound="back" onClick={() => setPage("main")} aria-label={messages.back}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
           )}
@@ -123,9 +181,26 @@ export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, lan
         {page === "main" && (
           <nav className="pause-list">
             <button type="button" className="pause-item is-primary" onClick={onResume}>
-              <span>{messages.resume}</span>
+              <span>{settingsOnly ? story.menuBack : messages.resume}</span>
               <kbd>Esc</kbd>
             </button>
+            {!settingsOnly && onSave && (
+              <button type="button" className="pause-item" onClick={() => setPage("save")}>
+                <span>{story.save}</span>
+                {saveBlocked && <small>{saveBlocked === "cutscene" ? story.saveBlockedCutscene : saveBlocked === "combat" ? story.saveBlockedCombat : saveBlocked === "danger" ? story.saveBlockedDanger : story.saveBlockedFree}</small>}
+              </button>
+            )}
+            {!settingsOnly && onLoad && (
+              <button type="button" className="pause-item" onClick={() => setPage("load")}>
+                <span>{story.load}</span>
+              </button>
+            )}
+            {!settingsOnly && onCampaign && campaignLabel && (
+              <button type="button" className="pause-item" onClick={onCampaign}>
+                <span>{campaignLabel}</span>
+                <kbd>L</kbd>
+              </button>
+            )}
             <button type="button" className="pause-item" onClick={() => setPage("graphics")}>
               <span>{messages.graphics}</span>
               <small>{qualityLabels[quality]}</small>
@@ -144,11 +219,44 @@ export function PauseMenu({ messages, labels, qualityLabels, quality, ultra, lan
               <span>{labels.sound}</span>
               <small>{soundOn ? labels.on : labels.off}</small>
             </button>
-            <button type="button" className="pause-item is-quiet" onClick={onBackToHelm}>
-              <span>{labels.backToHelm}</span>
-              <kbd>{keyLabel(keys.helm)}</kbd>
-            </button>
+            {!settingsOnly && away && (
+              <button type="button" className="pause-item is-quiet" onClick={onBackToHelm}>
+                <span>{labels.backToHelm}</span>
+                <kbd>{keyLabel(keys.helm)}</kbd>
+              </button>
+            )}
+            {!settingsOnly && onMainMenu && (
+              <button type="button" className="pause-item is-quiet" onClick={() => setPage("leave")}>
+                <span>{story.menuMain}</span>
+              </button>
+            )}
           </nav>
+        )}
+
+        {page === "save" && onSave && (
+          <div className="pause-body">
+            <SaveSlots mode="save" language={language} blocked={saveBlocked} onSave={onSave} />
+          </div>
+        )}
+
+        {page === "load" && onLoad && (
+          <div className="pause-body">
+            <SaveSlots mode="load" language={language} confirmLoad onLoad={onLoad} />
+          </div>
+        )}
+
+        {page === "leave" && onMainMenu && (
+          <div className="pause-body">
+            <p className="pause-note">{story.menuMainConfirm}</p>
+            <nav className="pause-list">
+              <button type="button" className="pause-item is-danger" onClick={onMainMenu}>
+                <span>{story.menuMainYes}</span>
+              </button>
+              <button type="button" className="pause-item is-quiet" onClick={() => setPage("main")}>
+                <span>{story.menuBack}</span>
+              </button>
+            </nav>
+          </div>
         )}
 
         {page === "graphics" && (

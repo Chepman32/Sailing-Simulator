@@ -23,6 +23,22 @@ export type SkyUniforms = {
   uFlashDirection: THREE.IUniform<THREE.Vector3>;
   /** 0: the flash fills the sky (a strike overhead) … 1: only around `uFlashDirection` (far off). */
   uFlashFocus: THREE.IUniform<number>;
+  /**
+   * The volumetric clouds' map of the sky (see `CloudMap`): the last pass
+   * drawn, the one before it, and how far the picture has moved from the
+   * one to the other (0…1).
+   */
+  uCloudMap: THREE.IUniform<THREE.Texture | null>;
+  uCloudMapPrev: THREE.IUniform<THREE.Texture | null>;
+  uCloudMapBlend: THREE.IUniform<number>;
+  /** 1 while the clouds are read from the map, 0 for the flat procedural ones. */
+  uCloudVolume: THREE.IUniform<number>;
+  /** Where the clouds have drifted to over the viewer (m): fine detail is laid on the cloud base with it. */
+  uCloudDrift: THREE.IUniform<THREE.Vector2>;
+  /** The cloud volume's noise (`CloudNoise`), for the clouds' shadows on the sea. */
+  uCloudNoise: THREE.IUniform<THREE.Data3DTexture | null>;
+  /** Cloud shadows: the weather threshold (x), the slab's depth in metres (y) and their strength, 0 off (z). */
+  uCloudShadow: THREE.IUniform<THREE.Vector3>;
 };
 
 export function createSkyUniforms(): SkyUniforms {
@@ -41,6 +57,13 @@ export function createSkyUniforms(): SkyUniforms {
     uFlash: { value: 0 },
     uFlashDirection: { value: new THREE.Vector3(0, 0.2, 1).normalize() },
     uFlashFocus: { value: 0 },
+    uCloudMap: { value: null },
+    uCloudMapPrev: { value: null },
+    uCloudMapBlend: { value: 1 },
+    uCloudVolume: { value: 0 },
+    uCloudDrift: { value: new THREE.Vector2() },
+    uCloudNoise: { value: null },
+    uCloudShadow: { value: new THREE.Vector3(1, 1500, 0) },
   };
 }
 
