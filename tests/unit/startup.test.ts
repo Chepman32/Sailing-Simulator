@@ -14,7 +14,7 @@ async function fixture(t: test.TestContext) {
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, "bin"));
   await mkdir(join(root, "scripts"));
-  for (const name of ["start.sh", "start-server.mjs", "build-verified.sh", "sites-env.sh", "run-bounded.mjs"]) {
+  for (const name of ["start.sh", "start-server.mjs", "build-verified.sh", "build-inputs.mjs", "sites-env.sh", "run-bounded.mjs"]) {
     await cp(join(scripts, name), join(root, "scripts", name));
   }
   await writeFile(join(root, "package.json"), JSON.stringify({
@@ -83,6 +83,25 @@ test("start builds and verifies a clean checkout, then reuses it and forwards se
   await rm(join(app.root, "dist/client"), { recursive: true });
   await app.start();
   assert.deepEqual((await app.calls()).slice(4), [["build"], ["verify"], ["start"]]);
+});
+
+test("start rebuilds when routes are added, edited, or removed after verification", async (t) => {
+  const app = await fixture(t);
+  const route = join(app.root, "app/story/page.tsx");
+  await app.start();
+  await mkdir(join(app.root, "app/story"), { recursive: true });
+  await writeFile(route, "first version");
+  await app.start();
+  await writeFile(route, "second version");
+  await app.start();
+  await rm(route);
+  await app.start();
+  await app.start();
+
+  const buildAndStart = [["build"], ["verify"], ["start"]];
+  assert.deepEqual(await app.calls(), [
+    ...buildAndStart, ...buildAndStart, ...buildAndStart, ...buildAndStart, ["start"],
+  ]);
 });
 
 test("start never launches the server after a failed build or rendered verification", async (t) => {

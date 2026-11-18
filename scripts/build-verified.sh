@@ -14,6 +14,7 @@ if ! command -v vinext >/dev/null 2>&1; then
 fi
 
 rm -f "${SITES_PROJECT_ROOT}/dist/.build-verified"
+build_inputs="$(node "${script_dir}/build-inputs.mjs")"
 echo "Running bounded vinext build..."
 node "${script_dir}/run-bounded.mjs" \
   "${SITES_BUILD_TIMEOUT:-3m}" \
@@ -22,4 +23,4 @@ node "${script_dir}/run-bounded.mjs" \
 
 echo "Running Worker import and rendered-route smoke test..."
 npm run test:rendered
-touch "${SITES_PROJECT_ROOT}/dist/.build-verified"
+printf '%s\n' "${build_inputs}" > "${SITES_PROJECT_ROOT}/dist/.build-verified"

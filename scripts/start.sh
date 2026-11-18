@@ -22,6 +22,12 @@ done
 if [[ ! -f dist/server/index.js || ! -d dist/client || ! -f dist/.build-verified ]]; then
   echo "No production build found. Building the app before starting..."
   bash "${script_dir}/build-verified.sh"
+else
+  build_inputs="$(node "${script_dir}/build-inputs.mjs")"
+  if [[ "$(<dist/.build-verified)" != "${build_inputs}" ]]; then
+    echo "The production build is out of date. Building the app before starting..."
+    bash "${script_dir}/build-verified.sh"
+  fi
 fi
 
 exec node "${script_dir}/start-server.mjs" "$@"
