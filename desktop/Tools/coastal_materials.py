@@ -1,5 +1,8 @@
 """Author the Coral Pass material graphs in the Unreal Editor."""
 
+import os
+from pathlib import Path
+
 import unreal
 
 from coastal_layout import CAYS, VOLCANO_RIM, VOLCANO_X, VOLCANO_Y
@@ -59,7 +62,16 @@ def shader(material, code, inputs, out, y=0):
 
 
 def material(name, shading=MAT.MSM_DEFAULT_LIT, blend=unreal.BlendMode.BLEND_OPAQUE, two_sided=False):
-    asset = TOOLS.create_asset(name, f"{ROOT}/Materials", unreal.Material, unreal.MaterialFactoryNew())
+    path = f"{ROOT}/Materials/{name}"
+    if ASSETS.does_asset_exist(path):
+        asset = ASSETS.load_asset(path)
+        # The editor can compile immediately while detaching the graph. Retire the
+        # single-layer model before removing its required optical output.
+        if asset.get_editor_property("shading_model") == MAT.MSM_SINGLE_LAYER_WATER:
+            asset.set_editor_property("shading_model", MAT.MSM_DEFAULT_LIT)
+        unreal.CoralMaterialAuthoring.reset_graph(asset)
+    else:
+        asset = TOOLS.create_asset(name, f"{ROOT}/Materials", unreal.Material, unreal.MaterialFactoryNew())
     asset.set_editor_property("shading_model", shading)
     asset.set_editor_property("blend_mode", blend)
     asset.set_editor_property("two_sided", two_sided)
@@ -75,7 +87,8 @@ def save(asset):
 
 def import_texture(directory, name, semantic):
     png = directory / f"{name}.png"
-    path = png if png.is_file() else directory / f"{name}.jpg"
+    tga = directory / f"{name}.tga"
+    path = png if png.is_file() else tga if tga.is_file() else directory / f"{name}.jpg"
     target = f"{ROOT}/Textures/{name}"
     texture = ASSETS.load_asset(target) if ASSETS.does_asset_exist(target) else None
     if not texture:
@@ -88,12 +101,11 @@ def import_texture(directory, name, semantic):
         texture = ASSETS.load_asset(target)
     if not texture:
         raise RuntimeError(f"Could not import {path}")
-    if semantic == "normal":
+    if semantic == "normal" and texture.get_editor_property("compression_settings") != unreal.TextureCompressionSettings.TC_NORMALMAP:
         texture.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_NORMALMAP)
+    if semantic in ("normal", "linear") and texture.get_editor_property("srgb"):
         texture.set_editor_property("srgb", False)
-    if semantic == "linear":
-        texture.set_editor_property("srgb", False)
-    ASSETS.save_loaded_asset(texture, only_if_is_dirty=False)
+    ASSETS.save_loaded_asset(texture)
     unreal.log(f"Coral Pass texture {name}: {texture.blueprint_get_size_x()} × {texture.blueprint_get_size_y()}")
     return texture
 
@@ -205,7 +217,7 @@ def foliage():
     leaf = shader(asset, """
         float rib = exp(-pow((UV.y - .5)*24, 2));
         float lines = 0.83 + .17*sin((UV.x + abs(UV.y-.5)*.26)*200);
-        float3 light = float3(.19,.29,.044);
+        float3 light = float3(.12,.22,.039);
         float3 dark = float3(.036,.103,.013);
         float3 green = lerp(dark, light, Age * .76 + UV.x * .16) * Tint;
         return green * lines + float3(.10,.074,.020) * rib;
@@ -216,10 +228,26 @@ def foliage():
         return Weight * float3(flex, .74*flex, sin(T*1.65 + UV.x*4 + Position.y*.003)*18);
         """, {"T": time, "Position": world, "Weight": (paint, "A"), "UV": uv}, OUTPUT.CMOT_FLOAT3, 220)
     assign(leaf, PROP.MP_BASE_COLOR)
-    assign(number(asset, (0.17, 0.27, 0.045)), PROP.MP_SUBSURFACE_COLOR)
+    assign(number(asset, (.066,.117,.025)), PROP.MP_SUBSURFACE_COLOR)
     assign(number(asset, 0.64), PROP.MP_ROUGHNESS)
-    assign(number(asset, 0.69), PROP.MP_OPACITY)
+    assign(number(asset,.83), PROP.MP_OPACITY)
     assign(wpo, PROP.MP_WORLD_POSITION_OFFSET)
+    return save(asset)
+
+
+def coastal_canopy():
+    asset = material("M_CoastalCanopy", MAT.MSM_TWO_SIDED_FOLIAGE, two_sided=True)
+    world = expression(asset, unreal.MaterialExpressionWorldPosition)
+    paint = expression(asset, unreal.MaterialExpressionVertexColor)
+    base = shader(asset, """
+        float3 p = P * .01;
+        float leaves = .5 + .25*sin(p.x*6.1+p.z*5.8+sin(p.y*4)) + .25*cos(p.y*8.3-p.z*4.1);
+        float3 canopy = lerp(float3(.016,.037,.013),float3(.095,.15,.039),Tint*Lightness);
+        return canopy * (.67+.42*leaves);
+        """, {"P": world, "Tint": (paint,"R"), "Lightness": (paint,"G")}, OUTPUT.CMOT_FLOAT3)
+    assign(base, PROP.MP_BASE_COLOR)
+    assign(number(asset,(.044,.066,.016)), PROP.MP_SUBSURFACE_COLOR)
+    assign(number(asset,.78), PROP.MP_ROUGHNESS)
     return save(asset)
 
 
@@ -238,7 +266,6 @@ def tropical_clouds():
     glow = parameter(asset, "CloudFlash", 0)
     origin = expression(asset, unreal.MaterialExpressionVectorParameter, parameter_name="StrikeOriginKm",
                         default_value=unreal.LinearColor(0, 0, 1.1, 0))
-    volcano = number(asset, (VOLCANO_X*.001, VOLCANO_Y*.001, VOLCANO_RIM*.001 - .017))
     densities = shader(asset, """
         float3 p = Position * .00001;
         float2 drift = float2(T * .008, T * .004);
@@ -253,44 +280,103 @@ def tropical_clouds():
         float h = saturate((p.z - 1.02) / 2.6);
         float pillar = smoothstep(0,.09,h) * (1-smoothstep(.32+local*.23,.73+local*.13,h));
         float mass = smoothstep(.26,.68,local + Coverage*.82 + (shape-.42)*.83 - erosion*.13 + bank);
-        float cloud = mass * pillar * Density * 19;
-
-        float3 q = p - Summit;
-        float ash = 0;
-        if (dot(q.xy,q.xy) < .66 && q.z > -.015 && q.z < 1.63) {
-            float z = max(q.z, 0);
-            float2 plume = q.xy - float2(.11,.52) * z * z
-                - float2(sin(q.z*11 - T*.43), cos(q.z*13 - T*.42)) * (.006+.041*z);
-            float width = .030 + .225*pow(z,.84) + .13*smoothstep(.68,1.38,z);
-            float3 scroll = q - float3(0,0,T*.012);
-            float billows = Texture3DSampleLevel(Noise,NoiseSampler,frac(scroll*float3(3.9,3.9,2.8)+.37),0).r;
-            float curls = Texture3DSampleLevel(Noise,NoiseSampler,frac(scroll*float3(11,11,9)+.72),0).r;
-            float cauliflower = (billows-.47)*1.26 + (curls-.51)*.41;
-            float edge = 1 - length(plume)/width + cauliflower;
-            ash = 18.0 * smoothstep(.06,.5,edge) * smoothstep(-.015,.007,q.z) * (1-smoothstep(1.10,1.63,z));
-        }
-        float collar = exp(-pow((q.z+.141 + .011*sin(q.x*17))/.012,2));
-        cloud += collar * smoothstep(.49,.74,shape+.11*sin(q.y*24)) * exp(-dot(q.xy,q.xy)*12) * .022;
-        return float2(cloud, ash);
+        return mass * pillar * Density * .8;
         """, {"Position": position, "T": time, "Noise": noise, "Coverage": coverage,
-              "Density": density, "Summit": volcano}, OUTPUT.CMOT_FLOAT2)
-    assign(shader(asset, "return Air.x + Air.y;", {"Air": densities}, OUTPUT.CMOT_FLOAT1), PROP.MP_SUBSURFACE_COLOR)
-    assign(shader(asset, "return lerp(float3(.94,.965,.99),float3(.21,.196,.18),saturate(Air.y*4));",
-                  {"Air": densities}, OUTPUT.CMOT_FLOAT3), PROP.MP_BASE_COLOR)
+              "Density": density}, OUTPUT.CMOT_FLOAT1)
+    assign(densities, PROP.MP_SUBSURFACE_COLOR)
+    assign(number(asset, (.94,.965,.99)), PROP.MP_BASE_COLOR)
     emissive = shader(asset, """
         float3 d = Position * .00001 - StrikeOrigin;
-        float local = exp(-dot(d*d, float3(.58,.58,1.1)));
-        float3 q = Position * .00001 - Summit;
-        float furnace = exp(-max(q.z,0)*59 - dot(q.xy,q.xy)*850) * (.85 + .15*sin(T*2.7));
-        return float3(.30,.56,1.0) * (Air.x+Air.y) * Flash * local * 520
-             + float3(4400,910,138) * furnace * saturate(Air.y*.4);
-        """, {"Position": position, "StrikeOrigin": origin, "Air": densities,
-              "Flash": glow, "Summit": volcano, "T": time}, OUTPUT.CMOT_FLOAT3)
+        return float3(.30,.56,1.0) * Air * Flash * exp(-dot(d*d, float3(.58,.58,1.1))) * 520;
+        """, {"Position": position, "StrikeOrigin": origin, "Air": densities, "Flash": glow}, OUTPUT.CMOT_FLOAT3)
     assign(emissive, PROP.MP_EMISSIVE_COLOR)
     expression(asset, unreal.MaterialExpressionVolumetricAdvancedMaterialOutput, x=-100, y=360,
                multi_scattering_approximation_octave_count=1, const_phase_g=.42,
                ground_contribution=True, ray_march_volume_shadow=False)
     EDIT.set_material_usage(asset, unreal.MaterialUsage.MATUSAGE_VOLUMETRIC_CLOUD)
+    return save(asset)
+
+
+def eruption_column():
+    # Integrate only the occupied vent volume. A global cloud march can cross the entire
+    # base of this plume in a single step when viewed along the horizon from the yacht.
+    asset = material("M_EruptionColumn", MAT.MSM_UNLIT, unreal.BlendMode.BLEND_TRANSLUCENT)
+    shape = unreal.load_asset("/Engine/EngineSky/VolumetricClouds/VT_PerlinWorley_Balanced")
+    volume = expression(asset, unreal.MaterialExpressionTextureObject, texture=shape,
+                        sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
+    inputs = {
+        "Noise": volume, "P": expression(asset, unreal.MaterialExpressionWorldPosition),
+        "Eye": expression(asset, unreal.MaterialExpressionCameraPositionWS),
+        "Center": expression(asset, unreal.MaterialExpressionObjectPositionWS),
+        "Extent": expression(asset, unreal.MaterialExpressionObjectBounds),
+        "BackgroundZ": expression(asset, unreal.MaterialExpressionSceneDepth),
+        "SurfaceZ": expression(asset, unreal.MaterialExpressionPixelDepth),
+        "Sun": expression(asset, unreal.MaterialExpressionSkyAtmosphereLightDirection),
+        "Light": expression(asset, unreal.MaterialExpressionSkyAtmosphereLightIlluminance),
+        "Summit": number(asset, (VOLCANO_X,VOLCANO_Y,VOLCANO_RIM-10)),
+        "T": expression(asset, unreal.MaterialExpressionTime),
+    }
+    result = shader(asset, """
+        struct Plume {
+            float Density(float3 p, float t, Texture3D tex, SamplerState smp) {
+                float z = max(0,p.z);
+                float h = saturate(z/600);
+                float2 axis = float2(.12,.24)*z*h + float2(6*sin(z*.022-t*.12),4*sin(z*.035-t*.15));
+                float width = 22 + .23*z + 16*smoothstep(70,165,z) + (4 + .026*z)*sin(z*.046-t*.16);
+                float2 across = p.xy-axis;
+                if (p.z < -10 || p.z > 615 || dot(across,across) > 2.7*width*width) return 0;
+                float3 q = float3(across,p.z-t*2.3);
+                float3 warp = Texture3DSampleLevel(tex,smp,q*.0037+.34,0).rgb-.5;
+                float3 rolls = Texture3DSampleLevel(tex,smp,q*.0096+warp*.65,0).rgb;
+                float wisps = Texture3DSampleLevel(tex,smp,q*.030+warp*.36+.71,0).r;
+                float tip = 1-smoothstep(490,605,z);
+                // Buoyant billows roll up the outer edge of the ash column.
+                float layer = (z-t*2.3)/55;
+                float shell = .82-length(across)/width;
+                [unroll] for(int j=-1;j<=1;j++) {
+                    float id = floor(layer)+j;
+                    float a = id*2.39996;
+                    float2 rollCenter = width*.48*float2(cos(a),sin(a));
+                    float3 local = float3((across-rollCenter)/(.69*width),(layer-id-.5)*55/(33+width*.12));
+                    shell = max(shell,1-length(local));
+                }
+                float edge = shell + (rolls.r-.50)*1.27 + (wisps-.5)*.33;
+                return .063*smoothstep(-.075,.40,edge)*(.47+.65*rolls.g)*tip*smoothstep(-10,2,p.z);
+            }
+        };
+        Plume ash;
+        float3 ray = normalize(P-Eye);
+        float3 exitFace = (Center-P + sign(ray)*Extent)*.01;
+        float3 exitDistance = exitFace / (ray+float3(.000001,.000001,.000001));
+        float travel = min(exitDistance.x,min(exitDistance.y,exitDistance.z));
+        travel = min(travel,(BackgroundZ-SurfaceZ)*length(P-Eye)/max(SurfaceZ,1)*.01);
+        if (travel <= 0) return 0;
+        int steps = clamp((int)ceil(travel/5),12,72);
+        float stepLength = travel/steps;
+        float3 relative = P*.01-Summit + ray*stepLength*.5;
+        float transmittance = 1;
+        float3 radiance = 0;
+        float3 skyFill = float3(.25,.35,.49) + Light*float3(.0025,.0036,.0050);
+        [loop] for(int i=0;i<steps && transmittance>.012;i++) {
+            float d = ash.Density(relative,T,Noise,NoiseSampler);
+            if(d>.0001) {
+                float d1 = ash.Density(relative+Sun*16,T,Noise,NoiseSampler);
+                float d2 = ash.Density(relative+Sun*46,T,Noise,NoiseSampler);
+                float d3 = ash.Density(relative+Sun*94,T,Noise,NoiseSampler);
+                float lighting = exp(-(d1*23+d2*36+d3*49));
+                float3 lit = skyFill + Light*float3(.040,.036,.031)*lighting;
+                float hot = exp(-max(0,relative.z)*.049-dot(relative.xy,relative.xy)*.0018);
+                lit += float3(6800,1160,98)*hot;
+                float scatter = 1-exp(-stepLength*d);
+                radiance += transmittance*scatter*lit;
+                transmittance *= 1-scatter;
+            }
+            relative += ray*stepLength;
+        }
+        return float4(radiance/max(.001,1-transmittance),1-transmittance);
+        """, inputs, OUTPUT.CMOT_FLOAT4)
+    assign(shader(asset, "return V.rgb;", {"V": result}, OUTPUT.CMOT_FLOAT3), PROP.MP_EMISSIVE_COLOR)
+    assign(shader(asset, "return V.a;", {"V": result}, OUTPUT.CMOT_FLOAT1), PROP.MP_OPACITY)
     return save(asset)
 
 
@@ -307,22 +393,35 @@ struct Surface {
 };
 Surface s;
 float2 p = Position.xy * .01;
-float3 sea = s.Wave(Wave0,p,Grid.x,CrestShape) + s.Wave(Wave1,p,Grid.x,CrestShape)
-           + s.Wave(Wave2,p,Grid.x,CrestShape) + s.Wave(Wave3,p,Grid.x,CrestShape)
-           + s.Wave(Wave4,p,Grid.x,CrestShape) + s.Wave(Wave5,p,Grid.x,CrestShape)
-           + s.Wave(Wave6,p,Grid.x,CrestShape) + s.Wave(Wave7,p,Grid.x,CrestShape);
+float3 sea = s.Wave(Wave0,p,Footprint.x,CrestShape) + s.Wave(Wave1,p,Footprint.x,CrestShape)
+           + s.Wave(Wave2,p,Footprint.x,CrestShape) + s.Wave(Wave3,p,Footprint.x,CrestShape)
+           + s.Wave(Wave4,p,Footprint.x,CrestShape) + s.Wave(Wave5,p,Footprint.x,CrestShape)
+           + s.Wave(Wave6,p,Footprint.x,CrestShape) + s.Wave(Wave7,p,Footprint.x,CrestShape);
 """
 
 
-def water():
-    asset = material("M_CoralWater", MAT.MSM_SINGLE_LAYER_WATER)
+def sample_texture(asset, texture, coordinates, *, normal=False):
+    if not texture:
+        raise RuntimeError("Missing a Coral Pass water texture")
+    sampler = unreal.MaterialSamplerType
+    node = expression(asset, unreal.MaterialExpressionTextureSample, texture=texture,
+                      sampler_type=sampler.SAMPLERTYPE_NORMAL if normal else sampler.SAMPLERTYPE_COLOR)
+    link(coordinates, node, "")
+    return node
+
+
+FOAM_TEXTURE = "/Water/Textures/Foam/T_WaterFlow_03_Foam_Tiled"
+
+
+def water(source):
+    asset = material("M_CoralWater")
     asset.set_editor_property("tangent_space_normal", False)
     world = expression(asset, unreal.MaterialExpressionWorldPosition,
                        world_position_shader_offset=unreal.WorldPositionIncludedOffsets.WPT_EXCLUDE_ALL_SHADER_OFFSETS)
-    uv = expression(asset, unreal.MaterialExpressionTextureCoordinate)
+    grid = expression(asset, unreal.MaterialExpressionTextureCoordinate)
     time = parameter(asset, "SeaTime", 0)
     scale = parameter(asset, "SeaScale", 1)
-    wave_inputs = {"Position": world, "Grid": uv, "CrestShape": parameter(asset, "CrestShape", .27)}
+    wave_inputs = {"Position": world, "CrestShape": parameter(asset, "CrestShape", .27)}
     for i in range(8):
         name = f"Wave{i}"
         vector = expression(asset, unreal.MaterialExpressionVectorParameter, y=i * 125,
@@ -331,40 +430,52 @@ def water():
         link(vector, append, "A")
         link(vector, append, "B", "A")
         wave_inputs[name] = append
-    offset = shader(asset, WAVE_MATH + "return float3(0,0,100*sea.x);", wave_inputs, OUTPUT.CMOT_FLOAT3)
-    normal = shader(asset, WAVE_MATH + """
-        struct Ripples {
-            float2 Capillary(float2 p, float2 d, float f, float rate, float amplitude, float footprint, float t) {
-                float aa = 1 - smoothstep(.17, .64, footprint * f);
-                float phase = dot(p,d)*f + rate*t + .65*sin(dot(p, float2(-d.y,d.x))*f*.28 - .49*t);
-                return d * cos(phase) * (amplitude * aa);
-            }
-        };
-        Ripples r;
-        float px = max(length(ddx(p)), length(ddy(p)));
-        float2 drift = p + .23*float2(sin(p.y*.62 + cos(p.x*.31) - .24*SeaTime),
-                                    sin(p.x*.40 + sin(p.y*.54) - .31*SeaTime));
-        float2 ripple = r.Capillary(drift,float2(.92,.39),3.1,-4.1,.087,px,SeaTime)
-             + r.Capillary(drift,float2(.57,.82),5.9,-5.4,.075,px,SeaTime)
-             + r.Capillary(drift,float2(-.20,.98),10.2,-6.8,.067,px,SeaTime)
-             + r.Capillary(drift,float2(.96,-.28),18.1,-9.8,.052,px,SeaTime)
-             + r.Capillary(drift,float2(.13,-.99),28.4,-12.4,.047,px,SeaTime)
-             + r.Capillary(drift,float2(.73,.68),44.0,-16.5,.039,px,SeaTime);
-        float gust = .72 + .28*sin(p.x*.37 - p.y*.43 + sin(p.y*.67 - SeaTime*.32));
-        float storm = saturate((SeaScale-1)/1.3);
-        float2 grid = floor(p*1.8);
-        float seed = frac(sin(dot(grid,float2(12.9898,78.233)))*43758.5453);
-        float2 splash = frac(p*1.8) - (.20 + .60*float2(seed,frac(seed*5.72)));
-        float age = frac(SeaTime*1.72 + seed);
-        float distance = length(splash);
-        float ring = smoothstep(.08,.0,abs(distance-age*.40)) * cos((distance-age*.40)*93);
-        float ringAA = 1 - smoothstep(.010,.084,px);
-        float2 rain = splash/max(.02,distance) * ring * ringAA * (1-age) * .13 * storm;
-        return normalize(float3(-sea.yz + ripple * gust * lerp(.96,1.65,storm) + rain,1));
-        """, {**wave_inputs, "SeaTime": time, "SeaScale": scale}, OUTPUT.CMOT_FLOAT3, 240)
+    offset = shader(asset, WAVE_MATH + "return float3(0,0,100*sea.x);",
+                    {**wave_inputs, "Footprint": grid}, OUTPUT.CMOT_FLOAT3)
+
+    # Cull sub-grid displacement in the vertex stage. Sub-grid slopes still reflect light
+    # until the wavelength falls below a pixel, including beyond the last displaced ring.
+    pixel = shader(asset, "return max(length(ddx(P.xy)),length(ddy(P.xy)))*.005;",
+                   {"P": world}, OUTPUT.CMOT_FLOAT1)
+    sea = shader(asset, WAVE_MATH + "return sea;", {**wave_inputs, "Footprint": pixel}, OUTPUT.CMOT_FLOAT3)
+    drift = shader(asset, """
+        float2 p = Position.xy * .01;
+        return p + float2(sin(dot(p,float2(.23,.12))-.22*T),cos(dot(p,float2(.10,-.29))-.19*T))*.44;
+        """, {"Position": world, "T": time}, OUTPUT.CMOT_FLOAT2)
+    samples = []
+    chop = unreal.load_asset("/Water/Textures/Normals/T_Water_TilingNormal_Waves_02")
+    ripple = import_texture(source,"T_SeaCapillaries_N","normal")
+    for texture,angle,size,velocity in ((chop,.55,14.3,1.42),(chop,-.72,4.71,.77),
+                                        (ripple,.41,9.6,.75),(ripple,-.83,3.4,.32)):
+        uv = shader(asset, f"""
+            float2 d = float2(cos({angle}),sin({angle}));
+            float2 q = float2(dot(P,d),dot(P,float2(-d.y,d.x)));
+            return (q - T*float2({velocity},.12)) / {size};
+            """, {"P": drift, "T": time}, OUTPUT.CMOT_FLOAT2)
+        sampled = sample_texture(asset,texture,uv,normal=True)
+        samples.append(shader(asset, f"""
+            float2 d = float2(cos({angle}),sin({angle}));
+            return (d*N.x + float2(-d.y,d.x)*N.y) / max(.55,N.z);
+            """, {"N": sampled}, OUTPUT.CMOT_FLOAT2))
+    normal = shader(asset, """
+        float gust = .84+.16*sin(dot(P,float2(.32,-.18))+sin(P.y*.61-T*.29));
+        float2 slopes = (Fetch*.42 + Chop*.32 + Catspaws*.60 + Ripples*.34) * gust * sqrt(SeaScale);
+        float storm = saturate((SeaScale-1)*.74);
+        float2 tile = floor(P*1.8);
+        float seed = frac(sin(dot(tile,float2(12.9898,78.233)))*43758.5453);
+        float2 drop = frac(P*1.8)-(.20+.60*float2(seed,frac(seed*5.72)));
+        float age = frac(T*1.72+seed), radius = length(drop), ring = radius-age*.40;
+        slopes += drop/max(.02,radius) * (1-smoothstep(.015,.08,abs(ring))) * cos(ring*86)
+                * (1-age)*.13*storm*(1-smoothstep(.012,.09,Pixel));
+        return normalize(float3(-Sea.yz+slopes,1));
+        """, {"Sea": sea, "Fetch": samples[0], "Chop": samples[1], "Catspaws": samples[2], "Ripples": samples[3], "SeaScale": scale,
+              "P": drift, "T": time, "Pixel": pixel}, OUTPUT.CMOT_FLOAT3)
+    lace_uv = shader(asset, "return (P-T*float2(.48,.22))*.085;", {"P": drift, "T": time}, OUTPUT.CMOT_FLOAT2)
+    lace = sample_texture(asset, unreal.load_asset(FOAM_TEXTURE), lace_uv)
 
     layout = "\n".join(f"surf = max(surf, h.Cay(p,float2({c.x},{c.y}),float2({c.length},{c.width}),{c.phase},T));" for c in CAYS)
-    foam = shader(asset, WAVE_MATH + """
+    foam = shader(asset, """
+        float2 p = Position.xy*.01;
         struct Shoal {
             float Cay(float2 p, float2 center, float2 radii, float phase, float t) {
                 float2 q = (p-center)/radii;
@@ -380,20 +491,20 @@ def water():
         Shoal h;
         float surf = 0;
         """ + layout + """
-        float2 q = p + float2(.7*sin(p.y*1.3),.65*sin(p.x*1.53))*sin(T*.19);
-        float ribbons = abs(sin(dot(q,float2(4.1,1.1))+sin(q.y*3.4-T)) + .78*sin(q.y*5.9-.3*T));
-        float cells = (1-smoothstep(.04,.38,ribbons)) * (.42+.58*sin(p.x*2.3+p.y*1.75)*.5);
-        float threshold = lerp(.70,.62,saturate((SeaScale-1)*.73));
-        float crest = smoothstep(threshold-.16,threshold+.10,sea.x) * smoothstep(.13,.35,length(sea.yz));
-        return saturate((surf + crest * .56) * (.31+.93*cells));
-        """, {**wave_inputs, "SeaScale": scale, "T": time}, OUTPUT.CMOT_FLOAT1, 600)
-    base = shader(asset, "return lerp(float3(.001,.005,.009),float3(.65,.72,.71),Foam);", {"Foam": foam}, OUTPUT.CMOT_FLOAT3)
+        // Breaking depends on a short steep face riding on the longer swell.
+        float foamyFace = -dot(Sea.yz,float2(-.71,.70)) + .29*Chop.y;
+        float breaking = smoothstep(.37,.76, Sea.x/max(.6,SeaScale)*.52 + foamyFace);
+        float web = smoothstep(.32,.79,Lace);
+        return saturate(surf*web + smoothstep(.17,.90,breaking)*web*web*(.41+.49*saturate(SeaScale-1)));
+        """, {"Position": world, "Sea": sea, "Chop": samples[0], "Lace": (lace,"R"),
+              "SeaScale": scale, "T": time}, OUTPUT.CMOT_FLOAT1, 600)
+    base = shader(asset, "return lerp(float3(.002,.009,.012),float3(.80,.86,.84),Foam);",
+                  {"Foam": foam}, OUTPUT.CMOT_FLOAT3)
     rough = shader(asset, """
-        float2 p = Position.xy * .01;
-        float gust = smoothstep(-.4,.8,sin(dot(p,float2(.43,.27)) + sin(p.y*.62- T*.69)));
-        return lerp(.055+.018*gust+.055*saturate(SeaScale-1),.64,Foam);
-        """, {"Foam": foam, "SeaScale": scale, "Position": world, "T": time}, OUTPUT.CMOT_FLOAT1)
-    opacity = shader(asset, "return lerp(.13, .93, Foam);", {"Foam": foam}, OUTPUT.CMOT_FLOAT1)
+        // Slopes lost to minification become a wider specular lobe on the horizon.
+        return lerp(.085+.065*smoothstep(.05,2.4,Pixel)+.035*saturate(SeaScale-1),.65,Foam);
+        """, {"Foam": foam, "SeaScale": scale, "Pixel": pixel}, OUTPUT.CMOT_FLOAT1)
+    opacity = shader(asset, "return lerp(.085,.98,Foam);", {"Foam": foam}, OUTPUT.CMOT_FLOAT1)
     assign(offset, PROP.MP_WORLD_POSITION_OFFSET)
     assign(normal, PROP.MP_NORMAL)
     assign(base, PROP.MP_BASE_COLOR)
@@ -401,19 +512,21 @@ def water():
     assign(opacity, PROP.MP_OPACITY)
     assign(number(asset, .255), PROP.MP_SPECULAR)
     sun = expression(asset, unreal.MaterialExpressionSkyAtmosphereLightIlluminance)
-    ambient = shader(asset, """
-        // A small lift from scattered skylight remains even inside the sail's shadow.
-        float daylight = saturate(dot(Light,float3(.2126,.7152,.0722)) / 68000);
-        return daylight * float3(30,92,130);
-        """, {"Light": sun}, OUTPUT.CMOT_FLOAT3)
-    assign(ambient, PROP.MP_EMISSIVE_COLOR)
+    fill = shader(asset, """
+        // Diffuse hemispherical inscattering persists under the sail's direct shadow.
+        float sky = saturate(dot(Light,float3(.21,.72,.07))/72000);
+        return sky*float3(13,72,107)*(1-Foam);
+        """, {"Light":sun,"Foam":foam}, OUTPUT.CMOT_FLOAT3)
+    assign(fill, PROP.MP_EMISSIVE_COLOR)
     output = expression(asset, unreal.MaterialExpressionSingleLayerWaterMaterialOutput, -95, 1190)
     for pin, value in {
-        "ScatteringCoefficients": (.000032,.000163,.000245),
-        "AbsorptionCoefficients": (.00375,.00099,.00042),
+        "ScatteringCoefficients": (.000016,.000087,.000137),
+        "AbsorptionCoefficients": (.0041,.00102,.00072),
         "PhaseG": .21, "ColorScaleBehindWater": 0.88,
     }.items():
         link(number(asset, value), output, pin)
+    # The single-layer model compiles only once all four optical inputs exist.
+    asset.set_editor_property("shading_model", MAT.MSM_SINGLE_LAYER_WATER)
     return save(asset)
 
 
@@ -479,22 +592,39 @@ def canvas():
     asset = material("M_CoralSailcloth", MAT.MSM_TWO_SIDED_FOLIAGE, two_sided=True)
     uv = expression(asset, unreal.MaterialExpressionTextureCoordinate)
     base = shader(asset, """
-        float panels = 8.2*UV.y + .74*UV.x + .16*sin(UV.x*3.1416);
-        float dist = abs(frac(panels)-.5);
-        float seam = 1-smoothstep(.009,.024+fwidth(panels),dist);
-        float stitch = (1-smoothstep(.002,.010+fwidth(panels),abs(dist-.032)))
-                       * (.38 + .62*smoothstep(-.2,.4,cos(UV.x*1500)));
-        float edge = max(smoothstep(.946,.995,UV.x),1-smoothstep(.013,.055,UV.x));
-        float panelTone = .94 + .06*sin(floor(panels+.5)*13.13);
-        float salt = .98 + .026*sin(dot(UV,float2(48,19))+sin(UV.y*35));
-        float yarn = sin(UV.x*2440)*sin(UV.y*2760)*(1-smoothstep(.002,.009,max(fwidth(UV.x),fwidth(UV.y))));
-        float3 cloth = float3(.78,.741,.64) * panelTone * salt * (1-.22*seam-.12*stitch+.014*yarn);
-        return lerp(cloth,float3(.54,.556,.505),edge*.71);
+        float u = UV.x, v = 1-UV.y; // FBX V runs from the head of the sail to the foot.
+        float panel = 10.0*v+.27*u*(1-v)+.12*sin(u*3.14159);
+        float aa = min(.13,fwidth(panel));
+        float seamDistance = abs(frac(panel+.5)-.5);
+        float seam = 1-smoothstep(.010,.024+aa,seamDistance);
+        float doubler = 1-smoothstep(.018,.050+aa,abs(seamDistance-.06));
+        float batten = (1-smoothstep(.015,.070+aa,seamDistance))*smoothstep(.55,.99,u);
+        float patches = max(saturate(1-length(float2(u*.94,v*5.5))),
+                        max(saturate(1-length(float2((1-u)*1.4,v*4.5))),smoothstep(.84,.995,v)));
+        float edge = max(1-smoothstep(.012,.031+fwidth(u),u),smoothstep(.974,.993,u));
+        float translucency = 1-.11*floor(patches*4)/4-.10*doubler-.22*seam-.13*batten;
+        float fan = atan2(v*1.29,max(.001,(1-u)*(1-v)));
+        float wrinkle = sin(fan*43+v*2.5)*exp(-v*3.7)*.045;
+        float gores = fan*4.7;
+        float radial = 1-smoothstep(.016,.046+min(.12,fwidth(gores)),abs(frac(gores+.5)-.5));
+        radial *= 1-smoothstep(.35,1.18,length(float2((1-u)*(1-v),v)));
+        float age = .93+.07*cos(fan*17+v*13)*sin(v*25+u*5);
+        float3 canvas = float3(.57,.57,.52)*(.89+.12*sin(floor(panel)*29.72)+wrinkle)
+                        *translucency*(1-.29*radial)*age;
+        return lerp(canvas,float3(.21,.25,.24),edge*.78);
         """, {"UV": uv}, OUTPUT.CMOT_FLOAT3)
     assign(base, PROP.MP_BASE_COLOR)
-    assign(shader(asset, "return Color * float3(.66,.62,.56);", {"Color": base}, OUTPUT.CMOT_FLOAT3), PROP.MP_SUBSURFACE_COLOR)
-    assign(number(asset, .73), PROP.MP_ROUGHNESS)
-    assign(number(asset, .65), PROP.MP_OPACITY)
+    assign(shader(asset,"return Color*float3(.66,.59,.45);",{"Color":base},OUTPUT.CMOT_FLOAT3),PROP.MP_SUBSURFACE_COLOR)
+    cloth_normal = shader(asset, """
+        float v = 1-UV.y;
+        float fan = atan2(v*1.29,max(.001,(1-UV.x)*(1-v)));
+        float folds = .11*cos(fan*43+v*2.5)*exp(-v*2.7);
+        float p = 10.0*v+.27*UV.x*(1-v)+.12*sin(UV.x*3.14159);
+        return normalize(float3(folds,.051*sin(6.283*p)+folds*.58,1));
+        """, {"UV":uv}, OUTPUT.CMOT_FLOAT3)
+    assign(cloth_normal, PROP.MP_NORMAL)
+    assign(number(asset,.79),PROP.MP_ROUGHNESS)
+    assign(number(asset,.58),PROP.MP_OPACITY)
     time = expression(asset, unreal.MaterialExpressionTime)
     flutter = shader(asset, """
         float free = sin(saturate(UV.y)*3.1415926) * smoothstep(.16,1,UV.x);
@@ -516,13 +646,14 @@ def gelcoat():
         float3 p = Local*.01;
         float weather = smoothstep(.28,.79,.5+.17*sin(p.x*19+p.y*2)+.21*sin(p.x*7.2+p.y*33))
                         * exp(-abs(p.z-.08)*2.1);
-        float band = smoothstep(-.23,-.19,p.z)*(1-smoothstep(-.045,-.025,p.z));
+        float band = smoothstep(.062,.080,p.z)*(1-smoothstep(.135,.15,p.z));
         float3 glass = float3(.82,.845,.813) * (1-.12*weather);
         float3 dry = lerp(glass,float3(.019,.047,.060),band);
         return lerp(float3(.020,.039,.040),dry,smoothstep(-.30,-.24,p.z));
         """, {"Local": local}, OUTPUT.CMOT_FLOAT3)
     assign(base, PROP.MP_BASE_COLOR)
-    assign(number(asset, .32), PROP.MP_ROUGHNESS)
+    assign(shader(asset, "return lerp(.17,.34,smoothstep(-8,38,P.z));",
+                  {"P":local}, OUTPUT.CMOT_FLOAT1), PROP.MP_ROUGHNESS)
     return save(asset)
 
 
@@ -533,9 +664,11 @@ def painted_masonry(name, tint, textures):
     color = shader(asset, """
         float3 p = Position*.01;
         float flow = sin(p.x*7.7 + p.y*5.4 + sin(p.z*.21)) * cos(p.x*3.0-p.y*6.1);
-        float weather = lerp(.83,1.12,smoothstep(-.57,.71,flow));
+        float weather = lerp(.76,1.09,smoothstep(-.57,.71,flow));
         float salt = .78 + .22*smoothstep(.4,2.1,p.z);
-        return Tint * lerp(.58,1.12,saturate(dot(Stone,float3(.48,.50,.50)))) * weather * salt;
+        float grain = dot(Stone,float3(.26,.52,.22));
+        float chips = smoothstep(.31,.56,grain+flow*.066)*.46;
+        return lerp(Tint,float3(.43,.38,.31),chips)*(.57+.64*sqrt(saturate(grain)))*weather*salt;
         """, {"Position": world, "Tint": number(asset, tint), "Stone": tex["color"]}, OUTPUT.CMOT_FLOAT3)
     assign(color, PROP.MP_BASE_COLOR)
     assign(tex["normal"], PROP.MP_NORMAL)
@@ -555,27 +688,67 @@ def lantern_glass():
 def volcano_surface(textures):
     asset = material("M_VolcanicRock")
     tex = texture_nodes(asset, textures)
-    vertex = expression(asset, unreal.MaterialExpressionVertexColor)
     world = expression(asset, unreal.MaterialExpressionWorldPosition)
     time = expression(asset, unreal.MaterialExpressionTime)
+    local = shader(asset,"return (P-Origin)*.01;",{"P":world,"Origin":expression(
+                   asset,unreal.MaterialExpressionActorPositionWS)},OUTPUT.CMOT_FLOAT3)
+    uv = expression(asset, unreal.MaterialExpressionTextureCoordinate)
+    aerial = sample_texture(asset, import_texture(Path(__file__).with_name("data"),"T_StHelens_Ortho","color"), uv)
+    detail = shader(asset,"return UV*94;",{"UV":uv},OUTPUT.CMOT_FLOAT2)
+    for node in tex.values():
+        link(detail,node,"")
+    masks = shader(asset, """
+        struct Terrain {
+            float Corner(int2 cell) {
+                uint h = ((uint)cell.x*1597334677u) ^ ((uint)cell.y*3812015801u);
+                h = (h^(h>>16))*2246822519u;
+                return (h^(h>>13))*(1.0/2147483648.0)-1;
+            }
+            float Noise(float2 p) {
+                int2 i = (int2)floor(p);
+                float2 f = smoothstep(0,1,frac(p));
+                return lerp(lerp(Corner(i),Corner(i+int2(1,0)),f.x),
+                            lerp(Corner(i+int2(0,1)),Corner(i+1),f.x),f.y);
+            }
+            float Channel(float r, float bearing, float direction, float end) {
+                float an = bearing-(direction+.14*sin(r*.021+direction)+.03*sin(r*.087));
+                float d = abs(atan2(sin(an),cos(an)))*r;
+                return saturate(1-d/(1.6+1.24*(1+sin(r*.065))))*saturate((end-r)/45);
+            }
+        };
+        Terrain field;
+        float r = length(P.xy), bearing = atan2(P.y,P.x);
+        float lava = max(1-smoothstep(12,18,r),field.Channel(r,bearing,2.48,355));
+        lava = max(lava,max(field.Channel(r,bearing,3.75,210),field.Channel(r,bearing,1.37,118)));
+        float green = saturate((115-P.z+47*field.Noise(P.xy*.013))/45)*saturate((P.z-1.9)/6);
+        return float2(green,lava);
+        """, {"P":local},OUTPUT.CMOT_FLOAT2)
+    green = shader(asset,"return Masks.x;",{"Masks":masks},OUTPUT.CMOT_FLOAT1)
+    lava = shader(asset,"return Masks.y;",{"Masks":masks},OUTPUT.CMOT_FLOAT1)
     base = shader(asset, """
-        float3 p = Position*.01;
-        float details = .58 + .22*sin(p.x*.64+sin(p.y*1.1)) * cos(p.y*.791) + .19*sin(dot(p.xy,float2(1.9,-1.4)));
-        float mineral = lerp(.31,.79,saturate(dot(Stone,float3(.34,.42,.39))));
-        float3 basalt = float3(.080,.062,.054) * (.56+mineral) * (.72+.44*details);
-        float3 scrub = lerp(float3(.029,.063,.016),float3(.122,.165,.054),smoothstep(.24,.77,details));
-        return lerp(lerp(basalt,scrub,Green),float3(.075,.024,.012),saturate(Lava*2));
-        """, {"Position": world, "Stone": tex["color"], "Green": (vertex, "G"), "Lava": (vertex, "B")}, OUTPUT.CMOT_FLOAT3)
+        float luma = dot(Ortho,float3(.2126,.7152,.0722));
+        float detail = dot(Stone,float3(.38,.41,.21));
+        float3 basalt = (.010+min(Ortho,.49)*.28)*float3(.98,.87,.82);
+        float3 weathered = lerp(float3(.018,.043,.016),float3(.094,.135,.038),saturate(luma*2.8));
+        float ledge = smoothstep(.22,.71,1-saturate(N.z));
+        float3 surface = lerp(basalt,weathered,Green*(1-.87*ledge)*.91);
+        return lerp(surface*(.72+1.32*detail),float3(.052,.023,.013),saturate(Lava));
+        """, {"Ortho": aerial, "Stone": tex["color"], "Green": green, "Lava": lava,
+              "N": expression(asset,unreal.MaterialExpressionPixelNormalWS)}, OUTPUT.CMOT_FLOAT3)
     emission = shader(asset, """
         float3 p = Position*.01;
         float flow = .58+.24*sin(p.x*.41+p.y*.33+T*2.1)+.18*sin(p.z*1.11 + p.x*.6 + T*3.8);
         float radiance = pow(saturate(Lava),1.65) * flow;
-        return lerp(float3(5900,450,17),float3(9600,2500,270),smoothstep(.27,.96,Lava)) * radiance;
-        """, {"Position": world, "Lava": (vertex, "B"), "T": time}, OUTPUT.CMOT_FLOAT3)
+        float skyFill = dot(Light,float3(.21,.72,.07))*.018;
+        return lerp(float3(5800,440,17),float3(9900,2500,270),smoothstep(.27,.96,Lava))*radiance
+             + Base*skyFill*float3(.78,.90,1.12);
+        """, {"Position": world, "Lava": lava, "T": time, "Base":base,
+              "Light":expression(asset,unreal.MaterialExpressionSkyAtmosphereLightIlluminance)}, OUTPUT.CMOT_FLOAT3)
     assign(base, PROP.MP_BASE_COLOR)
     assign(emission, PROP.MP_EMISSIVE_COLOR)
     assign(tex["normal"], PROP.MP_NORMAL)
     assign(tex["roughness"], PROP.MP_ROUGHNESS, "R")
+    assign(number(asset,.24), PROP.MP_SPECULAR)
     return save(asset)
 
 
@@ -589,7 +762,7 @@ def dolphin_skin(name, tint, roughness):
     illumination = caustics(asset, world)
     base = shader(asset, """
         float countershade = lerp(.58,1.2,smoothstep(.32,.75,UV.y));
-        return saturate(Tint * countershade * (1+Focus*3.2));
+        return saturate(Tint * countershade * (1+Focus*5.5));
         """, {"Tint": number(asset, tint), "Focus": illumination, "UV": uv}, OUTPUT.CMOT_FLOAT3)
     bend = shader(asset, """
         float stroke = sin(T*7.65 + Phase - UV.x*4.0);
@@ -598,6 +771,15 @@ def dolphin_skin(name, tint, roughness):
     asset.set_editor_property("max_world_position_offset_displacement", 39)
     assign(base, PROP.MP_BASE_COLOR)
     assign(bend, PROP.MP_WORLD_POSITION_OFFSET)
+    downwelling = shader(asset, """
+        // Diffuse skylight and refracted sunlight reach the skin below the water shadow.
+        float sky = dot(Light,float3(.21,.72,.07));
+        float dorsal = .38+.62*saturate(N.z*.7+.3);
+        return Tint*sky*dorsal*(.026+.115*Focus)*float3(.74,.97,1.06);
+        """, {"Tint":number(asset,tint), "Focus":illumination,
+              "N":expression(asset,unreal.MaterialExpressionPixelNormalWS),
+              "Light":expression(asset,unreal.MaterialExpressionSkyAtmosphereLightIlluminance)}, OUTPUT.CMOT_FLOAT3)
+    assign(downwelling, PROP.MP_EMISSIVE_COLOR)
     assign(number(asset, roughness), PROP.MP_ROUGHNESS)
     return save(asset)
 
@@ -608,43 +790,30 @@ def wake_foam():
     color = expression(asset, unreal.MaterialExpressionVertexColor)
     eye = expression(asset, unreal.MaterialExpressionEyeAdaptation)
     sun = expression(asset, unreal.MaterialExpressionSkyAtmosphereLightIlluminance)
+    world = expression(asset, unreal.MaterialExpressionWorldPosition)
+    time = expression(asset, unreal.MaterialExpressionTime)
+    uv_world = shader(asset, """
+        float2 p = P.xy*.01;
+        return (p + float2(sin(p.y*.72-T*.4),cos(p.x*.86-T*.35))*.32 - T*float2(.12,.08))*.16;
+        """, {"P": world, "T": time}, OUTPUT.CMOT_FLOAT2)
+    uv_trail = shader(asset, "return float2(UV.x*.65 + .04*sin(UV.y*.36),UV.y*.066);",
+                      {"UV": uv}, OUTPUT.CMOT_FLOAT2)
+    turbulent = sample_texture(asset, unreal.load_asset(FOAM_TEXTURE), uv_world)
+    streaks = sample_texture(asset, unreal.load_asset(FOAM_TEXTURE), uv_trail)
     foam = shader(asset, """
-        struct Froth {
-            float Cells(float2 p) {
-                float2 tile = floor(p);
-                float2 uv = frac(p);
-                float first = 2, second = 2;
-                [unroll] for (int y=-1; y<=1; ++y) {
-                    [unroll] for (int x=-1; x<=1; ++x) {
-                        float2 shift = float2(x,y);
-                        float2 v = tile + shift;
-                        float2 seed = frac(sin(float2(dot(v,float2(127.1,311.7)),dot(v,float2(269.5,183.3))))*43758.5453);
-                        float2 q = shift + .15 + .7*seed - uv;
-                        float d = dot(q,q);
-                        second = min(second,max(first,d));
-                        first = min(first,d);
-                    }
-                }
-                return sqrt(second)-sqrt(first);
-            }
-        };
-        Froth f;
         float edge = abs(UV.x*2-1);
-        float noise = sin(UV.y*3.8 + cos(UV.y*1.37)*1.6);
-        float2 p = float2((UV.x + .066*noise)*6.3,UV.y*2.65+sin(UV.x*12));
-        float thread = 1-smoothstep(.012,.14,f.Cells(p));
-        float lace = 1-smoothstep(.02,.18,f.Cells(p*2.08 + float2(.4,1.7)));
-        float broken = .51 + .49*sin(UV.y*1.37 + sin(UV.x*11)*2.1);
-        float core = 1-smoothstep(.43+.14*noise,.91+.085*noise,edge);
-        float head = (1-Age)*(1-smoothstep(.09,.61,edge));
-        float white = saturate((thread*.75 + lace*.35 + head*.54) * (.66+.34*broken));
-        float opacity = pow(Strength,.83) * core * saturate(.16 + white*.98) * lerp(1,.72,Prop);
-        float3 tint = lerp(float3(.085,.39,.415),float3(.87,.96,1.0),white);
-        return float4(tint, opacity);
-        """, {"UV": uv, "Age": (color, "R"), "Prop": (color, "G"), "Strength": (color, "A")}, OUTPUT.CMOT_FLOAT4)
+        float agitation = .64*Swirl+.36*Streak;
+        float fringe = 1-smoothstep(.36+.35*Swirl,.73+.27*Streak,edge);
+        float bubbles = smoothstep(.21+.22*Age,.76,agitation);
+        float white = smoothstep(.28+.24*Age,.72,agitation + .13*(1-Age));
+        float fade = saturate(Strength*fringe);
+        float3 tint = lerp(float3(.055,.48,.45),float3(.98,1,.96),white);
+        return float4(tint,fade*saturate(.18+.90*bubbles+.13*Prop));
+        """, {"UV": uv, "Age": (color, "R"), "Prop": (color, "G"), "Strength": (color, "A"),
+              "Swirl": (turbulent,"R"), "Streak": (streaks,"R")}, OUTPUT.CMOT_FLOAT4)
     emission = shader(asset, """
         float sunlight = smoothstep(0,22000,max(Light.r,max(Light.g,Light.b)));
-        return Surface.rgb * lerp(.11,.78,sunlight) / max(Eye,.00001);
+        return Surface.rgb * lerp(.10,1.18,sunlight) / max(Eye,.00001);
         """, {"Surface": foam, "Light": sun, "Eye": eye}, OUTPUT.CMOT_FLOAT3)
     assign(emission, PROP.MP_EMISSIVE_COLOR)
     assign(shader(asset, "return Surface.a;", {"Surface": foam}, OUTPUT.CMOT_FLOAT1), PROP.MP_OPACITY)
@@ -662,9 +831,11 @@ def create_materials(source):
 
     builders = {
         "ground": ("M_CoastalGround", lambda _: ground(maps())),
-        "water": ("M_CoralWater", lambda _: water()),
+        "water": ("M_CoralWater", lambda _: water(source)),
         "leaves": ("M_PalmFronds", lambda _: foliage()),
+        "canopy": ("M_CoastalCanopy", lambda _: coastal_canopy()),
         "cloud": ("M_CoralCloudVolume", lambda _: tropical_clouds()),
+        "ash": ("M_EruptionColumn", lambda _: eruption_column()),
         "distant_sky": ("M_TradeWindSky", lambda _: distant_sky(source)),
         "bark": ("M_PalmBark", lambda name: pbr(name, maps()["palm_tree_bark"])),
         "rock": ("M_TidalRock", lambda name: pbr(name, maps()["coast_rocks_03"], arm=True, wet=True)),
@@ -674,18 +845,19 @@ def create_materials(source):
         "paint": ("M_LighthouseRed", lambda name: painted_masonry(name, (.62,.087,.047), maps()["rock_face"])),
         "concrete": ("M_QuayConcrete", lambda name: painted_masonry(name, (.32,.31,.25), maps()["rock_face"])),
         "lantern": ("M_LanternGlass", lambda _: lantern_glass()),
-        "beacon": ("M_LighthouseBeacon", lambda name: simple(name, (.61,.33,.10), .29, emissive=(3700, 1920, 640))),
+        "beacon": ("M_LighthouseBeacon", lambda name: simple(name, (.61,.33,.10), .29, emissive=(7700, 3450, 690))),
         "wood": ("M_CoastalTimber", lambda name: pbr(name, maps()["wooden_planks"])),
         "gelcoat": ("M_SaltwaterGelcoat", lambda _: gelcoat()),
         "glass": ("M_SmokedGlazing", lambda name: simple(name, (.023,.057,.069), .092, metal=.44)),
         "steel": ("M_MarineSteel", lambda name: simple(name, (.39,.46,.47), .20, metal=.84)),
         "rubber": ("M_MarineRubber", lambda name: simple(name, (.015,.022,.023), .74)),
         "sail": ("M_CoralSailcloth", lambda _: canvas()),
+        "shirt": ("M_DeckShirt", lambda name: simple(name,(.56,.63,.62),.85,two_sided=True)),
         "red": ("M_MarkerRed", lambda name: simple(name, (.44,.018,.008), .47, metal=.12)),
         "green": ("M_MarkerGreen", lambda name: simple(name, (.006,.19,.095), .47, metal=.12)),
         "warm": ("M_PierLamp", lambda name: simple(name, (.76,.38,.16), .24, emissive=(7,2.8,.54))),
         "foam": ("M_CoralWakeFoam", lambda _: wake_foam()),
-        "dolphin_body": ("M_DolphinSkin", lambda name: dolphin_skin(name, (.075,.104,.12), .23)),
+        "dolphin_body": ("M_DolphinSkin", lambda name: dolphin_skin(name, (.145,.18,.19), .26)),
         "dolphin_white": ("M_DolphinBelly", lambda name: dolphin_skin(name, (.29,.32,.32), .27)),
         "dolphin_material": ("M_DolphinEye", lambda name: dolphin_skin(name, (.005,.007,.009), .15)),
         "dolphin_mouth": ("M_DolphinMouth", lambda name: dolphin_skin(name, (.021,.027,.030), .38)),
@@ -699,15 +871,16 @@ def create_materials(source):
     for piece in ("ship_bridge", "ship_hull", "ship_containers", "skipper"):
         builders[piece] = (f"M_{piece.title().replace('_', '')}",
                            lambda name, piece=piece: pbr(name, baked_maps(source, piece), arm=True))
+    refresh = set(os.environ.get("SAILING_REBUILD_MATERIALS", "").split(","))
     result = {}
     for role, (name, build) in builders.items():
         path = f"{ROOT}/Materials/{name}"
-        result[role] = ASSETS.load_asset(path) if ASSETS.does_asset_exist(path) else build(name)
+        result[role] = build(name) if role in refresh or not ASSETS.does_asset_exist(path) else ASSETS.load_asset(path)
     nanite = unreal.MaterialUsage.MATUSAGE_NANITE
     instances = unreal.MaterialUsage.MATUSAGE_INSTANCED_STATIC_MESHES
-    for role in ("ground", "leaves", "bark", "rock", "boulder", "volcano"):
+    for role in ("ground", "leaves", "bark", "canopy", "rock", "boulder", "volcano"):
         asset = result[role]
-        required = (nanite, instances) if role in ("leaves", "bark") else (nanite,)
+        required = (nanite, instances) if role in ("leaves", "bark", "canopy") else (nanite,)
         missing = [usage for usage in required if not EDIT.has_material_usage(asset, usage)]
         if missing:
             for usage in missing:

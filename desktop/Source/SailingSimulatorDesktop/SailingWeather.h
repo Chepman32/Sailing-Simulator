@@ -64,9 +64,7 @@ private:
     float PreviousFlash = 0.0f;
     bool bAtmosphereDirty = true;
 
-#if !UE_BUILD_SHIPPING
     FString CapturePath;
     int32 Frames = 0;
     int32 CaptureFrame = 0;
-#endif
 };

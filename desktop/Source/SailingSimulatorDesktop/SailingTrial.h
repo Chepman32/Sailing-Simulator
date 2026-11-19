@@ -70,6 +70,7 @@ private:
     double BoomAngle = 0.0;
     double LeewardSide = -1.0;
     bool bHelmCamera = false;
+    bool bWideChase = false;
 };
 
 UCLASS()

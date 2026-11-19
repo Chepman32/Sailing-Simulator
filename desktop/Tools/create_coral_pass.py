@@ -10,7 +10,7 @@ import sys
 import unreal
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from coastal_layout import CAYS, LIGHTHOUSE, VOLCANO_X, VOLCANO_Y, relief, volcano_relief
+from coastal_layout import CAYS, LIGHTHOUSE, VOLCANO_X, VOLCANO_Y, VOLCANO_RIM, reef_floor, relief, terrain_noise, volcano_relief
 from coastal_materials import ASSETS, ROOT, TOOLS, create_materials
 
 
@@ -48,6 +48,9 @@ def import_mesh(name, material, *, nanite=True, collision=False, foliage=False):
     mesh = ASSETS.load_asset(target) if ASSETS.does_asset_exist(target) else None
     refresh = mesh is not None and ("1" in REIMPORT or name in REIMPORT)
     if not mesh or refresh:
+        # Interchange matches individual source nodes on reimport. These FBXs are
+        # single combined meshes whose constituent hulls, sails and rigging can change.
+        unreal.SystemLibrary.execute_console_command(None, "Interchange.FeatureFlags.Import.FBX 0")
         ui = unreal.FbxImportUI()
         configure(ui, import_as_skeletal=False, import_mesh=True, import_materials=False, import_textures=False,
                   mesh_type_to_import=unreal.FBXImportType.FBXIT_STATIC_MESH, automated_import_should_detect_type=False)
@@ -59,7 +62,7 @@ def import_mesh(name, material, *, nanite=True, collision=False, foliage=False):
         task = unreal.AssetImportTask()
         configure(task, filename=str(SOURCES / f"{name}.fbx"), destination_path=f"{ROOT}/Meshes",
                   destination_name=f"SM_{name}", factory=unreal.FbxFactory(), options=ui, automated=True,
-                  replace_existing=refresh, save=True)
+                  replace_existing=refresh, replace_existing_settings=True, save=True)
         TOOLS.import_asset_tasks([task])
         objects = [asset for asset in task.get_objects() if isinstance(asset, unreal.StaticMesh)]
         if len(objects) != 1:
@@ -135,12 +138,12 @@ def make_dock(material):
     cube, post, cap = (unreal.load_asset(f"{SHAPES}/{name}") for name in ("Cube", "Cylinder", "Cone"))
     # The quay and light mark the harbor beyond the starting run of open water.
     for i in range(10):
-        y = -11 + 11 * i
+        y = -205 + 11 * i
         static(f"Quay wall {i+1}", cube, (472, y, -.72), scale=(21, 10.96, 6.3), material=material["concrete"], collision=True)
         static(f"Granite coping {i+1}", cube, (462.1, y, 2.55), scale=(1.45, 10.94, .43), material=material["plaster"])
         static(f"Rubber fender {i+1}", cube, (461.4, y, .71), scale=(.65, 1.15, 2.2), material=material["rubber"])
         static(f"Mooring bollard {i+1}", post, (463.2, y, 2.93), scale=(.58,.58,.54), material=material["steel"])
-    for i, (y, width) in enumerate(((36, 19), (62, 22), (88, 17))):
+    for i, (y, width) in enumerate(((-158, 19), (-132, 22), (-106, 17))):
         static(f"Harbor warehouse {i+1}", cube, (471,y,5.8), scale=(14,width,6.5), material=material["plaster"])
         static(f"Warehouse roof {i+1}", cube, (471,y,9.21), scale=(14.9,width+.64,.44), material=material["concrete"])
     for index, (x, y) in enumerate(((129, 42), (178, -34), (252, 64), (273, -38), (378, 81), (397, -51))):
@@ -158,11 +161,11 @@ def atmosphere(material):
                   scale=(220000, 220000, 220000), material=material["distant_sky"])
     dome.static_mesh_component.set_cast_shadow(False)
     dome.static_mesh_component.set_visible_in_ray_tracing(False)
-    sun = spawn(unreal.DirectionalLight, "Sun", pitch=-30, yaw=198)
+    sun = spawn(unreal.DirectionalLight, "Sun", pitch=-36, yaw=157)
     day = sun.get_component_by_class(unreal.DirectionalLightComponent)
     day.set_mobility(unreal.ComponentMobility.MOVABLE)
-    day.set_intensity(83000)
-    configure(day, atmosphere_sun_light=True, light_source_angle=1.1, cast_cloud_shadows=True, cast_volumetric_shadow=True,
+    day.set_intensity(86000)
+    configure(day, atmosphere_sun_light=True, light_source_angle=.75, cast_cloud_shadows=True, cast_volumetric_shadow=True,
               cloud_shadow_strength=.78, cloud_shadow_on_atmosphere_strength=1.0, cloud_shadow_on_surface_strength=.78,
               cloud_shadow_extent=10, cloud_shadow_map_resolution_scale=1.5, volumetric_scattering_intensity=1.7)
 
@@ -180,7 +183,7 @@ def atmosphere(material):
     cloud.set_material(cloud_mat)
     cloud.set_render_in_main_pass(True)
     cloud.set_visible_in_real_time_sky_captures(True)
-    configure(cloud, layer_bottom_altitude=.12, layer_height=3.8,
+    configure(cloud, layer_bottom_altitude=.94, layer_height=3.2,
               tracing_start_max_distance=42, tracing_max_distance=13, view_sample_count_scale=1.5,
               shadow_view_sample_count_scale=1.2)
     cloud.set_reflection_view_sample_count_scale(.72)
@@ -221,7 +224,7 @@ def atmosphere(material):
               rain_material=material["rain"], lightning_material=material["lightning"])
 
 
-def volcano_groves(palms):
+def volcano_groves(palms, canopy):
     rng = random.Random("coral-pass/volcano")
     groups = [[] for _ in palms]
     for _ in range(1500):
@@ -237,6 +240,19 @@ def volcano_groves(palms):
         grove = spawn(cpp("SailingGrove"), f"Volcano foothill grove {i+1}", (VOLCANO_X, VOLCANO_Y, 0))
         grove.plant(palm, transforms)
 
+    crowns = []
+    for _ in range(24500):
+        x, y = rng.uniform(-675,675),rng.uniform(-675,675)
+        height,green = volcano_relief(x,y)
+        corridor = .64 + .4*terrain_noise(x*.012,y*.012) + .23*terrain_noise(x*.033,y*.033)
+        if green < .30 or rng.random() > green*corridor:
+            continue
+        size = rng.uniform(.33,.96)
+        crowns.append(unreal.Transform(location=cm((x,y,height-1.25)),
+                      rotation=unreal.Rotator(yaw=rng.uniform(-180,180)),scale=unreal.Vector(size,size,size*rng.uniform(.78,1.15))))
+    grove = spawn(cpp("SailingGrove"),"Volcanic foothill forest",(VOLCANO_X,VOLCANO_Y,0))
+    grove.plant(canopy,crowns)
+
 
 def rocky_shore_and_reef(boulder):
     rng = random.Random("coral-pass/shoals")
@@ -248,12 +264,16 @@ def rocky_shore_and_reef(boulder):
         static(f"Lighthouse rock {i+1}", boulder,
                (x0+math.cos(theta)*27*radius, y0+math.sin(theta)*20*radius, rng.uniform(-.95,.40)),
                yaw=rng.uniform(-180,180), scale=(scale,scale,scale*rng.uniform(.64,.94)))
-    for i in range(31):
-        x, y = rng.uniform(-38, 103), rng.uniform(26, 51)
-        z = -18.3 + 12.5*math.sqrt(max(0,1-((x-32)/88)**2-((y-29)/37)**2))
+    for i in range(85):
+        x, y = rng.uniform(-44,88),rng.uniform(-8,51)
+        z,stone = reef_floor(x,y)
+        if stone < .40 or z < -12:
+            continue
         scale = rng.uniform(1.2, 3.8)
-        static(f"Shallow reef outcrop {i+1}", boulder, (x,y,z-.51), yaw=rng.uniform(-180,180),
-               scale=(scale,scale,scale*rng.uniform(.66,1.23)))
+        vertical = scale*rng.uniform(.55,.87)
+        top = boulder.get_bounding_box().max.z * .01 * vertical
+        static(f"Shallow reef outcrop {i+1}", boulder, (x,y,min(z-.51,-1.75-top)), yaw=rng.uniform(-180,180),
+               scale=(scale,scale,vertical))
 
 
 def build_level(material, meshes, cays, palms):
@@ -270,19 +290,41 @@ def build_level(material, meshes, cays, palms):
 
     floor = unreal.load_asset(f"{SHAPES}/Cube")
     static("Deep seabed", floor, (0, 0, -41), scale=(6500, 6500, 1.0), material=material["ground"], collision=True)
-    static("Reef shelf", unreal.load_asset(f"{SHAPES}/Sphere"), (32,29,-18.3), scale=(176,74,25), material=material["ground"])
+    static("Reef shelf", meshes["reef"], (0,0,0))
     for index, cay in enumerate(CAYS):
         static(cay.name, cays[cay.name], (cay.x, cay.y, 0), collision=True)
         plant_cay(cay, palms, (118, 87, 119, 100, 65, 0)[index])
 
+        if cay.ridge > 0:
+            rng = random.Random("windward scrub/"+cay.name)
+            shrubs = []
+            for _ in range(1600):
+                x,y = rng.uniform(-cay.length,cay.length),rng.uniform(-cay.width,cay.width)
+                z,green,rock = relief(cay,x,y)
+                if green < .65 or rock > .68:
+                    continue
+                size = rng.uniform(.36,.94)
+                shrubs.append(unreal.Transform(location=cm((x,y,z-size*1.7)),
+                    rotation=unreal.Rotator(yaw=rng.uniform(-180,180)),scale=unreal.Vector(size,size,size)))
+            grove = spawn(cpp("SailingGrove"),f"{cay.name} coastal woodland",(cay.x,cay.y,0))
+            grove.plant(meshes["canopy"],shrubs)
+
     static("Volcano and lava fields", meshes["volcano"], (VOLCANO_X,VOLCANO_Y,0), collision=True)
-    volcano_groves(palms)
-    static("Coral Pass light", meshes["lighthouse"], LIGHTHOUSE)
+    volcano_groves(palms,meshes["canopy"])
+    plume = static("Eruption column", floor, (VOLCANO_X+37,VOLCANO_Y+76,VOLCANO_RIM+303),
+                   scale=(570,650,656), material=material["ash"])
+    plume.static_mesh_component.set_cast_shadow(False)
+    plume.static_mesh_component.set_visible_in_ray_tracing(False)
+    static("Coral Pass light", meshes["lighthouse"], LIGHTHOUSE, scale=(1.10,1.10,1.10))
     for i, (x, y, heading, size) in enumerate(((-9,-6,28,.92), (8,-9,105,1.05), (-14,2,173,.84), (10,-3,63,.76))):
         height, _, _ = relief(CAYS[-1], x, y)
         static(f"Lighthouse palm {i+1}", palms[i % len(palms)], (LIGHTHOUSE[0]+x,LIGHTHOUSE[1]+y,height-.18),
                yaw=heading, scale=(size,size,size))
-    static("Container ship at anchor", meshes["ship"], (502, 26, -.20), yaw=91, collision=True)
+    for i, (x,y,size) in enumerate(((-8,-6,.46),(4,9,.51),(13,-3,.35),(-13,3,.47),(-2,-12,.43))):
+        z,_,_ = relief(CAYS[-1],x,y)
+        static(f"Light station thicket {i+1}",meshes["canopy"],(LIGHTHOUSE[0]+x,LIGHTHOUSE[1]+y,z-.55),
+               yaw=i*104,scale=(size,size,size))
+    static("Container ship at anchor", meshes["ship"], (430,-163,-.24), yaw=-122, collision=True)
     static("Distant merchant ship", meshes["ship"], (1280, -170, 0), yaw=-145, scale=(.95,.95,.95), collision=True)
     rocky_shore_and_reef(meshes["boulder"])
 
@@ -295,7 +337,7 @@ def build_level(material, meshes, cays, palms):
     for i, (x, y, z, yaw, scale) in enumerate(placements):
         static(f"Scanned headland {i + 1}", meshes["rocks"], (x, y, z), yaw=yaw, scale=(scale, scale, scale), collision=False)
     make_dock(material)
-    spawn(unreal.PlayerStart, "Free sailing start", (0, 0, .14), yaw=8)
+    spawn(unreal.PlayerStart, "Free sailing start", (0, 0, .14), yaw=25)
     sea = spawn(cpp("SailingSea"), "Open sea")
     configure(sea, water_material=material["water"])
     wake = spawn(cpp("SailingWake"), "Catamaran wake and prop wash")
@@ -316,8 +358,11 @@ def main():
     if os.environ.get("SAILING_MATERIALS_ONLY") == "1":
         return
     lighthouse = {"lighthousestone": material["plaster"], "lighthousered": material["paint"],
-                  "steel": material["steel"], "lampglass": material["lantern"], "beacon": material["beacon"]}
+                  "steel": material["steel"], "lampglass": material["lantern"], "beacon": material["beacon"],
+                  "windowglass": material["glass"]}
     meshes = {
+        "reef": import_mesh("ReefShelf",material["ground"]),
+        "canopy": import_mesh("CoastalCanopy",material["canopy"],foliage=True),
         "rocks": import_mesh("CoastRocks", material["rock"]),
         "boulder": import_mesh("Boulder", material["boulder"]),
         "volcano": import_mesh("Volcano", material["volcano"], collision=True),
@@ -336,7 +381,8 @@ def main():
              "material.002": material["wood"]}
     for name in ("Catamaran", "CatamaranRig", "CatamaranJib"):
         import_mesh(name, yacht, nanite=False)
-    import_mesh("Skipper", material["skipper"], nanite=False)
+    import_mesh("Skipper", {"skipperskin":material["skipper"],"deckshirt":material["shirt"],
+                            "material_0":material["skipper"]}, nanite=False)
     build_level(material, meshes, cays, palms)
 
 

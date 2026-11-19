@@ -27,8 +27,10 @@ constexpr double CmPerM = 100.0;
 constexpr int32 SeaCells = 144;
 constexpr double CellM = 0.46;
 constexpr double SeaRadiusM = SeaCells * CellM * 0.5;
-constexpr double ChasePitch = -6.3;
-constexpr double ChaseYawOffset = -33.0;
+constexpr double ChasePitch = -4.4;
+constexpr double ChaseYawOffset = -46.0;
+constexpr float CloseChaseCm = 3730;
+constexpr float WideChaseCm = 5040;
 
 UMaterialInterface* FindTrialMaterial(const TCHAR* Path)
 {
@@ -172,15 +174,15 @@ ASailingYachtPawn::ASailingYachtPawn()
     ChaseArm->SetupAttachment(Hull);
     ChaseArm->SetUsingAbsoluteRotation(true);
     ChaseArm->SetRelativeRotation(FRotator(ChasePitch, ChaseYawOffset, 0));
-    ChaseArm->TargetOffset = FVector(0, 0, 510);
-    ChaseArm->TargetArmLength = 3150.0f;
+    ChaseArm->TargetOffset = FVector(0, 0, 150);
+    ChaseArm->TargetArmLength = CloseChaseCm;
     ChaseArm->bEnableCameraLag = true;
     ChaseArm->CameraLagSpeed = 2.7f;
     ChaseArm->bEnableCameraRotationLag = true;
     ChaseArm->CameraRotationLagSpeed = 2.25f;
     ChaseCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("ChaseCamera"));
     ChaseCamera->SetupAttachment(ChaseArm, USpringArmComponent::SocketName);
-    ChaseCamera->SetFieldOfView(67.0f);
+    ChaseCamera->SetFieldOfView(61.0f);
 
     HelmCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("HelmCamera"));
     HelmCamera->SetupAttachment(Hull);
@@ -217,6 +219,8 @@ void ASailingYachtPawn::BeginPlay()
         Hull->SetPhysicsLinearVelocity(GetActorForwardVector() * 345.0);
     }
     ChaseArm->SetWorldRotation(FRotator(ChasePitch, GetActorRotation().Yaw + ChaseYawOffset, 0));
+    bWideChase = FParse::Param(FCommandLine::Get(), TEXT("SailingWide"));
+    if (bWideChase) ChaseArm->TargetArmLength = WideChaseCm;
     if (FParse::Param(FCommandLine::Get(), TEXT("SailingHelm")))
     {
         bHelmCamera = true;
@@ -270,6 +274,11 @@ void ASailingYachtPawn::Tick(float DeltaSeconds)
             ChaseCamera->SetActive(!bHelmCamera);
             HelmCamera->SetActive(bHelmCamera);
         }
+        if (!bHelmCamera)
+        {
+            if (Player->WasInputKeyJustPressed(EKeys::MouseScrollDown)) bWideChase = true;
+            if (Player->WasInputKeyJustPressed(EKeys::MouseScrollUp)) bWideChase = false;
+        }
         if (Player->WasInputKeyJustPressed(EKeys::H) && Player->GetHUD())
         {
             Player->GetHUD()->ShowHUD();
@@ -294,7 +303,12 @@ void ASailingYachtPawn::Tick(float DeltaSeconds)
     MainSail->SetRelativeScale3D(FVector(1.0, -LeewardSide, 1.0));
     Rig->SetRelativeScale3D(FVector(1.0, -LeewardSide, 1.0));
     Jib->SetRelativeScale3D(FVector(1.0, -LeewardSide, 1.0));
-    ChaseArm->SetWorldRotation(FRotator(ChasePitch, GetActorRotation().Yaw + ChaseYawOffset, 0));
+    ChaseArm->TargetArmLength = FMath::FInterpTo(ChaseArm->TargetArmLength,
+        bWideChase ? WideChaseCm : CloseChaseCm, DeltaSeconds, 3.0f);
+    const float Zoom = (ChaseArm->TargetArmLength - CloseChaseCm) / (WideChaseCm - CloseChaseCm);
+    ChaseArm->TargetOffset.Z = FMath::Lerp(150.0f, -28.0f, Zoom);
+    ChaseCamera->SetFieldOfView(FMath::Lerp(61.0f, 68.0f, Zoom));
+    ChaseArm->SetWorldRotation(FRotator(ChasePitch - 1.6 * Zoom, GetActorRotation().Yaw + ChaseYawOffset, 0));
 }
 
 void ASailingYachtPawn::AsyncPhysicsTickActor(float DeltaSeconds, float SimTime)
@@ -495,13 +509,13 @@ void ASailingDolphinPod::Tick(float DeltaSeconds)
     const Sailing::FSeaFrame Sea = Yacht->SeaFrame();
     const FVector Ahead = Yacht->GetActorForwardVector().GetSafeNormal2D();
     const FVector Beam = FVector::CrossProduct(FVector::UpVector, Ahead);
-    static const FVector2D Positions[] = {{-570, 1290}, {-890, 1110}, {-1120, 1020}};
+    static const FVector2D Positions[] = {{-1100, 1760}, {-1450, 1930}, {-1720, 2010}};
     for (int32 I = 0; I < Dolphins.Num(); ++I)
     {
         UStaticMeshComponent* Dolphin = Dolphins[I];
         const double Phase = Sea.TimeS * 0.72 + I * 1.92;
         const FVector Goal = Yacht->GetActorLocation() + Ahead * (Positions[I].X + 80 * FMath::Sin(Phase * .48))
-            + Beam * (Positions[I].Y + 120 * FMath::Sin(Phase * .68));
+            + Beam * (Positions[I].Y + 175 * FMath::Sin(Phase * .86));
         FVector Position = bSwimming ? Dolphin->GetComponentLocation() : Goal;
         FVector Motion = Yacht->GetVelocity() + (Goal - Position) * .62;
         Motion.Z = 0;
@@ -510,7 +524,7 @@ void ASailingDolphinPod::Tick(float DeltaSeconds)
         const float Yaw = bSwimming ? FMath::FixedTurn(Dolphin->GetComponentRotation().Yaw, Heading.Yaw, 65.0f * DeltaSeconds) : Heading.Yaw;
         Position += FRotator(0, Yaw, 0).Vector() * Speed * DeltaSeconds;
         const double Water = Sailing::SampleSea(FVector2D(Position) / CmPerM, Sea.TimeS, 0, Sea.Scale).HeightM;
-        Position.Z = Water * CmPerM - (60.0 + 24.0 * FMath::Sin(Phase));
+        Position.Z = Water * CmPerM - (41.0 + 32.0 * FMath::Sin(Phase));
         Dolphin->SetWorldLocationAndRotation(Position, FRotator(-6.8 * FMath::Cos(Phase), Yaw, 4 * FMath::Sin(Phase * 1.9)));
     }
     bSwimming = true;

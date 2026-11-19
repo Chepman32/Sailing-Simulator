@@ -43,7 +43,7 @@ struct FWeather
 };
 
 constexpr FWeather Conditions[] = {
-    { TEXT("Trade winds"), 30, 18, 83000, 0, 1.15f, 0.0020f, 1.7f, -0.48f, 0.0f, 1.0f, 0 },
+    { TEXT("Trade winds"), 36, -23, 86000, 0, 1.08f, 0.0028f, 1.0f, -0.48f, 0.0f, 1.0f, 0 },
     { TEXT("Golden hour"), 11, 3, 65000, 0, 1.04f, 0.0036f, 3.5f, -0.15f, 0.012f, 1.05f, 0 },
     { TEXT("Squall"), 19, -28, 3800, 0, 0.60f, 0.0135f, 2.4f, 0.13f, 0.030f, 2.43f, 1 },
     { TEXT("Moonlight"), -13, 25, 0, 4.5f, 0.74f, 0.0031f, 1.8f, -0.28f, 0.010f, 0.70f, 0 },
@@ -119,9 +119,7 @@ void ASailingWeather::BeginPlay()
         if (StartingWeather.Equals(TEXT("night"), ESearchCase::IgnoreCase)) Condition = 3;
         for (int32 I = 0; I < UE_ARRAY_COUNT(Conditions); ++I) Strengths[I] = I == Condition ? 1.0f : 0.0f;
     }
-#if !UE_BUILD_SHIPPING
     FParse::Value(FCommandLine::Get(), TEXT("SailingCapture="), CapturePath);
-#endif
     FRandomStream Drops(1249);
     TArray<int32> Indices;
     for (int32 I = 0; I < RainCount; ++I)
@@ -181,11 +179,8 @@ void ASailingWeather::Tick(float DeltaSeconds)
 
     const float RainStrength = Value(&FWeather::Rain);
     bool bForceStrike = Player->WasInputKeyJustPressed(EKeys::L);
-#if !UE_BUILD_SHIPPING
-    ++Frames;
-    const bool bCapture = !CapturePath.IsEmpty() && Frames > 120 && Time > 7.0f;
+    const bool bCapture = !CapturePath.IsEmpty() && ++Frames > 120 && Time > 7.0f;
     bForceStrike |= bCapture && CaptureFrame == 0 && Condition == 2;
-#endif
     if (RainStrength > 0.46f && (Time >= NextStrike || (bForceStrike && Time - StrikeTime > 0.7f)))
     {
         StartStrike(Time, Eye, Forward, Right);
@@ -244,7 +239,6 @@ void ASailingWeather::Tick(float DeltaSeconds)
     }
     UpdateRain(RainStrength, Time, Eye, Right);
 
-#if !UE_BUILD_SHIPPING
     if (bCapture && CaptureFrame == 0)
     {
         if (const APawn* Yacht = Player->GetPawn())
@@ -259,7 +253,6 @@ void ASailingWeather::Tick(float DeltaSeconds)
     {
         FGenericPlatformMisc::RequestExit(false);
     }
-#endif
 }
 
 void ASailingWeather::UpdateRain(float Strength, float Time, const FVector& Eye, const FVector& Right)

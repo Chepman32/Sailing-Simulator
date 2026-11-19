@@ -23,9 +23,9 @@ struct FWave
 
 constexpr FWave Waves[] = {
     { 55.0, 0.32, 155.0, 0.7 }, { 32.0, 0.22, 202.0, 1.4 },
-    { 19.0, 0.18, 115.0, 3.3 }, { 14.0, 0.133, 73.0, 4.1 },
-    { 9.7, 0.099, 139.0, 5.6 }, { 6.7, 0.076, 212.0, 1.9 },
-    { 4.75, 0.055, 89.0, 2.7 }, { 3.45, 0.042, 154.0, 0.9 },
+    { 19.0, 0.25, 115.0, 3.3 }, { 14.0, 0.195, 73.0, 4.1 },
+    { 9.7, 0.151, 139.0, 5.6 }, { 6.7, 0.118, 212.0, 1.9 },
+    { 4.75, 0.084, 89.0, 2.7 }, { 3.45, 0.062, 154.0, 0.9 },
 };
 static_assert(UE_ARRAY_COUNT(Waves) == SeaWaveCount);
 
@@ -88,7 +88,7 @@ FLinearColor SeaWaveParameter(int32 Index, FSeaFrame Frame)
 
 FVector TrueWind(double TimeS, double SeaScale)
 {
-    const double TowardRad = FMath::DegreesToRadians(87.0 + 4.0 * FMath::Sin(TimeS * 0.041));
+    const double TowardRad = FMath::DegreesToRadians(-93.0 + 4.0 * FMath::Sin(TimeS * 0.041));
     const double Speed = 8.5 * (1.0 + 0.12 * FMath::Sin(TimeS * 0.091) + 0.04 * FMath::Sin(TimeS * 0.37));
     return FVector(FMath::Cos(TowardRad), FMath::Sin(TowardRad), 0.0) * (Speed * FMath::Sqrt(SeaScale));
 }

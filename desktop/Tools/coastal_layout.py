@@ -1,7 +1,12 @@
 """Coral Pass layout in metres, with +X forward, +Y to starboard, and Z up."""
 
 import math
+import sys
+import zlib
+from array import array
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -16,7 +21,7 @@ class Cay:
     phase: float
 
 
-LIGHTHOUSE = (316.0, -26.0, 2.02)
+LIGHTHOUSE = (253.0, -122.0, 2.02)
 CAYS = (
     Cay("LongCay", 368, 178, 189, 101, 16, 9, 0.8),
     Cay("CloudHead", 525, -385, 175, 86, 20, 11, 2.2),
@@ -25,7 +30,7 @@ CAYS = (
     Cay("SouthCay", -260, 246, 138, 88, 26, 14, 4.8),
     Cay("LightCay", LIGHTHOUSE[0], LIGHTHOUSE[1], 27, 20, 2.15, 0, 4.2),
 )
-VOLCANO_X, VOLCANO_Y = 1510.0, -1100.0
+VOLCANO_X, VOLCANO_Y = 920.0, -2050.0
 VOLCANO_RADIUS = 640.0
 VOLCANO_RIM = 305.0
 
@@ -59,25 +64,69 @@ def relief(cay, x, y):
     return height, vegetation, rock
 
 
+def terrain_noise(x, y):
+    # Smooth seeded lattice values in [-1, 1], shared by mesh baking and planting.
+    i, j = math.floor(x), math.floor(y)
+    u, v = x-i, y-j
+    u, v = u*u*(3-2*u), v*v*(3-2*v)
+
+    def corner(a,b):
+        h = (a*1597334677 ^ b*3812015801) & 0xffffffff
+        h = ((h ^ h >> 16)*2246822519) & 0xffffffff
+        return (h ^ h >> 13)/2147483648 - 1
+
+    a, b = corner(i,j), corner(i+1,j)
+    c, d = corner(i,j+1), corner(i+1,j+1)
+    return (a+(b-a)*u)*(1-v)+(c+(d-c)*u)*v
+
+
+SURVEY_SIZE = 768
+
+
+@lru_cache(maxsize=1)
+def volcano_survey():
+    """North-up USGS 3DEP elevations, quantized to unsigned decimetres."""
+    path = Path(__file__).with_name("data") / "st_helens_3dep.u16z"
+    samples = array("H", zlib.decompress(path.read_bytes()))
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if len(samples) != SURVEY_SIZE**2:
+        raise ValueError(f"Unexpected elevation grid in {path}")
+    return samples
+
+
+def volcano_raster(x, y):
+    # The southern rim faces the opening reach. The orthophoto has the same extent.
+    return 344 + x*.43, 438 + y*.43
+
+
 def volcano_relief(x, y):
-    """Asymmetric stratovolcano with a recessed crater and radial erosion."""
-    angle = math.atan2(y, x)
-    meters = math.hypot(x, y)
-    coast = VOLCANO_RADIUS * (1 + .14 * math.sin(2 * angle + 1.1) + .093 * math.sin(5 * angle + .7))
-    flank = meters / coast
-    rim = 34 + 5 * math.cos(3 * angle + .8) + 2.7 * math.sin(8 * angle)
-    rough = (.54 * math.sin(9 * angle + flank * 2.1) + .27 * math.sin(16 * angle - flank * 4.2)
-             + .13 * math.cos(27 * angle + flank * 5.9) + .06 * math.sin(43 * angle + flank * 9))
-    if meters < rim:
-        crater = max(0.0, (meters / rim - .35) / .65)
-        height = VOLCANO_RIM - 42 + crater**2.3 * (42 + 6 * rough)
-    else:
-        slope = max(0.0, 1 - (meters - rim) / (coast - rim))
-        shoulder = 23 * max(0.0, math.sin(math.pi * flank))**2 * math.cos(4 * angle - flank * 4.5)
-        gullies = 43 * rough * max(0.0, math.sin(math.pi * flank))**.9
-        texture = 2.7 * math.sin(x*.052 + math.sin(y*.035)) * math.cos(y*.048)
-        height = VOLCANO_RIM * slope**2.18 + (shoulder + gullies + texture) * min(1, 2.8 * slope) - .5
-        if flank > 1:
-            height -= min(34, (flank - 1) * 93)
-    green = max(0.0, min(1.0, (144 - height + rough * 29) / 48, (height - 1.6) / 15))
-    return height, green
+    """Surveyed lava domes, cliffs and alluvial fans fitted to a fictional coastline."""
+    radius, angle = math.hypot(x,y), math.atan2(y,x)
+    coast = VOLCANO_RADIUS * (1+.13*math.sin(2*angle+1.1)+.075*math.sin(5*angle+.7))
+    r = radius/coast
+    if r >= 1:
+        return -.6-min(34,(r-1)*93), 0
+    u, v = volcano_raster(x,y)
+    u, v = max(0,min(SURVEY_SIZE-1.001,u)), max(0,min(SURVEY_SIZE-1.001,v))
+    col, row = int(u), int(v)
+    cell = row*SURVEY_SIZE+col
+    grid = volcano_survey()
+    fx, fy = u-col, v-row
+    north = grid[cell]*(1-fx) + grid[cell+1]*fx
+    south = grid[cell+SURVEY_SIZE]*(1-fx) + grid[cell+SURVEY_SIZE+1]*fx
+    elevation = .1*(north*(1-fy) + south*fy)
+    apron = min(1,(1-r)/.28)
+    vent = 24*max(0,1-(radius/19)**2)**2
+    height = max(1.6,(elevation-975)*.198)*apron*apron*(3-2*apron) - vent - .6
+    patch = terrain_noise(x*.013,y*.013)
+    green = min(1,max(0,(115-height+47*patch)/45))
+    return height, green*min(1,max(0,(height-1.9)/6))
+
+
+def reef_floor(x,y):
+    """Coral heads and sand channels under the opening reach, in world metres."""
+    r = math.hypot((x-20)/77,(y-19)/39)
+    patches = terrain_noise(x*.069,y*.069)*.63 + terrain_noise(x*.22,y*.22)*.37
+    shoal = -3.4 - 10*r*r + 2.8*patches + terrain_noise(x*.034,y*.034)*1.75
+    return max(-44,shoal-75*max(0,r-.80)**2), min(1,max(0,.48+patches*1.9))

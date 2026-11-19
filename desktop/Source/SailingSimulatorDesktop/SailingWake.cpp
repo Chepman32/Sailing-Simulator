@@ -79,13 +79,15 @@ void ASailingWake::Tick(float DeltaSeconds)
             const bool bPropeller = Strip == 2;
             const bool bBow = Strip >= 3;
             const bool bPort = Strip == 0 || Strip == 3;
-            const double Divergence = (1.0 - FMath::Exp(-Age * 0.27)) * (bBow ? 7.5 : 2.2);
-            const double HalfWidth = bPropeller ? 0.42 + 0.31 * Age : (bBow ? 0.31 : 0.59) + Age * 0.19;
+            const double Travel = Age * Sample.Speed;
+            const double Divergence = bBow ? Travel * .19 : .30 * FMath::Sin(Sample.DistanceM * .42 + Age * .36);
+            const double HalfWidth = bPropeller ? .48 + .34 * Age :
+                (bBow ? .34 + Travel * .055 : .86 + .50 * FMath::Sqrt(Travel));
             const FVector2D HullPosition = bBow ? (bPort ? Sample.BowPort : Sample.BowStarboard)
                 : (bPort ? Sample.Port : Sample.Starboard);
             const FVector2D Mid = bPropeller ? Sample.Propeller : HullPosition + Sample.Beam * Divergence * (bPort ? -1 : 1);
             const float Strength = bPropeller ? Sample.Wash * FMath::Exp(-Age * 0.52) :
-                FMath::SmoothStep(0.24f, bBow ? 3.6f : 2.8f, Sample.Speed) * FMath::Exp(-Age * (bBow ? .59f : .20f));
+                FMath::SmoothStep(0.24f, bBow ? 3.6f : 2.8f, Sample.Speed) * FMath::Exp(-Age * (bBow ? .39f : .145f));
             for (int32 I = 0; I < Across; ++I)
             {
                 const int32 Index = (Strip * (MaxRows + 1) + Row) * Across + I;
