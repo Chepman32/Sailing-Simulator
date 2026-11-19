@@ -1,14 +1,13 @@
 #include "SailingTrial.h"
+#include "SailingExplorer.h"
 
 #include "Camera/CameraComponent.h"
 #include "Components/BoxComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Engine/Canvas.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
-#include "InputCoreTypes.h"
 #include "Kismet/GameplayStatics.h"
 #include "KismetProceduralMeshLibrary.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -18,7 +17,7 @@
 #include "Misc/ScopeLock.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "ProceduralMeshComponent.h"
-#include "SailingWeather.h"
+#include "SailingPlayerController.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -108,11 +107,6 @@ void BuildSailMesh(UProceduralMeshComponent& Mesh)
 }
 }
 
-ASailingPlayerController::ASailingPlayerController()
-{
-    bShowMouseCursor = true;
-}
-
 ASailingYachtPawn::ASailingYachtPawn()
 {
     PrimaryActorTick.bCanEverTick = true;
@@ -157,7 +151,9 @@ ASailingYachtPawn::ASailingYachtPawn()
     Part(TEXT("Cabin"), Hull, Cube.Object, Gelcoat, { -20, 0, 108 }, { 2.55, 2.58, 0.74 })->SetHiddenInGame(bDetailed);
     Part(TEXT("Mast"), Hull, Cylinder.Object, Gelcoat, { 58, 0, 552 }, { 0.12, 0.12, 9.88 })->SetHiddenInGame(bDetailed);
     Catamaran = Part(TEXT("Catamaran"), Hull, DetailedYacht.Get(), nullptr, FVector::ZeroVector, FVector::OneVector);
-    Part(TEXT("Skipper"), Hull, Helmsman.Get(), nullptr, FVector::ZeroVector, FVector::OneVector);
+    SkipperModel = Part(TEXT("Skipper"), Hull, Helmsman.Get(), nullptr, FVector::ZeroVector, FVector::OneVector);
+    SkipperView = CreateDefaultSubobject<USailingExplorer>(TEXT("SkipperView"));
+    SkipperView->SetupAttachment(Hull);
     Jib = Part(TEXT("Jib"), Hull, ForeSail.Get(), nullptr, FVector::ZeroVector, FVector::OneVector);
 
     Boom = CreateDefaultSubobject<USceneComponent>(TEXT("Gooseneck"));
@@ -219,14 +215,16 @@ void ASailingYachtPawn::BeginPlay()
         Hull->SetPhysicsLinearVelocity(GetActorForwardVector() * 345.0);
     }
     ChaseArm->SetWorldRotation(FRotator(ChasePitch, GetActorRotation().Yaw + ChaseYawOffset, 0));
-    bWideChase = FParse::Param(FCommandLine::Get(), TEXT("SailingWide"));
-    if (bWideChase) ChaseArm->TargetArmLength = WideChaseCm;
+    ViewYaw = ChaseYawOffset;
+    ViewPitch = ChasePitch;
+    ViewDistanceCm = FParse::Param(FCommandLine::Get(), TEXT("SailingWide")) ? WideChaseCm : CloseChaseCm;
+    ChaseArm->TargetArmLength = ViewDistanceCm;
     if (FParse::Param(FCommandLine::Get(), TEXT("SailingHelm")))
     {
-        bHelmCamera = true;
-        ChaseCamera->SetActive(false);
-        HelmCamera->SetActive(true);
+        View = EYachtView::Helm;
+        RecenterView();
     }
+    ActivateView();
     if (!Catamaran->GetStaticMesh() || !Rig->GetStaticMesh())
     {
         BuildHullMesh(*HullVisual);
@@ -241,53 +239,206 @@ void ASailingYachtPawn::SetDeckLights(float Strength)
     StarboardLamp->SetIntensity(Strength * 30.0f);
 }
 
+void ASailingYachtPawn::SetRudder(double Value)
+{
+    Helm.Rudder = FMath::Clamp(Value, -1.0, 1.0);
+    bKeyboardRudder = false;
+}
+
+void ASailingYachtPawn::SetEngineRunning(bool bRunning)
+{
+    if (bRunning && !Helm.bEngineOn && FMath::Abs(Helm.Throttle) <= 0.08)
+    {
+        SetThrottle(0.12);
+    }
+    Helm.bEngineOn = bRunning;
+}
+
+void ASailingYachtPawn::DriveHelm(float DeltaSeconds, int32 Steering, int32 Throttle, int32 Ease)
+{
+    if (Steering != 0)
+    {
+        Helm.Rudder = FMath::Clamp(Helm.Rudder + Steering * DeltaSeconds * 2.4, -1.0, 1.0);
+        bKeyboardRudder = true;
+    }
+    else if (bKeyboardRudder)
+    {
+        Helm.Rudder = FMath::FInterpConstantTo(Helm.Rudder, 0.0, DeltaSeconds, 6.4);
+        bKeyboardRudder = Helm.Rudder != 0;
+    }
+    SetThrottle(Helm.Throttle + Throttle * DeltaSeconds * 0.55);
+    if (Ease != 0)
+    {
+        if (Helm.bAutoTrim)
+        {
+            Helm.SheetEase = (FMath::RadiansToDegrees(ReadSail().SheetAngleRad) - 7.0) / 80.0;
+            Helm.bAutoTrim = false;
+        }
+        Helm.SheetEase = FMath::Clamp(Helm.SheetEase + Ease * DeltaSeconds * 0.35, 0.0, 1.0);
+    }
+}
+
+const TCHAR* ASailingYachtPawn::ViewName() const
+{
+    switch (View)
+    {
+    case EYachtView::Helm: return TEXT("Helm");
+    case EYachtView::Orbit: return TEXT("Orbit");
+    case EYachtView::Drone: return TEXT("Drone");
+    default: return TEXT("Chase");
+    }
+}
+
+void ASailingYachtPawn::ActivateView()
+{
+    if (SkipperView->Away())
+    {
+        ChaseCamera->SetActive(false);
+        HelmCamera->SetActive(false);
+        return;
+    }
+    const bool bAtHelm = View == EYachtView::Helm && !bCinematic;
+    ChaseCamera->SetActive(!bAtHelm);
+    HelmCamera->SetActive(bAtHelm);
+}
+
+void ASailingYachtPawn::ToggleExplorer()
+{
+    if (SkipperView->Away()) SkipperView->Return();
+    else
+    {
+        bCinematic = false;
+        SetRudder(0);
+        SetThrottle(0);
+        Helm.AnchorM = FVector2D(GetActorLocation()) * .01;
+        Catamaran->SetCollisionResponseToAllChannels(ECR_Ignore);
+        Catamaran->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+        Catamaran->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+        SkipperView->Leave(*this);
+    }
+    Helm.bHoveTo = SkipperView->Away();
+    if (!Helm.bHoveTo) Catamaran->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    SkipperModel->SetVisibility(!Helm.bHoveTo);
+    ActivateView();
+}
+
+FVector ASailingYachtPawn::WorldFocus() const
+{
+    return SkipperView->Away() ? SkipperView->GetComponentLocation() : GetActorLocation();
+}
+
+double ASailingYachtPawn::DeckFloor(FVector Feet, double Top) const
+{
+    FHitResult Hit;
+    const FTransform Pose = GetActorTransform();
+    const FCollisionQueryParams Query(SCENE_QUERY_STAT(SailingDeck), true);
+    if (Catamaran->LineTraceComponent(Hit, Pose.TransformPosition({Feet.X,Feet.Y,Top}),
+        Pose.TransformPosition({Feet.X,Feet.Y,-80}), Query))
+        return Pose.InverseTransformPosition(Hit.ImpactPoint).Z;
+    // The rope lattice has gaps between its strands. The trial hull also has
+    // no imported mesh; its cockpit and steps use the authored local dimensions.
+    if (Feet.X > 260 && Feet.X < 444 && FMath::Abs(Feet.Y)<135 && Top >= 137) return 137;
+    if (!Catamaran->GetStaticMesh() && Feet.X >= -545 && Feet.X < 420 && FMath::Abs(Feet.Y) < 220)
+        return Feet.X < -480 ? 60 : 84;
+    return -1000;
+}
+
+bool ASailingYachtPawn::DeckWall(FVector From, FVector To) const
+{
+    if (From.Equals(To, .01)) return false;
+    const FTransform Pose = GetActorTransform();
+    const FVector Chest(0,0,85);
+    FHitResult Hit;
+    return Catamaran->LineTraceComponent(Hit, Pose.TransformPosition(From + Chest),
+        Pose.TransformPosition(To + Chest + (To-From).GetSafeNormal2D()*19), FCollisionQueryParams(SCENE_QUERY_STAT(SailingCabin),true))
+        && FVector::DotProduct(Hit.ImpactNormal, Pose.GetUnitAxis(EAxis::Z)) < .65;
+}
+
+void ASailingYachtPawn::CycleView()
+{
+    bCinematic = false;
+    switch (View)
+    {
+    case EYachtView::Chase: View = EYachtView::Helm; break;
+    case EYachtView::Helm: View = EYachtView::Orbit; break;
+    case EYachtView::Orbit: View = EYachtView::Drone; break;
+    case EYachtView::Drone: View = EYachtView::Chase; break;
+    }
+    ViewDistanceCm = View == EYachtView::Drone ? 4200.f : View == EYachtView::Orbit ? 2400.f : CloseChaseCm;
+    RecenterView();
+    ActivateView();
+}
+
+void ASailingYachtPawn::RecenterView()
+{
+    if (bCinematic)
+    {
+        CinematicYaw = 0;
+        CinematicPitch = -13.f;
+        return;
+    }
+    ViewYaw = 0;
+    switch (View)
+    {
+    case EYachtView::Helm: ViewPitch = -3; break;
+    case EYachtView::Orbit: ViewPitch = -14; break;
+    case EYachtView::Drone: ViewPitch = -33; break;
+    default: ViewPitch = ChasePitch; break;
+    }
+}
+
+void ASailingYachtPawn::OrbitView(FVector2D Pixels)
+{
+    const bool bAtHelm = View == EYachtView::Helm && !bCinematic;
+    float& Yaw = bCinematic ? CinematicYaw : ViewYaw;
+    float& Pitch = bCinematic ? CinematicPitch : ViewPitch;
+    const float NewYaw = Yaw + FMath::RadiansToDegrees(Pixels.X * 0.0047);
+    Yaw = bAtHelm ? FMath::Clamp(NewYaw, -83.f, 83.f) : FRotator::NormalizeAxis(NewYaw);
+    Pitch = FMath::Clamp<float>(Pitch - FMath::RadiansToDegrees(Pixels.Y * 0.0038), -62.f, bAtHelm ? 18.f : -2.f);
+}
+
+void ASailingYachtPawn::ZoomView(double WheelDelta)
+{
+    if (!bCinematic && View == EYachtView::Helm) return;
+    const float Minimum = !bCinematic && View == EYachtView::Drone ? 3400.f : 700.f;
+    float& Distance = bCinematic ? CinematicDistanceCm : ViewDistanceCm;
+    Distance = FMath::Clamp<float>(Distance - WheelDelta * 160, Minimum, 6800.f);
+}
+
+void ASailingYachtPawn::SetCinematic(bool bEnabled)
+{
+    bCinematic = bEnabled;
+    if (bEnabled)
+    {
+        CinematicYaw = ViewYaw;
+        CinematicPitch = -13.f;
+        CinematicDistanceCm = WideChaseCm;
+    }
+    ActivateView();
+}
+
+void ASailingYachtPawn::UpdateView(float DeltaSeconds)
+{
+    if (View == EYachtView::Helm && !bCinematic)
+    {
+        HelmCamera->SetRelativeRotation(FRotator(ViewPitch, ViewYaw, 0));
+        return;
+    }
+    if (bCinematic) CinematicYaw = FRotator::NormalizeAxis(CinematicYaw + DeltaSeconds * 3.5f);
+    const float Distance = bCinematic ? CinematicDistanceCm : ViewDistanceCm;
+    ChaseArm->TargetArmLength = FMath::FInterpTo(ChaseArm->TargetArmLength, Distance, DeltaSeconds, 3.f);
+    const float Wide = FMath::Clamp((ChaseArm->TargetArmLength - CloseChaseCm) / (WideChaseCm - CloseChaseCm), 0.f, 1.f);
+    ChaseArm->TargetOffset.Z = FMath::Lerp(150.f, -28.f, Wide);
+    ChaseCamera->SetFieldOfView(FMath::Lerp(61.f, 68.f, Wide));
+    const float Pitch = bCinematic ? CinematicPitch : ViewPitch - 1.6f * Wide;
+    const float Yaw = GetActorRotation().Yaw + (bCinematic ? CinematicYaw : ViewYaw);
+    ChaseArm->SetWorldRotation(FRotator(Pitch, Yaw, 0));
+}
+
 void ASailingYachtPawn::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
-    if (const APlayerController* Player = Cast<APlayerController>(Controller))
-    {
-        const auto Down = [Player](FKey Key) { return Player->IsInputKeyDown(Key) ? 1.0 : 0.0; };
-        Helm.Rudder = Down(EKeys::D) - Down(EKeys::A);
-        Helm.Throttle = FMath::Clamp(Helm.Throttle + (Down(EKeys::W) - Down(EKeys::S)) * DeltaSeconds * 0.65, -1.0, 1.0);
-        const double SheetInput = Down(EKeys::E) - Down(EKeys::Q);
-        if (SheetInput != 0.0)
-        {
-            if (Helm.bAutoTrim)
-            {
-                Helm.SheetEase = FMath::Clamp((FMath::RadiansToDegrees(ReadSail().SheetAngleRad) - 7.0) / 80.0, 0.0, 1.0);
-            }
-            Helm.bAutoTrim = false;
-            Helm.SheetEase = FMath::Clamp(Helm.SheetEase + SheetInput * DeltaSeconds * 0.55, 0.0, 1.0);
-        }
-        if (Player->WasInputKeyJustPressed(EKeys::T))
-        {
-            Helm.bAutoTrim = true;
-        }
-        if (Player->WasInputKeyJustPressed(EKeys::F))
-        {
-            Helm.bEngineOn = !Helm.bEngineOn;
-            Helm.Throttle = 0.0;
-        }
-        if (Player->WasInputKeyJustPressed(EKeys::C))
-        {
-            bHelmCamera = !bHelmCamera;
-            ChaseCamera->SetActive(!bHelmCamera);
-            HelmCamera->SetActive(bHelmCamera);
-        }
-        if (!bHelmCamera)
-        {
-            if (Player->WasInputKeyJustPressed(EKeys::MouseScrollDown)) bWideChase = true;
-            if (Player->WasInputKeyJustPressed(EKeys::MouseScrollUp)) bWideChase = false;
-        }
-        if (Player->WasInputKeyJustPressed(EKeys::H) && Player->GetHUD())
-        {
-            Player->GetHUD()->ShowHUD();
-        }
-    }
-    else
-    {
-        Helm = {};
-    }
+    if (!Controller) Helm = {};
     {
         FScopeLock Lock(&HelmMutex);
         PhysicsHelm = Helm;
@@ -303,12 +454,8 @@ void ASailingYachtPawn::Tick(float DeltaSeconds)
     MainSail->SetRelativeScale3D(FVector(1.0, -LeewardSide, 1.0));
     Rig->SetRelativeScale3D(FVector(1.0, -LeewardSide, 1.0));
     Jib->SetRelativeScale3D(FVector(1.0, -LeewardSide, 1.0));
-    ChaseArm->TargetArmLength = FMath::FInterpTo(ChaseArm->TargetArmLength,
-        bWideChase ? WideChaseCm : CloseChaseCm, DeltaSeconds, 3.0f);
-    const float Zoom = (ChaseArm->TargetArmLength - CloseChaseCm) / (WideChaseCm - CloseChaseCm);
-    ChaseArm->TargetOffset.Z = FMath::Lerp(150.0f, -28.0f, Zoom);
-    ChaseCamera->SetFieldOfView(FMath::Lerp(61.0f, 68.0f, Zoom));
-    ChaseArm->SetWorldRotation(FRotator(ChasePitch - 1.6 * Zoom, GetActorRotation().Yaw + ChaseYawOffset, 0));
+    if (SkipperView->Away()) SkipperView->Advance(*this, DeltaSeconds);
+    else UpdateView(DeltaSeconds);
 }
 
 void ASailingYachtPawn::AsyncPhysicsTickActor(float DeltaSeconds, float SimTime)
@@ -452,7 +599,7 @@ void ASailingSea::Tick(float DeltaSeconds)
     {
         return;
     }
-    const FVector Position = Yacht->GetActorLocation();
+    const FVector Position = Yacht->WorldFocus();
     const FVector2D CenterM(FMath::GridSnap(Position.X / CmPerM, CellM), FMath::GridSnap(Position.Y / CmPerM, CellM));
     const FVector CenterCm(CenterM.X * CmPerM, CenterM.Y * CmPerM, 0.0);
     SetActorLocation(CenterCm);
@@ -528,40 +675,6 @@ void ASailingDolphinPod::Tick(float DeltaSeconds)
         Dolphin->SetWorldLocationAndRotation(Position, FRotator(-6.8 * FMath::Cos(Phase), Yaw, 4 * FMath::Sin(Phase * 1.9)));
     }
     bSwimming = true;
-}
-
-void ASailingTrialHUD::BeginPlay()
-{
-    Super::BeginPlay();
-    Weather = Cast<ASailingWeather>(UGameplayStatics::GetActorOfClass(this, ASailingWeather::StaticClass()));
-    if (FParse::Param(FCommandLine::Get(), TEXT("SailingHideHUD"))) bShowHUD = false;
-}
-
-void ASailingTrialHUD::DrawHUD()
-{
-    Super::DrawHUD();
-    const ASailingYachtPawn* Yacht = Cast<ASailingYachtPawn>(GetOwningPawn());
-    if (!Yacht || !Canvas)
-    {
-        return;
-    }
-    const Sailing::FSail Sail = Yacht->ReadSail();
-    const Sailing::FHelm& Helm = Yacht->ReadHelm();
-    const double Heading = FMath::Fmod(Yacht->GetActorRotation().Yaw + 360.0, 360.0);
-    const double Speed = Yacht->GetVelocity().Size2D() / CmPerM * Sailing::KnotsPerMps;
-    const FLinearColor Panel(0.008f, 0.023f, 0.029f, 0.76f);
-    const FLinearColor Secondary(0.72f, 0.84f, 0.86f);
-    DrawRect(Panel, 24, 24, 330, 100);
-    DrawText(Weather ? Weather->ConditionName() : TEXT("Sea trial"), Secondary, 40, 34, nullptr, 1.05f);
-    DrawText(FString::Printf(TEXT("%.1f kn     %03.0f°"), Speed, Heading), FLinearColor::White, 39, 53, nullptr, 2.0f);
-    DrawText(FString::Printf(TEXT("AW %.1f kn  %+.0f°    ·    %s %.0f°    ·    %s %+.0f%%"),
-        Sail.ApparentSpeedMps * Sailing::KnotsPerMps, FMath::RadiansToDegrees(Sail.ApparentAngleRad),
-        Helm.bAutoTrim ? TEXT("Auto") : TEXT("Sheet"), FMath::RadiansToDegrees(Sail.SheetAngleRad),
-        Helm.bEngineOn ? TEXT("Engine") : TEXT("Off"), Helm.Throttle * 100.0), Secondary, 40, 99);
-    const float Bottom = Canvas->ClipY - 72;
-    DrawRect(Panel, 24, Bottom, 475, 48);
-    DrawText(TEXT("A/D Helm     Q/E Trim     T Auto     F Engine     W/S Throttle     C View"), Secondary, 36, Bottom + 7);
-    DrawText(TEXT("1 Day     2 Golden hour     3 Squall     4 Night     L Lightning     H HUD"), Secondary, 36, Bottom + 25);
 }
 
 ASailingTrialMode::ASailingTrialMode()

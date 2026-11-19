@@ -13,12 +13,12 @@
 #include "Engine/SkyLight.h"
 #include "Engine/StaticMeshActor.h"
 #include "GameFramework/PlayerController.h"
-#include "InputCoreTypes.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "ProceduralMeshComponent.h"
+#include "SailingExplorer.h"
 #include "SailingTrial.h"
 #include "UnrealClient.h"
 
@@ -93,6 +93,16 @@ ASailingWeather::ASailingWeather()
 void ASailingWeather::BeginPlay()
 {
     Super::BeginPlay();
+    if (Fog)
+    {
+        HeightFog = Fog->FindComponentByClass<UExponentialHeightFogComponent>();
+        if (HeightFog)
+        {
+            AirFogColor = HeightFog->FogInscatteringLuminance;
+            AirSkyScatter = HeightFog->SkyAtmosphereAmbientContributionColorScale;
+            bAirUsesVolume = HeightFog->bEnableVolumetricFog;
+        }
+    }
     if (Clouds)
     {
         UVolumetricCloudComponent* Cloud = Clouds->FindComponentByClass<UVolumetricCloudComponent>();
@@ -139,21 +149,20 @@ const TCHAR* ASailingWeather::ConditionName() const
     return Conditions[Condition].Name;
 }
 
+void ASailingWeather::SelectCondition(int32 Index)
+{
+    if (Index >= 0 && Index < UE_ARRAY_COUNT(Conditions) && Index != Condition)
+    {
+        Condition = Index;
+        bAtmosphereDirty = true;
+    }
+}
+
 void ASailingWeather::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
     APlayerController* Player = GetWorld()->GetFirstPlayerController();
     if (!Player || !Player->PlayerCameraManager) return;
-
-    const FKey Keys[] = { EKeys::One, EKeys::Two, EKeys::Three, EKeys::Four };
-    for (int32 I = 0; I < UE_ARRAY_COUNT(Keys); ++I)
-    {
-        if (Player->WasInputKeyJustPressed(Keys[I]) && Condition != I)
-        {
-            Condition = I;
-            bAtmosphereDirty = true;
-        }
-    }
 
     const float Time = GetWorld()->GetTimeSeconds();
     const FVector Eye = Player->PlayerCameraManager->GetCameraLocation();
@@ -178,7 +187,8 @@ void ASailingWeather::Tick(float DeltaSeconds)
     };
 
     const float RainStrength = Value(&FWeather::Rain);
-    bool bForceStrike = Player->WasInputKeyJustPressed(EKeys::L);
+    bool bForceStrike = bLightningRequested;
+    bLightningRequested = false;
     const bool bCapture = !CapturePath.IsEmpty() && ++Frames > 120 && Time > 7.0f;
     bForceStrike |= bCapture && CaptureFrame == 0 && Condition == 2;
     if (RainStrength > 0.46f && (Time >= NextStrike || (bForceStrike && Time - StrikeTime > 0.7f)))
@@ -207,7 +217,6 @@ void ASailingWeather::Tick(float DeltaSeconds)
             Light->SetVolumetricScatteringIntensity(Value(&FWeather::Scattering));
         }
         if (Moon) Moon->GetLightComponent()->SetIntensity(Value(&FWeather::MoonLux));
-        if (Fog) Fog->FindComponentByClass<UExponentialHeightFogComponent>()->SetFogDensity(Value(&FWeather::Fog));
         if (Optics)
         {
             Optics->Settings.AutoExposureBias = .13f + 0.6f * Strengths[3];
@@ -218,8 +227,9 @@ void ASailingWeather::Tick(float DeltaSeconds)
         }
         if (CloudInstance)
         {
+            const float Density = Value(&FWeather::CloudDensity);
             CloudInstance->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), Value(&FWeather::CloudCoverage));
-            CloudInstance->SetScalarParameterValue(TEXT("Cloud_GlobalDensity"), Value(&FWeather::CloudDensity));
+            CloudInstance->SetScalarParameterValue(TEXT("Cloud_GlobalDensity"), Density);
         }
         if (DistantSky)
         {
@@ -231,17 +241,37 @@ void ASailingWeather::Tick(float DeltaSeconds)
         Sky->GetLightComponent()->SetIntensity(Value(&FWeather::SkyIntensity) * (1.0f + Flash * 2.45f));
     }
     PreviousFlash = Flash;
+    ASailingYachtPawn* Yacht = Cast<ASailingYachtPawn>(Player->GetPawn());
+    const float Depth = Yacht ? Yacht->Explorer().DepthM() : 0.f;
+    const float Immersion = FMath::RoundToFloat(12 * FMath::SmoothStep(.04f, .62f, Depth)) / 12;
+    if (bAtmosphereDirty || Immersion != PreviousImmersion)
+    {
+        if (HeightFog)
+        {
+            // The existing fog pass supplies underwater visibility. Clear water
+            // scatters blue-green light over tens of metres, with no air shafts.
+            const float Light = .034f * Value(&FWeather::SunLux) + .075f * Value(&FWeather::MoonLux) + .015f;
+            const FLinearColor WaterScatter = FLinearColor(.012f, .13f, .16f) * Light;
+            HeightFog->SetFogDensity(FMath::Lerp(Value(&FWeather::Fog), .64f, Immersion));
+            HeightFog->SetFogInscatteringColor(FMath::Lerp(AirFogColor, WaterScatter, Immersion));
+            HeightFog->SetSkyAtmosphereAmbientContributionColorScale(AirSkyScatter * (1 - Immersion));
+            HeightFog->SetVolumetricFog(bAirUsesVolume && Immersion < .75f);
+        }
+        if (Clouds && CloudInstance && CloudMaterial)
+            Clouds->SetActorHiddenInGame(Immersion == 1 || Value(&FWeather::CloudDensity) == 0.f);
+        PreviousImmersion = Immersion;
+    }
     bAtmosphereDirty = Strengths[Condition] < 1.0f;
-    if (ASailingYachtPawn* Yacht = Cast<ASailingYachtPawn>(Player->GetPawn()))
+    if (Yacht)
     {
         Yacht->SetSeaScale(Value(&FWeather::SeaScale));
         Yacht->SetDeckLights(Strengths[3] + Strengths[2] * 0.15f);
     }
-    UpdateRain(RainStrength, Time, Eye, Right);
+    UpdateRain(RainStrength * (1 - Immersion), Time, Eye, Right);
 
     if (bCapture && CaptureFrame == 0)
     {
-        if (const APawn* Yacht = Player->GetPawn())
+        if (Yacht)
         {
             UE_LOG(LogTemp, Display, TEXT("Coral Pass capture: %s at %.2f kn, position %s"), ConditionName(),
                 Yacht->GetVelocity().Size2D() * 0.01 * Sailing::KnotsPerMps, *Yacht->GetActorLocation().ToCompactString());

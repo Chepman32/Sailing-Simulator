@@ -10,6 +10,7 @@ class APostProcessVolume;
 class ASkyLight;
 class AStaticMeshActor;
 class AVolumetricCloud;
+class UExponentialHeightFogComponent;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 class UPointLightComponent;
@@ -25,6 +26,8 @@ public:
     void BeginPlay() override;
     void Tick(float DeltaSeconds) override;
     const TCHAR* ConditionName() const;
+    void SelectCondition(int32 Index);
+    void RequestLightning() { bLightningRequested = true; }
 
 private:
     void UpdateRain(float Strength, float Time, const FVector& Eye, const FVector& Right);
@@ -47,6 +50,11 @@ private:
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> CloudInstance;
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> DistantSky;
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> BoltInstance;
+    UPROPERTY(Transient) TObjectPtr<UExponentialHeightFogComponent> HeightFog;
+    FLinearColor AirFogColor = FLinearColor::Black;
+    FLinearColor AirSkyScatter = FLinearColor::White;
+    float PreviousImmersion = 0;
+    bool bAirUsesVolume = false;
 
     FRandomStream Random{73};
     TArray<FVector> RainSeeds;
@@ -63,6 +71,7 @@ private:
     float NextStrike = 6.0f;
     float PreviousFlash = 0.0f;
     bool bAtmosphereDirty = true;
+    bool bLightningRequested = false;
 
     FString CapturePath;
     int32 Frames = 0;

@@ -4,7 +4,6 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/Pawn.h"
-#include "GameFramework/PlayerController.h"
 #include "SailingPhysics.h"
 
 #include <atomic>
@@ -21,15 +20,9 @@ class UProceduralMeshComponent;
 class USpringArmComponent;
 class UStaticMeshComponent;
 class ASailingWeather;
+class USailingExplorer;
 
-UCLASS()
-class ASailingPlayerController : public APlayerController
-{
-    GENERATED_BODY()
-
-public:
-    ASailingPlayerController();
-};
+enum class EYachtView : uint8 { Chase, Helm, Orbit, Drone };
 
 UCLASS()
 class ASailingYachtPawn : public APawn
@@ -46,12 +39,31 @@ public:
     void SetDeckLights(float Strength);
     const Sailing::FHelm& ReadHelm() const { return Helm; }
     Sailing::FSail ReadSail() const;
+    void DriveHelm(float DeltaSeconds, int32 Steering, int32 Throttle, int32 Ease);
+    void SetRudder(double Value);
+    void SetThrottle(double Value) { Helm.Throttle = FMath::Clamp(Value, -1.0, 1.0); }
+    void SetEngineRunning(bool bRunning);
+    void ResumeAutoTrim() { Helm.bAutoTrim = true; }
+    void CycleView();
+    void RecenterView();
+    void OrbitView(FVector2D Pixels);
+    void ZoomView(double WheelDelta);
+    void SetCinematic(bool bEnabled);
+    bool IsCinematic() const { return bCinematic; }
+    const TCHAR* ViewName() const;
+    USailingExplorer& Explorer() const { return *SkipperView; }
+    void ToggleExplorer();
+    FVector WorldFocus() const;
+    double DeckFloor(FVector LocalFeet, double Top) const;
+    bool DeckWall(FVector From, FVector To) const;
 
 private:
     UPROPERTY() TObjectPtr<UBoxComponent> Hull;
     UPROPERTY() TObjectPtr<UProceduralMeshComponent> HullVisual;
     UPROPERTY() TObjectPtr<UProceduralMeshComponent> MainSail;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Catamaran;
+    UPROPERTY() TObjectPtr<UStaticMeshComponent> SkipperModel;
+    UPROPERTY() TObjectPtr<USailingExplorer> SkipperView;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Rig;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Jib;
     UPROPERTY() TObjectPtr<USceneComponent> Boom;
@@ -69,8 +81,17 @@ private:
     std::atomic<float> SeaScale{1.0f};
     double BoomAngle = 0.0;
     double LeewardSide = -1.0;
-    bool bHelmCamera = false;
-    bool bWideChase = false;
+    void ActivateView();
+    void UpdateView(float DeltaSeconds);
+    EYachtView View = EYachtView::Chase;
+    float ViewPitch = 0;
+    float ViewYaw = 0;
+    float ViewDistanceCm = 0;
+    float CinematicYaw = 0;
+    float CinematicPitch = 0;
+    float CinematicDistanceCm = 0;
+    bool bCinematic = false;
+    bool bKeyboardRudder = false;
 };
 
 UCLASS()
@@ -101,9 +122,14 @@ class ASailingTrialHUD : public AHUD
 public:
     void BeginPlay() override;
     void DrawHUD() override;
+    double ThrottleAt(double ScreenY) const;
+    float InputScale() const { return UIScale; }
 
 private:
     UPROPERTY() TObjectPtr<ASailingWeather> Weather;
+    float ThrottleTop = 0;
+    float ThrottleHeight = 1;
+    float UIScale = 1;
 };
 
 UCLASS()

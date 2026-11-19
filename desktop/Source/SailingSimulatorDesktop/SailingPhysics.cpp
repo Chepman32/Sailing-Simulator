@@ -160,7 +160,13 @@ FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS,
     const FVector Forward = State.Rotation.GetForwardVector().GetSafeNormal2D();
     const FVector Right = RightOf(Forward);
     const FVector CenterOfEffort = Point({ 0.25, 0.0, 4.4 });
-    Apply(SolveSail(Forward, TrueWind(TimeS, SeaScale) - VelocityAt(CenterOfEffort), Helm).ForceN, CenterOfEffort);
+    if (Helm.bHoveTo)
+    {
+        const FVector2D Offset = Helm.AnchorM - FVector2D(State.OriginM);
+        const FVector2D Holding = (Offset * 780.0 - FVector2D(State.VelocityMps) * 6100.0).GetClampedToMaxSize(21000.0);
+        Loads.ForceN += FVector(Holding, 0);
+    }
+    else Apply(SolveSail(Forward, TrueWind(TimeS, SeaScale) - VelocityAt(CenterOfEffort), Helm).ForceN, CenterOfEffort);
 
     const FVector Keel = Point({ 0.0, 0.0, -0.78 });
     const FSeaSample KeelSea = SampleSea({ Keel.X, Keel.Y }, TimeS, FMath::Max(0.0, -Keel.Z), SeaScale);
@@ -186,7 +192,7 @@ FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS,
     const double RawAxial = FVector::DotProduct(SternFlow, Forward) + PropWash;
     const double AxialSpeed = FMath::Abs(RawAxial);
     const double EffectiveAxial = FMath::Sign(RawAxial) * (FMath::Min(AxialSpeed, 3.8) + 0.25 * FMath::Max(0.0, AxialSpeed - 3.8));
-    const double Delta = FMath::DegreesToRadians(32.0) * FMath::Clamp(Helm.Rudder, -1.0, 1.0);
+    const double Delta = FMath::DegreesToRadians(MaxRudderDegrees) * FMath::Clamp(Helm.Rudder, -1.0, 1.0);
     const double OpposingSide = -520.0 * (FMath::Sin(Delta) * FMath::Cos(Delta) * EffectiveAxial
         + 0.42 * FVector::DotProduct(SternFlow, Right)) * FMath::Abs(EffectiveAxial);
     const double RudderDrag = -FMath::Sign(U) * FMath::Abs(OpposingSide * FMath::Sin(Delta)) * 0.65;

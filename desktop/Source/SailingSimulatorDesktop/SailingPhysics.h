@@ -6,6 +6,7 @@ namespace Sailing
 {
 inline constexpr double MassKg = 6200.0;
 inline constexpr double KnotsPerMps = 1.94384449;
+inline constexpr double MaxRudderDegrees = 32.0;
 inline constexpr int32 SeaWaveCount = 8;
 inline constexpr double SeaCrestShape = 0.27;
 
@@ -29,6 +30,8 @@ struct FHelm
     double SheetEase = 0.50;
     bool bEngineOn = false;
     bool bAutoTrim = true;
+    bool bHoveTo = false;
+    FVector2D AnchorM = FVector2D::ZeroVector;
 };
 
 struct FSail
