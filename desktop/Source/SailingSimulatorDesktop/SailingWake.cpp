@@ -1,105 +1,78 @@
 #include "SailingWake.h"
-
+#include "Components/PrimitiveComponent.h"
+#include "Engine/Texture2D.h"
 #include "Kismet/GameplayStatics.h"
-#include "ProceduralMeshComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "SailingTrial.h"
 
 ASailingWake::ASailingWake()
 {
     PrimaryActorTick.bCanEverTick = true;
     PrimaryActorTick.TickGroup = TG_PostPhysics;
-    Foam = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("WakeFoam"));
-    SetRootComponent(Foam);
-    Foam->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-    Foam->SetCastShadow(false);
-    Foam->SetTranslucentSortPriority(1);
 }
 
 void ASailingWake::BeginPlay()
 {
     Super::BeginPlay();
-    TArray<int32> Indices;
-    constexpr int32 StripSize = Across * (MaxRows + 1);
-    for (int32 Strip = 0; Strip < Strips; ++Strip)
+    Sea = Cast<ASailingSea>(UGameplayStatics::GetActorOfClass(this,ASailingSea::StaticClass()));
+    constexpr auto Size = Sailing::FFoamField::Size;
+    TArray64<uint8> Empty;
+    Empty.SetNumZeroed(Size*Size*4);
+    for (auto& Map : Maps)
     {
-        for (int32 Row = 0; Row < MaxRows; ++Row)
-        {
-            for (int32 I = 0; I < Across - 1; ++I)
-            {
-                const int32 A = Strip * StripSize + Row * Across + I;
-                Indices.Append({ A, A + 1, A + Across, A + 1, A + Across + 1, A + Across });
-            }
-        }
+        Map = UTexture2D::CreateTransient(Size,Size,PF_B8G8R8A8,NAME_None,Empty);
+        Map->SRGB=false;
+        Map->Filter=TF_Bilinear;
+        Map->AddressX=Map->AddressY=TA_Wrap;
+        Map->NeverStream=true;
+        Map->UpdateResource();
     }
-    Vertices.Init(FVector::ZeroVector, Strips * StripSize);
-    UVs.Init(FVector2D::ZeroVector, Vertices.Num());
-    Colors.Init(FLinearColor::Transparent, Vertices.Num());
-    Trail.Reserve(MaxRows);
-    Foam->SetMaterial(0, FoamMaterial);
-    Foam->CreateMeshSection_LinearColor(0, Vertices, Indices, {}, UVs, Colors, {}, false);
 }
 
 void ASailingWake::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
-    const ASailingYachtPawn* Yacht = Cast<ASailingYachtPawn>(UGameplayStatics::GetPlayerPawn(this, 0));
-    if (!Yacht || !FoamMaterial) return;
-
-    const Sailing::FSeaFrame Sea = Yacht->SeaFrame();
-    const FTransform YachtPose = Yacht->GetActorTransform();
-    const FVector2D Beam(Yacht->GetActorRightVector().GetSafeNormal2D());
-    const auto Position = [&YachtPose](double X, double Y)
+    const auto* Yacht = Cast<ASailingYachtPawn>(UGameplayStatics::GetPlayerPawn(this,0));
+    UMaterialInstanceDynamic* Water = Sea ? Sea->SurfaceMaterial() : nullptr;
+    if (!Water || !Yacht) return;
+    if (BoundWater.Get()!=Water)
     {
-        return FVector2D(YachtPose.TransformPositionNoScale(FVector(X, Y, -28))) * 0.01;
+        Water->SetTextureParameterValue(TEXT("WakeFieldA"),Maps[0]);
+        Water->SetTextureParameterValue(TEXT("WakeFieldB"),Maps[1]);
+        BoundWater=Water;
+    }
+    const FVector2D Bow(Yacht->GetActorForwardVector().GetSafeNormal2D());
+    const UPrimitiveComponent* Hull = CastChecked<UPrimitiveComponent>(Yacht->GetRootComponent());
+    const FVector Heading(Bow,0);
+    const auto Surge = [&](double Side)
+    {
+        const FVector Point = Yacht->GetActorTransform().TransformPositionNoScale({-470,Side*193,-28});
+        return float(FVector::DotProduct(Hull->GetPhysicsLinearVelocityAtPoint(Point),Heading)*.01);
     };
-    const FVector2D Center = Position(-430, 0);
-    const float Speed = Yacht->GetVelocity().Size2D() * 0.01;
-    const Sailing::FHelm& Helm = Yacht->ReadHelm();
-    const float Wash = Helm.bEngineOn ? FMath::Abs(Helm.Throttle) : 0.0f;
-    while (!Trail.IsEmpty() && Sea.TimeS - Trail.Last().TimeS > 22.0f)
+    const auto& Helm = Yacht->ReadHelm();
+    const float Now = Yacht->SeaFrame().TimeS;
+    const bool Reset = Field.Record({FVector2D(Yacht->GetActorLocation())*.01,Bow,Surge(-1),Surge(1),
+        float(Helm.bEngineOn ? Helm.Throttle : 0)},Now);
+    constexpr int32 Size = Sailing::FFoamField::Size;
+    constexpr float Interval = Sailing::FFoamField::Interval;
+    if (Reset || Now-Published>=Interval)
     {
-        Trail.Pop(EAllowShrinking::No);
-    }
-    const float Distance = Trail.IsEmpty() ? 0.0f : FVector2D::Distance(Trail[0].Propeller, Center);
-    const float Arc = Trail.IsEmpty() ? 0.0f : Trail[0].DistanceM + Distance;
-    const FSample Head{ Position(-475, -193), Position(-475, 193), Center,
-        Position(382, -193), Position(382, 193), Beam, Sea.TimeS, Arc, Speed, Wash };
-    if (Trail.IsEmpty() || Distance >= 0.49f || (Sea.TimeS - Trail[0].TimeS > 0.18f && Wash > 0.06f))
-    {
-        if (Trail.Num() == MaxRows) Trail.Pop(EAllowShrinking::No);
-        Trail.Insert(Head, 0);
-    }
-
-    for (int32 Strip = 0; Strip < Strips; ++Strip)
-    {
-        for (int32 Row = 0; Row <= MaxRows; ++Row)
+        Latest=1-Latest;
+        auto Pixels=MakeShared<TArray<FColor>,ESPMode::ThreadSafe>();
+        Field.Rasterize(*Pixels);
+        static const FUpdateTextureRegion2D Region(0,0,0,0,Size,Size);
+        const auto Upload = [&](UTexture2D* Map)
         {
-            const FSample& Sample = Row == 0 ? Head : Trail[FMath::Min(Row - 1, Trail.Num() - 1)];
-            const double Age = FMath::Max(0.0f, Sea.TimeS - Sample.TimeS);
-            const bool bPropeller = Strip == 2;
-            const bool bBow = Strip >= 3;
-            const bool bPort = Strip == 0 || Strip == 3;
-            const double Travel = Age * Sample.Speed;
-            const double Divergence = bBow ? Travel * .19 : .30 * FMath::Sin(Sample.DistanceM * .42 + Age * .36);
-            const double HalfWidth = bPropeller ? .48 + .34 * Age :
-                (bBow ? .34 + Travel * .055 : .86 + .50 * FMath::Sqrt(Travel));
-            const FVector2D HullPosition = bBow ? (bPort ? Sample.BowPort : Sample.BowStarboard)
-                : (bPort ? Sample.Port : Sample.Starboard);
-            const FVector2D Mid = bPropeller ? Sample.Propeller : HullPosition + Sample.Beam * Divergence * (bPort ? -1 : 1);
-            const float Strength = bPropeller ? Sample.Wash * FMath::Exp(-Age * 0.52) :
-                FMath::SmoothStep(0.24f, bBow ? 3.6f : 2.8f, Sample.Speed) * FMath::Exp(-Age * (bBow ? .39f : .145f));
-            for (int32 I = 0; I < Across; ++I)
-            {
-                const int32 Index = (Strip * (MaxRows + 1) + Row) * Across + I;
-                const double U = static_cast<double>(I) / (Across - 1);
-                const FVector2D XY = Mid + Sample.Beam * (2 * U - 1) * HalfWidth;
-                const double Height = Sailing::SampleSea(XY, Sea.TimeS, 0, Sea.Scale).HeightM;
-                Vertices[Index] = FVector(XY.X, XY.Y, Height + .045 + (bBow ? .085 * FMath::Exp(-Age * 1.9) : .012)) * 100.0;
-                UVs[Index] = { U, Sample.DistanceM + 0.28 * Age + Strip * 23.0 };
-                Colors[Index] = FLinearColor(FMath::Min(Age * .115, 1.0), bPropeller ? 1.0 : 0.0,
-                    bBow ? 1.0 : 0.0, Row <= Trail.Num() ? Strength : 0.0f);
-            }
-        }
+            // Each upload owns its pixels until the render thread consumes them.
+            Map->UpdateTextureRegions(0,1,&Region,Size*sizeof(FColor),sizeof(FColor),
+                reinterpret_cast<uint8*>(Pixels->GetData()),[Pixels](uint8*,const FUpdateTextureRegion2D*){});
+        };
+        Upload(Maps[Latest]);
+        if (Reset) Upload(Maps[1-Latest]);
+        Published=Now;
     }
-    Foam->UpdateMeshSection_LinearColor(0, Vertices, {}, UVs, Colors, {}, false);
+    const float Fraction=FMath::Clamp((Now-Published)/Interval,0.f,1.f);
+    const FVector2D Center=Field.Center();
+    Water->SetVectorParameterValue(TEXT("WakeFieldView"),FLinearColor(Center.X,Center.Y,
+        1.f/Sailing::FFoamField::Metres,Latest ? Fraction : 1.f-Fraction));
 }

@@ -150,7 +150,7 @@ case "$action" in
   preview)
     select_engine
     exec "$ue/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor" \
-      "$project" -game -NoSplash -NoTrace -Windowed -ResX=1440 -ResY=900 "$@"
+      "$project" -game -NoSplash -NoTrace "$@"
     ;;
   build) select_engine && build_dmg ;;
   install) install_dmg ;;

@@ -21,18 +21,21 @@ class Cay:
     phase: float
 
 
-LIGHTHOUSE = (253.0, -122.0, 2.02)
-CAYS = (
-    Cay("LongCay", 368, 178, 189, 101, 16, 9, 0.8),
-    Cay("CloudHead", 525, -385, 175, 86, 20, 11, 2.2),
-    Cay("EastCay", 854, 260, 260, 128, 27, 27, 3.5),
-    Cay("OuterCay", 1290, -270, 315, 142, 36, 41, 1.3),
-    Cay("SouthCay", -260, 246, 138, 88, 26, 14, 4.8),
-    Cay("LightCay", LIGHTHOUSE[0], LIGHTHOUSE[1], 27, 20, 2.15, 0, 4.2),
-)
-VOLCANO_X, VOLCANO_Y = 920.0, -2050.0
-VOLCANO_RADIUS = 640.0
-VOLCANO_RIM = 305.0
+# Read the same footprint definitions that the native buoyancy and GPU wave field use.
+LAYOUT = Path(__file__).resolve().parents[1] / "Source/SailingSimulatorDesktop/CoralPassLayout.inl"
+def _footprints():
+    cays = []
+    for line in LAYOUT.read_text().splitlines():
+        if line.startswith("CORAL_CAY("):
+            name, *values = line[len("CORAL_CAY("):-1].split(",")
+            cays.append(Cay(name, *map(float, values)))
+        elif line.startswith("CORAL_VOLCANO("):
+            volcano = tuple(map(float, line[len("CORAL_VOLCANO("):-1].split(",")))
+    return tuple(cays), volcano
+
+
+CAYS, (VOLCANO_X, VOLCANO_Y, VOLCANO_RADIUS, VOLCANO_RIM) = _footprints()
+LIGHTHOUSE = (CAYS[-1].x, CAYS[-1].y, 2.02)
 
 
 def shore_scale(theta, phase):

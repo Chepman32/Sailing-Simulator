@@ -34,9 +34,18 @@ void FSailingChart::Open(UWorld& World, const ASailingYachtPawn& Yacht)
         FString Name = Mesh->GetStaticMesh()->GetName();
         Name.RemoveFromStart(TEXT("SM_"));
         const FVector2D Origin = FVector2D(Mesh->GetComponentLocation()) * .01;
-        if (Name == TEXT("Lighthouse") || Name == TEXT("ContainerShip"))
+        const bool bLight = Name == TEXT("LightStation") || Name == TEXT("Lighthouse");
+        if (It->ActorHasTag(TEXT("SailingPirate")))
         {
-            Marks.Add({Name == TEXT("Lighthouse") ? TEXT("Coral Pass Light") : TEXT("Anchorage"), Origin});
+            Marks.Add({TEXT("Pirate ship"), Origin});
+            continue;
+        }
+        if (bLight || It->ActorHasTag(TEXT("SailingMerchant")))
+        {
+            const TCHAR* Label = bLight ? TEXT("Coral Pass Light")
+                : Name == TEXT("ProductTanker") ? TEXT("Product tanker")
+                : Name == TEXT("GasCarrier") ? TEXT("LNG carrier") : TEXT("Anchorage");
+            Marks.Add({Label, Origin});
             continue;
         }
         if (!Name.EndsWith(TEXT("Cay")) && Name != TEXT("CloudHead") && Name != TEXT("Volcano")) continue;

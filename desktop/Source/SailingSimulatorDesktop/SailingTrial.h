@@ -5,6 +5,7 @@
 #include "GameFramework/HUD.h"
 #include "GameFramework/Pawn.h"
 #include "SailingPhysics.h"
+#include "SailingShoreGuard.h"
 
 #include <atomic>
 
@@ -21,8 +22,15 @@ class USpringArmComponent;
 class UStaticMeshComponent;
 class ASailingWeather;
 class USailingExplorer;
+class USailingEntryBubbles;
 
 enum class EYachtView : uint8 { Chase, Helm, Orbit, Drone };
+
+struct FBowContact
+{
+    FVector WaterlineM = FVector::ZeroVector, StrikeM = FVector::ZeroVector;
+    float LastStrikeS = -10.f, StrikeMps = 0.f, Sheet = 0.f;
+};
 
 UCLASS()
 class ASailingYachtPawn : public APawn
@@ -33,10 +41,19 @@ public:
     ASailingYachtPawn();
     void BeginPlay() override;
     void Tick(float DeltaSeconds) override;
+    void CalcCamera(float DeltaSeconds, FMinimalViewInfo& OutView) override;
     void AsyncPhysicsTickActor(float DeltaSeconds, float SimTime) override;
     Sailing::FSeaFrame SeaFrame() const { return WaterFrame.load(std::memory_order_relaxed); }
+    Sailing::FBoatWake BoatWake() const;
+    bool HasCoralCoast() const { return bCoralPass; }
+    double SurfaceHeightM(FVector2D XYm) const;
+    const Sailing::FWaterImpacts& SurfaceImpacts() const { return Impacts; }
+    TConstArrayView<FBowContact> BowContacts() const { return BowWater; }
+    const Sailing::FWakeHistory& ShedWake() const { return WakeTrail; }
+    void DisturbSurface(FVector PositionCm, float HeightM);
     void SetSeaScale(float Scale) { SeaScale.store(Scale, std::memory_order_relaxed); }
     void SetDeckLights(float Strength);
+    void SetSurfaceWetness(float Wetness);
     const Sailing::FHelm& ReadHelm() const { return Helm; }
     Sailing::FSail ReadSail() const;
     void DriveHelm(float DeltaSeconds, int32 Steering, int32 Throttle, int32 Ease);
@@ -45,6 +62,8 @@ public:
     void SetEngineRunning(bool bRunning);
     void ResumeAutoTrim() { Helm.bAutoTrim = true; }
     void CycleView();
+    void SelectView(EYachtView Next);
+    EYachtView CurrentView() const { return View; }
     void RecenterView();
     void OrbitView(FVector2D Pixels);
     void ZoomView(double WheelDelta);
@@ -52,6 +71,7 @@ public:
     bool IsCinematic() const { return bCinematic; }
     const TCHAR* ViewName() const;
     USailingExplorer& Explorer() const { return *SkipperView; }
+    USailingEntryBubbles& EntryBubbles() const { return *Bubbles; }
     void ToggleExplorer();
     FVector WorldFocus() const;
     double DeckFloor(FVector LocalFeet, double Top) const;
@@ -64,6 +84,7 @@ private:
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Catamaran;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> SkipperModel;
     UPROPERTY() TObjectPtr<USailingExplorer> SkipperView;
+    UPROPERTY() TObjectPtr<USailingEntryBubbles> Bubbles;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Rig;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Jib;
     UPROPERTY() TObjectPtr<USceneComponent> Boom;
@@ -77,9 +98,19 @@ private:
     Sailing::FHelm Helm;
     FCriticalSection HelmMutex;
     Sailing::FHelm PhysicsHelm;
+    TSharedPtr<const Sailing::FShoreMap, ESPMode::ThreadSafe> ShoreMap;
+    Sailing::FShoreGuard PhysicsShoreGuard;
+    std::atomic<bool> bRefloatRequested{false};
+    void RefloatIfGrounded();
+    Sailing::FWaterImpacts Impacts, PhysicsImpacts;
+    Sailing::FWakeHistory WakeTrail, PhysicsWakeTrail;
+    double LastBowClearance[2] = {};
+    FBowContact BowWater[2];
+    void UpdateBowContact();
     std::atomic<Sailing::FSeaFrame> WaterFrame{Sailing::FSeaFrame{}};
     std::atomic<float> SeaScale{1.0f};
     double BoomAngle = 0.0;
+    double SailSpan = 1.0;
     double LeewardSide = -1.0;
     void ActivateView();
     void UpdateView(float DeltaSeconds);
@@ -91,6 +122,7 @@ private:
     float CinematicPitch = 0;
     float CinematicDistanceCm = 0;
     bool bCinematic = false;
+    bool bCoralPass = false;
     bool bKeyboardRudder = false;
 };
 
@@ -105,12 +137,19 @@ public:
     void BeginPlay() override;
     void Tick(float DeltaSeconds) override;
 
+    UMaterialInstanceDynamic* SurfaceMaterial() const;
+    void SetPrecipitation(float Intensity, float Wetness);
 private:
     void BuildSurface();
+    void BindSurfProfile();
     void SetSurfaceFrame(Sailing::FSeaFrame Frame);
 
     UPROPERTY(EditAnywhere, Category = "Sea") TObjectPtr<UMaterialInterface> WaterMaterial;
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> Water;
+    UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> Shore;
+    UPROPERTY(Transient) TObjectPtr<UTexture2D> SurfProfile;
+    uint32 SentWakeRevision = MAX_uint32;
+    Sailing::FSeaFrame PreviousSurfaceFrame{};
     UPROPERTY() TObjectPtr<UProceduralMeshComponent> Surface;
 };
 
@@ -121,12 +160,15 @@ class ASailingTrialHUD : public AHUD
 
 public:
     void BeginPlay() override;
+    ASailingTrialHUD();
     void DrawHUD() override;
     double ThrottleAt(double ScreenY) const;
     float InputScale() const { return UIScale; }
 
 private:
     UPROPERTY() TObjectPtr<ASailingWeather> Weather;
+    UPROPERTY() TObjectPtr<UTexture2D> HelmAtlas;
+    UPROPERTY() TObjectPtr<UFont> HelmFont;
     float ThrottleTop = 0;
     float ThrottleHeight = 1;
     float UIScale = 1;

@@ -1,11 +1,17 @@
 #include "SailingTrial.h"
+#include "SailingEncounter.h"
 #include "SailingExplorer.h"
+#include "SailingEntryBubbles.h"
 
 #include "Camera/CameraComponent.h"
+#include "Camera/CameraActor.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/BoxComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMeshActor.h"
+#include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Kismet/GameplayStatics.h"
@@ -17,14 +23,15 @@
 #include "Misc/ScopeLock.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "ProceduralMeshComponent.h"
+#include "Engine/Texture2D.h"
 #include "SailingPlayerController.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
 {
 constexpr double CmPerM = 100.0;
-constexpr int32 SeaCells = 144;
-constexpr double CellM = 0.46;
+constexpr int32 SeaCells = 160;
+constexpr double CellM = 0.36;
 constexpr double SeaRadiusM = SeaCells * CellM * 0.5;
 constexpr double ChasePitch = -4.4;
 constexpr double ChaseYawOffset = -46.0;
@@ -154,6 +161,8 @@ ASailingYachtPawn::ASailingYachtPawn()
     SkipperModel = Part(TEXT("Skipper"), Hull, Helmsman.Get(), nullptr, FVector::ZeroVector, FVector::OneVector);
     SkipperView = CreateDefaultSubobject<USailingExplorer>(TEXT("SkipperView"));
     SkipperView->SetupAttachment(Hull);
+    Bubbles = CreateDefaultSubobject<USailingEntryBubbles>(TEXT("WaterEntryBubbles"));
+    Bubbles->SetupAttachment(Hull);
     Jib = Part(TEXT("Jib"), Hull, ForeSail.Get(), nullptr, FVector::ZeroVector, FVector::OneVector);
 
     Boom = CreateDefaultSubobject<USceneComponent>(TEXT("Gooseneck"));
@@ -172,6 +181,7 @@ ASailingYachtPawn::ASailingYachtPawn()
     ChaseArm->SetRelativeRotation(FRotator(ChasePitch, ChaseYawOffset, 0));
     ChaseArm->TargetOffset = FVector(0, 0, 150);
     ChaseArm->TargetArmLength = CloseChaseCm;
+    ChaseArm->ProbeSize = 28.f;
     ChaseArm->bEnableCameraLag = true;
     ChaseArm->CameraLagSpeed = 2.7f;
     ChaseArm->bEnableCameraRotationLag = true;
@@ -208,11 +218,20 @@ ASailingYachtPawn::ASailingYachtPawn()
 void ASailingYachtPawn::BeginPlay()
 {
     Super::BeginPlay();
-    Hull->SetSimulatePhysics(true);
-    Hull->SetMassOverrideInKg(NAME_None, Sailing::MassKg);
-    if (GetWorld()->GetMapName().EndsWith(TEXT("CoralPass")))
+    bCoralPass = GetWorld()->GetMapName().EndsWith(TEXT("CoralPass"));
+    auto Coast=MakeShared<Sailing::FShoreMap,ESPMode::ThreadSafe>(*GetWorld());
     {
-        Hull->SetPhysicsLinearVelocity(GetActorForwardVector() * 345.0);
+        FScopeLock Lock(&HelmMutex);
+        ShoreMap=MoveTemp(Coast);
+    }
+    Hull->SetSimulatePhysics(true);
+    // Account for the load carried low in both hulls and the water entrained as they roll and pitch.
+    Hull->BodyInstance.InertiaTensorScale = FVector(1.8, 1.35, 1.0);
+    Hull->SetCenterOfMass(FVector(0,0,-30));
+    Hull->SetMassOverrideInKg(NAME_None, Sailing::MassKg);
+    if (bCoralPass)
+    {
+        Hull->SetPhysicsLinearVelocity(GetActorForwardVector() * (345.0 * Sailing::CruisingSpeedScale));
     }
     ChaseArm->SetWorldRotation(FRotator(ChasePitch, GetActorRotation().Yaw + ChaseYawOffset, 0));
     ViewYaw = ChaseYawOffset;
@@ -237,6 +256,14 @@ void ASailingYachtPawn::SetDeckLights(float Strength)
     CockpitLamp->SetIntensity(Strength * 125.0f);
     PortLamp->SetIntensity(Strength * 32.0f);
     StarboardLamp->SetIntensity(Strength * 30.0f);
+}
+
+void ASailingYachtPawn::SetSurfaceWetness(float Wetness)
+{
+    // The hull finish and both sailcloth meshes read slot zero in their materials.
+    Catamaran->SetCustomPrimitiveDataFloat(0,Wetness);
+    Rig->SetCustomPrimitiveDataFloat(0,Wetness);
+    Jib->SetCustomPrimitiveDataFloat(0,Wetness);
 }
 
 void ASailingYachtPawn::SetRudder(double Value)
@@ -356,14 +383,13 @@ bool ASailingYachtPawn::DeckWall(FVector From, FVector To) const
 
 void ASailingYachtPawn::CycleView()
 {
+    SelectView(static_cast<EYachtView>((int32(View)+1)%4));
+}
+
+void ASailingYachtPawn::SelectView(EYachtView Next)
+{
     bCinematic = false;
-    switch (View)
-    {
-    case EYachtView::Chase: View = EYachtView::Helm; break;
-    case EYachtView::Helm: View = EYachtView::Orbit; break;
-    case EYachtView::Orbit: View = EYachtView::Drone; break;
-    case EYachtView::Drone: View = EYachtView::Chase; break;
-    }
+    View = Next;
     ViewDistanceCm = View == EYachtView::Drone ? 4200.f : View == EYachtView::Orbit ? 2400.f : CloseChaseCm;
     RecenterView();
     ActivateView();
@@ -435,13 +461,31 @@ void ASailingYachtPawn::UpdateView(float DeltaSeconds)
     ChaseArm->SetWorldRotation(FRotator(Pitch, Yaw, 0));
 }
 
+void ASailingYachtPawn::CalcCamera(float DeltaSeconds, FMinimalViewInfo& OutView)
+{
+    Super::CalcCamera(DeltaSeconds,OutView);
+    if (SkipperView->Away() || !ChaseCamera->IsActive()) return;
+    // The spring arm collides with solid scenery. The displaced sea has no collision mesh.
+    const double FloorCm = 100.*SurfaceHeightM(FVector2D(OutView.Location)*.01) + 65.;
+    if (OutView.Location.Z < FloorCm)
+    {
+        const FVector Aim = OutView.Location + OutView.Rotation.Vector()*ChaseArm->TargetArmLength;
+        OutView.Location.Z = FloorCm;
+        OutView.Rotation = (Aim-OutView.Location).Rotation();
+    }
+}
+
 void ASailingYachtPawn::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
     if (!Controller) Helm = {};
+    if (bRefloatRequested.exchange(false)) RefloatIfGrounded();
+    UpdateBowContact();
     {
         FScopeLock Lock(&HelmMutex);
         PhysicsHelm = Helm;
+        PhysicsImpacts = Impacts;
+        if (WakeTrail.Revision != PhysicsWakeTrail.Revision) WakeTrail = PhysicsWakeTrail;
     }
 
     const Sailing::FSail Sail = ReadSail();
@@ -451,9 +495,15 @@ void ASailingYachtPawn::Tick(float DeltaSeconds)
     }
     BoomAngle = FMath::FInterpTo(BoomAngle, FMath::RadiansToDegrees(Sail.SheetAngleRad) * LeewardSide, DeltaSeconds, 3.2);
     Boom->SetRelativeRotation(FRotator(0, BoomAngle, 0));
-    MainSail->SetRelativeScale3D(FVector(1.0, -LeewardSide, 1.0));
+    // Ease the visual reef over several seconds. The cloth draws in towards
+    // the gooseneck, leaving the boom and standing rigging at their full size.
+    SailSpan = FMath::Lerp(SailSpan,FMath::Sqrt(Sail.WorkingAreaFraction),1.-FMath::Exp(-DeltaSeconds*.48));
+    MainSail->SetRelativeScale3D(FVector(SailSpan,-LeewardSide*SailSpan,SailSpan));
     Rig->SetRelativeScale3D(FVector(1.0, -LeewardSide, 1.0));
-    Jib->SetRelativeScale3D(FVector(1.0, -LeewardSide, 1.0));
+    Rig->SetCustomPrimitiveDataFloat(1,1.-SailSpan);
+    // Scale about the authored tack. The shorter working jib still follows the forestay.
+    Jib->SetRelativeLocation(FVector(567,0,159)*(1.-SailSpan));
+    Jib->SetRelativeScale3D(FVector(SailSpan,-LeewardSide*SailSpan,SailSpan));
     if (SkipperView->Away()) SkipperView->Advance(*this, DeltaSeconds);
     else UpdateView(DeltaSeconds);
 }
@@ -467,21 +517,109 @@ void ASailingYachtPawn::AsyncPhysicsTickActor(float DeltaSeconds, float SimTime)
     }
 
     Sailing::FHelm Controls;
+    Sailing::FWaterImpacts ContactWaves;
+    TSharedPtr<const Sailing::FShoreMap,ESPMode::ThreadSafe> Coast;
+    const FVector OriginCm = Body->X();
+    const FQuat Rotation = Body->R();
+    const auto Wake = Sailing::FBoatWake::FromMotion(FVector2D(OriginCm)*.01,
+        FVector2D(Rotation.GetForwardVector().GetSafeNormal2D()), FVector2D(Body->V())*.01, Body->W().Z);
     {
         FScopeLock Lock(&HelmMutex);
         Controls = PhysicsHelm;
+        ContactWaves = PhysicsImpacts;
+        Coast = ShoreMap;
+        PhysicsWakeTrail.Record(Wake, SimTime);
     }
-    const FVector OriginCm = Body->X();
-    const FQuat Rotation = Body->R();
     const FVector CenterOfMassCm = OriginCm + Rotation.RotateVector(Body->CenterOfMass());
     const Sailing::FRigidState State = {
         OriginCm / CmPerM, CenterOfMassCm / CmPerM, Rotation, Body->V() / CmPerM, Body->W()
     };
     const float Scale = SeaScale.load(std::memory_order_relaxed);
-    const Sailing::FLoads Loads = Sailing::CalculateLoads(State, Controls, SimTime, Scale);
+    Sailing::FLoads Loads = Sailing::CalculateLoads(State, Controls, SimTime, Scale, bCoralPass, &ContactWaves, &PhysicsWakeTrail);
+    if (Coast && PhysicsShoreGuard.Constrain(*Coast,State,Controls,DeltaSeconds,Loads))
+        bRefloatRequested.store(true);
     Body->AddForce(Loads.ForceN * CmPerM);
     Body->AddTorque(Loads.TorqueNm * FMath::Square(CmPerM));
     WaterFrame.store({ SimTime, Scale }, std::memory_order_relaxed);
+}
+
+void ASailingYachtPawn::RefloatIfGrounded()
+{
+    const FVector2D Center=FVector2D(GetActorLocation())/CmPerM;
+    const FVector2D Bow(GetActorForwardVector().GetSafeNormal2D());
+    const Sailing::FShoreContact Contact=ShoreMap->AtHull(Center,Bow);
+    if (Contact.ClearanceM>1.15) return;
+    const FVector2D Edge=Center-Contact.Seaward*Contact.ClearanceM;
+    const FVector2D Along(-Contact.Seaward.Y,Contact.Seaward.X);
+    const FQuat Attitude=FRotator(0,GetActorRotation().Yaw,0).Quaternion();
+    const auto Frame=SeaFrame();
+    // Start beside the grounding. Check both hulls and the actual blocking scene
+    // before refloating, so a quay or moored ship cannot become the destination.
+    for (const double Off : {3.,6.,12.,24.,48.,96.})
+    for (const double Side : {0.,-1.,1.})
+    {
+        const FVector2D Spot=Edge+(Contact.Seaward+Along*Side)*Off;
+        if (ShoreMap->AtHull(Spot,Bow).ClearanceM<2.) continue;
+        const auto Sea=Sailing::SampleSea(Spot,Frame.TimeS,0,Frame.Scale,bCoralPass);
+        const FVector Afloat=FVector(Spot,Sea.HeightM+.12)*CmPerM;
+        if (GetWorld()->OverlapBlockingTestByChannel(Afloat,Attitude,Hull->GetCollisionObjectType(),
+            FCollisionShape::MakeBox(FVector(565,278,80)),FCollisionQueryParams(SCENE_QUERY_STAT(SailingRefloat),false,this)))
+            continue;
+        SetActorLocationAndRotation(Afloat,Attitude,false,nullptr,ETeleportType::TeleportPhysics);
+        Hull->SetPhysicsLinearVelocity(FVector(Contact.Seaward*1.2,Sea.VelocityMps.Z)*CmPerM);
+        Hull->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
+        Hull->WakeRigidBody();
+        if (Helm.bHoveTo) Helm.AnchorM=Spot;
+        return;
+    }
+}
+
+Sailing::FBoatWake ASailingYachtPawn::BoatWake() const
+{
+    return Sailing::FBoatWake::FromMotion(FVector2D(GetActorLocation())*.01,
+        FVector2D(GetActorForwardVector().GetSafeNormal2D()), FVector2D(GetVelocity())*.01, Hull->GetPhysicsAngularVelocityInRadians().Z);
+}
+
+double ASailingYachtPawn::SurfaceHeightM(FVector2D XYm) const
+{
+    const auto Frame = SeaFrame();
+    return Sailing::SeaHeight(XYm, Frame, bCoralPass) + BoatWake().HeightAt(XYm)
+        + Impacts.At(XYm,Frame.TimeS).HeightM + WakeTrail.At(XYm,Frame.TimeS).HeightM;
+}
+
+void ASailingYachtPawn::DisturbSurface(FVector PositionCm, float HeightM)
+{
+    Impacts.Emit(FVector2D(PositionCm)*.01, SeaFrame().TimeS, HeightM);
+}
+
+void ASailingYachtPawn::UpdateBowContact()
+{
+    const auto Frame = SeaFrame();
+    for (int32 Side = 0; Side < 2; ++Side)
+    {
+        const FVector Bow = GetActorTransform().TransformPositionNoScale({445., Side ? 193. : -193., 19.});
+        const auto Sea = Sailing::SampleSea(FVector2D(Bow)*.01, Frame.TimeS, 0, Frame.Scale, bCoralPass);
+        const double Clearance = Bow.Z*.01-Sea.HeightM;
+        const FVector Velocity = Hull->GetPhysicsLinearVelocityAtPoint(Bow)*.01;
+        // The stem meets the moving surface at dH/dt + grad(H) dot Vbow.
+        const double Closing = Sea.VelocityMps.Z+FVector2D::DotProduct(Sea.Gradient,FVector2D(Velocity))-Velocity.Z;
+        const double Surge = FVector::DotProduct(Velocity-Sea.VelocityMps,GetActorForwardVector().GetSafeNormal2D());
+        auto& Contact = BowWater[Side];
+        Contact.WaterlineM = FVector(Bow.X*.01,Bow.Y*.01,Sea.HeightM);
+        Contact.Sheet = FMath::SmoothStep(1.1,4.5,Surge)*FMath::SmoothStep(.17,1.85,Closing)
+            * FMath::SmoothStep(-1.05,-.4,Clearance)*(1-FMath::SmoothStep(.08,.39,Clearance));
+        if (LastBowClearance[Side] > 0 && Clearance <= 0 && Frame.TimeS-Contact.LastStrikeS > 1.15)
+        {
+            if (Closing > .48)
+            {
+                DisturbSurface(Bow,FMath::Clamp(Closing*.115,.065,.31));
+                Contact.StrikeM = Contact.WaterlineM;
+                Contact.LastStrikeS = Frame.TimeS;
+                Contact.StrikeMps = Closing;
+            }
+        }
+        LastBowClearance[Side] = Clearance;
+    }
 }
 
 Sailing::FSail ASailingYachtPawn::ReadSail() const
@@ -498,8 +636,13 @@ ASailingSea::ASailingSea()
     PrimaryActorTick.TickGroup = TG_PostPhysics;
     Surface = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("WaterSurface"));
     SetRootComponent(Surface);
+    // UV0 holds grid spacing. Only the material knows the scale of the
+    // world-projected foam, so request its full mip chain on this component.
+    Surface->bForceMipStreaming = true;
     Surface->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     Surface->SetCastShadow(false);
+    Surface->SetCastContactShadow(false);
+    Surface->SetAffectDistanceFieldLighting(false);
     WaterMaterial = FindTrialMaterial(TEXT("/Game/Coastal/Materials/M_CoralWater.M_CoralWater"));
     if (!WaterMaterial)
     {
@@ -513,7 +656,14 @@ void ASailingSea::OnConstruction(const FTransform& Transform)
     BuildSurface();
     Water = UMaterialInstanceDynamic::Create(WaterMaterial, this);
     Surface->SetMaterial(0, Water);
+    BindSurfProfile();
     SetSurfaceFrame({});
+}
+
+void ASailingSea::SetPrecipitation(float Intensity, float Wetness)
+{
+    if (Water) Water->SetScalarParameterValue(TEXT("RainIntensity"),Intensity);
+    if (Shore) Shore->SetScalarParameterValue(TEXT("RainWetness"),Wetness);
 }
 
 void ASailingSea::BeginPlay()
@@ -526,7 +676,36 @@ void ASailingSea::BeginPlay()
         Water = UMaterialInstanceDynamic::Create(WaterMaterial, this);
         Surface->SetMaterial(0, Water);
     }
+    BindSurfProfile();
+    // All of the island shores use the same material instance and simulation clock.
+    for (TActorIterator<AStaticMeshActor> It(GetWorld()); It; ++It)
+    {
+        UStaticMeshComponent* Mesh = It->GetStaticMeshComponent();
+        UMaterialInterface* Base = Mesh ? Mesh->GetMaterial(0) : nullptr;
+        if (Base && Base->GetFName() == TEXT("M_CoastalGround"))
+        {
+            if (!Shore) Shore = UMaterialInstanceDynamic::Create(Base, this);
+            Mesh->SetMaterial(0, Shore);
+        }
+    }
     SetSurfaceFrame({});
+}
+
+void ASailingSea::BindSurfProfile()
+{
+    if (!Water) return;
+    if (!SurfProfile)
+    {
+        const auto Table=Sailing::SurfProfileTexels();
+        const TConstArrayView64<uint8> Bytes(reinterpret_cast<const uint8*>(Table.GetData()),Table.Num()*sizeof(FLinearColor));
+        SurfProfile=UTexture2D::CreateTransient(Sailing::SurfProfileWidth,Table.Num()/Sailing::SurfProfileWidth,
+            PF_A32B32G32R32F,NAME_None,Bytes);
+        SurfProfile->SRGB=false;
+        SurfProfile->NeverStream=true;
+        SurfProfile->Filter=TF_Nearest;
+        SurfProfile->UpdateResource();
+    }
+    Water->SetTextureParameterValue(TEXT("SurfProfile"),SurfProfile);
 }
 
 void ASailingSea::BuildSurface()
@@ -548,47 +727,86 @@ void ASailingSea::BuildSurface()
             }
         }
     }
-    TArray<int32, TFixedAllocator<Perimeter>> Edge;
+    TArray<int32, TInlineAllocator<Perimeter>> Edge;
     for (int32 I = 0; I < SeaCells; ++I) Edge.Add(I);
     for (int32 I = 0; I < SeaCells; ++I) Edge.Add(I * Stride + SeaCells);
     for (int32 I = 0; I < SeaCells; ++I) Edge.Add(SeaCells * Stride + SeaCells - I);
     for (int32 I = 0; I < SeaCells; ++I) Edge.Add((SeaCells - I) * Stride);
 
     // Every annulus uses the preceding edge vertices, so a snapped centre never opens a seam.
-    for (double Radius = SeaRadiusM; Radius < 38000.0;)
+    for (double Radius = SeaRadiusM, StepM = CellM; Radius < 38000.0;)
     {
-        const double StepM = FMath::Max(CellM, Radius * 0.14);
         const double Outer = Radius + StepM;
         const int32 First = Vertices.Num();
-        for (int32 I = 0; I < Perimeter; ++I)
+        const int32 InnerCount = Edge.Num();
+        // As radial spacing grows, adjacent vertices along the edge can be twice
+        // as close as the supported wavelength requires. Stitch pairs to one edge.
+        const int32 EdgeStep = InnerCount % 8 == 0 && StepM >= 16. * Outer / InnerCount ? 2 : 1;
+        const int32 OuterCount = InnerCount / EdgeStep;
+        for (int32 I = 0; I < OuterCount; ++I)
         {
-            const int32 Next = (I + 1) % Perimeter;
-            const FVector InnerPoint = Vertices[Edge[I]];
+            const int32 Inner = I * EdgeStep;
+            const int32 Next = (I + 1) % OuterCount;
+            const FVector InnerPoint = Vertices[Edge[Inner]];
             Vertices.Add(InnerPoint * (Outer / Radius));
-            UVs.Emplace(FMath::Max(StepM, Outer * 2.0 / SeaCells), 0);
-            Indices.Append({ Edge[I], Edge[Next], First + I, Edge[Next], First + Next, First + I });
+            const double RadialSpacing = StepM * InnerPoint.Size2D() / (Radius * CmPerM);
+            UVs.Emplace(FMath::Max(RadialSpacing, 8. * Outer / OuterCount), 0);
+            const int32 Mid = Edge[(Inner + 1) % InnerCount];
+            Indices.Append({ Edge[Inner], Mid, First + I, Mid, First + Next, First + I });
+            if (EdgeStep == 2) Indices.Append({ Mid, Edge[Next * EdgeStep], First + Next });
         }
-        for (int32 I = 0; I < Perimeter; ++I) Edge[I] = First + I;
+        Edge.SetNum(OuterCount, EAllowShrinking::No);
+        for (int32 I = 0; I < OuterCount; ++I) Edge[I] = First + I;
         Radius = Outer;
+        // Keep several vertices on a wind-sea ridge well past the yacht. Once even the
+        // longest swell has fallen below the grid cutoff, a final ring reaches the horizon.
+        StepM = StepM >= 90.0 ? 38000.0 - Radius
+            : CellM + .030 * (Radius - SeaRadiusM) + .055 * FMath::Max(0., Radius - 320.);
     }
     TArray<FVector> Normals;
     Normals.Init(FVector::UpVector, Vertices.Num());
     Surface->CreateMeshSection_LinearColor(0, Vertices, Indices, Normals, UVs, {}, {}, false);
 }
 
+UMaterialInstanceDynamic* ASailingSea::SurfaceMaterial() const
+{
+    return Water;
+}
+
 void ASailingSea::SetSurfaceFrame(Sailing::FSeaFrame Frame)
 {
     if (!Water) return;
+    if (PreviousSurfaceFrame.TimeS > Frame.TimeS || Frame.TimeS-PreviousSurfaceFrame.TimeS > .25f)
+        PreviousSurfaceFrame = Frame;
+    Water->SetVectorParameterValue(TEXT("SeaHistory"),FLinearColor(PreviousSurfaceFrame.TimeS,PreviousSurfaceFrame.Scale,
+        Frame.TimeS-PreviousSurfaceFrame.TimeS,1.f));
     static const FName Modes[] = { TEXT("Wave0"), TEXT("Wave1"), TEXT("Wave2"), TEXT("Wave3"),
-        TEXT("Wave4"), TEXT("Wave5"), TEXT("Wave6"), TEXT("Wave7") };
+        TEXT("Wave4"), TEXT("Wave5"), TEXT("Wave6"), TEXT("Wave7"),
+        TEXT("Wave8"), TEXT("Wave9"), TEXT("Wave10"), TEXT("Wave11"), TEXT("Wave12"), TEXT("Wave13"),
+        TEXT("Wave14"), TEXT("Wave15"), TEXT("Wave16"), TEXT("Wave17"),
+        TEXT("Wave18"), TEXT("Wave19"), TEXT("Wave20"), TEXT("Wave21") };
+    static const FName PreviousAmplitudes[] = { TEXT("PrevAmp0"), TEXT("PrevAmp1"), TEXT("PrevAmp2"), TEXT("PrevAmp3"),
+        TEXT("PrevAmp4"), TEXT("PrevAmp5") };
     static_assert(UE_ARRAY_COUNT(Modes) == Sailing::SeaWaveCount);
+    static_assert(UE_ARRAY_COUNT(PreviousAmplitudes) == (Sailing::SeaWaveCount+3)/4);
+    FLinearColor PackedPreviousAmplitudes[UE_ARRAY_COUNT(PreviousAmplitudes)] = {};
     for (int32 I = 0; I < Sailing::SeaWaveCount; ++I)
     {
-        Water->SetVectorParameterValue(Modes[I], Sailing::SeaWaveParameter(I, Frame));
+        const FLinearColor Mode = Sailing::SeaWaveParameter(I, Frame);
+        Water->SetVectorParameterValue(Modes[I], Mode);
+        PackedPreviousAmplitudes[I/4].Component(I%4) = Sailing::SeaWaveAmplitude(I, PreviousSurfaceFrame.Scale);
     }
+    for (int32 I = 0; I < UE_ARRAY_COUNT(PreviousAmplitudes); ++I)
+        Water->SetVectorParameterValue(PreviousAmplitudes[I], PackedPreviousAmplitudes[I]);
+    PreviousSurfaceFrame = Frame;
     Water->SetScalarParameterValue(TEXT("SeaTime"), Frame.TimeS);
     Water->SetScalarParameterValue(TEXT("SeaScale"), Frame.Scale);
     Water->SetScalarParameterValue(TEXT("CrestShape"), Sailing::SeaCrestShape);
+    if (Shore)
+    {
+        Shore->SetScalarParameterValue(TEXT("SeaTime"), Frame.TimeS);
+        Shore->SetScalarParameterValue(TEXT("SeaScale"), Frame.Scale);
+    }
 }
 
 void ASailingSea::Tick(float DeltaSeconds)
@@ -599,11 +817,56 @@ void ASailingSea::Tick(float DeltaSeconds)
     {
         return;
     }
-    const FVector Position = Yacht->WorldFocus();
+    const auto* PC=Cast<APlayerController>(Yacht->GetController());
+    const ACameraActor* Camera=PC ? Cast<ACameraActor>(PC->GetViewTarget()) : nullptr;
+    FVector Position = Camera ? Camera->GetActorLocation() : Yacht->WorldFocus();
+    if (!Camera && PC && PC->PlayerCameraManager)
+    {
+        // Keep the foreground beneath the chase camera and both hulls on the fine lattice.
+        const FVector FromFocus = PC->PlayerCameraManager->GetCameraLocation() - Position;
+        Position += FromFocus.GetClampedToMaxSize2D(SeaRadiusM * 2 * CmPerM) * .5;
+    }
     const FVector2D CenterM(FMath::GridSnap(Position.X / CmPerM, CellM), FMath::GridSnap(Position.Y / CmPerM, CellM));
     const FVector CenterCm(CenterM.X * CmPerM, CenterM.Y * CmPerM, 0.0);
+    // Re-centring the grid changes which vertices draw the water. It does not move the sea horizontally.
+    const FVector GridStep = CenterCm-GetActorLocation();
+    if (Water) Water->SetVectorParameterValue(TEXT("GridStep"), FLinearColor(GridStep.X,GridStep.Y,0,0));
     SetActorLocation(CenterCm);
     SetSurfaceFrame(Yacht->SeaFrame());
+    const auto& History = Yacht->ShedWake();
+    if (Water)
+    {
+        const auto Wake = Yacht->BoatWake();
+        Water->SetVectorParameterValue(TEXT("WakePose"), FLinearColor(Wake.SternM.X, Wake.SternM.Y, Wake.Forward.X, Wake.Forward.Y));
+        Water->SetScalarParameterValue(TEXT("WakeSpeed"), Wake.SpeedMps);
+        Water->SetScalarParameterValue(TEXT("WakeBias"), Wake.HullBias);
+        Water->SetScalarParameterValue(TEXT("CoralCoast"), Yacht->HasCoralCoast() ? 1.f : 0.f);
+        static const FName Rings[] = {TEXT("Ring0"), TEXT("Ring1"), TEXT("Ring2"), TEXT("Ring3")};
+        static_assert(UE_ARRAY_COUNT(Rings) == Sailing::FWaterImpacts::Count);
+        for (int32 I = 0; I < UE_ARRAY_COUNT(Rings); ++I)
+            Water->SetVectorParameterValue(Rings[I], Yacht->SurfaceImpacts().Rings[I]);
+        if (SentWakeRevision != History.Revision)
+        {
+            static const FName Marks[] = {TEXT("Mark0"),TEXT("Mark1"),TEXT("Mark2"),TEXT("Mark3"),
+                TEXT("Mark4"),TEXT("Mark5"),TEXT("Mark6"),TEXT("Mark7")};
+            static const FName Axes[] = {TEXT("Axes0"),TEXT("Axes1"),TEXT("Axes2"),TEXT("Axes3")};
+            static_assert(UE_ARRAY_COUNT(Marks) == Sailing::FWakeHistory::Count && UE_ARRAY_COUNT(Axes)*2 == UE_ARRAY_COUNT(Marks));
+            for (int32 I = 0; I < UE_ARRAY_COUNT(Marks); ++I) Water->SetVectorParameterValue(Marks[I],History.Marks[I]);
+            static const FName BiasNames[] = {TEXT("MarkBias0"),TEXT("MarkBias1")};
+            static_assert(UE_ARRAY_COUNT(BiasNames)*4 == Sailing::FWakeHistory::Count);
+            for (int32 I = 0; I < UE_ARRAY_COUNT(BiasNames); ++I)
+            {
+                const float* Bias = History.HullBias+4*I;
+                Water->SetVectorParameterValue(BiasNames[I],FLinearColor(Bias[0],Bias[1],Bias[2],Bias[3]));
+            }
+            for (int32 I = 0; I < UE_ARRAY_COUNT(Axes); ++I)
+            {
+                const FVector2f A = History.Directions[2*I], B = History.Directions[2*I+1];
+                Water->SetVectorParameterValue(Axes[I], FLinearColor(A.X,A.Y,B.X,B.Y));
+            }
+        }
+    }
+    SentWakeRevision = History.Revision;
 }
 
 ASailingGrove::ASailingGrove()
@@ -654,6 +917,13 @@ void ASailingDolphinPod::Tick(float DeltaSeconds)
     if (!Yacht || !DolphinMesh) return;
 
     const Sailing::FSeaFrame Sea = Yacht->SeaFrame();
+    const double Visit = Sailing::DolphinVisit(GetWorld()->GetTimeSeconds());
+    SetActorHiddenInGame(Visit <= 0);
+    if (Visit <= 0)
+    {
+        bSwimming = false;
+        return;
+    }
     const FVector Ahead = Yacht->GetActorForwardVector().GetSafeNormal2D();
     const FVector Beam = FVector::CrossProduct(FVector::UpVector, Ahead);
     static const FVector2D Positions[] = {{-1100, 1760}, {-1450, 1930}, {-1720, 2010}};
@@ -662,16 +932,16 @@ void ASailingDolphinPod::Tick(float DeltaSeconds)
         UStaticMeshComponent* Dolphin = Dolphins[I];
         const double Phase = Sea.TimeS * 0.72 + I * 1.92;
         const FVector Goal = Yacht->GetActorLocation() + Ahead * (Positions[I].X + 80 * FMath::Sin(Phase * .48))
-            + Beam * (Positions[I].Y + 175 * FMath::Sin(Phase * .86));
+            + Beam * (Positions[I].Y + 2300 * (1-Visit) + 175 * FMath::Sin(Phase * .86));
         FVector Position = bSwimming ? Dolphin->GetComponentLocation() : Goal;
         FVector Motion = Yacht->GetVelocity() + (Goal - Position) * .62;
         Motion.Z = 0;
-        const float Speed = FMath::Min(790.0, Motion.Size());
+        const float Speed = FMath::Min(1250.0, Motion.Size());
         const FRotator Heading = Speed > 25.0 ? Motion.Rotation() : Ahead.Rotation();
         const float Yaw = bSwimming ? FMath::FixedTurn(Dolphin->GetComponentRotation().Yaw, Heading.Yaw, 65.0f * DeltaSeconds) : Heading.Yaw;
         Position += FRotator(0, Yaw, 0).Vector() * Speed * DeltaSeconds;
-        const double Water = Sailing::SampleSea(FVector2D(Position) / CmPerM, Sea.TimeS, 0, Sea.Scale).HeightM;
-        Position.Z = Water * CmPerM - (41.0 + 32.0 * FMath::Sin(Phase));
+        const double Water = Yacht->SurfaceHeightM(FVector2D(Position) / CmPerM);
+        Position.Z = Water * CmPerM - 900*(1-Visit) - (41.0 + 32.0 * FMath::Sin(Phase));
         Dolphin->SetWorldLocationAndRotation(Position, FRotator(-6.8 * FMath::Cos(Phase), Yaw, 4 * FMath::Sin(Phase * 1.9)));
     }
     bSwimming = true;

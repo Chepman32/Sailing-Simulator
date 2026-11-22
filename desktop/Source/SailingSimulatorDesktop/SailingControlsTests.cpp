@@ -5,10 +5,14 @@
 
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
+#include "Framework/Application/SlateApplication.h"
+#include "GameFramework/HUDHitBox.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "InputKeyEventArgs.h"
 #include "Misc/AutomationTest.h"
 #include "Slate/SceneViewport.h"
+#include "SailingVoyageSound.h"
+#include "Widgets/SViewport.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingControlsTest, "Sailing.Controls.WebHelmAndViews",
     EAutomationTestFlags::ClientContext | EAutomationTestFlags::NonNullRHI | EAutomationTestFlags::EngineFilter)
@@ -90,16 +94,38 @@ bool FSailingControlsTest::RunTest(const FString& Parameters)
         else if (Wheel != 0) Scene->OnMouseWheel(Geometry, Mouse);
         else Scene->OnMouseMove(Geometry, Mouse);
     };
-    const FVector2D Wheel(53 * Scale, Size.Y - 52 * Scale);
-    Pointer(IE_Pressed, Wheel);
-    Pointer(IE_Released, Wheel + FVector2D(55 * Scale, 0));
-    Player->PlayerTick(.1f);
-    TestEqual(TEXT("Dragging the wheel holds the rudder on release"), Yacht->ReadHelm().Rudder, .5, .02);
+    TestNull(TEXT("The HUD has no rudder panel"), HUD->GetHitBoxWithName(TEXT("Rudder")));
+    Yacht->SetRudder(.4);
     Tap(EKeys::C);
-    TestEqual(TEXT("C centers the wheel"), Yacht->ReadHelm().Rudder, 0.0);
-    Pointer(IE_Pressed, {Size.X - 100 * Scale, Size.Y - 145 * Scale});
-    Pointer(IE_Released, {Size.X - 100 * Scale, Size.Y - 79 * Scale});
-    TestEqual(TEXT("The mouse lever reaches full astern"), Yacht->ReadHelm().Throttle, -1.0, .04);
+    TestEqual(TEXT("C still centers the helm"), Yacht->ReadHelm().Rudder, 0.0);
+    const double Axis = Size.X-120*Scale;
+    const double Top = FMath::Max(164.*Scale,Size.Y*.333)+66*Scale;
+    const double Bottom = Size.Y-124*Scale;
+    Yacht->SetEngineRunning(false);
+    Pointer(IE_Pressed, {Axis, Top});
+    Pointer(IE_Released, {Axis, Bottom});
+    TestEqual(TEXT("The mouse lever reaches full astern with the engine stopped"), Yacht->ReadHelm().Throttle, -1.0, .04);
+    TestFalse(TEXT("Moving the lever does not start the engine"), Yacht->ReadHelm().bEngineOn);
+    Tap(EKeys::SpaceBar);
+    TestEqual(TEXT("Starting applies the new lever position"), Yacht->ReadHelm().Throttle, -1.0, .04);
+    Pointer(IE_Pressed, {Axis, Bottom});
+    Pointer(IE_Released, {Axis, -10});
+    TestEqual(TEXT("A captured release outside the window reaches full ahead"), Yacht->ReadHelm().Throttle, 1.0);
+
+    FVector2D SoundButton(0,34*Scale);
+    const FHUDHitBox* SoundHitBox=HUD->GetHitBoxWithName(TEXT("Sound"));
+    if (!TestNotNull(TEXT("Sound button has a hit target"),SoundHitBox)) return false;
+    while (SoundButton.X<Size.X && !SoundHitBox->Contains(SoundButton)) SoundButton.X+=4*Scale;
+    if (!TestTrue(TEXT("Sound button is reachable in the top row"),SoundButton.X<Size.X)) return false;
+    const bool SoundWasEnabled = Player->Sound().Enabled();
+    const auto ClickSound = [&] {
+        Pointer(IE_Pressed, SoundButton);
+        Pointer(IE_Released, SoundButton);
+    };
+    ClickSound();
+    TestTrue(TEXT("Clicking the sound button changes the master setting"), Player->Sound().Enabled() != SoundWasEnabled);
+    ClickSound();
+    TestEqual(TEXT("Clicking the sound button again restores the master setting"), Player->Sound().Enabled(), SoundWasEnabled);
 
     USpringArmComponent* Arm = Yacht->FindComponentByClass<USpringArmComponent>();
     if (!TestNotNull(TEXT("Exterior camera arm"), Arm)) return false;
@@ -149,4 +175,44 @@ bool FSailingControlsTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Losing focus releases held controls"), Yacht->ReadHelm().Throttle, FocusLever);
     return true;
 }
+
+#if PLATFORM_MAC
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingMacKeysTest, "Sailing.Controls.MacKeyboardLayout",
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::NonNullRHI | EAutomationTestFlags::EngineFilter)
+
+bool FSailingMacKeysTest::RunTest(const FString&)
+{
+    UGameViewportClient* Client = GEngine->GameViewport;
+    auto* Player = Client ? Cast<ASailingPlayerController>(Client->GetWorld()->GetFirstPlayerController()) : nullptr;
+    if (!TestNotNull(TEXT("Local sailing player"), Player)) return false;
+    const auto Viewport = Client->GetGameViewportWidget();
+    if (!TestTrue(TEXT("A Slate game viewport is available"), Viewport.IsValid())) return false;
+    FSlateApplication& Slate = FSlateApplication::Get();
+    Player->ToggleWorld();
+    Player->ToggleWorld();
+    if (!TestTrue(TEXT("Closing World returns keyboard focus to the helm"), Slate.GetKeyboardFocusedWidget() == Viewport))
+        return false;
+
+    // macOS still supplies the physical code when the current layout has
+    // no matching Latin key. Send those events through Slate's normal routing.
+    constexpr int MKeyCode = 0x2e, DKeyCode = 0x02;
+    constexpr uint32 SoftSign = 0x44c, Ve = 0x432;
+    const bool SoundBefore = Player->Sound().Enabled();
+    Slate.OnKeyDown(MKeyCode, SoftSign, false);
+    Slate.OnKeyUp(MKeyCode, SoftSign, false);
+    TestTrue(TEXT("The sound shortcut works in a Cyrillic layout"), Player->Sound().Enabled() != SoundBefore);
+    Slate.OnKeyDown(MKeyCode, SoftSign, false);
+    Slate.OnKeyUp(MKeyCode, SoftSign, false);
+
+    ASailingYachtPawn* Yacht = Player->GetPawn<ASailingYachtPawn>();
+    if (!TestNotNull(TEXT("Playable yacht"), Yacht)) return false;
+    Slate.OnKeyDown(DKeyCode, Ve, false);
+    Player->PlayerTick(.1f);
+    TestTrue(TEXT("Held steering works in a Cyrillic layout"), Yacht->ReadHelm().Rudder > .1);
+    Slate.OnKeyUp(DKeyCode, Ve, false);
+    Player->PlayerTick(.1f);
+    TestEqual(TEXT("Release clears the steering key"), Yacht->ReadHelm().Rudder, 0.);
+    return true;
+}
+#endif
 #endif

@@ -7,9 +7,8 @@ public class SailingSimulatorDesktop : ModuleRules
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine" });
         PrivateDependencyModuleNames.AddRange(new[] { "AudioMixer", "Chaos", "InputCore", "MediaAssets", "PhysicsCore", "ProceduralMeshComponent", "RHI" });
-        if (Target.bForceCompileDevelopmentAutomationTests || Target.Configuration != UnrealTargetConfiguration.Shipping)
-        {
-            PrivateDependencyModuleNames.AddRange(new[] { "Slate", "SlateCore" });
-        }
+        PrivateDependencyModuleNames.AddRange(new[] { "ApplicationCore", "Slate", "SlateCore" });
+        if (Target.Platform == UnrealTargetPlatform.Mac)
+            PublicFrameworks.Add("CoreGraphics");
     }
 }

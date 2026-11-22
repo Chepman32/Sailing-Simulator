@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "SailingTrial.h"
+#include "SailingEntryBubbles.h"
 
 namespace
 {
@@ -14,8 +15,7 @@ constexpr double DeepBed = -4100;
 
 double WaterAt(const ASailingYachtPawn& Yacht, FVector Point)
 {
-    const auto Frame = Yacht.SeaFrame();
-    return 100 * Sailing::SampleSea(FVector2D(Point) / 100, Frame.TimeS, 0, Frame.Scale).HeightM;
+    return 100 * Yacht.SurfaceHeightM(FVector2D(Point) / 100);
 }
 } // namespace
 
@@ -26,7 +26,7 @@ USailingExplorer::USailingExplorer()
     SetAbsolute(true, true, true);
     PostProcessBlendWeight = 0;
     PostProcessSettings.bOverride_SceneColorTint = true;
-    PostProcessSettings.SceneColorTint = FLinearColor(.35f, .76f, .82f);
+    PostProcessSettings.SceneColorTint = FLinearColor(.33f, .68f, .90f);
     PostProcessSettings.bOverride_ColorSaturation = true;
     PostProcessSettings.ColorSaturation = FVector4(.76, .85, .9, 1);
 }
@@ -69,6 +69,7 @@ void USailingExplorer::Leave(ASailingYachtPawn& Yacht)
     bFrozen = false;
     ClearInput();
     LeapTime = 0;
+    PendingImpact = EntryGlide = 0;
     Yaw = Yacht.GetActorRotation().Yaw;
     Pitch = -3;
     Depth = 0;
@@ -138,16 +139,31 @@ void USailingExplorer::StepLeap(const ASailingYachtPawn& Yacht, float Dt)
     Yaw = Yacht.GetActorRotation().Yaw + 113 * Turn;
     Pitch = -3 - 19 * Turn;
     SetWorldLocationAndRotation(Eye, FRotator(Pitch, Yaw, 0));
-    if (Flight > .32f && (Eye.Z < WaterAt(Yacht, Eye) - 12 || LeapTime >= 3.25f)) EnterWater(Eye, -260);
+    if (Flight > .32f && (Eye.Z < WaterAt(Yacht, Eye) - 12 || LeapTime >= 3.25f))
+    {
+        const float Impact = FMath::Max(260.f,981.f*Flight-310.f);
+        EnterWater(Yacht, Eye, -.48f*Impact, Impact);
+    }
 }
 
-void USailingExplorer::EnterWater(FVector Eye, float EntrySpeed)
+void USailingExplorer::Splash(const ASailingYachtPawn& Yacht, FVector Eye)
+{
+    Yacht.EntryBubbles().Splash(Yacht,Eye,FRotator(0,Yaw,0).Vector(),PendingImpact);
+    const float Strength = FMath::Clamp(PendingImpact / 600.f, 0.f, 1.f);
+    EntryGlide = .90f * Strength;
+    Velocity.Z = FMath::Min(Velocity.Z, -300. * Strength);
+    PendingImpact = 0;
+}
+
+void USailingExplorer::EnterWater(const ASailingYachtPawn& Yacht, FVector Eye, float EntrySpeed, float Impact)
 {
     State = ESkipperMode::Swim;
     Velocity = FVector(0, 0, EntrySpeed);
     bFloating = true;
     bGrounded = bCrouched = false;
     SetWorldLocation(Eye);
+    PendingImpact = Impact;
+    if (PendingImpact>0 && Eye.Z<=WaterAt(Yacht,Eye)+22) Splash(Yacht,Eye);
 }
 
 void USailingExplorer::StepSwim(const ASailingYachtPawn& Yacht, float Dt)
@@ -160,9 +176,25 @@ void USailingExplorer::StepSwim(const ASailingYachtPawn& Yacht, float Dt)
     FVector Target = MoveDirection() * Speed;
     if (!bFloating) Target.Z = FMath::Sin(FMath::DegreesToRadians(Pitch)) * Movement.X * Speed;
     Target.Z += 135 * (int32(bUp) - int32(bDown));
-    Velocity = FMath::Lerp(Velocity, Target, 1.0 - FMath::Exp(-3.0 * Dt));
-    if (bFloating) Velocity.Z += ((Water + 19 - Old.Z) * 16 - Velocity.Z * 4) * Dt;
+    EntryGlide = FMath::Max(0.f,EntryGlide-Dt);
+    Velocity = FMath::Lerp(Velocity, Target, 1.0 - FMath::Exp(-(EntryGlide>0 ? 1.35 : 3.0) * Dt));
+    if (bFloating && EntryGlide<=0) Velocity.Z += ((Water + 19 - Old.Z) * 16 - Velocity.Z * 4) * Dt;
+    // Re-engage buoyancy at eye depth, even if a trough crosses the entry.
+    if (EntryGlide > 0 && Water-Old.Z >= 150)
+    {
+        EntryGlide = 0;
+        Velocity.Z = FMath::Max(Velocity.Z, -35.);
+    }
     FVector Next = Old + Velocity * Dt;
+    FHitResult Wall;
+    if (GetWorld()->SweepSingleByChannel(Wall, Old, Next, FQuat::Identity, ECC_Camera,
+        FCollisionShape::MakeSphere(23.f), FCollisionQueryParams(SCENE_QUERY_STAT(SailingSwimHull), true, GetOwner()))
+        && FMath::Abs(Wall.Normal.Z) < .80 && FVector::DotProduct(Velocity, Wall.Normal) < 0)
+    {
+        // The same plated shell stops the yacht, the chase camera and the swimmer.
+        Velocity = FVector::VectorPlaneProject(Velocity, Wall.Normal);
+        Next = Wall.Location + Wall.Normal + Velocity * (Dt * (1.0 - Wall.Time));
+    }
     const FVector Local = Yacht.GetActorTransform().InverseTransformPosition(Next);
     if (Local.Z > -100 && Local.Z < 160 && Local.X > -545 && Local.X < 530 &&
         FMath::Abs(FMath::Abs(Local.Y) - 190) < 77)
@@ -187,6 +219,7 @@ void USailingExplorer::StepSwim(const ASailingYachtPawn& Yacht, float Dt)
     else
         Next.Z = FMath::Max(Next.Z, Ground + 55);
     SetWorldLocation(Next);
+    if (PendingImpact>0 && Velocity.Z<0 && Next.Z<=Water+24) Splash(Yacht,Next);
 }
 
 void USailingExplorer::StepWalk(const ASailingYachtPawn& Yacht, float Dt)
@@ -210,7 +243,9 @@ void USailingExplorer::StepWalk(const ASailingYachtPawn& Yacht, float Dt)
         }
         if (Ground < -80)
         {
-            EnterWater(Pose.TransformPosition(Next + FVector::UpVector * EyeHeight), FMath::Min(0.0, Velocity.Z));
+            const FVector Eye = Pose.TransformPosition(Next + FVector::UpVector * EyeHeight);
+            const float Impact = FMath::Sqrt(2.f*981.f*FMath::Max(0.,Eye.Z-Water));
+            EnterWater(Yacht, Eye, FMath::Min(0.0, Velocity.Z), Impact);
             return;
         }
     }
@@ -230,7 +265,7 @@ void USailingExplorer::StepWalk(const ASailingYachtPawn& Yacht, float Dt)
         }
         if (Water - Ground > 142 && Feet.Z < Water + 15)
         {
-            EnterWater(Next + FVector::UpVector * EyeHeight, 0);
+            EnterWater(Yacht, Next + FVector::UpVector * EyeHeight, 0, bGrounded ? 0 : FMath::Max(0.,-Velocity.Z));
             return;
         }
     }
@@ -277,8 +312,11 @@ void USailingExplorer::Jump()
         bGrounded = false;
         Velocity.Z = 426;
     }
-    else if (State == ESkipperMode::Swim && bFloating)
+    else if (State == ESkipperMode::Swim && bFloating && Depth < .15f && PendingImpact<=0 && EntryGlide<=0)
+    {
         Velocity.Z = 260;
+        PendingImpact = 230;
+    }
 }
 
 void USailingExplorer::Crouch()

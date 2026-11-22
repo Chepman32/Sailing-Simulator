@@ -1,6 +1,10 @@
 #include "SailingPlayerController.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
+#include "AudioDevice.h"
+#include "Components/AudioComponent.h"
+#include "ISubmixBufferListener.h"
+#include "Sound/SoundWave.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "InputKeyEventArgs.h"
@@ -8,6 +12,7 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "SailingExplorer.h"
+#include "SailingEntryBubbles.h"
 #include "SailingSignal.h"
 #include "SailingTrial.h"
 #include "SailingVoyageSound.h"
@@ -109,7 +114,121 @@ class FInspectVoyage : public IAutomationLatentCommand
     int Stage = 0;
     double Next = 0, Started = 0;
 };
+
+class FVoyageMixMeter final : public ISubmixBufferListener
+{
+public:
+    void OnNewSubmixBuffer(const USoundSubmix*, float* Data, int32 Count, int32, int32, double) override
+    {
+        float Peak = 0;
+        for (int32 I = 0; I < Count; ++I) Peak = FMath::Max(Peak, FMath::Abs(Data[I]));
+        LatestPeak.Store(Peak);
+    }
+
+    TAtomic<float> LatestPeak{0};
+};
+
+class FCheckRecordedAudio final : public IAutomationLatentCommand
+{
+public:
+    FCheckRecordedAudio(ASailingPlayerController& InPlayer, FAutomationTestBase& InTest)
+        : Player(&InPlayer), Test(InTest), Device(InPlayer.GetWorld()->GetAudioDevice()) {}
+
+    ~FCheckRecordedAudio() override
+    {
+        for (const auto& Voice : Voices)
+            if (auto* Component = Voice.Component.Get()) Component->OnAudioSingleEnvelopeValueNative.Remove(Voice.Handle);
+        if (Device && Meter) Device->UnregisterSubmixBufferListener(Meter.ToSharedRef(), Device->GetMainSubmixObject());
+    }
+
+    bool Update() override
+    {
+        if (!Player.IsValid() || !Device) return true;
+        auto* Yacht = Player->GetPawn<ASailingYachtPawn>();
+        if (!Yacht) return true;
+        const double Now = FPlatformTime::Seconds();
+        if (!Meter)
+        {
+            Meter = MakeShared<FVoyageMixMeter, ESPMode::ThreadSafe>();
+            Device->RegisterSubmixBufferListener(Meter.ToSharedRef(), Device->GetMainSubmixObject());
+            // Prepare the lazily created components before their playback starts.
+            TapKey(*Player, EKeys::M);
+            if (Player->Sound().Enabled()) TapKey(*Player, EKeys::M);
+            for (UAudioComponent* Component : TInlineComponentArray<UAudioComponent*>(Player.Get()))
+            {
+                const auto* Sound = Component->GetSound();
+                if (!Sound) continue;
+                auto Peak = MakeShared<float>(0);
+                const FDelegateHandle Handle = Component->OnAudioSingleEnvelopeValueNative.AddLambda(
+                    [Peak](const UAudioComponent*, const USoundWave*, float Value) { *Peak = FMath::Max(*Peak, Value); });
+                Voices.Add({Component, Sound->GetName(), Handle, Peak});
+            }
+            Test.TestEqual(TEXT("The ambience and three recorded sources are connected"), Voices.Num(), 4);
+            TapKey(*Player, EKeys::M);
+            Yacht->SetEngineRunning(true);
+            Yacht->SetThrottle(.6);
+            TapKey(*Player, EKeys::J);
+            TapKey(*Player, EKeys::B);
+            Deadline = Now + 5.;
+            return false;
+        }
+
+        if (!bCheckingMute)
+        {
+            const float Mixed = Meter->LatestPeak.Load();
+            const bool bAllHeard = !Voices.ContainsByPredicate([](const FVoice& Voice) { return *Voice.Peak <= .002f; });
+            if (Now < Deadline && (!bAllHeard || Mixed <= .002f)) return false;
+            for (const auto& Voice : Voices)
+                Test.TestTrue(Voice.Name + TEXT(" produces decoded audio"), *Voice.Peak > .002f);
+            Test.TestTrue(TEXT("The mixed audio reaches the device output"), Mixed > .002f);
+            TapKey(*Player, EKeys::M);
+            Yacht->SetEngineRunning(false);
+            Yacht->SetThrottle(0);
+            bCheckingMute = true;
+            Deadline = Now + .6;
+            return false;
+        }
+        if (Now < Deadline) return false;
+        Test.TestTrue(TEXT("The mixer goes quiet after muting"), Meter->LatestPeak.Load() < .002f);
+        return true;
+    }
+
+private:
+    struct FVoice
+    {
+        TWeakObjectPtr<UAudioComponent> Component;
+        FString Name;
+        FDelegateHandle Handle;
+        TSharedPtr<float> Peak;
+    };
+    TWeakObjectPtr<ASailingPlayerController> Player;
+    FAutomationTestBase& Test;
+    FAudioDeviceHandle Device;
+    TSharedPtr<FVoyageMixMeter, ESPMode::ThreadSafe> Meter;
+    TArray<FVoice> Voices;
+    double Deadline = 0;
+    bool bCheckingMute = false;
+};
 } // namespace
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingAudioOutputTest, "Sailing.Audio.DeviceOutput",
+                                 EAutomationTestFlags::ClientContext | EAutomationTestFlags::NonNullRHI |
+                                     EAutomationTestFlags::EngineFilter)
+
+bool FSailingAudioOutputTest::RunTest(const FString&)
+{
+    UGameViewportClient* Client = GEngine->GameViewport;
+    auto* Player = Client ? Cast<ASailingPlayerController>(Client->GetWorld()->GetFirstPlayerController()) : nullptr;
+    if (!TestNotNull(TEXT("Local sailing player"), Player)) return false;
+    if (!Player->GetWorld()->AllowAudioPlayback())
+    {
+        AddInfo(TEXT("Audio is disabled for this test run"));
+        return true;
+    }
+    if (!TestTrue(TEXT("The game has an audio device"), Player->GetWorld()->GetAudioDevice().IsValid())) return false;
+    ADD_LATENT_AUTOMATION_COMMAND(FCheckRecordedAudio(*Player, *this));
+    return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingVoyageTest, "Sailing.Voyage.WebExplorationAndSignals",
                                  EAutomationTestFlags::ClientContext | EAutomationTestFlags::NonNullRHI |
@@ -130,10 +249,37 @@ bool FSailingVoyageTest::RunTest(const FString& Parameters)
             Explorer.Advance(*Yacht, 1.f / 60);
         }
     };
-    TestFalse(TEXT("Audio starts silent"), Player->Sound().Enabled());
+    TestFalse(TEXT("A fresh voyage waits for the sound control"), Player->Sound().Enabled());
+    TestEqual(TEXT("Startup ambience leaves the radio off"), Player->Sound().Station(), -1);
     Tap(EKeys::J);
     Tap(EKeys::B);
-    TestFalse(TEXT("A signal does not arm audio"), Player->Sound().Enabled());
+    TestFalse(TEXT("Signal keys do not unmute the game"), Player->Sound().Enabled());
+    Tap(EKeys::M);
+    Tap(EKeys::J);
+    Tap(EKeys::B);
+    int RecordedVoices=0;
+    TInlineComponentArray<UAudioComponent*> Voices(Player);
+    for (UAudioComponent* Voice : Voices)
+    {
+        auto* Clip=Cast<USoundWave>(Voice->GetSound());
+        if (!Clip) continue;
+        const FName Name=Clip->GetFName();
+        const bool IsMotor=Name==TEXT("MarineDiesel");
+        if (!IsMotor && Name!=TEXT("MarineHorn") && Name!=TEXT("ShipBell")) continue;
+        ++RecordedVoices;
+        TestEqual(TEXT("Only the engine recording loops"),bool(Clip->bLooping),IsMotor);
+        TestTrue(TEXT("The recorded clip has audio"),Clip->Duration>1.f);
+        if (!IsMotor && Player->GetWorld()->AllowAudioPlayback())
+            TestTrue(TEXT("The signal key starts its recorded voice"),Voice->IsPlaying());
+    }
+    TestEqual(TEXT("All three recorded voices are bound to the player"),RecordedVoices,3);
+    Tap(EKeys::M);
+    const int64 MutedSamples = Player->Sound().SamplesWritten();
+    Tap(EKeys::J);
+    Tap(EKeys::B);
+    Advance(2);
+    TestFalse(TEXT("Signals respect the mute switch"), Player->Sound().Enabled());
+    TestEqual(TEXT("The muted mixer stops producing samples"), Player->Sound().SamplesWritten(), MutedSamples);
     Tap(EKeys::Q);
     TestTrue(TEXT("Q opens a chart of the actual placed islands"),
              Player->GetPanel() == ESailingPanel::Chart && Player->ChartView().IslandCount() == 7);
@@ -184,8 +330,33 @@ bool FSailingVoyageTest::RunTest(const FString& Parameters)
     Tap(EKeys::T);
     TestTrue(TEXT("Overboard captures the mouse and heaves the yacht to"),
              Explorer.Away() && !Player->bShowMouseCursor && Yacht->ReadHelm().bHoveTo);
-    Advance(210);
+    float MaximumEntryDepth = 0;
+    for (int I=0; I<225; ++I)
+    {
+        Advance(1);
+        MaximumEntryDepth = FMath::Max(MaximumEntryDepth,Explorer.DepthM());
+    }
+    AddInfo(FString::Printf(TEXT("Overboard entry reached %.2f m"),MaximumEntryDepth));
+    TestTrue(TEXT("An unassisted jump carries the eyes one to two metres underwater"),
+             MaximumEntryDepth>=1.f && MaximumEntryDepth<=2.f);
     TestTrue(TEXT("The leap ends in the water"), Explorer.Mode() == ESkipperMode::Swim);
+    auto& Bubbles = Yacht->EntryBubbles();
+    int32 SmallBubbles=0, MediumBubbles=0, LargeBubbles=0;
+    for (int32 I=0; I<Bubbles.GetInstanceCount(); ++I)
+    {
+        FTransform Bubble;
+        Bubbles.GetInstanceTransform(I,Bubble,true);
+        const double Radius = Bubble.GetScale3D().GetMax()*50.;
+        if (Radius<.65) ++SmallBubbles;
+        else if (Radius<1.8) ++MediumBubbles;
+        else ++LargeBubbles;
+    }
+    TestTrue(TEXT("Going overboard entrains pinhead, intermediate and large bubbles"),
+             SmallBubbles>8 && MediumBubbles>6 && LargeBubbles>2 && Bubbles.GetInstanceCount()<=88);
+    TestTrue(TEXT("Bubbles use the optical skin"), Bubbles.GetMaterial(0) && Bubbles.GetMaterial(0)->GetFName()==TEXT("M_EntryBubble"));
+    for (int32 I=0; I<300 && Bubbles.IsComponentTickEnabled(); ++I)
+        Bubbles.TickComponent(1.f/60,LEVELTICK_All,nullptr);
+    TestTrue(TEXT("The entry plume clears completely"), Bubbles.GetInstanceCount()==0 && !Bubbles.IsComponentTickEnabled());
     SetKey(*Player, EKeys::W, true);
     const FVector BeforeSwim = Explorer.GetComponentLocation();
     Advance(36);

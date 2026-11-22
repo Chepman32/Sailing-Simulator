@@ -40,7 +40,8 @@ private:
     void StepLeap(const ASailingYachtPawn& Yacht, float Dt);
     void StepSwim(const ASailingYachtPawn& Yacht, float Dt);
     void StepWalk(const ASailingYachtPawn& Yacht, float Dt);
-    void EnterWater(FVector Eye, float EntrySpeed);
+    void EnterWater(const ASailingYachtPawn& Yacht, FVector Eye, float EntrySpeed, float Impact);
+    void Splash(const ASailingYachtPawn& Yacht, FVector Eye);
     FVector MoveDirection() const;
     bool AtLadder(const ASailingYachtPawn& Yacht) const;
 
@@ -53,4 +54,5 @@ private:
     bool bSprint = false, bUp = false, bDown = false, bGrounded = false;
     bool bCrouched = false, bFloating = true, bPrepared = false;
     bool bFrozen = false;
+    float PendingImpact = 0, EntryGlide = 0;
 };

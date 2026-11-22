@@ -1,6 +1,8 @@
 #include "SailingVoyageSound.h"
 
 #include "Components/AudioComponent.h"
+#include "GameFramework/PlayerController.h"
+#include "UObject/ConstructorHelpers.h"
 #include "MediaPlayer.h"
 #include "MediaSoundComponent.h"
 #include "Sound/SoundWaveProcedural.h"
@@ -10,6 +12,7 @@
 namespace
 {
 constexpr int Rate = 24000, Block = 1024;
+constexpr int BufferedBlocks = 5;
 const TCHAR* const Stations[] = {TEXT("SomaFM · Groove Salad"), TEXT("SomaFM · Underground 80s"),
                                  TEXT("SomaFM · Heavyweight Reggae"), TEXT("Onboard shanty band")};
 const TCHAR* const Channels[] = {TEXT("groovesalad"), TEXT("u80s"), TEXT("reggae")};
@@ -20,39 +23,69 @@ float SinTone(double Phase)
 }
 } // namespace
 
-void USailingVoyageSound::StartSpeaker()
+USailingVoyageSound::USailingVoyageSound()
 {
-    if (!Wave)
-    {
-        Wave = NewObject<USoundWaveProcedural>(this);
-        Wave->SetSampleRate(Rate);
-        Wave->NumChannels = 1;
-        Wave->Duration = INDEFINITELY_LOOPING_DURATION;
-        Wave->SoundGroup = SOUNDGROUP_Default;
-        Speaker = NewObject<UAudioComponent>(GetOwner());
-        Speaker->bAutoActivate = false;
-        Speaker->bAllowSpatialization = false;
-        Speaker->SetSound(Wave);
-        Speaker->RegisterComponent();
-        PCM.SetNumUninitialized(Block);
-    }
-    Wave->ResetAudio();
-    FillBlock(0, 0, 1, 0);
-    Speaker->Play();
+    PrimaryComponentTick.bCanEverTick = true;
+    PrimaryComponentTick.bStartWithTickEnabled = false;
+    static ConstructorHelpers::FObjectFinder<USoundWave> Motor(TEXT("/Game/Coastal/Audio/MarineDiesel"));
+    static ConstructorHelpers::FObjectFinder<USoundWave> Typhon(TEXT("/Game/Coastal/Audio/MarineHorn"));
+    static ConstructorHelpers::FObjectFinder<USoundWave> Chime(TEXT("/Game/Coastal/Audio/ShipBell"));
+    DieselRecording = Motor.Object;
+    HornRecording = Typhon.Object;
+    BellRecording = Chime.Object;
 }
 
-void USailingVoyageSound::Toggle()
+UAudioComponent* USailingVoyageSound::MakeVoice(USoundWave* Recording)
 {
-    bEnabled = !bEnabled;
+    auto* Voice = NewObject<UAudioComponent>(GetOwner());
+    Voice->bAutoActivate = false;
+    Voice->bAllowSpatialization = false;
+    Voice->SetSound(Recording);
+    Voice->RegisterComponent();
+    return Voice;
+}
+
+void USailingVoyageSound::StartSpeaker()
+{
+    if (!Speaker)
+    {
+        Speaker = MakeVoice(nullptr);
+        Diesel = MakeVoice(DieselRecording);
+        Horn = MakeVoice(HornRecording);
+        Bell = MakeVoice(BellRecording);
+        Horn->SetVolumeMultiplier(.50f);
+        Bell->SetVolumeMultiplier(.68f);
+        PCM.SetNumUninitialized(Block);
+    }
+    // A fresh buffer avoids the render thread draining or resetting the next
+    // session's samples while the previous playback is stopping.
+    Wave = NewObject<USoundWaveProcedural>(this);
+    Wave->SetSampleRate(Rate);
+    Wave->NumChannels = 1;
+    Wave->Duration = INDEFINITELY_LOOPING_DURATION;
+    Wave->SoundGroup = SOUNDGROUP_Default;
+    Speaker->SetSound(Wave);
+    for (int32 I = 0; I < BufferedBlocks; ++I) FillBlock(0, 1, 0);
+    Speaker->Play();
+    NextSpeakerStart = FPlatformTime::Seconds() + .5;
+}
+
+void USailingVoyageSound::SetEnabled(bool bEnable)
+{
+    if (bEnabled == bEnable) return;
+    bEnabled = bEnable;
+    SetComponentTickEnabled(bEnable);
+    ApplyStation();
     if (bEnabled)
         StartSpeaker();
     else if (Speaker)
     {
         Speaker->Stop();
-        Wave->ResetAudio();
-        HornStart = BellStart = BurstStart = -1000000;
+        Diesel->Stop();
+        Horn->Stop();
+        Bell->Stop();
+        BurstStart = -1000000;
     }
-    ApplyStation();
 }
 
 void USailingVoyageSound::Tune(int Direction)
@@ -123,17 +156,16 @@ void USailingVoyageSound::Cue(ESailingCue Kind)
 {
     if (!bEnabled) return;
     if (Kind == ESailingCue::Horn)
-        HornStart = SampleIndex;
+        Horn->Play();
     else if (Kind == ESailingCue::Bell)
-        BellStart = SampleIndex;
+        Bell->Play();
     else
         BurstStart = SampleIndex;
 }
 
-void USailingVoyageSound::FillBlock(float Engine, float Speed, float Weather, float Depth)
+void USailingVoyageSound::FillBlock(float Speed, float Weather, float Depth)
 {
-    // One bounded mono bus. The engine, breaking water, wind and signal envelopes
-    // are mixed into a short queue; a muted game creates no audio work.
+    // Sea, wind, splashes and the onboard band share a short ambience queue.
     static constexpr int Notes[] = {9, 9, 9, 9, 9, 9, 9, 5, 2, 5,  9,  9,  7,  7, 7, 7, 7, 7, 7, 4, 0, 4,
                                     7, 7, 9, 9, 9, 9, 9, 9, 9, 10, 12, 14, 12, 9, 7, 4, 0, 2, 2, 2, 2, 2};
     const float Wet = FMath::Clamp(Depth / .8f, 0.f, 1.f);
@@ -146,24 +178,7 @@ void USailingVoyageSound::FillBlock(float Engine, float Speed, float Weather, fl
         SeaNoise += (LowNoise - SeaNoise) * .065f;
         const float Surf = .65f + .35f * SinTone(T * .19 + .18f * SinTone(T * .47));
         float Sample = SeaNoise * (.45f + .25f * Weather) + LowNoise * (.22f + .13f * Speed) * Surf * (1 - .8f * Wet);
-        if (Engine > 0)
-        {
-            EnginePhase = FMath::Fmod(EnginePhase + (25 + Engine * 63) / Rate, 1.);
-            Sample += Engine * (.16f * SinTone(EnginePhase) + .055f * SinTone(2 * EnginePhase) +
-                                .018f * SinTone(4 * EnginePhase));
-        }
-        const double Horn = double(SampleIndex - HornStart) / Rate;
-        const double Bell = double(SampleIndex - BellStart) / Rate;
         const double Burst = double(SampleIndex - BurstStart) / Rate;
-        if (Horn < 1.55)
-        {
-            const float Envelope = FMath::Min(1., Horn * 15) * FMath::Clamp((1.55 - Horn) * 6., 0., 1.);
-            const double Phase = 168 * Horn - .31 * (1 - FMath::Exp(-14 * Horn));
-            Sample += Envelope * (.27f * SinTone(Phase) + .15f * SinTone(2 * Phase) + .065f * SinTone(3 * Phase));
-        }
-        if (Bell < 3.4)
-            Sample += FMath::Exp(-1.8 * Bell) *
-                      (.26f * SinTone(707 * Bell) + .16f * SinTone(710 * Bell) + .10f * SinTone(1593 * Bell));
         if (Burst < .43) Sample += LowNoise * .85f * FMath::Exp(-7 * Burst);
         if (Selected == 3)
         {
@@ -179,9 +194,21 @@ void USailingVoyageSound::FillBlock(float Engine, float Speed, float Weather, fl
     Wave->QueueAudio(reinterpret_cast<uint8*>(PCM.GetData()), Block * sizeof(int16));
 }
 
+void USailingVoyageSound::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTick)
+{
+    Super::TickComponent(DeltaTime, TickType, ThisTick);
+    const auto* Player = Cast<APlayerController>(GetOwner());
+    if (const auto* Yacht = Player ? Player->GetPawn<ASailingYachtPawn>() : nullptr) Update(*Yacht);
+}
+
 void USailingVoyageSound::Update(const ASailingYachtPawn& Yacht)
 {
     if (!bEnabled) return;
+    if (!Speaker->IsPlaying() && FPlatformTime::Seconds() >= NextSpeakerStart)
+    {
+        Speaker->Play();
+        NextSpeakerStart = FPlatformTime::Seconds() + .5;
+    }
     if (Selected >= 0 && Selected < UE_ARRAY_COUNT(Channels) && Media && !bExhausted)
     {
         // A live connection can advertise playback before its first audio packet.
@@ -196,15 +223,24 @@ void USailingVoyageSound::Update(const ASailingYachtPawn& Yacht)
             TryServer();
     }
     const auto& Helm = Yacht.ReadHelm();
-    const float Engine = Helm.bEngineOn ? .25f + .75f * FMath::Abs(Helm.Throttle) : 0;
-    for (int I = 0; I < 4 && Wave->GetAvailableAudioByteCount() < Block * 3 * int(sizeof(int16)); ++I)
-        FillBlock(Engine, Yacht.GetVelocity().Size2D() * .002, Yacht.SeaFrame().Scale, Yacht.Explorer().DepthM());
+    const float Engine = Helm.bEngineOn && bEngineAudible ? .25f + .75f * FMath::Abs(Helm.Throttle) : 0;
+    if (Engine > 0)
+    {
+        Diesel->SetPitchMultiplier(.75f + Engine*.75f);
+        Diesel->SetVolumeMultiplier((.14f + .51f*Engine) / (1.f + .18f*Yacht.Explorer().DepthM()));
+        if (!Diesel->IsPlaying()) Diesel->Play();
+    }
+    else if (Diesel->IsPlaying()) Diesel->Stop();
+    for (int I = 0; I < BufferedBlocks && Wave->GetAvailableAudioByteCount() < Block * BufferedBlocks * int(sizeof(int16)); ++I)
+        FillBlock(Yacht.GetVelocity().Size2D() * .002, Yacht.SeaFrame().Scale, Yacht.Explorer().DepthM());
 }
 
 void USailingVoyageSound::EndPlay(const EEndPlayReason::Type Reason)
 {
+    SetComponentTickEnabled(false);
     if (Media) Media->Close();
     if (Radio) Radio->Stop();
-    if (Speaker) Speaker->Stop();
+    for (auto* Voice : {Diesel.Get(), Horn.Get(), Bell.Get(), Speaker.Get()})
+        if (Voice) Voice->DestroyComponent();
     Super::EndPlay(Reason);
 }

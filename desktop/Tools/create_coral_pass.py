@@ -93,6 +93,20 @@ def import_mesh(name, material, *, nanite=True, collision=False, foliage=False):
         trace = unreal.CollisionTraceFlag.CTF_USE_COMPLEX_AS_SIMPLE
         if shape.get_editor_property("collision_trace_flag") != trace:
             shape.set_editor_property("collision_trace_flag", trace)
+        if name in ("ProductTanker","GasCarrier","SirensLight") and not shape.get_editor_property("double_sided_geometry"):
+            shape.set_editor_property("double_sided_geometry", True)
+    if name in ("ProductTanker","GasCarrier","SirensLight"):
+        editor = unreal.get_editor_subsystem(unreal.StaticMeshEditorSubsystem)
+        if refresh or editor.get_lod_count(mesh) != 3:
+            lods = unreal.StaticMeshReductionOptions()
+            reductions = []
+            for fraction,screen in ((1.,1.),(.42,.32),(.14,.11)):
+                level = unreal.StaticMeshReductionSettings()
+                configure(level,percent_triangles=fraction,screen_size=screen)
+                reductions.append(level)
+            configure(lods,auto_compute_lod_screen_size=False,reduction_settings=reductions)
+            if editor.set_lods(mesh,lods) != len(reductions):
+                raise RuntimeError(f"Could not build the distance levels for {name}")
     if not ASSETS.save_loaded_asset(mesh):
         raise RuntimeError(f"Could not save {target}")
     bounds = mesh.get_bounding_box()
@@ -154,6 +168,22 @@ def make_dock(material):
         static(f"Channel lens {index + 1}", post, (x, y, 1.63), scale=(.20,.20,.16), material=material["warm"])
 
 
+def plant_grass(cay, mesh):
+    rng = random.Random("dune grass/" + cay.name)
+    patches = []
+    for _ in range(int(cay.length*cay.width*.075)):
+        x, y = rng.uniform(-cay.length,cay.length), rng.uniform(-cay.width,cay.width)
+        height, green, rock = relief(cay,x,y)
+        if .13 < green < .82 and rock < .5:
+            size = rng.uniform(.72,1.45)
+            patches.append(unreal.Transform(location=cm((x,y,height-.06)),
+                           rotation=unreal.Rotator(yaw=rng.uniform(0,360)), scale=unreal.Vector(size,size,size)))
+    if patches:
+        grass = spawn(cpp("SailingGrove"), f"{cay.name} dune grass", (cay.x,cay.y,0))
+        grass.plant(mesh,patches)
+        grass.get_component_by_class(unreal.InstancedStaticMeshComponent).set_cull_distances(8000,15500)
+
+
 def atmosphere(material):
     sky_atmosphere = spawn(unreal.SkyAtmosphere, "Atmosphere")
     sky_atmosphere.get_component_by_class(unreal.SkyAtmosphereComponent).set_aerial_pespective_view_distance_scale(1.05)
@@ -184,10 +214,10 @@ def atmosphere(material):
     cloud.set_render_in_main_pass(True)
     cloud.set_visible_in_real_time_sky_captures(True)
     configure(cloud, layer_bottom_altitude=.94, layer_height=3.2,
-              tracing_start_max_distance=42, tracing_max_distance=13, view_sample_count_scale=1.5,
-              shadow_view_sample_count_scale=1.2)
-    cloud.set_reflection_view_sample_count_scale(.72)
-    cloud.set_shadow_reflection_view_sample_count_scale(.62)
+              tracing_start_max_distance=42, tracing_max_distance=13, view_sample_count_scale=.77,
+              shadow_view_sample_count_scale=.67)
+    cloud.set_reflection_view_sample_count_scale(.42)
+    cloud.set_shadow_reflection_view_sample_count_scale(.38)
 
     ambient = spawn(unreal.SkyLight, "Sky and sea reflections", position=(0, 0, 20))
     sky = ambient.get_component_by_class(unreal.SkyLightComponent)
@@ -294,6 +324,7 @@ def build_level(material, meshes, cays, palms):
     for index, cay in enumerate(CAYS):
         static(cay.name, cays[cay.name], (cay.x, cay.y, 0), collision=True)
         plant_cay(cay, palms, (118, 87, 119, 100, 65, 0)[index])
+        plant_grass(cay, meshes["grass"])
 
         if cay.ridge > 0:
             rng = random.Random("windward scrub/"+cay.name)
@@ -315,17 +346,23 @@ def build_level(material, meshes, cays, palms):
                    scale=(570,650,656), material=material["ash"])
     plume.static_mesh_component.set_cast_shadow(False)
     plume.static_mesh_component.set_visible_in_ray_tracing(False)
-    static("Coral Pass light", meshes["lighthouse"], LIGHTHOUSE, scale=(1.10,1.10,1.10))
-    for i, (x, y, heading, size) in enumerate(((-9,-6,28,.92), (8,-9,105,1.05), (-14,2,173,.84), (10,-3,63,.76))):
+    static("Coral Pass light", meshes["lighthouse"], (*LIGHTHOUSE[:2], .25), scale=(1.10,1.10,1.10), collision=True)
+    for i, (x, y, heading, size) in enumerate(((-11,-7,28,.92), (6,-13,105,1.05), (-14,2,173,.84), (1,13,63,.76))):
         height, _, _ = relief(CAYS[-1], x, y)
         static(f"Lighthouse palm {i+1}", palms[i % len(palms)], (LIGHTHOUSE[0]+x,LIGHTHOUSE[1]+y,height-.18),
                yaw=heading, scale=(size,size,size))
-    for i, (x,y,size) in enumerate(((-8,-6,.46),(4,9,.51),(13,-3,.35),(-13,3,.47),(-2,-12,.43))):
+    for i, (x,y,size) in enumerate(((-10,-6,.46),(5,12,.51),(16,-11,.35),(-13,3,.47),(-2,-12,.43))):
         z,_,_ = relief(CAYS[-1],x,y)
         static(f"Light station thicket {i+1}",meshes["canopy"],(LIGHTHOUSE[0]+x,LIGHTHOUSE[1]+y,z-.55),
                yaw=i*104,scale=(size,size,size))
-    static("Container ship at anchor", meshes["ship"], (430,-163,-.24), yaw=-122, collision=True)
-    static("Distant merchant ship", meshes["ship"], (1280, -170, 0), yaw=-145, scale=(.95,.95,.95), collision=True)
+    # Keep the tanker parallel to the quay and the carrier visible past the lighthouse from the departure view.
+    for label, key, position, yaw in (("Product tanker at the quay","tanker",(439,-155,-.24),-90),
+                                      ("LNG carrier at the outer anchorage","lng",(385,-625,-.15),33)):
+        ship = static(label, meshes[key], position, yaw=yaw, collision=True)
+        ship.set_editor_property("tags", ["SailingMerchant"])
+    # Leave room for the bowsprit and swimmers outside the yacht's departure line.
+    pirate = static("The Siren's Light", meshes["pirate"], (129,137,0), yaw=-53, collision=True)
+    pirate.set_editor_property("tags", ["SailingPirate"])
     rocky_shore_and_reef(meshes["boulder"])
 
     # The full-resolution scan is used at shoreline scale and as larger headland outcrops.
@@ -340,14 +377,17 @@ def build_level(material, meshes, cays, palms):
     spawn(unreal.PlayerStart, "Free sailing start", (0, 0, .14), yaw=25)
     sea = spawn(cpp("SailingSea"), "Open sea")
     configure(sea, water_material=material["water"])
-    wake = spawn(cpp("SailingWake"), "Catamaran wake and prop wash")
-    configure(wake, foam_material=material["foam"])
+    spawn(cpp("SailingWake"), "Catamaran wake and prop wash")
     dolphin = spawn(cpp("SailingDolphinPod"), "Dolphins in the pass")
     configure(dolphin, dolphin_mesh=meshes["dolphin"])
+    whale = spawn(cpp("SailingWhales"), "Blue whales offshore")
+    configure(whale, whale_mesh=meshes["whale"])
+    sharks = spawn(cpp("SailingSharks"), "Reef sharks")
+    configure(sharks, shark_mesh=meshes["shark"])
     atmosphere(material)
 
     for actor in set(ACTORS.get_all_level_actors()) - existing:
-        actor.set_editor_property("tags", ["CoralPassGenerated"])
+        actor.set_editor_property("tags", [*actor.get_editor_property("tags"), "CoralPassGenerated"])
     if not LEVELS.save_current_level():
         raise RuntimeError(f"Could not save {LEVEL}")
     unreal.log(f"Created playable level {LEVEL}")
@@ -357,18 +397,22 @@ def main():
     material = create_materials(SOURCES)
     if os.environ.get("SAILING_MATERIALS_ONLY") == "1":
         return
-    lighthouse = {"lighthousestone": material["plaster"], "lighthousered": material["paint"],
-                  "steel": material["steel"], "lampglass": material["lantern"], "beacon": material["beacon"],
-                  "windowglass": material["glass"]}
+    lighthouse = {key.removeprefix("station_"): value for key,value in material.items() if key.startswith("station_")}
+    lighthouse.update(dark=material["rubber"], glass=material["lantern"], lamp=material["beacon"])
     meshes = {
         "reef": import_mesh("ReefShelf",material["ground"]),
-        "canopy": import_mesh("CoastalCanopy",material["canopy"],foliage=True),
+        "canopy": import_mesh("CoastalCanopy",{"canopy": material["canopy"], "canopybark": material["bark"]},foliage=True),
+        "grass": import_mesh("DuneGrass",material["canopy"],foliage=True),
         "rocks": import_mesh("CoastRocks", material["rock"]),
         "boulder": import_mesh("Boulder", material["boulder"]),
         "volcano": import_mesh("Volcano", material["volcano"], collision=True),
-        "lighthouse": import_mesh("Lighthouse", lighthouse, nanite=False),
-        "ship": import_mesh("ContainerShip", {name: material[f"ship_{name}"] for name in ("hull", "bridge", "containers")},
-                            nanite=False, collision=True),
+        "lighthouse": import_mesh("LightStation", lighthouse, nanite=False, collision=True),
+        "tanker": import_mesh("ProductTanker", material["tanker"], collision=True, nanite=False),
+        "lng": import_mesh("GasCarrier", material["lng"], collision=True, nanite=False),
+        "pirate": import_mesh("SirensLight", {k:v for k,v in material.items() if k.startswith("pirate")},
+                              collision=True, nanite=False),
+        "whale": import_mesh("BlueWhale", material["blue_whale"], nanite=False),
+        "shark": import_mesh("ReefShark", material["reef_shark"], nanite=False),
         "dolphin": import_mesh("Dolphin", {name: value for name, value in material.items() if name.startswith("dolphin_")},
                                 nanite=False),
     }
@@ -386,4 +430,5 @@ def main():
     build_level(material, meshes, cays, palms)
 
 
-main()
+if __name__ == "__main__":
+    main()
