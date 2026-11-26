@@ -136,7 +136,7 @@ void ASailingTrialHUD::DrawHUD()
                 {TEXT("WASD   ·   Shift"), TEXT("Walk / swim   ·   Run / swim faster")},
                 {TEXT("Jet ski   ·   E   ·   WASD"), TEXT("Board / dismount   ·   Gas / brake / steer")},
                 {TEXT("Space   ·   C / Ctrl   ·   F"), TEXT("Jump / rise   ·   Crouch / dive   ·   Torch")},
-                {TEXT("Q / N   ·   Tab"), TEXT("Chart   ·   Inventory")},
+                {TEXT("Q / N   ·   Tab"), TEXT("Map   ·   Inventory")},
                 {TEXT("J / B   ·   F / G"), TEXT("Horn / bell   ·   Red / green signal flare")},
                 {TEXT("M   ·   O or 0 / Shift+O"), TEXT("Sound   ·   Next / previous radio station")},
                 {TEXT("1–4   ·   L"), TEXT("Weather presets   ·   Squall lightning")},
@@ -179,7 +179,7 @@ void ASailingTrialHUD::DrawHUD()
             29, 47, 26, Accent, true);
         Paint.Box(ETile::Card, 16, ScreenHeight - 76, 438, 60);
         Paint.Label(TEXT("W   Gas     S   Brake / reverse     A / D   Steer"), 29, ScreenHeight - 67, 12);
-        Paint.Label(TEXT("E   Dismount     T   Back to helm     Q   Chart     R   Recenter"), 29, ScreenHeight - 43, 11, Muted);
+        Paint.Label(TEXT("E   Dismount     T   Back to helm     Q   Map     R   Recenter"), 29, ScreenHeight - 43, 11, Muted);
         if (!Ski->CanDismount())
         {
             Paint.Box(ETile::Card, ScreenWidth * .5f - 94, ScreenHeight - 64, 188, 32);
@@ -211,7 +211,7 @@ void ASailingTrialHUD::DrawHUD()
         Paint.Box(ETile::Card, 16, ScreenHeight - 55, 388, 39);
         const TCHAR* Actions = Explorer.Mode() == ESkipperMode::Swim
             ? TEXT("C / Ctrl   Dive     Space   Rise     T   Back to helm     H   Controls")
-            : TEXT("T   Back to helm     Q   Chart     ,   World     H   Controls");
+            : TEXT("T   Back to helm     Q   Map     ,   World     H   Controls");
         Paint.Label(Actions, 29, ScreenHeight-46, 11, Muted);
         if (const TCHAR* Prompt = Explorer.Prompt(*Yacht))
         {
@@ -275,7 +275,7 @@ void ASailingTrialHUD::DrawHUD()
     TopAction(TEXT("Radio"),ETile::Radio,TEXT("Radio"),TEXT("0"),113);
     TopAction(TEXT("Sound"),ETile::Sound,Player->Sound().Enabled() ? TEXT("Sound on") : TEXT("Sound off"),TEXT("M"),136);
     TopAction(TEXT("Help"),ETile::Help,TEXT("Controls"),TEXT("H"),135);
-    TopAction(TEXT("Chart"),ETile::Chart,TEXT("Chart"),TEXT("Q"),112);
+    TopAction(TEXT("Chart"),ETile::Chart,TEXT("Map"),TEXT("Q"),112);
     TopAction(TEXT("View"),ETile::View,Yacht->ViewName(),TEXT("V"),116);
     TopAction(TEXT("World"),ETile::World,TEXT("World"),nullptr,92);
     if (Player->Sound().Station() >= 0) Paint.Label(Player->Sound().StationLabel(),22,139,13);

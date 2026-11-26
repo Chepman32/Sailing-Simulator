@@ -1,6 +1,7 @@
 #include "SailingViewportClient.h"
 
 #include "DynamicRHI.h"
+#include "DynamicResolutionState.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "Engine/GameEngine.h"
@@ -68,7 +69,21 @@ void USailingViewportClient::Init(FWorldContext& WorldContext, UGameInstance* In
     }
     FParse::Value(FCommandLine::Get(), TEXT("SailingWaterView="), WaterView);
     FParse::Value(FCommandLine::Get(), TEXT("SailingWaterFrames="), WaterFrames);
-    if (WaterView.IsEmpty() && !WaterFrames.IsEmpty()) WaterView=TEXT("chase");
+    if (!WaterFrames.IsEmpty())
+    {
+        if (WaterView.IsEmpty()) WaterView=TEXT("chase");
+        CaptureTimes=TEXT("frame,world_s,sea_s\n");
+        if (FParse::Param(FCommandLine::Get(),TEXT("UseFixedTimeStep")))
+        {
+            // Shipping does not parse the engine's -FPS argument. Record on the
+            // requested simulation clock even when reading a GPU image takes longer.
+            float Rate=30;
+            FParse::Value(FCommandLine::Get(),TEXT("FPS="),Rate);
+            GEngine->FixedFrameRate=FMath::Clamp(Rate,12.f,120.f);
+            GEngine->bUseFixedFrameRate=true;
+            FApp::SetFixedDeltaTime(1./GEngine->FixedFrameRate);
+        }
+    }
     FParse::Value(FCommandLine::Get(), TEXT("SailingWaterFrameCount="), WaterFrameCount);
     WaterFrameCount=FMath::Clamp(WaterFrameCount,1,1200);
     bStartAlongside = !BenchmarkPath.IsEmpty() && FParse::Param(FCommandLine::Get(), TEXT("SailingBenchmarkAlongside"));
@@ -121,8 +136,49 @@ void USailingViewportClient::SetRenderResolution(FIntPoint Size)
     GEngine->GetGameUserSettings()->SaveSettings();
 }
 
+#if PLATFORM_MAC
+void USailingViewportClient::SetAdaptiveUltra(bool bEnabled)
+{
+    bAdaptiveUltra=bEnabled;
+    if (!bEnabled) RestoreFrameLimit();
+}
+
+void USailingViewportClient::RestoreFrameLimit()
+{
+    if (UnpacedFrameLimit && GEngine && FMath::IsNearlyEqual(GEngine->GetMaxFPS(),45.f))
+        GEngine->SetMaxFPS(*UnpacedFrameLimit);
+    UnpacedFrameLimit.Reset();
+    HeadroomWindows=0;
+}
+
+void USailingViewportClient::PaceUltra(double GpuMs,float Floor)
+{
+    if (!bAdaptiveUltra) return;
+    if (UnpacedFrameLimit)
+    {
+        // Recover only after sustained headroom. A single quiet sample
+        // between two crests should not change the cadence.
+        HeadroomWindows=GpuMs<15. && ReconstructionScale>1.16f*Floor ? HeadroomWindows+1 : 0;
+        if (HeadroomWindows>=4 || !FMath::IsNearlyEqual(GEngine->GetMaxFPS(),45.f)) RestoreFrameLimit();
+        return;
+    }
+    if (GpuMs<=17. || ReconstructionScale>1.16f*Floor || GEngine->GetGameUserSettings()->GetFrameRateLimit()>0.f) return;
+    const float Limit=GEngine->GetMaxFPS();
+    if (Limit<=0.f || Limit>45.f)
+    {
+        // On a loaded Retina view, submitting every 22.2 ms avoids the
+        // alternating 16/34 ms waits for a Metal drawable at 60 Hz.
+        UnpacedFrameLimit=Limit;
+        GEngine->SetMaxFPS(45.f);
+    }
+}
+#endif
+
 void USailingViewportClient::ApplyRenderResolution()
 {
+#if PLATFORM_MAC
+    RestoreFrameLimit();
+#endif
     auto* DynamicResolution = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DynamicRes.OperationMode"));
     if (DynamicResolution) DynamicResolution->Set(RequestedResolution.GetMin() > 0 ? 0 : 2, ECVF_SetByGameOverride);
     ReconstructionScale = 1;
@@ -147,6 +203,9 @@ void USailingViewportClient::RemoveStartupOverlay()
 
 void USailingViewportClient::DetachViewportClient()
 {
+#if PLATFORM_MAC
+    RestoreFrameLimit();
+#endif
     OnViewportCreated().RemoveAll(this);
     RemoveStartupOverlay();
     Super::DetachViewportClient();
@@ -210,6 +269,9 @@ void USailingViewportClient::FinalizeViews(FSceneViewFamily* Family, const TMap<
     if (Size != PreviousSize)
     {
         PreviousSize = Size;
+#if PLATFORM_MAC
+        RestoreFrameLimit();
+#endif
         ReconstructionScale = FMath::Min(1., FMath::Sqrt(1920. * 1080. / FMath::Max(1., double(Size.X) * Size.Y)));
         GpuTotalMs = 0;
         GpuSamples = 0;
@@ -226,20 +288,23 @@ void USailingViewportClient::FinalizeViews(FSceneViewFamily* Family, const TMap<
     if (GpuMs > 0)
     {
         GpuTotalMs += FMath::Min(GpuMs, 100.0);
-        if (++GpuSamples == 45)
+        if (++GpuSamples == 24)
         {
             const double MeanMs = GpuTotalMs / GpuSamples;
             const float Floor = FMath::Sqrt(ReferencePixels / Pixels);
             static const auto* Budget = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.DynamicRes.FrameTimeBudget"));
-            const double TargetMs = Budget ? FMath::Max(24.f,Budget->GetValueOnGameThread()) : 33.33;
+            const double TargetMs = Budget ? FMath::Max(16.67f,Budget->GetValueOnGameThread()) : 33.33;
             if (MeanMs > TargetMs * 1.06)
             {
                 ReconstructionScale = FMath::Max<float>(Floor, ReconstructionScale * FMath::Sqrt(TargetMs / MeanMs));
             }
             else if (MeanMs < TargetMs * .82)
             {
-                ReconstructionScale = FMath::Min(1.f, ReconstructionScale + .06f);
+                ReconstructionScale = FMath::Min(1.f, ReconstructionScale + .025f);
             }
+#if PLATFORM_MAC
+            PaceUltra(MeanMs,Floor);
+#endif
             GpuTotalMs = 0;
             GpuSamples = 0;
         }
@@ -257,6 +322,8 @@ void USailingViewportClient::UpdateWaterView()
     const bool Beach=WaterView==TEXT("beach"), WorldMenu=WaterView==TEXT("world");
     const bool Strand=WaterView==TEXT("strand");
     const bool RockWash=WaterView==TEXT("rockwash");
+    const bool AircraftView=WaterView==TEXT("aircraft") || WaterView==TEXT("banner")
+        || WaterView==TEXT("stunt") || WaterView==TEXT("contrail");
     const bool Canopy=WaterView==TEXT("canopy");
     const bool ShoreWalk=WaterView==TEXT("shore-walk");
     const bool SandRock=WaterView==TEXT("sand-rock");
@@ -306,7 +373,7 @@ void USailingViewportClient::UpdateWaterView()
             WaterCamera->GetCameraComponent()->SetFieldOfView(63);
             FVector Start=CoastView && !RockWash ? FVector(31000,4000,35) : FVector(0,0,35);
             FRotator Heading=FRotator::ZeroRotator;
-            double SurgeCmS=(CoastView || Shark || Dolphin || Whale) ? 0 : 450;
+            double SurgeCmS=(CoastView || AircraftView || Shark || Dolphin || Whale) ? 0 : 450;
             double Throttle=.9;
             if (ShoreApproach)
             {
@@ -343,7 +410,7 @@ void USailingViewportClient::UpdateWaterView()
             Yacht->SetActorLocationAndRotation(Start,Heading,false,nullptr,ETeleportType::TeleportPhysics);
             auto* Body=CastChecked<UPrimitiveComponent>(Yacht->GetRootComponent());
             Body->SetPhysicsLinearVelocity(FVector(SurgeCmS,0,0));
-            Yacht->SetEngineRunning(!CoastView && !MooredView && !Shark && !Dolphin && !Whale && !Waterline && WaterView!=TEXT("sail"));
+            Yacht->SetEngineRunning(!CoastView && !AircraftView && !MooredView && !Shark && !Dolphin && !Whale && !Waterline && WaterView!=TEXT("sail"));
             Yacht->SetThrottle(Yacht->ReadHelm().bEngineOn ? Throttle : 0);
             Player->SetViewTarget(WaterCamera.Get());
         }
@@ -401,22 +468,32 @@ void USailingViewportClient::UpdateWaterView()
             Eye={322,78.7,1.76};
             Aim={338,63.,.48};
         }
-        if (WaterView==TEXT("aircraft") || WaterView==TEXT("contrail"))
+        if (AircraftView)
         {
-            Eye={322,77.7,1.76};
-            const FName Subject=WaterView==TEXT("aircraft") ? TEXT("Sightseeing floatplane") : TEXT("Cruising airliner");
+            // Observe the same flight path from one station for the whole pass.
+            Eye={-12.,9.,5.8};
+            const FName Subject=WaterView==TEXT("contrail") ? TEXT("Cruising airliner") :
+                WaterView==TEXT("stunt") ? TEXT("Aerobatic plane") : TEXT("Sightseeing floatplane");
             TActorIterator<ASailingWeather> Weather(GetWorld());
             if (Weather)
             {
                 TInlineComponentArray<UStaticMeshComponent*> Models(*Weather);
                 for (const auto* Model : Models)
-                    if (Model->GetFName()==Subject) Aim=Model->GetComponentLocation()*.01;
+                    if (Model->GetFName()==Subject)
+                    {
+                        Aim=Model->GetComponentLocation()*.01;
+                        SubjectReady=Model->IsVisible() && (WaterView==TEXT("contrail") || FVector::Dist2D(Aim,Eye)<164.);
+                    }
             }
         }
         if (RockWash)
         {
-            Eye={378.2,56.8,4.5};
-            Aim={363.2,57.4,-.55};
+            // Match the reference tilt from the flooded foot of the rock
+            // to the approaching set, keeping the same rock at frame left.
+            Eye={374.1,61.3,4.35};
+            const double Tilt=FMath::SmoothStep(8.,11.25,double(Age));
+            const double Reach=FMath::Lerp(4.8,21.5,Tilt);
+            Aim=Eye+FVector(-.975*Reach,-.222*Reach,-4.2);
         }
         if (Underwater)
         {
@@ -510,9 +587,14 @@ void USailingViewportClient::UpdateWaterView()
                 *Observer.GetComponentLocation().ToCompactString(), Observer.Pitch, Yacht->RenderedSurfaceHeightM(FVector2D(Observer.Feet)*.01)*100.);
         }
         const FString File=FPaths::Combine(WaterFrames,FString::Printf(TEXT("%04d.png"),CapturedFrames));
+        CaptureTimes.Appendf(TEXT("%d,%.6f,%.6f\n"),CapturedFrames,Now,Yacht->SeaFrame().TimeS);
         FScreenshotRequest::RequestScreenshot(File,WorldMenu,false,false,FIntRect(),WorldMenu);
     }
-    if (++CapturedFrames==WaterFrameCount+4) FPlatformMisc::RequestExit(false,TEXT("Water capture complete"));
+    if (++CapturedFrames==WaterFrameCount+4)
+    {
+        FFileHelper::SaveStringToFile(CaptureTimes,*FPaths::Combine(WaterFrames,TEXT("clock.csv")));
+        FPlatformMisc::RequestExit(false,TEXT("Water capture complete"));
+    }
 }
 
 void USailingViewportClient::RecordBenchmark(FIntPoint Size, double Now)
@@ -524,6 +606,13 @@ void USailingViewportClient::RecordBenchmark(FIntPoint Size, double Now)
     PreviousFrame = Now;
     if (++BenchmarkFrames <= 120 || Now - BenchmarkStart < 5.0) return;
     FrameTimesMs.Add(FrameMs);
+    FDynamicResolutionStateInfos Dynamic;
+    GEngine->GetDynamicResolutionCurrentStateInfos(Dynamic);
+    const double Primary = Dynamic.Status==EDynamicResolutionStatus::Enabled || Dynamic.Status==EDynamicResolutionStatus::DebugForceEnabled
+        ? Dynamic.ResolutionFractionApproximations[GDynamicPrimaryResolutionFraction] : 1.;
+    const float Output=RequestedResolution.GetMin()>0 ? Sailing::RenderResolutionFraction(RequestedResolution,Size) : ReconstructionScale;
+    ShadingFractionSum+=Primary*Output;
+    OutputFractionSum+=Output;
     if (ThreadTimesMs.Max() > 0)
         ThreadTimesMs.Emplace(FPlatformTime::ToMilliseconds(GGameThreadTime),FPlatformTime::ToMilliseconds(GRenderThreadTime),
             FPlatformTime::ToMilliseconds(GRHIThreadTime),FPlatformTime::ToMilliseconds(RHIGetGPUFrameCycles()));
@@ -551,9 +640,9 @@ void USailingViewportClient::RecordBenchmark(FIntPoint Size, double Now)
     }
     const int32 Count = FrameTimesMs.Num();
     const FString Result = FString::Printf(
-        TEXT("width,height,frames,average_fps,p95_frame_ms,frames_over_33_33_ms,p50_frame_ms,p99_frame_ms,max_frame_ms,frames_over_66_67_ms,frames_over_100_ms\n%d,%d,%d,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%d,%d\n"),
+        TEXT("width,height,frames,average_fps,p95_frame_ms,frames_over_33_33_ms,p50_frame_ms,p99_frame_ms,max_frame_ms,frames_over_66_67_ms,frames_over_100_ms,mean_shading_percent,mean_reconstruction_percent\n%d,%d,%d,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%d,%d,%.1f,%.1f\n"),
         Size.X, Size.Y, Count, 1000.0 * Count / TotalMs, FrameTimesMs[FMath::CeilToInt(.95 * Count) - 1], SlowFrames,
-        FrameTimesMs[(Count-1)/2], FrameTimesMs[FMath::CeilToInt(.99 * Count)-1], FrameTimesMs.Last(), MissedTwo, Hitches);
+        FrameTimesMs[(Count-1)/2], FrameTimesMs[FMath::CeilToInt(.99 * Count)-1], FrameTimesMs.Last(), MissedTwo, Hitches, 100.*ShadingFractionSum/Count,100.*OutputFractionSum/Count);
     const bool bSaved = FFileHelper::SaveStringToFile(Result, *BenchmarkPath);
     BenchmarkPath.Reset();
     FPlatformMisc::RequestExitWithStatus(false, bSaved ? 0 : 1, TEXT("SailingBenchmark"));

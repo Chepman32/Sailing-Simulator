@@ -99,7 +99,8 @@ void DrawGear(const FDeckPainter& Paint, const ASailingPlayerController& Player,
     const auto& Entry = Gear[int32(Selected)];
     Paint.Rect(0, 0, Size.X, Size.Y, Base.CopyWithNewOpacity(.92f));
     Paint.Text(TEXT("Inventory"), 32, 22, 40, Ink, true);
-    Paint.Button(TEXT("ChartPage"), TEXT("Chart  ·  Q"), Size.X - 348, 25, 146);
+    Paint.Text(FString::Printf(TEXT("%d coins"), Player.Coins()), 258, 47, 18, Amber, true);
+    Paint.Button(TEXT("ChartPage"), TEXT("Map  ·  Q"), Size.X - 348, 25, 146);
     Paint.Button(TEXT("Close"), TEXT("Close  ·  Esc"), Size.X - 190, 25, 158);
     Paint.Line({32, 88}, {Size.X - 32, 88}, LineInk);
 
@@ -182,7 +183,7 @@ void DrawGear(const FDeckPainter& Paint, const ASailingPlayerController& Player,
             Paint.Text(bReady ? TEXT("F toggles the torch while exploring.") : TEXT("Use the torch while walking or swimming."),
                 X + 25, Y + 449, 16, Muted);
     }
-    Paint.Text(TEXT("Arrow keys   Select     Enter   Use     Q   Chart     Esc   Close"), 33, Size.Y - 38, 14, Muted);
+    Paint.Text(TEXT("Arrow keys   Select     Enter   Use     Q   Map     Esc   Close"), 33, Size.Y - 38, 14, Muted);
 }
 
 void DrawChart(const FDeckPainter& Paint, const ASailingPlayerController& Player, const ASailingYachtPawn& Yacht, FVector2D Size)
@@ -194,7 +195,7 @@ void DrawChart(const FDeckPainter& Paint, const ASailingPlayerController& Player
     Paint.Rect(0, Area.Min.Y, Area.Min.X, Area.GetSize().Y, Base);
     Paint.Rect(0, Area.Max.Y, Size.X, Size.Y - Area.Max.Y, Base);
     Paint.Rect(Area.Max.X, Area.Min.Y, Size.X - Area.Max.X, Area.GetSize().Y, Base);
-    Paint.Text(TEXT("Chart"), 32, 22, 40, Ink, true);
+    Paint.Text(TEXT("Map"), 32, 22, 40, Ink, true);
     Paint.Text(Yacht.HasCoralCoast() ? TEXT("Coral Pass") : TEXT("Sea trial"), 183, 47, 18, Muted);
     Paint.Button(TEXT("GearPage"), TEXT("Inventory  ·  Tab"), Size.X - 396, 25, 194);
     Paint.Button(TEXT("Close"), TEXT("Close  ·  Esc"), Size.X - 190, 25, 158);
@@ -203,6 +204,7 @@ void DrawChart(const FDeckPainter& Paint, const ASailingPlayerController& Player
     const double X = Area.Max.X + 19., W = Size.X - X - 32., Y = Area.Min.Y;
     Paint.Rect(X, Y, W, Area.GetSize().Y, Surface);
     Paint.Text(TEXT("Navigation"), X + 16., Y + 15., 24, Ink, true);
+    Paint.Text(FString::Printf(TEXT("%d coins"), Player.Coins()), X + W - 120, Y + 20, 16, Amber, true);
     Paint.Button(TEXT("Follow"), TEXT("Center on player  ·  R"), X + 16, Y + 57, W - 32, 39, true, Chart.bFollowing);
     Paint.Button(TEXT("FitChart"), TEXT("Fit all islands  ·  F"), X + 16, Y + 105, W - 32, 39, Chart.IslandCount() > 0);
     Paint.Button(TEXT("ZoomOut"), TEXT("Zoom out"), X + 16, Y + 153, (W - 41) * .5, 39);
@@ -213,15 +215,18 @@ void DrawChart(const FDeckPainter& Paint, const ASailingPlayerController& Player
     {
         Paint.Text(Chart.WaypointLabel(), X + 16, Y + 261, 18, Amber, true);
         Paint.Text(Chart.WaypointReadout(Yacht), X + 16, Y + 292, 18, Ink);
-        Paint.Button(TEXT("ClearWaypoint"), TEXT("Clear waypoint  ·  Delete"), X + 16, Y + 325, W - 32, 39);
+        Paint.Button(TEXT("FastTravel"), TEXT("Fast travel  ·  10 coins"), X + 16, Y + 322, W - 32, 39,
+            Chart.Arrival().IsSet() && Player.Coins() >= Player.TravelFare, true);
+        Paint.Button(TEXT("ClearWaypoint"), TEXT("Clear waypoint  ·  Delete"), X + 16, Y + 369, W - 32, 33);
+        Paint.Text(Chart.Arrival().IsSet() ? TEXT("Green ring marks arrival") : TEXT("No safe arrival nearby"), X + 16, Y + 410, 14, Muted);
     }
     else
     {
-        Paint.Text(TEXT("Click a point on the chart."), X + 16, Y + 267, 16, Muted);
+        Paint.Text(TEXT("Click a point on the map."), X + 16, Y + 267, 16, Muted);
         Paint.Text(TEXT("Its bearing will appear as you sail."), X + 16, Y + 294, 16, Muted);
     }
-    Paint.Line({X + 16., Y + 390.}, {X + W - 16., Y + 390.}, LineInk);
-    Paint.Text(TEXT("Legend"), X + 16, Y + 408, 20, Ink, true);
+    Paint.Line({X + 16., Y + 445.}, {X + W - 16., Y + 445.}, LineInk);
+    Paint.Text(TEXT("Legend"), X + 16, Y + 457, 20, Ink, true);
     struct FKeyedMark { const TCHAR* Label; FLinearColor Color; };
     const FKeyedMark Keys[] = {
         {TEXT("Yacht / player"), Ink}, {TEXT("Jet ski"), Accent}, {TEXT("Landmark / vessel"), FLinearColor(.97, .65, .31)},
@@ -229,11 +234,11 @@ void DrawChart(const FDeckPainter& Paint, const ASailingPlayerController& Player
     };
     for (int32 I = 0; I < UE_ARRAY_COUNT(Keys); ++I)
     {
-        const double Row = Y + 448. + I * 31.;
+        const double Row = Y + 490. + I * 26.;
         Paint.Rect(X + 17, Row + 6, 10, 10, Keys[I].Color);
         Paint.Text(Keys[I].Label, X + 39, Row, 16, Muted);
     }
-    Paint.Text(TEXT("Drag   Pan     Scroll   Zoom     Click   Set waypoint     Enter   Set at chart center"),
+    Paint.Text(TEXT("Drag   Pan     Scroll   Zoom     Click   Set waypoint     Enter   Set at map center"),
                32, Size.Y - 37, 14, Muted);
 }
 }

@@ -285,8 +285,15 @@ bool FSailingSurfaceTest::RunTest(const FString& Parameters)
     const FVector2D Shoal(281.0, -120.8);
     const auto Breaker = Sailing::SampleSea(Shoal, Time, 0, 1.65, true);
     const auto Height = [&](FVector2D P, double T) { return Sailing::SampleSea(P, T, 0, 1.65, true).HeightM; };
-    TestTrue(TEXT("The cay transforms the arriving swell"), FMath::Abs(Breaker.HeightM -
-        Sailing::SampleSea(Shoal, Time, 0, 1.65).HeightM) > .035);
+    // Two propagating surfaces can have the same height at an isolated crossing.
+    // Measure the change in wave shape over a full incident period.
+    double ShoalDifference=0.;
+    for (int32 I=0; I<32; ++I)
+    {
+        const double T=Time+I*(2*PI/1.16)/32.;
+        ShoalDifference+=FMath::Square(Height(Shoal,T)-Sailing::SampleSea(Shoal,T,0,1.65).HeightM);
+    }
+    TestTrue(TEXT("The cay transforms the arriving swell over its cycle"),FMath::Sqrt(ShoalDifference/32.)>.035);
     for (const FVector2D Direction : {FVector2D(1,0), FVector2D(0,1)})
         TestEqual(TEXT("Breaking wave normal follows the coastline and run-up envelope"),
             FVector2D::DotProduct(Breaker.Gradient, Direction),

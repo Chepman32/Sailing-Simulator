@@ -50,6 +50,11 @@ public:
             break;
         case 3:
             Photo(TEXT("graphics.png"));
+            Tap(EKeys::Tab);
+            Test.TestTrue(TEXT("Inventory opens from a paused settings page without advancing the world"),
+                Player->GetPanel()==ESailingPanel::Gear && UGameplayStatics::IsGamePaused(Player.Get()));
+            Tap(EKeys::Tab);
+            CheckPaused(TEXT("Inventory restores the same paused settings page"),ESailingPausePage::Graphics);
             break;
         case 4:
             Tap(EKeys::Escape);
@@ -127,8 +132,33 @@ public:
             Photo(TEXT("chart.png"));
             break;
         case 13:
+        {
+            const auto* Hud=Cast<ASailingTrialHUD>(Player->GetHUD());
+            const auto* Button=Hud ? Hud->GetHitBoxWithName(TEXT("FastTravel")) : nullptr;
+            if (Test.TestNotNull(TEXT("The map has a fast travel button"),Button) &&
+                Test.TestTrue(TEXT("The pin has a clear landing"),Player->ChartView().Arrival().IsSet()))
+            {
+                const FVector Expected=*Player->ChartView().Arrival();
+                const int32 Before=Player->Coins();
+                Test.TestEqual(TEXT("A test voyage starts with the configured purse"),Before,1000);
+                FSceneViewport* View=Player->GetWorld()->GetGameViewport()->GetGameViewport();
+                const FVector2D Pixels(View->GetSizeXY());
+                FVector2D Click=FVector2D::ZeroVector;
+                for (int32 Y=0; Y<Pixels.Y && Click.IsZero(); Y+=8)
+                    for (int32 X=0; X<Pixels.X; X+=8)
+                        if (Button->Contains(FVector2D(X,Y))) { Click={double(X),double(Y)}; break; }
+                const FGeometry Geometry=FGeometry::MakeRoot(Pixels,FSlateLayoutTransform());
+                const TSet<FKey> Buttons{EKeys::LeftMouseButton};
+                View->OnMouseButtonDown(Geometry,FPointerEvent(0,Click,Click,Buttons,EKeys::LeftMouseButton,0,{}));
+                View->OnMouseButtonUp(Geometry,FPointerEvent(0,Click,Click,Buttons,EKeys::LeftMouseButton,0,{}));
+                Test.TestEqual(TEXT("Successful travel charges one fare"),Player->Coins(),Before-ASailingPlayerController::TravelFare);
+                Test.TestTrue(TEXT("The yacht arrives at the previewed water"),FVector::Dist2D(
+                    Player->GetPawn()->GetActorLocation(),Expected)<1.);
+                if (Player->GetPanel()!=ESailingPanel::Chart) Tap(EKeys::Q);
+            }
+            ChartGesture(FVector2D::ZeroVector);
             Tap(EKeys::Escape);
-            Test.TestTrue(TEXT("Closing the chart leaves the waypoint set"), Player->GetPanel() == ESailingPanel::None &&
+            Test.TestTrue(TEXT("Closing the map leaves the waypoint set"), Player->GetPanel()==ESailingPanel::None &&
                 Player->ChartView().HasWaypoint());
             Tap(EKeys::Q);
             Tap(EKeys::Delete);
@@ -139,6 +169,7 @@ public:
             Tap(EKeys::B);
             Test.TestTrue(TEXT("The bell still works from the helm"), Player->NoticeText().StartsWith(TEXT("Bell")));
             return true;
+        }
         default: return true;
         }
         return false;

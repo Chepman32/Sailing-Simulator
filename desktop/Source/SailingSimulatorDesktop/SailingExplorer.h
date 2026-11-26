@@ -30,6 +30,7 @@ public:
     const TCHAR* Prompt(const ASailingYachtPawn& Yacht) const;
     ASailingJetSki* MountedJetSki() const;
     void RecenterJetSkiView();
+    void Arrive(const ASailingYachtPawn& Yacht, FVector Point, bool bWalking);
     ESkipperMode Mode() const { return State; }
     bool Away() const { return State != ESkipperMode::Helm; }
     bool TorchOn() const;

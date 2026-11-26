@@ -32,23 +32,22 @@ void FBreakingSheets::BreakAt(const FShoreLip& Lip, FSeaFrame Frame, bool Ultra,
         if (Frame.TimeS>=S.Born+S.Life) Free=&S;
         else if (FVector2D::DistSquared(Center,S.CenterM)<FMath::Square(S.HalfSpanM+2.5)) return;
     }
-    if (Free) *Free={Center,Frame.TimeS,1.f+.44f*Seed,1.6f+2.4f*Lip.Aeration,Seed};
+    if (Free) *Free={Center,Frame.TimeS,1.38f+.50f*Seed,1.6f+2.4f*Lip.Aeration,Seed,Lip.Shoreward,Lip.SpeedMps,Lip.Aeration,Frame.TimeS};
 }
 
 void FBreakingSheets::Update(UProceduralMeshComponent& Mesh, FSeaFrame Frame, int32 Quality, float Air)
 {
     // Section from the seaward shoulder, over the crown and back under the
     // falling tip. Its ends taper into the water while the middle throws.
-    static constexpr double Across[Rows]={-.70,-.40,-.13,.12,.36,.53,.58,.50};
-    static constexpr double Above[Rows]={-.20,-.065,.085,.20,.235,.17,.03,-.12};
+    static constexpr double Across[Rows]={-.95,-.54,-.18,.16,.42,.65,.71,.60};
+    static constexpr double Above[Rows]={-.22,-.055,.115,.275,.335,.26,.07,-.14};
     bool Visible=false;
     for (int32 I=0; I<Count; ++I)
     {
         FSheet& S=Sheets[I];
         float Age=Frame.TimeS-S.Born;
         FShoreLip Lip;
-        if (Quality<2 || (Quality==2 && I>=3) || Air<.01f || Age<0 || Age>=S.Life ||
-            !FindShoreLip(S.CenterM,Frame,Lip))
+        if (Quality<2 || (Quality==2 && I>=3) || Air<.01f || Age<0 || Age>=S.Life)
         {
             if (S.Life>0)
             {
@@ -59,7 +58,25 @@ void FBreakingSheets::Update(UProceduralMeshComponent& Mesh, FSeaFrame Frame, in
             continue;
         }
         Visible=true;
-        S.CenterM=FVector2D(Lip.PositionM);
+        const double Dt=FMath::Clamp(double(Frame.TimeS-S.LastUpdate),0.,.12);
+        const FVector2D Expected=S.CenterM+S.Shoreward*(S.SpeedMps*Dt);
+        if (FindShoreLip(Expected,Frame,Lip))
+        {
+            // Follow this section of crest continuously, including when a
+            // closer phase solution appears on the opposite flank of a rock.
+            S.CenterM=Expected+(FVector2D(Lip.PositionM)-Expected).GetClampedToMaxSize(.7*Dt);
+            S.Shoreward=FMath::Lerp(S.Shoreward,Lip.Shoreward,1.-FMath::Exp(-5.*Dt)).GetSafeNormal();
+            S.SpeedMps=FMath::Lerp(S.SpeedMps,Lip.SpeedMps,float(1.-FMath::Exp(-4.*Dt)));
+            S.Air=FMath::Lerp(S.Air,Lip.Aeration,float(1.-FMath::Exp(-5.*Dt)));
+        }
+        else
+        {
+            S.CenterM=Expected;
+            S.Air*=FMath::Exp(-4.*Dt);
+        }
+        S.LastUpdate=Frame.TimeS;
+        Lip.Shoreward=S.Shoreward;
+        Lip.Aeration=S.Air;
         const FVector2D Along(-Lip.Shoreward.Y,Lip.Shoreward.X);
         const double Phase=Age/S.Life;
         // Project a few points onto the same curved crest as the water mesh.
@@ -73,7 +90,8 @@ void FBreakingSheets::Update(UProceduralMeshComponent& Mesh, FSeaFrame Frame, in
             const bool OnCrest=FindShoreLip(Probe,Frame,Local) && FVector2D::DistSquared(Probe,FVector2D(Local.PositionM))<2.25;
             Ridge[A]=OnCrest ? FVector2D(Local.PositionM) : Probe;
             Shoreward[A]=OnCrest ? Local.Shoreward : Lip.Shoreward;
-            Wet[A]=OnCrest ? 1. : 0.;
+            Wet[A]=OnCrest ? 1. : FMath::Clamp(double(S.Air),0.,1.);
+            if (OnCrest) Ridge[A]=Probe+(Ridge[A]-Probe).GetClampedToMaxSize(.65);
         }
         for (int32 C=0; C<Columns; ++C)
         {
@@ -91,11 +109,15 @@ void FBreakingSheets::Update(UProceduralMeshComponent& Mesh, FSeaFrame Frame, in
             {
                 const int32 V=(I*Columns+C)*Rows+R;
                 const double Curl=FMath::Square(FMath::SmoothStep(.30,1.,Stage))*.75;
-                const double Fall=Curl*FMath::Square(double(R)/(Rows-1));
-                Positions[V]=100.*FVector(P+Dir*(Across[R]*Throw),Crest+(Above[R]-Fall)*Throw);
+                const double Tip=double(R)/(Rows-1), Fall=Curl*Tip*Tip;
+                // The thin leading sheet gains reach as it rolls over, then
+                // loses height under gravity while the crest continues inland.
+                const double Reach=.26*FMath::SmoothStep(.25,.77,Stage)*Tip*Tip;
+                Positions[V]=100.*FVector(P+Dir*((Across[R]+Reach)*Throw),Crest+(Above[R]-Fall)*Throw);
                 const int32 Lo=FMath::Max(0,R-1), Hi=FMath::Min(Rows-1,R+1);
                 const double Drop=Curl*(Hi*Hi-Lo*Lo)/FMath::Square(double(Rows-1));
-                Normals[V]=(FVector::UpVector*(Across[Hi]-Across[Lo])-FVector(Dir,0.)*(Above[Hi]-Above[Lo]-Drop)).GetSafeNormal();
+                const double Extension=.26*FMath::SmoothStep(.25,.77,Stage)*(Hi*Hi-Lo*Lo)/FMath::Square(double(Rows-1));
+                Normals[V]=(FVector::UpVector*(Across[Hi]-Across[Lo]+Extension)-FVector(Dir,0.)*(Above[Hi]-Above[Lo]-Drop)).GetSafeNormal();
                 Colors[V]=FLinearColor(Lip.Aeration,S.Seed,Stage,Air*Growth*Taper*FMath::Lerp(Wet[A],Wet[A+1],Mix));
             }
         }

@@ -153,11 +153,11 @@ void USailingExplorer::SetMovement(FVector2D Axes, bool bFast, bool bRise, bool 
 void USailingExplorer::Look(float YawDelta, float PitchDelta)
 {
     if (State == ESkipperMode::Leap) return;
-    if (auto* Ski = Ride.Get())
+    if (Ride.IsValid())
     {
         Yaw = FMath::Clamp(Yaw + YawDelta * .13f, -122.f, 122.f);
         Pitch = FMath::Clamp(Pitch + PitchDelta * .13f, -66.f, 44.f);
-        UpdateJetSkiView(*Ski);
+        // Advance updates the camera after the interpolated hull pose.
         return;
     }
     Yaw = FRotator::NormalizeAxis(Yaw + YawDelta * .13f);
@@ -668,13 +668,35 @@ void USailingExplorer::UpdateJetSkiView(const ASailingJetSki& Ski, float Dt)
     // Keep the seat directly under the rider in a turn. Knees absorb heave
     // and the rider stabilises the horizon independently of the hull.
     const double Height = Eye.Z + 85.;
-    RideHeight = FMath::Lerp(RideHeight, Height, 1. - FMath::Exp(-3.2 * Dt));
+    RideHeight = Dt > 0 ? FMath::Lerp(RideHeight, Height, 1. - FMath::Exp(-3.2 * Dt)) : Height;
     Eye.Z = FMath::Clamp(RideHeight, Height - 32., Height + 32.);
-    const double Lean = 1. - FMath::Exp(-2.6 * Dt);
+    const double Lean = Dt > 0 ? 1. - FMath::Exp(-2.6 * Dt) : 1.;
     RidePitch = FMath::Lerp(RidePitch, .12 * Hull.Pitch, Lean);
     RideRoll = FMath::Lerp(RideRoll, .22 * Ski.Drive().BankDegrees, Lean);
     SetWorldLocationAndRotation(Eye, FRotator(Pitch + RidePitch, Yaw + Hull.Yaw, RideRoll));
     SetFieldOfView(84.f + 10.f * Ski.Drive().Planing());
+}
+
+void USailingExplorer::Arrive(const ASailingYachtPawn& Yacht, FVector Point, bool bWalking)
+{
+    ClearInput();
+    if (auto* Ski = MountedJetSki())
+    {
+        Ski->Arrive(Yacht,FVector2D(Point)*.01);
+        UpdateJetSkiView(*Ski);
+    }
+    else if (bWalking)
+    {
+        State = ESkipperMode::Shore;
+        StandAt(Point,FVector::ZeroVector);
+        Depth = 0;
+        SetWorldLocation(Point + FVector(0,0,EyeHeight));
+    }
+    else
+    {
+        EnterWater(Yacht,Point + FVector(0,0,24.),FVector::ZeroVector,0.);
+        Depth = 0;
+    }
 }
 
 void USailingExplorer::DismountJetSki(const ASailingYachtPawn& Yacht, ASailingJetSki& Ski)

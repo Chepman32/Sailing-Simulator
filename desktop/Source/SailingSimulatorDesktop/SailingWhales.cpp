@@ -182,8 +182,8 @@ void ASailingWhales::Swim(ASailingYachtPawn& Yacht, float Dt)
         - 65.*FMath::SmoothStep(.57,.73,U) - 1100.*Dive;
     // At the head, trunk and peduncle keep actual submerged sections in the
     // water. The last two metres of flukes may clear it during a sounding dive.
-    const FVector Stations[] = {{580,0,-210},{-470,0,-160},{100,-135,-185},{100,135,-185}};
-    for (const FVector& Local : Stations)
+    const FVector HullStations[] = {{580,0,-210},{-470,0,-160},{100,-135,-185},{100,135,-185}};
+    for (const FVector& Local : HullStations)
     {
         const FVector Offset=Rotation.RotateVector(Local);
         P.Z=FMath::Min(P.Z,Surface(P+Offset)-Offset.Z-65.);

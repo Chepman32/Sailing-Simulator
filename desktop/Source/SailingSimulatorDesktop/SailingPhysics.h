@@ -119,7 +119,13 @@ double SeaHeight(FVector2D XYm, FSeaFrame Frame, bool bCoralPass);
 // Two rows per surveyed beach, holding phase, shoaling and depth, then their spatial derivatives.
 inline constexpr int32 SurfProfileWidth = 97;
 TConstArrayView<FLinearColor> SurfProfileTexels();
-inline constexpr int32 RockTileWidth = 128;
+inline constexpr int32 RockTileWidth = 128, RockWashFrames = 32;
+inline constexpr int32 RockTileCount = 0
+#define SURF_TILE(...) +1
+#include "CoralSurfTiles.inl"
+#undef SURF_TILE
+;
+TConstArrayView<uint8> RockWashTexels();
 TConstArrayView<FFloat16Color> RockSurfTexels();
 double SeaWaveAmplitude(int32 Index, double Scale);
 FLinearColor SeaWaveParameter(int32 Index, FSeaFrame Frame);

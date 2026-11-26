@@ -236,13 +236,14 @@ class FCheckRecordedAudio final : public IAutomationLatentCommand
 {
 public:
     FCheckRecordedAudio(ASailingPlayerController& InPlayer, FAutomationTestBase& InTest)
-        : Player(&InPlayer), Test(InTest), Device(InPlayer.GetWorld()->GetAudioDevice()) {}
+        : Player(&InPlayer), Test(InTest), Device(InPlayer.GetWorld()->GetAudioDevice()), bOriginalSound(InPlayer.Sound().Enabled()) {}
 
     ~FCheckRecordedAudio() override
     {
         for (const auto& Voice : Voices)
             if (auto* Component = Voice.Component.Get()) Component->OnAudioSingleEnvelopeValueNative.Remove(Voice.Handle);
         if (Device && Meter) Device->UnregisterSubmixBufferListener(Meter.ToSharedRef(), Device->GetMainSubmixObject());
+        if (Player.IsValid() && Player->Sound().Enabled() != bOriginalSound) TapKey(*Player,EKeys::M);
     }
 
     bool Update() override
@@ -337,6 +338,7 @@ private:
     TWeakObjectPtr<ASailingPlayerController> Player;
     FAutomationTestBase& Test;
     FAudioDeviceHandle Device;
+    bool bOriginalSound;
     TSharedPtr<FVoyageMixMeter, ESPMode::ThreadSafe> Meter;
     TArray<FVoice> Voices;
     TWeakObjectPtr<UAudioComponent> EngineVoice;
@@ -898,8 +900,12 @@ bool FSailingVoyageTest::RunTest(const FString& Parameters)
     Tap(EKeys::G);
     const ASailingSignal* Green = Player->CurrentSignal();
     if (TestNotNull(TEXT("G launches a visible signal"), Green)) TestTrue(TEXT("G selects green"), Green->IsGreen());
+    Yacht->SetEngineRunning(true);
+    Yacht->SetThrottle(.65);
     const uint32 BeforeWaterEntry = Explorer.LastWaterEntry().Sequence;
     Tap(EKeys::T);
+    TestFalse(TEXT("Leaving a powered yacht cuts the engine"),Yacht->ReadHelm().bEngineOn);
+    TestEqual(TEXT("The abandoned throttle is neutral"),Yacht->ReadHelm().Throttle,0.);
     TestTrue(TEXT("Overboard captures the mouse and heaves the yacht to"),
              Explorer.Away() && !Player->bShowMouseCursor && Yacht->ReadHelm().bHoveTo);
     float MaximumEntryDepth = 0;

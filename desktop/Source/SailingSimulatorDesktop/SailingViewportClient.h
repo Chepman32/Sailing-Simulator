@@ -17,6 +17,9 @@ public:
     float FramesPerSecond() const { return DisplayFPS; }
     FIntPoint RenderResolution() const { return RequestedResolution; }
     void SetRenderResolution(FIntPoint Size);
+#if PLATFORM_MAC
+    void SetAdaptiveUltra(bool bEnabled);
+#endif
 
 private:
     void InitializeDisplay();
@@ -31,13 +34,17 @@ private:
     bool PrepareDiveBenchmark();
     bool PrepareAlongsideBenchmark();
     void UpdateWaterView();
-    FString WaterView, WaterFrames;
+    FString WaterView, WaterFrames, CaptureTimes;
     TWeakObjectPtr<ACameraActor> WaterCamera;
     float WaterViewStart = -1, EntryTime = -1;
     int32 CapturedFrames = 0, WaterFrameCount = 150;
     bool bStartAlongside = false;
 #if PLATFORM_MAC
-    bool bActivatePreview = false;
+    bool bActivatePreview = false, bAdaptiveUltra = false;
+    TOptional<float> UnpacedFrameLimit;
+    int32 HeadroomWindows = 0;
+    void RestoreFrameLimit();
+    void PaceUltra(double GpuMs,float Floor);
 #endif
     FIntPoint PreviousSize = FIntPoint::ZeroValue;
     float ReconstructionScale = 1;
@@ -50,6 +57,7 @@ private:
     FString BenchmarkPath;
     TArray<double> FrameTimesMs;
     TArray<FVector4f> ThreadTimesMs;
+    double ShadingFractionSum=0, OutputFractionSum=0;
     double BenchmarkStart = 0;
     double PreviousFrame = 0;
     int32 BenchmarkFrames = 0, MeasuredFrameCount = 600;

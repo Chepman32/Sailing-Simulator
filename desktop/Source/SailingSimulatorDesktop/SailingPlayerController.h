@@ -12,9 +12,7 @@ class ASailingYachtPawn;
 class ASailingSignal;
 class USailingVoyageSound;
 class SWidget;
-#if PLATFORM_MAC
-class FSailingMacKeyboard;
-#endif
+class FSailingGameKeyboard;
 
 enum class ESailingPanel : uint8 { None, Controls, Pause, Chart, Gear, World };
 enum class ESailingGear : uint8 { Tank, Torch, RedFlare, GreenFlare, Count };
@@ -38,6 +36,10 @@ public:
     ESailingPausePage PausePage() const { return Pause; }
     void OpenPausePage(ESailingPausePage Page);
     void BackFromPause();
+    void ToggleInventory();
+    void QuitToDesktop();
+    int32 Coins() const;
+    static constexpr int32 TravelFare = 10;
     bool CanUseGear(ESailingGear Gear) const;
     bool CanUseGear() const { return CanUseGear(GearSelection); }
     const FSailingChart& ChartView() const { return Chart; }
@@ -59,14 +61,18 @@ private:
     enum class EDrag : uint8 { None, View, Throttle, Chart };
     void OpenPanel(ESailingPanel Next);
     void ClosePanel();
+    void TravelToPin(ASailingYachtPawn& Yacht);
     void UseGear(ASailingYachtPawn& Yacht);
     bool PanelButton(FName Name, ASailingYachtPawn& Yacht, const ASailingTrialHUD& HUD);
     FBox2D ChartPlot(const ASailingTrialHUD* HUD) const;
     void ApplyGraphics(int32 Choice);
     TSharedPtr<SWidget> SettingsWidget;
-#if PLATFORM_MAC
-    TSharedPtr<FSailingMacKeyboard> MacKeyboard;
-#endif
+    TSharedPtr<FSailingGameKeyboard> GameKeyboard;
+    ESailingPanel GearReturn = ESailingPanel::None;
+    ESailingPausePage GearPausePage = ESailingPausePage::Menu;
+    TSharedPtr<SWidget> GearPreviousSettings;
+    TWeakPtr<SWidget> GearPreviousFocus;
+    bool bGearCinematic = false;
     ESailingPanel WorldReturn = ESailingPanel::None;
     int32 GraphicsChoice = 0;
     void ToggleSkipper(ASailingYachtPawn& Yacht);

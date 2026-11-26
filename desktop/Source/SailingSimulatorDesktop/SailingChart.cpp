@@ -26,6 +26,7 @@ FVector2D FromPaper(FVector2D Paper)
 
 void FSailingChart::Open(UWorld& World, const ASailingYachtPawn& Yacht)
 {
+    RefreshArrival(Yacht);
     if (!bSurveyed || bFollowing) Recenter(Yacht);
     if (bSurveyed) return;
     bSurveyed = true;
@@ -98,9 +99,10 @@ FVector2D FSailingChart::WorldAt(FVector2D Cursor, const FBox2D& Area) const
 void FSailingChart::Track(FVector YachtPosition)
 {
     const FVector2D Point = FVector2D(YachtPosition) * .01;
-    if (!Trail.IsEmpty() && FVector2D::DistSquared(Point, Trail.Last()) < 64) return;
+    if (!bBreakNext && !Trail.IsEmpty() && FVector2D::DistSquared(Point, Trail.Last().Point) < 64) return;
     if (Trail.Num() == 512) Trail.RemoveAt(0, 1, EAllowShrinking::No);
-    Trail.Add(Point);
+    Trail.Add({Point,bBreakNext});
+    bBreakNext = false;
 }
 
 void FSailingChart::Recenter(const ASailingYachtPawn& Yacht)
@@ -156,6 +158,12 @@ void FSailingChart::SetWaypoint(FVector2D PositionM, const ASailingYachtPawn& Ya
     for (const FMark& Mark : Marks) Consider(Mark.Position, Mark.Name);
     for (const ASailingJetSki* Ski : Yacht.JetSkis())
         if (IsValid(Ski)) Consider(FVector2D(Ski->GetActorLocation()) * .01, TEXT("Jet ski"));
+    RefreshArrival(Yacht);
+}
+
+void FSailingChart::RefreshArrivalAt(FVector2D Pin,const ASailingYachtPawn& Yacht)
+{
+    Landing = Yacht.FindTravelSpot(Pin);
 }
 
 FString FSailingChart::WaypointReadout(const ASailingYachtPawn& Yacht) const
@@ -228,7 +236,8 @@ void FSailingChart::Draw(AHUD& HUD, UCanvas& Canvas, UFont& Font, FVector2D Size
             Line(XY(Island.Coast[I]), XY(Island.Coast[Next]), FLinearColor(.80, .79, .60), 1.4f);
         }
     }
-    for (int32 I = 1; I < Trail.Num(); ++I) Line(XY(Trail[I - 1]), XY(Trail[I]), TrackInk, 1.7f);
+    for (int32 I = 1; I < Trail.Num(); ++I)
+        if (!Trail[I].bStart) Line(XY(Trail[I-1].Point), XY(Trail[I].Point), TrackInk, 1.7f);
     if (!bFollowing)
     {
         const FLinearColor Reticle(.29, .51, .54);
@@ -257,6 +266,18 @@ void FSailingChart::Draw(AHUD& HUD, UCanvas& Canvas, UFont& Font, FVector2D Size
         for (double Offset = 12.; Offset < FMath::Min(Length - 13., 2000.); Offset += 14.)
             Line(Focus + Direction * Offset, Focus + Direction * FMath::Min(Offset + 6., Length - 13.), RouteInk, 1.1f);
         if (Area.IsInside(Pos)) Diamond(Pos, 8., RouteInk, 2.2f);
+        if (Landing)
+        {
+            const FVector2D At = XY(FVector2D(*Landing)*.01);
+            if (Area.IsInside(At))
+            {
+                for (int32 I=0; I<16; ++I)
+                {
+                    const double A=I*UE_TWO_PI/16., B=(I+1)*UE_TWO_PI/16.;
+                    Line(At+11.*FVector2D(FMath::Cos(A),FMath::Sin(A)),At+11.*FVector2D(FMath::Cos(B),FMath::Sin(B)),FLinearColor(.2,.93,.55),2.);
+                }
+            }
+        }
     }
     const FVector2D Boat = XY(FVector2D(Yacht.GetActorLocation()) * .01);
     const FVector2D Forward = OnPaper(FVector2D(Yacht.GetActorForwardVector()).GetSafeNormal());

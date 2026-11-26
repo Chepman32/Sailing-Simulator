@@ -685,7 +685,7 @@ def main():
         "dolphin": import_mesh("Dolphin", {name: value for name, value in material.items() if name.startswith("dolphin_")},
                                 nanite=False),
     }
-    for aircraft in ("Floatplane","Airliner"):
+    for aircraft in ("Floatplane","Airliner","StuntPlane"):
         import_mesh(aircraft, material["aircraft_paint"], nanite=False)
     cays = {cay.name: import_mesh(cay.name, material["ground"], collision=True) for cay in CAYS}
     palms = [coastal_models["CoconutPalm"]] * 3

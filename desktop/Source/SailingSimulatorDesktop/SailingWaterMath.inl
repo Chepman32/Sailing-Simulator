@@ -110,7 +110,7 @@ struct SailingWaterMath
         // Small differences in travel time across the bed send tongues of
         // water ahead of the bore. Carry their slopes into the water normal.
         Real bend=.57*x-.36*y+seed, lobe=1.63*x+1.37*y+.61*sin(bend);
-        Real delay=.13*sin(lobe), slope=.13*cos(lobe), turn=.61*cos(bend);
+        Real delay=.035*sin(lobe), slope=.035*cos(lobe), turn=.61*cos(bend);
         return Real4(.020*x-.013*y + 1.18*sin(a)+.67*sin(b)+.46*sin(c)+.68*sin(along)+delay,
                      .020+.04956*cos(a)+.01273*cos(b)+.10028*cos(c)+.68*cos(along)*(.114+.03456*cos(.096*x-.066*y))+slope*(1.63+.57*turn),
                      -.013+.02950*cos(a)-.04154*cos(b)+.06578*cos(c)+.68*cos(along)*(.081-.02376*cos(.096*x-.066*y))+slope*(1.37-.36*turn), 0);
@@ -250,11 +250,19 @@ struct SailingWaterMath
     Real HullWave(Real a, Real b, Real speed, Real bias)
     {
         if (a < -10 || a > 24 || abs(b) > 16 || speed < .35) return 0;
-        Real aft = max(a+8,0.0), width = .82+.036*aft;
-        Real cross = abs(b)-1.92-.285*aft;
-        Real envelope = exp(-cross*cross/(width*width) - aft*.044);
-        Real amp = .38*smoothstep(.35,4.6,speed)*smoothstep(-10,-6,a)*(1-smoothstep(9,24,a));
-        return HullWeight(b,bias)*amp*envelope*cos(cross*2.75/width);
+        Real aft=max(a+8,0.), width=.63+.048*aft;
+        Real spread=.26+.047*smoothstep(2.1,6.2,speed);
+        Real k=min(2.6,9.81/max(1.0,speed*speed));
+        Real cross=abs(b)-1.92-spread*aft, outer=cross/width;
+        Real inner=(abs(b)+1.92-spread*aft)/width;
+        // The outer bow shoulders reinforce; crests from the inboard sides of
+        // the two demihulls cross in the tunnel and then pass through one another.
+        Real divergent=exp(-.83*outer*outer)*cos(outer*(2.05+.30*k));
+        divergent+=.54*exp(-.90*inner*inner)*cos(inner*(2.05+.30*k));
+        Real middle=b/(2.+.22*aft), center=exp(-middle*middle);
+        Real transverse=.25*center*cos(k*(a+2.4))*smoothstep(-5,2,a);
+        Real amp=.41*smoothstep(.35,4.6,speed)*smoothstep(-10,-6,a)*(1-smoothstep(9,24,a));
+        return amp*exp(-.037*aft)*(HullWeight(b,bias)*divergent+transverse);
     }
 
     // A pair of divergent wave packets and their transverse interference, shed
@@ -269,12 +277,17 @@ struct SailingWaterMath
         Real ax = 1-u*u, envelope = ax*ax, axialSlope = -4*u*ax/length;
         Real aft = speed*age-along, width = 1.38+.11*speed+.055*age;
         Real side = beam<0 ? -1 : 1;
-        Real v = (abs(beam)-1.93-.335*aft)/width;
+        Real spread=.29+.068*smoothstep(2.,6.,speed);
+        Real v = (abs(beam)-1.93-spread*aft)/width;
+        Real opposite=(abs(beam)+1.93-spread*aft)/width;
         Real edge = max(0,1-v*v/6.25), c = cos(3.75*v);
         Real wing = edge*edge*c;
         Real wingSlope = -4*v/6.25*edge*c - 3.75*edge*edge*sin(3.75*v);
+        Real inner=max(0,1-opposite*opposite/6.25), ci=cos(3.75*opposite);
+        wing+=.49*inner*inner*ci;
+        Real innerSlope=.49*(-4*opposite/6.25*inner*ci-3.75*inner*inner*sin(3.75*opposite));
         Real middle = 4.0+.22*age, q = beam/middle;
-        Real inside = max(0,1-q*q), transverse = .34*inside*inside;
+        Real inside = max(0,1-q*q), transverse = .48*inside*inside;
         Real k = min(1.65,9.81/max(1,speed*speed));
         Real kt = k*aft+.35, ct = cos(kt), st = sin(kt);
         Real crest = wing+transverse*ct;
@@ -284,12 +297,12 @@ struct SailingWaterMath
         Real denom = sqrt(beam*beam+1), hull = 1+bias*beam/denom;
         Real amp = energy*rise*fall, weight = amp*envelope*hull;
         Real ampT = energy*(4*enter*(1-enter)*fall - 1.5*rise*leave*(1-leave))-.088*amp;
-        Real midSlope = -1.36*q*inside*ct/middle;
+        Real midSlope = -1.92*q*inside*ct/middle;
         return Real4(weight*crest,
-            amp*axialSlope*hull*crest + weight*(wingSlope*.335/width+transverse*k*st),
-            weight*(wingSlope*side/width+midSlope) + amp*envelope*crest*bias/(denom*denom*denom),
+            amp*axialSlope*hull*crest + weight*((wingSlope+innerSlope)*spread/width+transverse*k*st),
+            weight*((wingSlope+innerSlope)*side/width+midSlope) + amp*envelope*crest*bias/(denom*denom*denom),
             (ampT*envelope-amp*drift*axialSlope)*hull*crest
-              +weight*(wingSlope*(-.335*speed-.055*v)/width - midSlope*.22*q - transverse*k*speed*st));
+              +weight*((wingSlope*(-spread*speed-.055*v)+innerSlope*(-spread*speed-.055*opposite))/width - midSlope*.22*q - transverse*k*speed*st));
     }
 
     // A finite wave packet emitted at a fixed world position. Its rings spread

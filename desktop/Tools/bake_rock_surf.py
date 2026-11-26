@@ -140,18 +140,22 @@ def solve_tile(rocks, row, x0, y0, cell):
                          fade*(current(1)-dx)/norm, fade*(current(SIZE)-dy)/norm, fade*contact)
     for i,wet in border:
         struct.pack_into('<4e',out,8*i,phi[i]/2.7,0,0,1.+max(0.,min(1.,h[i])))
-    return out
+    return out, h
 
 
 def bake(rocks):
     data = bytearray()
+    seabed = bytearray()
     for line in (LAYOUT.parent/'CoralSurfTiles.inl').read_text().splitlines():
         if line.startswith('SURF_TILE('):
             row,tile,x,y,cell = map(float,line[10:-1].split(','))
             assert int(tile)*COUNT*8 == len(data)
-            data.extend(solve_tile(rocks,int(row),x,y,cell))
+            survey, heights = solve_tile(rocks,int(row),x,y,cell)
+            data.extend(survey)
+            seabed.extend(struct.pack(f'<{COUNT}f', *heights))
     OUTPUT.parent.mkdir(parents=True,exist_ok=True)
     OUTPUT.write_bytes(data)
+    (OUTPUT.parents[3]/'Saved/CoastalSources/RockBed.f32').write_bytes(seabed)
 
 
 def run_editor():

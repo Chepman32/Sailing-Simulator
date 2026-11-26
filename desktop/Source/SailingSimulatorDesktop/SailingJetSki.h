@@ -25,10 +25,15 @@ public:
     const Sailing::FJetSkiMotion& Drive() const { return Motion; }
     FName BerthName() const { return Berth; }
     FVector Seat() const;
+    bool CanArrive(const ASailingYachtPawn& Yacht, FVector2D At) const;
+    void Arrive(const ASailingYachtPawn& Yacht, FVector2D At);
 
 private:
     bool HasWaterClearance(FVector2D PositionM, FVector2D Bow) const;
-    void UpdatePose(const ASailingYachtPawn& Yacht, float Dt);
+    void StepPose(const ASailingYachtPawn& Yacht, double Dt);
+    void ShowPose(double Alpha);
+    FTransform PreviousPose = FTransform::Identity, CurrentPose = FTransform::Identity;
+    FVector SuspensionVelocity = FVector::ZeroVector;
 
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Body;
     UPROPERTY() TArray<TObjectPtr<UStaticMesh>> AvailableModels;

@@ -50,8 +50,20 @@ public:
 private:
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Floatplane;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Airliner;
-    FVector2D FlightCenter = FVector2D(325.,35.);
-    void UpdateAircraft(float Time, float Dt, const FVector& Eye);
+    UPROPERTY() TObjectPtr<UStaticMeshComponent> StuntPlane;
+    UPROPERTY() TObjectPtr<UProceduralMeshComponent> TowBanner;
+    UPROPERTY() TObjectPtr<UProceduralMeshComponent> DisplaySmoke;
+    FVector FlightOrigin=FVector::ZeroVector, FlightAxis=FVector::RightVector, FlightAcross=FVector::ForwardVector;
+    int32 FlightNumber=INDEX_NONE;
+    double FlightAltitude=56;
+    TArray<FVector> BannerVertices, BannerNormals, SmokeVertices;
+    TArray<FVector2D> BannerUVs, SmokeUVs;
+    TArray<FLinearColor> SmokeColors;
+    void PrepareAircraft();
+    void UpdateBanner(double Age);
+    void UpdateSmoke(double Age, const FVector& Eye);
+    FVector FlightPosition(double Age, bool Stunt) const;
+    void UpdateAircraft(float Time, const FVector& Eye);
     void UpdateRain(float Strength, float DeltaSeconds, const FVector& Eye, const FVector& Right, const FVector& Wind);
     void UpdateSpindrift(const ASailingYachtPawn& Yacht, float Air, const FVector& Eye, const FVector& Forward, const FVector& Right);
     void EmitShoreSpray(Sailing::FSeaFrame Frame, const FVector& EyeM, const FVector& Forward, const FVector& Right, const FVector& Wind);

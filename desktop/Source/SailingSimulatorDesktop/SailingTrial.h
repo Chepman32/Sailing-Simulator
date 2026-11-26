@@ -53,7 +53,8 @@ public:
     bool HasCoralCoast() const { return bCoralPass; }
     const Sailing::FShoreMap* ShoreGeometry() const { return ShoreMap.Get(); }
     double SurfaceHeightM(FVector2D XYm) const;
-    double RenderedSurfaceHeightM(FVector2D XYm) const;
+    double RenderedSurfaceHeightM(FVector2D XYm) const { return RenderedSurfaceHeightM(XYm,SeaFrame()); }
+    double RenderedSurfaceHeightM(FVector2D XYm, Sailing::FSeaFrame Frame) const;
     const Sailing::FWaterImpacts& SurfaceImpacts() const { return Impacts; }
     TConstArrayView<FBowContact> BowContacts() const { return BowWater; }
     const Sailing::FWakeHistory& ShedWake() const { return WakeTrail; }
@@ -82,6 +83,9 @@ public:
     TConstArrayView<TObjectPtr<ASailingJetSki>> JetSkis() const { return JetSkiFleet; }
     USailingEntryBubbles& EntryBubbles() const { return *Bubbles; }
     void ToggleExplorer();
+    TOptional<FVector> FindTravelSpot(FVector2D PinM) const;
+    bool TravelTo(FVector ApprovedSpot);
+    uint32 TravelSequence() const { return TravelSerial; }
     FVector WorldFocus() const;
     double DeckFloor(FVector LocalFeet, double Top) const;
     bool DeckWall(FVector From, FVector To) const;
@@ -134,6 +138,8 @@ private:
     bool bCinematic = false;
     bool bCoralPass = false;
     bool bKeyboardRudder = false;
+    uint32 TravelSerial = 0;
+    std::atomic<bool> bResetPhysicsTravel{false};
 };
 
 UCLASS()
@@ -165,8 +171,10 @@ private:
     UPROPERTY(EditAnywhere, Category = "Sea") TObjectPtr<UMaterialInterface> WaterMaterial;
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> Water;
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> Shore;
+    UPROPERTY(Transient) TArray<TObjectPtr<UMaterialInstanceDynamic>> TidalStone;
     UPROPERTY(Transient) TObjectPtr<UTexture2D> SurfProfile;
     UPROPERTY(Transient) TObjectPtr<UTexture2D> RockFlow;
+    UPROPERTY(Transient) TObjectPtr<UTexture2D> RockWash;
     uint32 SentWakeRevision = MAX_uint32;
     Sailing::FSeaFrame PreviousSurfaceFrame{};
     UPROPERTY() TArray<TObjectPtr<UProceduralMeshComponent>> SurfaceTiles;

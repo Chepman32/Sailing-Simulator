@@ -42,6 +42,15 @@ bool FSailingWindowInputTest::RunTest(const FString&)
         Slate.ProcessKeyDownEvent(Key);
         Slate.ProcessKeyUpEvent(Key);
     };
+    Tap(EKeys::Tab);
+    TestTrue(TEXT("Physical Tab reaches inventory from the helm"),Player->GetPanel()==ESailingPanel::Gear);
+    Tap(EKeys::Tab);
+    Player->ToggleWorld();
+    Tap(EKeys::Tab);
+    TestTrue(TEXT("Focused Slate settings pass Tab to inventory"),Player->GetPanel()==ESailingPanel::Gear);
+    Tap(EKeys::Escape);
+    TestTrue(TEXT("Escape from gear restores focused settings"),Player->GetPanel()==ESailingPanel::World);
+    Tap(EKeys::Escape);
     // No preparatory click or explicit focus. Enter through the focused Slate window.
     Tap(EKeys::M);
     TestTrue(TEXT("The first M in the game window reaches the sound control"), Player->Sound().Enabled() != Before);
@@ -248,7 +257,10 @@ bool FSailingControlsTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Clicking the picture leaves the cinematic view"), Yacht->IsCinematic());
     Tap(EKeys::P);
     Tap(EKeys::Tab);
-    TestFalse(TEXT("Tab returns to the controls from the cinematic view"), Yacht->IsCinematic());
+    TestTrue(TEXT("Tab opens gear over the cinematic view"), Player->GetPanel()==ESailingPanel::Gear);
+    Tap(EKeys::Tab);
+    TestTrue(TEXT("Closing gear restores the cinematic camera"), Yacht->IsCinematic());
+    Tap(EKeys::P);
 
     Input(EKeys::W, IE_Pressed);
     Player->PlayerTick(.1f);

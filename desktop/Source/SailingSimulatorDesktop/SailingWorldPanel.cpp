@@ -239,7 +239,9 @@ public:
             + SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 10)
             [PageButton(TEXT("Graphics settings"), ESailingPausePage::Graphics)]
             + SVerticalBox::Slot().AutoHeight()
-            [PageButton(TEXT("Sound settings"), ESailingPausePage::Sound)];
+            [PageButton(TEXT("Sound settings"), ESailingPausePage::Sound)]
+            + SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
+            [Button(FText::FromString(TEXT("Exit")), [this] { if (Player.IsValid()) Player->QuitToDesktop(); }, 14.f)];
         ChildSlot[SNew(SOverlay)
             + SOverlay::Slot()
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))

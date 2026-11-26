@@ -17,7 +17,7 @@ writeFileSync(join(dir,'model.js'),ts.transpileModule(model,{compilerOptions:{ta
 writeFileSync(join(dir,'bake.html'),`<pre></pre><script type="importmap">{"imports":{"three":"./three.module.js","three/addons/utils/BufferGeometryUtils.js":"./utils.js"}}</script><script type="module">
 import * as M from './model.js';import * as T from 'three';
 const owned={geometries:[],materials:[],textures:[]};
-const models={Floatplane:M.buildFloatplane({base:'#f9eee0',accent:'#d44320',trim:'#254650',registration:'LC-207'},owned),Airliner:M.buildAirliner(owned)};
+const models={Floatplane:M.buildFloatplane({base:'#f9eee0',accent:'#d44320',trim:'#254650',registration:'LC-207'},owned),Airliner:M.buildAirliner(owned),StuntPlane:M.buildStuntPlane(owned)};
 const output={};
 for(const [name,parts] of Object.entries(models)){
  const group=parts.group;group.updateMatrixWorld(true);
@@ -43,6 +43,15 @@ for(const [name,parts] of Object.entries(models)){
  });
  output[name]={vertices,faces,colors};
 }
+const banner=document.createElement('canvas');
+banner.width=1024;banner.height=160;
+const ink=banner.getContext('2d');
+ink.fillStyle='#ffd43a';ink.fillRect(0,0,1024,160);
+ink.strokeStyle='#c81e1e';ink.lineWidth=8;ink.strokeRect(8,8,1008,144);
+ink.textAlign='center';ink.textBaseline='middle';ink.fillStyle='#a51b1d';
+ink.font='900 84px Arial Black,Arial,sans-serif';ink.fillText('VOLCANO TOURS',512,62,960);
+ink.font='bold 35px Arial,sans-serif';ink.fillStyle='#25202a';ink.fillText('BOOK YOUR FLIGHT TODAY',512,126,924);
+output.banner=banner.toDataURL().split(',')[1];
 document.querySelector('pre').textContent=JSON.stringify(output);
 </script>`);
 const html=execFileSync(process.env.CHROME_BIN||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -50,6 +59,8 @@ const html=execFileSync(process.env.CHROME_BIN||'/Applications/Google Chrome.app
   '--user-data-dir='+join(dir,'profile'),'--virtual-time-budget=5000','--dump-dom',pathToFileURL(join(dir,'bake.html')).href],
  {encoding:'utf8',maxBuffer:20*1024*1024});
 const meshes=JSON.parse(html.match(/<pre>([^<]+)<\/pre>/)[1]);
+writeFileSync(resolve('desktop/Saved/CoastalSources/T_FlightBanner.png'),Buffer.from(meshes.banner,'base64'));
+delete meshes.banner;
 writeFileSync(join(dir,'models.json'),JSON.stringify(meshes));
 execFileSync(process.env.BLENDER_BIN||'/Applications/Blender.app/Contents/MacOS/Blender',['-b','-P',
  resolve('desktop/Tools/bake_aircraft.py'),'--',join(dir,'models.json')],{stdio:'inherit'});

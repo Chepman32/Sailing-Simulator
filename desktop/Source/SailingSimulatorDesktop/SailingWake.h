@@ -22,6 +22,7 @@ private:
     UPROPERTY() TObjectPtr<ASailingSea> Sea;
     UPROPERTY(Transient) TObjectPtr<UTexture2D> Maps[2];
     TWeakObjectPtr<UMaterialInstanceDynamic> BoundWater;
+    uint32 TravelSerial = 0;
     int32 Latest = 0;
     float Published = -1;
     float LastBreak[2]{-10.f,-10.f};

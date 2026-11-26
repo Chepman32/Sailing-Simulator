@@ -45,6 +45,8 @@ void ASailingWake::Tick(float DeltaSeconds)
     }
     const ASailingJetSki* Ski = Yacht->Explorer().MountedJetSki();
     const float Now = Yacht->SeaFrame().TimeS;
+    const bool bTravel = TravelSerial != Yacht->TravelSequence();
+    if (bTravel) { Field = {}; TravelSerial = Yacht->TravelSequence(); }
     bool Reset;
     if (Ski)
     {
@@ -78,6 +80,7 @@ void ASailingWake::Tick(float DeltaSeconds)
     }
     constexpr int32 Size = Sailing::FFoamField::Size;
     constexpr float Interval = Sailing::FFoamField::Interval;
+    Reset |= bTravel;
     if (Reset || Now-Published>=Interval)
     {
         Latest=1-Latest;

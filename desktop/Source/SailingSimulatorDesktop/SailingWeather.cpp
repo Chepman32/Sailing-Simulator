@@ -104,6 +104,17 @@ ASailingWeather::ASailingWeather()
     Floatplane=Aircraft(TEXT("Sightseeing floatplane"),BushModel.Object);
     Airliner=Aircraft(TEXT("Cruising airliner"),JetModel.Object);
     Airliner->SetCastShadow(false);
+    static ConstructorHelpers::FObjectFinder<UStaticMesh> StuntModel(TEXT("/Game/Coastal/Meshes/SM_StuntPlane.SM_StuntPlane"));
+    StuntPlane=Aircraft(TEXT("Aerobatic plane"),StuntModel.Object);
+    StuntPlane->SetVisibility(false);
+    TowBanner=Effect(TEXT("Tow banner"));
+    DisplaySmoke=Effect(TEXT("Aerobatic smoke"));
+    static ConstructorHelpers::FObjectFinder<UMaterialInterface> Cloth(TEXT("/Game/Coastal/Materials/M_FlightBanner.M_FlightBanner"));
+    static ConstructorHelpers::FObjectFinder<UMaterialInterface> Smoke(TEXT("/Game/Coastal/Materials/M_DisplaySmoke.M_DisplaySmoke"));
+    static ConstructorHelpers::FObjectFinder<UMaterialInterface> Cord(TEXT("/Game/Coastal/Materials/M_AircraftPaint.M_AircraftPaint"));
+    TowBanner->SetMaterial(0,Cloth.Object);
+    TowBanner->SetMaterial(1,Cord.Object);
+    DisplaySmoke->SetMaterial(0,Smoke.Object);
     Rain = Effect(TEXT("Rain"));
     Spindrift = Effect(TEXT("CrestSpray"));
     static ConstructorHelpers::FObjectFinder<UMaterialInterface> SprayMaterial(TEXT("/Game/Coastal/Materials/M_StormSpindrift.M_StormSpindrift"));
@@ -129,6 +140,7 @@ ASailingWeather::ASailingWeather()
 void ASailingWeather::BeginPlay()
 {
     Super::BeginPlay();
+    PrepareAircraft();
     SeaActor = Cast<ASailingSea>(UGameplayStatics::GetActorOfClass(this, ASailingSea::StaticClass()));
     if (Fog)
     {
@@ -252,28 +264,6 @@ void ASailingWeather::SelectWeather(int32 Choice)
     bAtmosphereDirty = true;
 }
 
-void ASailingWeather::UpdateAircraft(float Time, float Dt, const FVector& Eye)
-{
-    // The floatplane flies a continuous banked circuit over the inshore route.
-    // When the player sails farther afield, move the route gradually with them.
-    const FVector2D Offset=FVector2D(Eye)*.01-FlightCenter;
-    if (Offset.SizeSquared()>FMath::Square(460.))
-        FlightCenter+=Offset.GetSafeNormal()*FMath::Min(Offset.Size()-460.,double(Dt)*14.);
-    const double Phase=Time*.084-1.70, S=FMath::Sin(Phase), C=FMath::Cos(Phase);
-    const FVector Position(FlightCenter.X+350*C,FlightCenter.Y+175*S,49.+14.*C);
-    const FVector Tangent(-350*S,175*C,-14*S);
-    FRotator Pose=Tangent.Rotation();
-    const double Speed=Tangent.Size2D()*.084;
-    const double Curvature=350.*175./FMath::Pow(Tangent.Size2D(),3.);
-    Pose.Roll=-FMath::RadiansToDegrees(FMath::Atan(Speed*Speed*Curvature/9.81));
-    Floatplane->SetWorldLocationAndRotation(Position*100.,Pose);
-    const FVector Course(.932327,.361615,0.);
-    const double Along=FMath::Fmod(Time*172.+18400.,38000.)-19000.;
-    const FVector Jet=FVector(80.,-1250.,2700.)+Course*Along;
-    Airliner->SetWorldLocationAndRotation(Jet*100.,Course.Rotation());
-    if (DistantSky) DistantSky->SetVectorParameterValue(TEXT("JetTrack"),FLinearColor(Jet.X,Jet.Y,Jet.Z));
-}
-
 void ASailingWeather::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
@@ -295,7 +285,7 @@ void ASailingWeather::Tick(float DeltaSeconds)
         bAtmosphereDirty=true;
     }
     const FVector Eye = Player->PlayerCameraManager->GetCameraLocation();
-    UpdateAircraft(Time,DeltaSeconds,Eye);
+    UpdateAircraft(Time,Eye);
     const FRotator View = Player->PlayerCameraManager->GetCameraRotation();
     const FVector Forward = View.Vector().GetSafeNormal2D();
     const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward);
@@ -364,6 +354,13 @@ void ASailingWeather::Tick(float DeltaSeconds)
             Light->SetIntensity(SunLux);
             // Dense cloud spreads the remaining direct light over a broad patch of sky.
             const float Obscured = FMath::SmoothStep(.10f,.81f,StormSky);
+#if PLATFORM_MAC
+            // The direct solar disc disappears under the storm bank. Fade
+            // its projected shadow into the diffuse sky before retiring the atlas.
+            const float SunShadow=1.f-FMath::SmoothStep(.78f,.97f,StormSky);
+            Light->SetShadowAmount(SunShadow);
+            Light->SetCastShadows(SunShadow>0.f);
+#endif
             Light->SetLightColor(FMath::Lerp(FLinearColor::White, FLinearColor(.72f,.83f,1.f), Obscured));
             Light->SetLightSourceAngle(.53f + 1.5f*Obscured);
             Light->SetLightSourceSoftAngle(3.f*Obscured);

@@ -20,6 +20,8 @@ private:
     {
         FVector2D CenterM = FVector2D::ZeroVector;
         float Born = -10, Life = 0, HalfSpanM = 0, Seed = 0;
+        FVector2D Shoreward=FVector2D::ZeroVector;
+        float SpeedMps=0, Air=0, LastUpdate=0;
     };
     static constexpr int32 Count=6, Columns=13, Rows=8;
     FSheet Sheets[Count];

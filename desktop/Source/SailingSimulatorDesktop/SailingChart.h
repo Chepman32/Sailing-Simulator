@@ -17,7 +17,10 @@ struct FSailingChart
     void Pan(FVector2D Pixels);
     void Zoom(double Wheel, FVector2D Offset);
     void SetWaypoint(FVector2D PositionM, const ASailingYachtPawn& Yacht);
-    void ClearWaypoint() { Waypoint.Reset(); }
+    void ClearWaypoint() { Waypoint.Reset(); Landing.Reset(); }
+    void RefreshArrival(const ASailingYachtPawn& Yacht) { if (Waypoint) RefreshArrivalAt(*Waypoint,Yacht); }
+    const TOptional<FVector>& Arrival() const { return Landing; }
+    void BreakTrack() { bBreakNext = true; }
     bool HasWaypoint() const { return Waypoint.IsSet(); }
     const FString& WaypointLabel() const { return WaypointName; }
     FString WaypointReadout(const ASailingYachtPawn& Yacht) const;
@@ -33,9 +36,13 @@ private:
     struct FIsland { FString Name; FVector2D Center; TArray<FVector2D> Coast, Shoal; };
     struct FMark { FString Name; FVector2D Position; };
     bool bSurveyed = false;
+    void RefreshArrivalAt(FVector2D Pin, const ASailingYachtPawn& Yacht);
     TOptional<FVector2D> Waypoint;
+    TOptional<FVector> Landing;
+    bool bBreakNext = false;
     FString WaypointName;
     TArray<FIsland> Land;
     TArray<FMark> Marks;
-    TArray<FVector2D> Trail;
+    struct FFix { FVector2D Point; bool bStart; };
+    TArray<FFix> Trail;
 };

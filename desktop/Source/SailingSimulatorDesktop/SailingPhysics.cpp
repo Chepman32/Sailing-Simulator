@@ -157,13 +157,8 @@ TConstArrayView<FLinearColor> SurfProfileTexels()
 TConstArrayView<FFloat16Color> RockSurfTexels()
 {
     static const auto Atlas=[] {
-        constexpr int32 Tiles = 0
-            #define SURF_TILE(...) +1
-            #include "CoralSurfTiles.inl"
-            #undef SURF_TILE
-            ;
         TArray<FFloat16Color> Texels;
-        Texels.SetNum(Tiles*RockTileWidth*RockTileWidth);
+        Texels.SetNum(RockTileCount*RockTileWidth*RockTileWidth);
         TArray<uint8> File;
         const FString Path=FPaths::ProjectContentDir()/TEXT("Coastal/Surf/RockFlow.bin");
         const int32 Bytes=Texels.Num()*sizeof(FFloat16Color);
@@ -177,6 +172,60 @@ TConstArrayView<FFloat16Color> RockSurfTexels()
         return Texels;
     }();
     return Atlas;
+}
+
+TConstArrayView<uint8> RockWashTexels()
+{
+    static const auto Atlas=[] {
+        TArray<uint8> Bytes;
+        const FString Path=FPaths::ProjectContentDir()/TEXT("Coastal/Surf/RockWash.rgba");
+        constexpr int32 Expected=4*RockTileWidth*RockTileWidth*RockTileCount*RockWashFrames;
+        if (!FFileHelper::LoadFileToArray(Bytes,*Path) || Bytes.Num()!=Expected)
+        {
+            UE_LOG(LogTemp,Error,TEXT("Incomplete rock wash cycle: %s"),*Path);
+            Bytes.Reset();
+        }
+        return Bytes;
+    }();
+    return Atlas;
+}
+
+struct FRockWash
+{
+    double Height=0, Rise=0;
+    FVector2D Slope=FVector2D::ZeroVector, Current=FVector2D::ZeroVector;
+};
+
+static FRockWash SampleWash(Real4 Grid, double Phase)
+{
+    FRockWash Wash;
+    if (Grid.z==0) return Wash;
+    const auto Texels=RockWashTexels();
+    if (Texels.IsEmpty()) return Wash;
+    constexpr int32 Stride=RockTileWidth*RockTileCount;
+    const int32 X=int32(Grid.x), Y=int32(Grid.y), Tile=Y/RockTileWidth;
+    const int32 PhaseIndex=FMath::FloorToInt(Phase);
+    const double U=Grid.x-X,V=Grid.y-Y,T=Phase-PhaseIndex;
+    // Rows are laid out tile by tile horizontally, phase by phase vertically.
+    double Heights[2];
+    for (int32 J=0; J<2; ++J)
+    {
+        const int32 Row=((PhaseIndex+J)&(RockWashFrames-1))*RockTileWidth + Y%RockTileWidth;
+        const uint8* Texel=Texels.GetData()+4*(Row*Stride+Tile*RockTileWidth+X);
+        const auto Channel=[&](int32 C) {
+            return FMath::Lerp(FMath::Lerp(double(Texel[C]),double(Texel[4+C]),U),
+                               FMath::Lerp(double(Texel[4*Stride+C]),double(Texel[4*Stride+4+C]),U),V)-128.;
+        };
+        const double Weight=J ? T : 1-T;
+        Heights[J]=Channel(0)/128.;
+        Wash.Height+=Weight*Heights[J];
+        Wash.Slope+=Weight*Grid.z/128.*FVector2D(FMath::Lerp(double(Texel[4]-Texel[0]),double(Texel[4*Stride+4]-Texel[4*Stride]),V),
+            FMath::Lerp(double(Texel[4*Stride]-Texel[0]),double(Texel[4*Stride+4]-Texel[4]),U));
+        Wash.Current+=Weight/48.*FVector2D(Channel(1),Channel(2));
+    }
+    SailingWaterMath Water;
+    Wash.Rise=(Heights[1]-Heights[0])*RockWashFrames*Water.BreakerFrequency()/(2*PI);
+    return Wash;
 }
 
 static Real4 ShoreArrival(SailingWaterMath& Water, FVector2D P, double Row, Real4& Flow, FVector2D& ContactSlope)
@@ -341,6 +390,10 @@ static FSeaSample EvaluateSea(FVector2D XYm, double TimeS, double DepthM, double
                 Surf.z+=Gate.x*Bore.z;
                 BoreContactSlope=Gate.x*Bore.y;
             }
+            const auto Wash=SampleWash(Water.RockTile(XYm.X,XYm.Y,Coast.w),TimeS*Water.BreakerFrequency()*RockWashFrames/(2*PI));
+            const Real4 WashGate=Water.BoreWindow(Coast.x);
+            const double WashScale=.84*std::sqrt(FMath::Min(Scale,2.5)), Gain=WashGate.x*WashScale;
+            const FVector2D WashSlope=Gain*Wash.Slope + WashScale*WashGate.y*Wash.Height*FVector2D(Coast.y,Coast.z);
             const double Swell = Water.Swell(Coast.x);
             if constexpr (Motion)
             {
@@ -350,23 +403,23 @@ static FSeaSample EvaluateSea(FVector2D XYm, double TimeS, double DepthM, double
                 {
                     Result.SwellRiseMps = Result.SwellRiseMps*Swell + Surf.z +
                         (Surf.y + Result.HeightM*Water.SwellSlope(Coast.x))*FVector2D::DotProduct(TravelMps,Normal)
-                        + FVector2D::DotProduct(TravelMps,FVector2D(Peel.y,Peel.z)*Surf.z+ContactSlope*BoreContactSlope);
+                        + Gain*Wash.Rise + FVector2D::DotProduct(TravelMps,FVector2D(Peel.y,Peel.z)*Surf.z+ContactSlope*BoreContactSlope+WashSlope);
                     Result.SwellAccelerationMps2 *= Swell;
                 }
                 Result.Gradient = Swell*Result.Gradient + Normal*(Surf.y + Result.HeightM*Water.SwellSlope(Coast.x))
-                    + FVector2D(Peel.y, Peel.z)*Surf.z+ContactSlope*BoreContactSlope;
+                    + FVector2D(Peel.y, Peel.z)*Surf.z+ContactSlope*BoreContactSlope+WashSlope;
                 const double K=FMath::Lerp(P[0].A,P[1].A,Sample-I), H=FMath::Lerp(P[0].B,P[1].B,Sample-I);
                 const double KH=K*H, AboveBed=K*FMath::Clamp(H-DepthM,0.,H);
                 const double Denom=std::sinh(KH);
                 const double VerticalTransfer = std::sinh(AboveBed)/Denom;
                 DepthSlope = DepthSlope*Swell + Normal*(DepthHeight*Water.SwellSlope(Coast.x))
-                    + (Normal*Surf.y + FVector2D(Peel.y,Peel.z)*Surf.z+ContactSlope*BoreContactSlope)*VerticalTransfer;
-                Result.SurfaceRiseMps = Result.SurfaceRiseMps*Swell + Surf.z;
+                    + (Normal*Surf.y + FVector2D(Peel.y,Peel.z)*Surf.z+ContactSlope*BoreContactSlope+WashSlope)*VerticalTransfer;
+                Result.SurfaceRiseMps = Result.SurfaceRiseMps*Swell + Surf.z + Gain*Wash.Rise;
                 Result.VelocityMps = Result.VelocityMps*Swell +
                     FVector(-(Normal.GetSafeNormal()+FVector2D(Flow.y,Flow.z))*(Surf.x*Water.BreakerFrequency()*std::cosh(AboveBed)/Denom),
-                            Surf.z*VerticalTransfer);
+                            Surf.z*VerticalTransfer) + FVector(Gain*Wash.Current,(Gain*Wash.Rise)*VerticalTransfer);
             }
-            Result.HeightM = Result.HeightM*Swell + Surf.x;
+            Result.HeightM = Result.HeightM*Swell + Surf.x + Gain*Wash.Height;
         }
     }
     Result.HeightM += Storm.HeightM;
@@ -592,14 +645,16 @@ FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS,
     const FVector Right = RightOf(Forward);
     double Waterline = 0., Rise = 0., WaveAcceleration = 0., WetStations = 0.;
     double BowMoment = 0., BeamMoment = 0., BowSpanSq = 0., BeamSpanSq = 0.;
-    double BowRiseMoment = 0., BeamRiseMoment = 0.;
+    double BowRiseMoment = 0., BeamRiseMoment = 0., BowAccelerationMoment = 0.;
+    const double HeadSea = FMath::SmoothStep(3.,8.,FMath::Abs(FVector::DotProduct(State.VelocityMps,Forward)))
+        * FMath::SmoothStep(1.6,3.8,SeaScale);
     double BowEntrySq = 0.;
     for (const double X : StationsX)
     {
         for (const double Y : StationsY)
         {
             const FVector Station = Point({ X, Y, -StaticDraftM });
-            const FVector2D XY(State.OriginM + Forward*X + Right*Y);
+            const FVector2D XY(Station);
             FSeaSample Sea = EvaluateSea<true,true>(XY,TimeS,StaticDraftM,SeaScale,bCoralPass,FVector2D(State.VelocityMps));
             if (Impacts)
             {
@@ -626,6 +681,7 @@ FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS,
             BowMoment += X*Sea.HeightM;
             BeamMoment += Y*Sea.HeightM;
             BowRiseMoment += X*Sea.SwellRiseMps;
+            BowAccelerationMoment += X*Sea.SwellAccelerationMps2;
             BeamRiseMoment += Y*Sea.SwellRiseMps;
             BowSpanSq += X*X;
             BeamSpanSq += Y*Y;
@@ -640,7 +696,7 @@ FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS,
     const double WaveCoupling = (1.-FMath::SmoothStep(StaticDraftM*.48,StaticDraftM*1.9,AbovePlane))
         * FMath::SmoothStep(1.6,3.8,SeaScale);
     const double Contact = FMath::Max(WaveCoupling,FMath::Min(1.,WetStations*.5));
-    const double HeaveFrequency = 3.4 + 1.8*WaveCoupling; // rad/s, including the water accelerated with the hulls
+    const double HeaveFrequency = 3.4 + (1.8+2.0*HeadSea)*WaveCoupling; // rad/s, including the water accelerated with the hulls
     // Long-wave pressure starts slowing the ascent before the crest passes underneath.
     const double Heave = FMath::Clamp(WaveAcceleration/StationCount,-Gravity*(1.+1.25*WaveCoupling),Gravity*(1.+.75*WaveCoupling))
         + HeaveFrequency*HeaveFrequency*(Waterline/StationCount-State.OriginM.Z)
@@ -715,9 +771,7 @@ FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS,
     // Limit the slope the yacht takes up smoothly while leaving the swell's full height.
     // At speed the head sea arrives several times faster than its earth-fixed period.
     // Let the bows follow more of the fore-and-aft rise without increasing beam roll.
-    const double HeadSea=FMath::SmoothStep(3.,8.,FMath::Abs(FVector::DotProduct(State.VelocityMps,Forward)))
-        *FMath::SmoothStep(1.6,3.8,SeaScale);
-    const double MaxRideSlope = .49+.13*HeadSea*FMath::Abs(FVector::DotProduct(Slope.GetSafeNormal(),Forward));
+    const double MaxRideSlope = .49+.18*HeadSea*FMath::Abs(FVector::DotProduct(Slope.GetSafeNormal(),Forward));
     const double Response = FMath::InvSqrt(1.+Slope.SizeSquared()/(MaxRideSlope*MaxRideSlope));
     const FVector WaterNormal = FVector::UpVector - Slope*Response;
     const FVector TargetUp = WaterNormal.GetSafeNormal();
@@ -738,26 +792,45 @@ FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS,
         const double Rate = FVector::DotProduct(State.AngularVelocityRad-WaterSpin,Direction);
         return MassKg*Gravity*LeverM*FVector::DotProduct(TiltError,Direction) - Damping*FMath::Clamp(Rate,-2.,2.);
     };
-    Loads.TorqueNm += Contact * (Forward*RightingMoment(Forward,4.1,155000.) + Right*RightingMoment(Right,8.0+3.5*HeadSea,320000.+45000.*HeadSea));
+    // A powered head sea crosses the eight-metre waterplane quickly. Its
+    // differential vertical acceleration starts pitching the bows before
+    // there is a large angle error for the righting moment to correct.
+    const double PitchAccel = -(BowAccelerationMoment/BowSpanSq)*Response*Response*Response;
+    const double PitchInertia = MassKg*11.;
+    const double PitchMoment = RightingMoment(Right,8.+9.*HeadSea,320000.+100000.*HeadSea)
+        + HeadSea*PitchInertia*FMath::Clamp(PitchAccel,-1.8,1.8);
+    Loads.TorqueNm += Contact * (Forward*RightingMoment(Forward,4.1,155000.) + Right*PitchMoment);
     Loads.TorqueNm.Z -= HullWet*5600.*State.AngularVelocityRad.Z;
     if (!Helm.bHoveTo)
     {
         // Close the loop on yaw in the world frame. A passing crest can lift
         // the rudder or reverse local flow without reversing the helm command.
-        const double SurgeOverGround = FVector::DotProduct(State.VelocityMps, Forward);
+        const FVector Heading = Forward.GetSafeNormal2D();
+        const FVector Beam(-Heading.Y, Heading.X, 0.);
+        const double GroundSurge = FVector::DotProduct(State.VelocityMps, Heading);
+        const double SwaySpeed = FVector::DotProduct(State.VelocityMps, Beam);
         const double Drive = Helm.bEngineOn ? Throttle : 0.;
-        const double Authority = FMath::Max(FMath::SmoothStep(0., 1.5, FMath::Abs(SurgeOverGround)), FMath::Abs(Drive));
-        const double Direction = FMath::Abs(SurgeOverGround) > .55 ? FMath::Sign(SurgeOverGround) : FMath::Sign(Drive);
-        const double Target = Direction * Helm.Rudder * FMath::Lerp(.42, .34, FMath::SmoothStep(3., 10., FMath::Abs(SurgeOverGround)));
-        const double YawMoment = 175000. * (Target - State.AngularVelocityRad.Z);
-        Loads.TorqueNm.Z = FMath::Lerp(Loads.TorqueNm.Z, FMath::Clamp(YawMoment,-90000.,90000.), Authority);
+        // Over-ground surge oscillates through zero as a crest passes. A selected
+        // gear owns the helm direction at low speed, including slow astern.
+        const double Direction = FMath::Abs(Drive) > .02 ? FMath::Sign(Drive) : (GroundSurge < -.85 ? -1. : 1.);
+        const double Steer = FMath::Clamp(Helm.Rudder, -1., 1.);
+        const double Way = FMath::SmoothStep(.05, 1.1, FMath::Abs(GroundSurge));
+        const double Authority = FMath::Max(Way, FMath::SmoothStep(0., .08, FMath::Abs(Drive)));
+        const double Command = Direction * Steer * FMath::Lerp(.54, .39, FMath::SmoothStep(2., 9., FMath::Abs(GroundSurge)));
+        const double YawTorque = FMath::Clamp((Command-State.AngularVelocityRad.Z)*320000., -148000., 148000.);
+        Loads.TorqueNm.Z = FMath::Lerp(Loads.TorqueNm.Z, YawTorque, Authority);
+        if (Authority > 0.)
+        {
+            const double ForceAcross = FVector::DotProduct(Loads.ForceN, Beam);
+            const double Grip = MassKg * FMath::Clamp(-1.55*SwaySpeed, -3.2, 3.2);
+            Loads.ForceN += Beam * ((Grip-ForceAcross)*Authority*.92);
+        }
         if (Drive != 0.)
         {
-            // Give commanded thrust its low-speed response even across a trough.
             const double SpeedDemand = Drive * (Drive > 0. ? 7.92 : 3.9);
-            const double Accel = FMath::Clamp((SpeedDemand-SurgeOverGround)*1.2,-2.8,2.8);
-            const double Along = FVector::DotProduct(Loads.ForceN,Forward);
-            Loads.ForceN += Forward*((MassKg*Accel-Along)*FMath::Abs(Drive));
+            const double Accel = FMath::Clamp((SpeedDemand-GroundSurge)*1.45,-2.8,3.0);
+            const double ForceAlong = FVector::DotProduct(Loads.ForceN,Heading);
+            Loads.ForceN += Heading*((MassKg*Accel-ForceAlong)*FMath::SmoothStep(0.,.06,FMath::Abs(Drive)));
         }
     }
     return Loads;

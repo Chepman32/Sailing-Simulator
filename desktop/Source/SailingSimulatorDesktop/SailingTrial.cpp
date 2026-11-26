@@ -354,6 +354,88 @@ void ASailingYachtPawn::ActivateView()
     HelmCamera->SetActive(bAtHelm);
 }
 
+TOptional<FVector> ASailingYachtPawn::FindTravelSpot(FVector2D PinM) const
+{
+    const auto Mode = SkipperView->Mode();
+    const bool bWalking = Mode == ESkipperMode::Deck || Mode == ESkipperMode::Shore;
+    const auto* Ski = SkipperView->MountedJetSki();
+    const FVector2D Bow(GetActorForwardVector().GetSafeNormal2D());
+    const FQuat Heading = FRotator(0.,GetActorRotation().Yaw,0.).Quaternion();
+    FCollisionQueryParams Query(SCENE_QUERY_STAT(SailingArrival),true,this);
+    const auto Try = [&](FVector2D P) -> TOptional<FVector>
+    {
+        const FVector Water(P*100., SurfaceHeightM(P)*100.);
+        if (Mode != ESkipperMode::Helm)
+        {
+            const FVector Local = GetActorTransform().InverseTransformPosition(Water);
+            if (FMath::Abs(Local.X)<720. && FMath::Abs(Local.Y)<360.) return {};
+        }
+        FHitResult Hit;
+        const bool bGround = GetWorld()->LineTraceSingleByChannel(Hit, FVector(Water.X,Water.Y,100000.),
+            FVector(Water.X,Water.Y,-15000.), ECC_Visibility,Query);
+        if (bWalking)
+        {
+            if (!bGround || Hit.ImpactPoint.Z < Water.Z-15. || Hit.ImpactNormal.Z < .72) return {};
+            if (GetWorld()->OverlapBlockingTestByChannel(Hit.ImpactPoint+FVector(0,0,95),FQuat::Identity,
+                ECC_Visibility,FCollisionShape::MakeCapsule(29.,87.),Query)) return {};
+            return Hit.ImpactPoint;
+        }
+        const double Depth = Mode == ESkipperMode::Helm ? 170. : Ski ? 80. : 165.;
+        if (bGround && Hit.ImpactPoint.Z > FMath::Min(0.,Water.Z)-Depth) return {};
+        if (Ski && !Ski->CanArrive(*this,P)) return {};
+        if (Mode == ESkipperMode::Helm)
+        {
+            if (ShoreMap && ShoreMap->AtHull(P,Bow).ClearanceM < 2.) return {};
+            if (GetWorld()->OverlapBlockingTestByChannel(Water,Heading,Hull->GetCollisionObjectType(),
+                FCollisionShape::MakeBox(FVector(595,300,100)),Query)) return {};
+        }
+        return Water;
+    };
+    if (auto Spot = Try(PinM)) return Spot;
+    for (const double Radius : {2.,5.,10.,18.,32.,55.,90.,145.,230.,360.,540.,800.,1200.,1800.})
+    {
+        for (int32 I=0; I<24; ++I)
+        {
+            const double Angle = I*UE_TWO_PI/24.;
+            if (auto Spot=Try(PinM+Radius*FVector2D(FMath::Cos(Angle),FMath::Sin(Angle)))) return Spot;
+        }
+    }
+    return {};
+}
+
+bool ASailingYachtPawn::TravelTo(FVector ApprovedSpot)
+{
+    const auto Spot = FindTravelSpot(FVector2D(ApprovedSpot)*.01);
+    if (!Spot || FVector::DistSquared2D(*Spot,ApprovedSpot)>1.) return false;
+    if (SkipperView->Away())
+    {
+        const auto Mode = SkipperView->Mode();
+        SkipperView->Arrive(*this,*Spot,Mode==ESkipperMode::Deck || Mode==ESkipperMode::Shore);
+    }
+    else
+    {
+        const FRotator Heading(0,GetActorRotation().Yaw,0);
+        if (!SetActorLocationAndRotation(*Spot+FVector(0,0,12),Heading,false,nullptr,ETeleportType::TeleportPhysics)) return false;
+        SetRudder(0);
+        SetThrottle(0);
+        Hull->SetPhysicsLinearVelocity(FVector::ZeroVector);
+        Hull->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
+        Hull->WakeRigidBody();
+        Impacts = {};
+        const uint32 NextRevision = WakeTrail.Revision+1;
+        WakeTrail = {};
+        WakeTrail.Revision = NextRevision;
+        for (int32 Side=0; Side<2; ++Side) { BowWater[Side]={}; LastBowClearance[Side]=0.; }
+        FScopeLock Lock(&HelmMutex);
+        PhysicsHelm = Helm;
+        PhysicsImpacts = Impacts;
+        bResetPhysicsTravel.store(true);
+        bRefloatRequested.store(false);
+    }
+    ++TravelSerial;
+    return true;
+}
+
 void ASailingYachtPawn::ToggleExplorer()
 {
     if (SkipperView->Away()) SkipperView->Return();
@@ -361,6 +443,7 @@ void ASailingYachtPawn::ToggleExplorer()
     {
         bCinematic = false;
         SetRudder(0);
+        SetEngineRunning(false);
         SetThrottle(0);
         Helm.AnchorM = FVector2D(GetActorLocation()) * .01;
         Catamaran->SetCollisionResponseToAllChannels(ECR_Ignore);
@@ -565,6 +648,11 @@ void ASailingYachtPawn::AsyncPhysicsTickActor(float DeltaSeconds, float SimTime)
         Controls = PhysicsHelm;
         ContactWaves = PhysicsImpacts;
         Coast = ShoreMap;
+        if (bResetPhysicsTravel.exchange(false))
+        {
+            PhysicsShoreGuard = {};
+            PhysicsWakeTrail = {};
+        }
         PhysicsWakeTrail.Record(Wake, SimTime);
     }
     const FVector CenterOfMassCm = OriginCm + Rotation.RotateVector(Body->CenterOfMass());
@@ -624,17 +712,21 @@ double ASailingYachtPawn::SurfaceHeightM(FVector2D XYm) const
         + Impacts.At(XYm,Frame.TimeS).HeightM + WakeTrail.At(XYm,Frame.TimeS).HeightM;
 }
 
-double ASailingYachtPawn::RenderedSurfaceHeightM(FVector2D XYm) const
+double ASailingYachtPawn::RenderedSurfaceHeightM(FVector2D XYm,Sailing::FSeaFrame Frame) const
 {
+    const auto Wake=BoatWake();
+    const auto Height=[&](FVector2D P) {
+        return Sailing::SeaHeight(P,Frame,bCoralPass)+Wake.HeightAt(P)+Impacts.At(P,Frame.TimeS).HeightM+WakeTrail.At(P,Frame.TimeS).HeightM;
+    };
     // The sea snaps to this lattice around the swimmer. Match the diagonal
     // in BuildSurface so the waterline follows the displaced triangles.
     const FVector2D Corner(FMath::FloorToDouble(XYm.X/CellM)*CellM, FMath::FloorToDouble(XYm.Y/CellM)*CellM);
     const FVector2D UV = (XYm-Corner)/CellM;
-    const double East = SurfaceHeightM(Corner+FVector2D(CellM,0));
-    const double North = SurfaceHeightM(Corner+FVector2D(0,CellM));
+    const double East = Height(Corner+FVector2D(CellM,0));
+    const double North = Height(Corner+FVector2D(0,CellM));
     if (UV.X+UV.Y <= 1.)
-        return SurfaceHeightM(Corner)*(1.-UV.X-UV.Y) + East*UV.X + North*UV.Y;
-    return SurfaceHeightM(Corner+FVector2D(CellM,CellM))*(UV.X+UV.Y-1.) + East*(1.-UV.Y) + North*(1.-UV.X);
+        return Height(Corner)*(1.-UV.X-UV.Y) + East*UV.X + North*UV.Y;
+    return Height(Corner+FVector2D(CellM,CellM))*(UV.X+UV.Y-1.) + East*(1.-UV.Y) + North*(1.-UV.X);
 }
 
 void ASailingYachtPawn::DisturbSurface(FVector PositionCm, float HeightM)
@@ -739,7 +831,8 @@ void ASailingSea::BeginPlay()
         BuildSurface();
     }
     BindSurfProfile();
-    // All of the island shores use the same material instance and simulation clock.
+    TMap<UMaterialInterface*,UMaterialInstanceDynamic*> StoneInstances;
+    // Shared instances put exposed stone and sand on the same tide clock.
     for (TActorIterator<AStaticMeshActor> It(GetWorld()); It; ++It)
     {
         UStaticMeshComponent* Mesh = It->GetStaticMeshComponent();
@@ -754,6 +847,19 @@ void ASailingSea::BeginPlay()
                 Shore->SetTextureParameterValue(TEXT("RockFlow"),RockFlow);
             }
             Mesh->SetMaterial(0, Shore);
+        }
+        else if (Base && (Base->GetFName()==TEXT("M_TidalRock") || Base->GetFName()==TEXT("M_Boulder")))
+        {
+            auto*& WetStone=StoneInstances.FindOrAdd(Base);
+            if (!WetStone)
+            {
+                WetStone=UMaterialInstanceDynamic::Create(Base,this);
+                WetStone->SetTextureParameterValue(TEXT("SurfProfile"),SurfProfile);
+                WetStone->SetTextureParameterValue(TEXT("RockFlow"),RockFlow);
+                WetStone->SetTextureParameterValue(TEXT("RockWash"),RockWash);
+                TidalStone.Add(WetStone);
+            }
+            Mesh->SetMaterial(0,WetStone);
         }
     }
     SetSurfaceFrame({});
@@ -806,6 +912,18 @@ void ASailingSea::BindSurfProfile()
         RockFlow->UpdateResource();
     }
     Water->SetTextureParameterValue(TEXT("RockFlow"),RockFlow);
+    if (!RockWash)
+    {
+        const auto Bytes=Sailing::RockWashTexels();
+        if (Bytes.IsEmpty()) return;
+        RockWash=UTexture2D::CreateTransient(Sailing::RockTileWidth*Sailing::RockTileCount,
+            Sailing::RockTileWidth*Sailing::RockWashFrames,PF_R8G8B8A8,NAME_None,TConstArrayView64<uint8>(Bytes.GetData(),Bytes.Num()));
+        RockWash->SRGB=false;
+        RockWash->NeverStream=true;
+        RockWash->Filter=TF_Bilinear;
+        RockWash->UpdateResource();
+    }
+    Water->SetTextureParameterValue(TEXT("RockWash"),RockWash);
 }
 
 void ASailingSea::BuildSurface()
@@ -932,6 +1050,11 @@ void ASailingSea::SetSurfaceFrame(Sailing::FSeaFrame Frame)
     PreviousSurfaceFrame = Frame;
     Water->SetScalarParameterValue(TEXT("SeaTime"), Frame.TimeS);
     Water->SetScalarParameterValue(TEXT("SeaScale"), Frame.Scale);
+    for (auto& Stone : TidalStone)
+    {
+        Stone->SetScalarParameterValue(TEXT("SeaTime"),Frame.TimeS);
+        Stone->SetScalarParameterValue(TEXT("SeaScale"),Frame.Scale);
+    }
     if (Shore)
     {
         Shore->SetScalarParameterValue(TEXT("SeaTime"), Frame.TimeS);
