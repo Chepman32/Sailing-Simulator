@@ -84,7 +84,7 @@ async function watchDesktop() {
       await stop(previous);
       if (closing) return;
       console.log(previous ? 'Reloading the sailing preview…' : 'Opening the sailing preview…');
-      const game = run(mac, ['preview', ...args]);
+      const game = run(mac, ['preview', '-SailingInteractivePreview', ...args]);
       preview = game;
       void game.done.then((code) => {
         if (preview === game) void finish(code);

@@ -12,7 +12,8 @@ class USailingEntryBubbles : public UInstancedStaticMeshComponent
     GENERATED_BODY()
 public:
     USailingEntryBubbles();
-    void Splash(const ASailingYachtPawn& Yacht, FVector Eye, FVector Forward, float ImpactCmS);
+    void Splash(const ASailingYachtPawn& Yacht, FVector Eye, FVector Forward, float ImpactCmS, float PlumeScale = 1.f);
+    void Exhale(const ASailingYachtPawn& Yacht, FVector Eye, const FRotator& View, FVector MovementCmS);
     void TickComponent(float Dt, ELevelTick TickType, FActorComponentTickFunction* Tick) override;
 private:
     struct FBubble
@@ -24,5 +25,6 @@ private:
     TArray<FBubble> Bubbles;
     TArray<FTransform> Transforms;
     FRandomStream Random{192113};
+    TWeakObjectPtr<const ASailingYachtPawn> WaterSource;
     void DrawBubbles();
 };

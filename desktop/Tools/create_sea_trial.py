@@ -1,6 +1,12 @@
 """Run in the UE 5.8 editor to create the checked-in sea-trial map and materials."""
 
+from pathlib import Path
+import sys
+
 import unreal
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from create_coral_pass import configure_buoy, import_coastal_models
 
 
 LEVEL = "/Game/Maps/SeaTrial"
@@ -97,8 +103,10 @@ def create_level():
 
     solid("Light tower", "Cylinder", (54200, 20700, 1130), (3.0, 3.0, 19.0), gelcoat)
     solid("Light tower cap", "Cone", (54200, 20700, 2190), (3.7, 3.7, 3.0), red)
+    buoy = import_coastal_models()["LateralSeaMarker"]
     for index, (x, y) in enumerate([(5200, 1650), (11800, -2100), (22800, 2250), (35200, -1850)], 1):
-        solid(f"Channel marker {index}", "Cylinder", (x, y, 36), (0.7, 0.7, 1.8), red if index % 2 else gelcoat)
+        marker = spawn(unreal.StaticMeshActor, f"Channel marker {index}", (x, y, 0), yaw=index * 43)
+        configure_buoy(marker, buoy, green=index % 2 == 0, scale=.45)
 
     spawn(unreal.PlayerStart, "Yacht start", (0, 0, 20))
     spawn(unreal.load_class(None, "/Script/SailingSimulatorDesktop.SailingSea"), "Trial sea")

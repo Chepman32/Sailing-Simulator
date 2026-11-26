@@ -11,7 +11,6 @@ namespace
 {
 constexpr double KeelContourM = -2.0; // 0.8 m draft plus room for heel and wave troughs.
 constexpr double LookAheadM = 24.0;
-constexpr int32 Directions = 192;
 FVector2D Perpendicular(FVector2D V) { return {-V.Y,V.X}; }
 }
 
@@ -22,17 +21,21 @@ FShoreMap::FShoreMap(UWorld& World)
         UStaticMeshComponent* Mesh = It->GetStaticMeshComponent();
         const UMaterialInterface* Surface = Mesh ? Mesh->GetMaterial(0) : nullptr;
         const UMaterial* Base = Surface ? Surface->GetMaterial() : nullptr;
-        if (!Base || Mesh->GetCollisionResponseToChannel(ECC_PhysicsBody)!=ECR_Block) continue;
+        if (!Base || !Mesh->IsCollisionEnabled() || Mesh->GetCollisionResponseToChannel(ECC_PhysicsBody)!=ECR_Block) continue;
         const FName Material = Base->GetFName();
-        if (Material!=TEXT("M_CoastalGround") && Material!=TEXT("M_VolcanicRock") && Material!=TEXT("M_TrialSand")) continue;
+        const bool bRock = It->ActorHasTag(TEXT("SailingRock"));
+        if (!bRock && Material!=TEXT("M_CoastalGround") && Material!=TEXT("M_VolcanicRock") && Material!=TEXT("M_TrialSand")) continue;
         const FBox Bounds = Mesh->Bounds.GetBox();
-        const double Z = KeelContourM*100;
-        if (Bounds.Min.Z>=Z || Bounds.Max.Z<0) continue;
+        const double KeelZ = KeelContourM*100;
+        if (bRock ? Bounds.Max.Z<=KeelZ || Bounds.Min.Z>=0 : Bounds.Min.Z>=KeelZ || Bounds.Max.Z<0) continue;
+        // A rock may begin above the keel plane. Use its lower face as the limit in that case.
+        const double Z = bRock ? FMath::Max(KeelZ,FMath::Lerp(Bounds.Min.Z,Bounds.Max.Z,.15)) : KeelZ;
 
-        // Both maps author each island around its own origin. A horizontal ray
-        // from the sea hits the actual submerged shelf, including its coves.
-        const FVector2D Center(Mesh->GetComponentLocation());
+        // The islands are authored around their centres and the rocks around their bases.
+        // A horizontal section reads the shape of the actual blocking mesh.
+        const FVector2D Center(bRock ? Bounds.GetCenter() : Mesh->GetComponentLocation());
         const double Reach = 100 + FVector2D::Distance(Center,FVector2D(Bounds.GetCenter())) + FVector2D(Bounds.GetExtent()).Size();
+        const int32 Directions = bRock ? 32 : 192;
         TArray<FVector2D> Rim;
         Rim.Reserve(Directions);
         for (int32 I=0; I<Directions; ++I)
@@ -44,17 +47,16 @@ FShoreMap::FShoreMap(UWorld& World)
                 Rim.Add(FVector2D(Hit.ImpactPoint)*.01);
         }
         if (Rim.Num()<3) continue;
-        FIsland& Island = Islands.Emplace_GetRef();
-        Island.Edges.Reserve(Rim.Num());
+        FBarrier& Barrier = Barriers.Emplace_GetRef();
+        Barrier.Edges.Reserve(Rim.Num());
         FVector2D A = Rim.Last();
         for (const FVector2D B : Rim)
         {
             const FVector2D Segment = B-A;
-            if (!Segment.IsNearlyZero()) Island.Edges.Add({A,Segment,1./Segment.SizeSquared()});
-            Island.Vicinity += B;
+            if (!Segment.IsNearlyZero()) Barrier.Edges.Add({A,Segment,1./Segment.SizeSquared()});
+            Barrier.Bounds += B;
             A=B;
         }
-        Island.Vicinity=Island.Vicinity.ExpandBy(LookAheadM+7.0);
     }
 }
 
@@ -64,9 +66,9 @@ FShoreContact FShoreMap::AtHull(FVector2D CenterM, FVector2D Bow) const
     const FVector2D Beam = Perpendicular(Bow);
     // Fore and aft steps, the widest part of each hull, and the bridge between them.
     constexpr double Stations[][2]={{5.65,2.1},{5.65,-2.1},{0,2.78},{0,-2.78},{-5.5,2.4},{-5.5,-2.4},{0,0}};
-    for (const FIsland& Island : Islands)
+    for (const FBarrier& Barrier : Barriers)
     {
-        if (!Island.Vicinity.IsInside(CenterM)) continue;
+        if (!Barrier.Bounds.ExpandBy(LookAheadM+7.0).IsInside(CenterM)) continue;
         for (const auto& Station : Stations)
         {
             const FVector2D Offset=Bow*Station[0]+Beam*Station[1];
@@ -74,7 +76,7 @@ FShoreContact FShoreMap::AtHull(FVector2D CenterM, FVector2D Bow) const
             FVector2D Separation=FVector2D::ZeroVector, EdgeNormal=FVector2D::ZeroVector;
             double NearestSquared=TNumericLimits<double>::Max();
             bool Inside=false;
-            for (const FEdge& Edge : Island.Edges)
+            for (const FEdge& Edge : Barrier.Edges)
             {
                 const FVector2D V=P-Edge.Start;
                 // Crossings of the rightward ray give the sign even at a concave corner.
@@ -97,6 +99,44 @@ FShoreContact FShoreMap::AtHull(FVector2D CenterM, FVector2D Bow) const
         }
     }
     return Contact;
+}
+
+bool FShoreMap::CorridorClear(FVector2D StartM, FVector2D EndM, double MarginM) const
+{
+    FBox2D Corridor(ForceInit);
+    Corridor += StartM;
+    Corridor += EndM;
+    Corridor = Corridor.ExpandBy(MarginM);
+    const double LimitSquared = FMath::Square(MarginM);
+    const auto DistanceSquared = [](FVector2D P, FVector2D A, FVector2D Segment, double InverseLengthSquared) {
+        const FVector2D Offset = P - A;
+        const double Along = FMath::Clamp(FVector2D::DotProduct(Offset, Segment) * InverseLengthSquared, 0., 1.);
+        return (Offset - Along * Segment).SizeSquared();
+    };
+    const FVector2D Course = EndM - StartM;
+    const double InverseLengthSquared = Course.IsNearlyZero() ? 0. : 1. / Course.SizeSquared();
+    for (const FBarrier& Barrier : Barriers)
+    {
+        if (!Barrier.Bounds.Intersect(Corridor)) continue;
+        bool bStartsOnLand = false;
+        for (const FEdge& Edge : Barrier.Edges)
+        {
+            const FVector2D V = StartM - Edge.Start;
+            if ((V.Y < 0) != (V.Y < Edge.Delta.Y) && V.X < Edge.Delta.X * (V.Y / Edge.Delta.Y))
+                bStartsOnLand = !bStartsOnLand;
+            if (DistanceSquared(StartM, Edge.Start, Edge.Delta, Edge.InverseLengthSquared) < LimitSquared ||
+                DistanceSquared(EndM, Edge.Start, Edge.Delta, Edge.InverseLengthSquared) < LimitSquared ||
+                DistanceSquared(Edge.Start, StartM, Course, InverseLengthSquared) < LimitSquared) return false;
+
+            const double Cross = FVector2D::CrossProduct(Course, Edge.Delta);
+            if (FMath::IsNearlyZero(Cross)) continue;
+            const double T = FVector2D::CrossProduct(Edge.Delta, V) / Cross;
+            const double U = FVector2D::CrossProduct(Course, V) / Cross;
+            if (T >= 0. && T <= 1. && U >= 0. && U <= 1.) return false;
+        }
+        if (bStartsOnLand) return false;
+    }
+    return true;
 }
 
 bool FShoreGuard::Constrain(const FShoreMap& Map, const FRigidState& Boat, const FHelm& Helm, double Dt, FLoads& Loads)
@@ -138,7 +178,7 @@ bool FShoreGuard::Constrain(const FShoreMap& Map, const FRigidState& Boat, const
         const double Error=FMath::Atan2(FVector2D::CrossProduct(Travel,Course),FVector2D::DotProduct(Travel,Course));
         const double TargetRate=FMath::Clamp(Error*1.2,-.48,.48);
         // Apply a yaw moment about the mast. The helm and sheet settings stay with the skipper.
-        constexpr double YawInertia=MassKg*(9.5*9.5+4.48*4.48)/12.;
+        constexpr double YawInertia=MassKg*(FMath::Square(2.*HullHalfLengthM)+FMath::Square(2.*HullHalfBeamM))/12.;
         Loads.TorqueNm.Z+=YawInertia*FMath::Clamp((TargetRate-YawRate)*2.6,-.85,.85);
     }
 

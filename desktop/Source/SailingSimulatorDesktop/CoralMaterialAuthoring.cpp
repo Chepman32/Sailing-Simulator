@@ -71,4 +71,13 @@ void UCoralMaterialAuthoring::SetCoatFinish(UMaterial* Material, UMaterialExpres
         Pin->SetMask(1,Channel==0,Channel==1,Channel==2,0);
     }
 }
+
+void UCoralMaterialAuthoring::SetDisplacementHeight(UMaterial* Material, UMaterialExpression* Height)
+{
+    if (!Material || !Height) return;
+    // The displacement input is hidden from the Python material editor API.
+    FExpressionInput* Pin = Material->GetExpressionInputForProperty(MP_Displacement);
+    Pin->Connect(0, Height);
+    Pin->SetMask(1, 1, 0, 0, 0);
+}
 #endif

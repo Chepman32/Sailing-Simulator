@@ -16,6 +16,10 @@
 #include "GameFramework/GameUserSettings.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ConfigCacheIni.h"
+#include "RenderResource.h"
+#include "RenderUtils.h"
+#include "RHI.h"
+#include "Scalability.h"
 #include "UnrealClient.h"
 #include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
@@ -127,8 +131,9 @@ void ASailingPlayerController::BeginPlay()
     UpdatePointerMode();
     Weather = Cast<ASailingWeather>(UGameplayStatics::GetActorOfClass(this, ASailingWeather::StaticClass()));
     int32 SavedQuality=0;
-    if (GConfig->GetInt(TEXT("Sailing.World"),TEXT("Graphics"),SavedQuality,GGameUserSettingsIni))
-        ApplyGraphics(SavedQuality);
+    GConfig->GetInt(TEXT("Sailing.World"),TEXT("Graphics"),SavedQuality,GGameUserSettingsIni);
+    ApplyGraphics(SavedQuality);
+    VoyageSound->LoadPreferences();
 }
 
 void ASailingPlayerController::EndPlay(const EEndPlayReason::Type Reason)
@@ -138,9 +143,9 @@ void ASailingPlayerController::EndPlay(const EEndPlayReason::Type Reason)
         FSlateApplication::Get().UnregisterInputPreProcessor(MacKeyboard);
     MacKeyboard.Reset();
 #endif
-    if (WorldWidget.IsValid() && GetWorld()->GetGameViewport())
-        GetWorld()->GetGameViewport()->RemoveViewportWidgetContent(WorldWidget.ToSharedRef());
-    WorldWidget.Reset();
+    if (SettingsWidget.IsValid() && GetWorld()->GetGameViewport())
+        GetWorld()->GetGameViewport()->RemoveViewportWidgetContent(SettingsWidget.ToSharedRef());
+    SettingsWidget.Reset();
     Super::EndPlay(Reason);
 }
 
@@ -148,32 +153,73 @@ void ASailingPlayerController::ApplyGraphics(int32 Choice)
 {
     struct FProfile
     {
+        int32 ScalabilityLevel;
         float Min, Max;
+        float NaniteEdge;
         int32 FogCell, FogLayers, CloudShadow, ShadowSamples, SkySamples, ReflectionSamples;
     };
     constexpr FProfile Profiles[] = {
-        {74,100,10,80,224,32,52,32},  // Auto
-        {52,72,16,48,128,24,40,24},   // Low
-        {58,84,12,64,192,32,52,32},   // Medium
-        {80,100,9,80,320,48,76,48},   // High
-        {90,100,8,96,512,48,96,80}    // Ultra
+        {2, 66.67f,100,1.2f, 12,64,128,24,52,32}, // Auto
+        {0, 52,72,2.5f,      16,48,96,16,32,16},  // Low
+        {1, 58,84,1.6f,      14,64,128,24,48,24}, // Medium
+        {2, 72,100,1.f,      10,80,224,32,64,40}, // High
+#if PLATFORM_MAC
+        // Resolve the sky and sea mist at lower frequency than the water
+        // normals. The 4K display composite shares the GPU frame budget.
+        {3, 60,100,.83f,     12,72,144,24,42,24}  // Ultra on Metal
+#else
+        {3, 64,100,.83f,     10,80,224,28,56,28}  // Ultra
+#endif
     };
     GraphicsChoice=FMath::Clamp(Choice,0,4);
     const FProfile& P=Profiles[GraphicsChoice];
+    auto Quality = Scalability::GetQualityLevels();
+    const float ResolutionQuality = Quality.ResolutionQuality;
+    Quality.SetFromSingleQualityLevel(P.ScalabilityLevel);
+    Quality.ResolutionQuality = ResolutionQuality;
+    if (P.ScalabilityLevel == 1) Quality.GlobalIlluminationQuality = 0;
+    Scalability::SetQualityLevels(Quality);
+
     const auto Set=[](const TCHAR* Name,auto Value) {
         if (auto* Var=IConsoleManager::Get().FindConsoleVariable(Name)) Var->Set(Value,ECVF_SetByGameOverride);
     };
     Set(TEXT("r.DynamicRes.MinScreenPercentage"),P.Min);
     Set(TEXT("r.DynamicRes.MaxScreenPercentage"),P.Max);
-    const bool bDetailedWater = GraphicsChoice == 0 || GraphicsChoice >= 3;
-    Set(TEXT("r.DynamicRes.FrameTimeBudget"),bDetailedWater ? 33.33f : 16.67f);
-    Set(TEXT("r.Water.SingleLayer.Reflection"),bDetailedWater ? 3 : 2);
+    const bool bDetailedWater = P.ScalabilityLevel >= 2;
+    const bool bUltra = P.ScalabilityLevel == 3;
+    const float BudgetMs = PLATFORM_MAC && bUltra ? 28.5f : bDetailedWater ? 33.33f : 16.67f;
+    Set(TEXT("r.DynamicRes.FrameTimeBudget"),BudgetMs);
+    Set(TEXT("r.Water.SingleLayer.Reflection"),bUltra ? 1 : bDetailedWater ? 3 : 2);
+    Set(TEXT("r.SSR.Quality"),bUltra ? 4 : GraphicsChoice == 3 ? 3 : P.ScalabilityLevel > 0 ? 2 : 0);
+    Set(TEXT("r.Shadow.Virtual.SMRT.SamplesPerRayDirectional"),bUltra ? 6 : bDetailedWater ? 4 : 2);
+    Set(TEXT("r.Lumen.ScreenProbeGather.RadianceCache.NumProbesToTraceBudget"),bUltra ? 48 : GraphicsChoice == 3 ? 40 : 32);
+    // The translucent shore, spray and opaque beach share the same sky lighting.
+    // Spend the high-frequency samples on moving water and leaf silhouettes.
+    Set(TEXT("r.Lumen.TranslucencyVolume.ShareRadianceCacheWithOpaque"),1);
+    Set(TEXT("r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution"),16);
+    Set(TEXT("r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor"),2);
+    Set(TEXT("r.Lumen.Reflections.ScreenSpaceReconstruction.NumSamples"),3);
+    Set(TEXT("r.Lumen.Reflections.DownsampleFactor"),2);
+    Set(TEXT("r.Lumen.ScreenProbeGather.DownsampleFactor"),bDetailedWater ? 24 : 32);
+    Set(TEXT("r.Water.SingleLayer.RefractionDownsampleFactor"),2);
+    Set(TEXT("r.Shadow.Virtual.SMRT.RayCountDirectional"),bDetailedWater ? 4 : 2);
+    Set(TEXT("r.Nanite.MaxPixelsPerEdge"),P.NaniteEdge);
     Set(TEXT("r.VolumetricFog.GridPixelSize"),P.FogCell);
     Set(TEXT("r.VolumetricFog.GridSizeZ"),P.FogLayers);
     Set(TEXT("r.VolumetricCloud.ShadowMap.MaxResolution"),P.CloudShadow);
     Set(TEXT("r.VolumetricCloud.ShadowMap.RaySampleMaxCount"),P.ShadowSamples);
     Set(TEXT("r.VolumetricCloud.ViewRaySampleMaxCount"),P.SkySamples);
     Set(TEXT("r.VolumetricCloud.ReflectionRaySampleMaxCount"),P.ReflectionSamples);
+    if (GetWorld()->WorldType == EWorldType::Game && GIsRHIInitialized)
+    {
+        const bool bSupportsLumenRT = GRHISupportsInlineRayTracing ||
+            (GRHISupportsRayTracingShaders && GRHISupportsRayTracingDispatchIndirect);
+        const auto Mode = GetRayTracingMode();
+        const bool bHardwareRT = bUltra && bSupportsLumenRT && (Mode == ERayTracingMode::Dynamic || IsRayTracingEnabled());
+        if (Mode == ERayTracingMode::Dynamic) Set(TEXT("r.RayTracing.Enable"),int32(bHardwareRT));
+        Set(TEXT("r.Lumen.HardwareRayTracing"),int32(bHardwareRT && IsRayTracingEnabled()));
+    }
+    if (Weather) Weather->SetGraphicsQuality(P.ScalabilityLevel);
 }
 
 bool ASailingPlayerController::WorldChoiceSelected(EWorldSetting Row,int32 Index) const
@@ -192,7 +238,8 @@ bool ASailingPlayerController::WorldChoiceSelected(EWorldSetting Row,int32 Index
 
 void ASailingPlayerController::SetWorldChoice(EWorldSetting Row,int32 Index)
 {
-    if (Panel!=ESailingPanel::World) return;
+    if (Panel != ESailingPanel::World &&
+        !(Panel == ESailingPanel::Pause && Pause == ESailingPausePage::Graphics && Row == EWorldSetting::Graphics)) return;
     switch (Row)
     {
     case EWorldSetting::Lighting: if (Weather) Weather->SelectLighting(Index); break;
@@ -200,7 +247,7 @@ void ASailingPlayerController::SetWorldChoice(EWorldSetting Row,int32 Index)
     case EWorldSetting::Graphics:
         ApplyGraphics(Index);
         GConfig->SetInt(TEXT("Sailing.World"),TEXT("Graphics"),GraphicsChoice,GGameUserSettingsIni);
-        GConfig->Flush(false,GGameUserSettingsIni);
+        GEngine->GetGameUserSettings()->SaveSettings();
         break;
     case EWorldSetting::Camera:
         if (auto* Yacht=GetPawn<ASailingYachtPawn>(); Yacht && !Yacht->Explorer().Away() && Index>=0 && Index<4)
@@ -216,16 +263,15 @@ void ASailingPlayerController::SetWorldChoice(EWorldSetting Row,int32 Index)
 
 bool ASailingPlayerController::CanChangeResolution() const
 {
-    const auto* Viewport = GetWorld()->GetGameViewport();
+    const auto* Viewport = Cast<USailingViewportClient>(GetWorld()->GetGameViewport());
     return GetWorld()->WorldType == EWorldType::Game && Viewport && Viewport->Viewport &&
-        Viewport->GetWindow().IsValid() && FSlateApplication::IsInitialized() && GEngine->GetGameUserSettings();
+        Viewport->GetWindow().IsValid() && FSlateApplication::IsInitialized();
 }
 
 FIntPoint ASailingPlayerController::WorldResolution() const
 {
-    const auto* Client = GetWorld()->GetGameViewport();
-    const FViewport* Viewport = Client ? Client->Viewport : nullptr;
-    return Viewport ? Viewport->GetSizeXY() : FIntPoint::ZeroValue;
+    const auto* Client = Cast<USailingViewportClient>(GetWorld()->GetGameViewport());
+    return Client ? Client->RenderResolution() : FIntPoint::ZeroValue;
 }
 
 Sailing::FDisplayModes ASailingPlayerController::WorldDisplayModes() const
@@ -237,16 +283,9 @@ Sailing::FDisplayModes ASailingPlayerController::WorldDisplayModes() const
 
 void ASailingPlayerController::SetWorldResolution(FIntPoint Size)
 {
-    if (Panel != ESailingPanel::World) return;
-    const auto Display = WorldDisplayModes();
-    if (!Display.Sizes.Contains(Size)) return;
-    auto* Settings = GEngine->GetGameUserSettings();
-    Settings->SetDisplayProperties(Display.MonitorID,Display.MonitorIndex);
-    Settings->SetFullscreenMode(Display.WindowModeFor(Size));
-    Settings->SetScreenResolution(Size);
-    Settings->ApplyResolutionSettings(false);
-    Settings->ConfirmVideoMode();
-    Settings->SaveSettings();
+    if (Panel != ESailingPanel::World && !(Panel == ESailingPanel::Pause && Pause == ESailingPausePage::Graphics)) return;
+    if (!CanChangeResolution() || (Size != FIntPoint::ZeroValue && !WorldDisplayModes().Sizes.Contains(Size))) return;
+    CastChecked<USailingViewportClient>(GetWorld()->GetGameViewport())->SetRenderResolution(Size);
 }
 
 FString ASailingPlayerController::WorldReadout() const
@@ -263,7 +302,7 @@ FString ASailingPlayerController::WorldReadout() const
 void ASailingPlayerController::ToggleWorld()
 {
     if (Panel==ESailingPanel::World) { OpenPanel(WorldReturn); return; }
-    WorldReturn=Panel==ESailingPanel::Pause ? ESailingPanel::Pause : ESailingPanel::None;
+    WorldReturn = Panel;
     if (auto* Yacht=GetPawn<ASailingYachtPawn>()) { Yacht->SetCinematic(false); EndSignalView(*Yacht); }
     OpenPanel(ESailingPanel::World);
 }
@@ -277,8 +316,11 @@ void ASailingPlayerController::UpdatePointerMode()
     if (!Viewport) return;
     const TSharedPtr<SWidget> GameWidget = Viewport->GetGameViewportWidget();
 #if PLATFORM_MAC
-    if (MacKeyboard) MacKeyboard->SetFocusTargets(GameWidget, WorldWidget);
+    if (MacKeyboard) MacKeyboard->SetFocusTargets(GameWidget, SettingsWidget);
 #endif
+    const TSharedPtr<SWidget> Focus = SettingsWidget.IsValid() ? SettingsWidget : GameWidget;
+    if (const auto Window = Viewport->GetWindow(); Window.IsValid() && Focus.IsValid() && GetWorld()->WorldType == EWorldType::Game)
+        Window->SetWidgetToFocusOnActivate(Focus);
     if (bLook)
     {
         FInputModeGameOnly Mode;
@@ -289,7 +331,7 @@ void ASailingPlayerController::UpdatePointerMode()
     {
         FInputModeGameAndUI Mode;
         Mode.SetHideCursorDuringCapture(false);
-        Mode.SetWidgetToFocus(WorldWidget.IsValid() ? WorldWidget : GameWidget);
+        Mode.SetWidgetToFocus(Focus);
         SetInputMode(Mode);
     }
 }
@@ -346,15 +388,23 @@ void ASailingPlayerController::Signal(ASailingYachtPawn& Yacht, FKey Key)
 
 void ASailingPlayerController::ToggleSkipper(ASailingYachtPawn& Yacht)
 {
+    const bool bHoldingLeftShift = bLeftShift;
+    const bool bHoldingRightShift = bRightShift;
     EndSignalView(Yacht);
     Yacht.ToggleExplorer();
     FlushPressedKeys();
     UpdatePointerMode();
+    if (Yacht.Explorer().Away())
+    {
+        // Changing mouse capture clears key state while Shift may still be held.
+        bLeftShift = bHoldingLeftShift;
+        bRightShift = bHoldingRightShift;
+    }
 }
 
-bool ASailingPlayerController::HasShortcutModifier() const
+bool ASailingPlayerController::HasShortcutModifier(bool bIgnoreControl) const
 {
-    return IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl) ||
+    return (!bIgnoreControl && (IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl))) ||
            IsInputKeyDown(EKeys::LeftCommand) || IsInputKeyDown(EKeys::RightCommand) ||
            IsInputKeyDown(EKeys::LeftAlt) || IsInputKeyDown(EKeys::RightAlt);
 }
@@ -371,19 +421,18 @@ void ASailingPlayerController::FlushPressedKeys()
 
 void ASailingPlayerController::OpenPanel(ESailingPanel Next)
 {
-    if (Panel == ESailingPanel::Pause || Next == ESailingPanel::Pause)
-    {
-        if (!SetPause(Next == ESailingPanel::Pause)) return;
-    }
-    auto* Viewport=GetWorld()->GetGameViewport();
-    const bool bLeavingWorld=WorldWidget.IsValid();
-    if (bLeavingWorld && Viewport) Viewport->RemoveViewportWidgetContent(WorldWidget.ToSharedRef());
-    WorldWidget.Reset();
+    const bool bPause = Next == ESailingPanel::Pause;
+    if (bPause != (Panel == ESailingPanel::Pause) && !SetPause(bPause)) return;
+    auto* Viewport = GetWorld()->GetGameViewport();
+    const bool bHadSettings = SettingsWidget.IsValid();
+    if (bHadSettings && Viewport) Viewport->RemoveViewportWidgetContent(SettingsWidget.ToSharedRef());
+    SettingsWidget.Reset();
     Panel = Next;
-    if (Panel==ESailingPanel::World && Viewport)
+    if (Viewport && (Panel == ESailingPanel::World || bPause))
     {
-        WorldWidget=MakeSailingWorldPanel(*this);
-        Viewport->AddViewportWidgetContent(WorldWidget.ToSharedRef(),25);
+        Pause = ESailingPausePage::Menu;
+        SettingsWidget = bPause ? MakeSailingPausePanel(*this) : MakeSailingWorldPanel(*this);
+        Viewport->AddViewportWidgetContent(SettingsWidget.ToSharedRef(), 25);
     }
     if (auto* Yacht = GetPawn<ASailingYachtPawn>())
     {
@@ -393,8 +442,59 @@ void ASailingPlayerController::OpenPanel(ESailingPanel Next)
     if (Next != ESailingPanel::None && GetHUD()) GetHUD()->bShowHUD = true;
     FlushPressedKeys();
     UpdatePointerMode();
-    if (bLeavingWorld && !WorldWidget.IsValid() && FSlateApplication::IsInitialized())
+    if (bHadSettings && !SettingsWidget.IsValid() && FSlateApplication::IsInitialized())
         FSlateApplication::Get().SetAllUserFocusToGameViewport();
+}
+
+void ASailingPlayerController::ClosePanel()
+{
+    OpenPanel(ESailingPanel::None);
+}
+
+void ASailingPlayerController::OpenPausePage(ESailingPausePage Page)
+{
+    if (Panel != ESailingPanel::Pause || Pause == Page) return;
+    if (Pause == ESailingPausePage::Sound) VoyageSound->SavePreferences();
+    Pause = Page;
+    UpdatePointerMode();
+}
+
+void ASailingPlayerController::BackFromPause()
+{
+    if (Panel != ESailingPanel::Pause) return;
+    if (Pause == ESailingPausePage::Menu) ClosePanel();
+    else OpenPausePage(Pause == ESailingPausePage::Music ? ESailingPausePage::Sound : ESailingPausePage::Menu);
+}
+
+bool ASailingPlayerController::CanUseGear(ESailingGear Gear) const
+{
+    const auto* Yacht = GetPawn<ASailingYachtPawn>();
+    if (!Yacht) return false;
+    const auto& Explorer = Yacht->Explorer();
+    if (Gear == ESailingGear::Torch)
+        return Explorer.Away() && Explorer.Mode() != ESkipperMode::Leap && Explorer.Mode() != ESkipperMode::JetSki;
+    const bool bFlare = Gear == ESailingGear::RedFlare || Gear == ESailingGear::GreenFlare;
+    return bFlare && !Explorer.Away() && GetWorld()->GetTimeSeconds() - LastFlareTime >= 1.4f;
+}
+
+void ASailingPlayerController::UseGear(ASailingYachtPawn& Yacht)
+{
+    if (Panel != ESailingPanel::Gear || !CanUseGear()) return;
+    if (GearSelection == ESailingGear::Torch)
+    {
+        Yacht.Explorer().ToggleTorch();
+        return;
+    }
+    const FKey Key = GearSelection == ESailingGear::RedFlare ? EKeys::F : EKeys::G;
+    OpenPanel(ESailingPanel::None);
+    if (Panel == ESailingPanel::None) Signal(Yacht, Key);
+}
+
+FBox2D ASailingPlayerController::ChartPlot(const ASailingTrialHUD* HUD) const
+{
+    int32 Width, Height;
+    GetViewportSize(Width, Height);
+    return FSailingChart::Plot(FVector2D(Width, Height) / (HUD ? HUD->InputScale() : 1.));
 }
 
 bool ASailingPlayerController::InputKey(const FInputKeyEventArgs& Params)
@@ -447,24 +547,28 @@ bool ASailingPlayerController::InputKey(const FInputKeyEventArgs& Params)
         return true;
     }
     const bool bCrouchKey = Key == EKeys::LeftControl || Key == EKeys::RightControl;
-    if (HasShortcutModifier() && !(Explorer.Away() && bCrouchKey)) return bHandled;
+    const bool bSwimVerticalKey = Explorer.Mode() == ESkipperMode::Swim && (Key == EKeys::SpaceBar || Key == EKeys::C);
+    if (HasShortcutModifier(bSwimVerticalKey) && !(Explorer.Away() && bCrouchKey)) return bHandled;
     if (Key == EKeys::MouseWheelAxis && Params.Event == IE_Axis)
     {
         if (Panel == ESailingPanel::Chart)
         {
+            const auto* HUD = Cast<ASailingTrialHUD>(GetHUD());
+            const double Scale = HUD ? HUD->InputScale() : 1.;
+            const FBox2D Plot = ChartPlot(HUD);
             int32 Width, Height;
             GetViewportSize(Width, Height);
             FVector2D Mouse(Width * .5, Height * .5);
             GetMousePosition(Mouse.X, Mouse.Y);
-            const ASailingTrialHUD* HUD = Cast<ASailingTrialHUD>(GetHUD());
-            Chart.Zoom(Params.AmountDepressed,
-                       (Mouse - FVector2D(Width * .5, Height * .5)) / (HUD ? HUD->InputScale() : 1));
+            Mouse /= Scale;
+            Chart.Zoom(Params.AmountDepressed, Plot.IsInside(Mouse) ? Mouse - Plot.GetCenter() : FVector2D::ZeroVector);
         }
         else if (Panel == ESailingPanel::None && !Explorer.Away())
             Yacht->ZoomView(Params.AmountDepressed);
         return true;
     }
     if (Params.Event != IE_Pressed) return bHandled;
+    if (Panel == ESailingPanel::Pause && Key != EKeys::Escape && Key != EKeys::M) return true;
     if (Key==EKeys::Comma || (Key==EKeys::Escape && Panel==ESailingPanel::World))
     {
         ToggleWorld();
@@ -477,8 +581,10 @@ bool ASailingPlayerController::InputKey(const FInputKeyEventArgs& Params)
     }
     if (Key == EKeys::Escape)
     {
-        if (Panel != ESailingPanel::None)
-            OpenPanel(ESailingPanel::None);
+        if (Panel == ESailingPanel::Pause)
+            BackFromPause();
+        else if (Panel != ESailingPanel::None)
+            ClosePanel();
         else if (Yacht->IsCinematic())
             Yacht->SetCinematic(false);
         else if (SignalShot.IsValid())
@@ -496,39 +602,70 @@ bool ASailingPlayerController::InputKey(const FInputKeyEventArgs& Params)
     if (Key == EKeys::H)
     {
         Yacht->SetCinematic(false);
-        OpenPanel(Panel == ESailingPanel::Controls ? ESailingPanel::None : ESailingPanel::Controls);
+        if (Panel == ESailingPanel::Controls) ClosePanel();
+        else OpenPanel(ESailingPanel::Controls);
         return true;
     }
     if (Key == EKeys::Q || Key == EKeys::N || Key == EKeys::Tab)
     {
         const ESailingPanel Target = Key == EKeys::Tab ? ESailingPanel::Gear : ESailingPanel::Chart;
-        if (Panel != ESailingPanel::None && Panel != Target) return bHandled;
+        if (Panel == ESailingPanel::World) return bHandled;
         EndSignalView(*Yacht);
         Yacht->SetCinematic(false);
-        OpenPanel(Panel == Target ? ESailingPanel::None : Target);
+        if (Panel == Target) ClosePanel();
+        else OpenPanel(Target);
         return true;
     }
-    if (Panel == ESailingPanel::Chart && Key == EKeys::R)
+    if (Panel == ESailingPanel::Gear)
     {
-        Chart.Recenter(*Yacht);
+        if (Key == EKeys::Enter)
+        {
+            UseGear(*Yacht);
+            return true;
+        }
+        const int32 Current = int32(GearSelection), Signals = int32(ESailingGear::RedFlare);
+        const bool bSignal = Current >= Signals;
+        if (Key == EKeys::Left || Key == EKeys::Right)
+        {
+            const int32 Step = Key == EKeys::Right ? 1 : -1;
+            GearSelection = ESailingGear(FMath::Clamp(Current + Step, bSignal ? Signals : 0,
+                bSignal ? int32(ESailingGear::Count) - 1 : Signals - 1));
+            return true;
+        }
+        if (Key == EKeys::Up || Key == EKeys::Down)
+        {
+            if (bSignal && Key == EKeys::Up) GearSelection = ESailingGear(FMath::Min(Current - Signals, Signals - 1));
+            if (!bSignal && Key == EKeys::Down) GearSelection = ESailingGear(Current + Signals);
+            return true;
+        }
+    }
+    if (Panel == ESailingPanel::Chart)
+    {
+        if (Key == EKeys::R) Chart.Recenter(*Yacht);
+        else if (Key == EKeys::F) Chart.Fit(ChartPlot(Cast<ASailingTrialHUD>(GetHUD())).GetSize(), *Yacht);
+        else if (Key == EKeys::BackSpace || Key == EKeys::Delete) Chart.ClearWaypoint();
+        else if (Key == EKeys::Enter) Chart.SetWaypoint(Chart.Center, *Yacht);
+        else if (Key == EKeys::Equals || Key == EKeys::Hyphen) Chart.Zoom(Key == EKeys::Equals ? 1. : -1., FVector2D::ZeroVector);
+        else if (Key == EKeys::Up || Key == EKeys::Down || Key == EKeys::Left || Key == EKeys::Right)
+            Chart.Pan(FVector2D(Key == EKeys::Left ? 60. : Key == EKeys::Right ? -60. : 0.,
+                               Key == EKeys::Up ? 60. : Key == EKeys::Down ? -60. : 0.));
+        else if (Key == EKeys::T)
+        {
+            ClosePanel();
+            ToggleSkipper(*Yacht);
+        }
+        else return bHandled;
         return true;
     }
-    if (Key == EKeys::T && (Panel == ESailingPanel::None || Panel == ESailingPanel::Chart))
+    if (Key == EKeys::T && Panel == ESailingPanel::None)
     {
-        if (Panel == ESailingPanel::Chart) OpenPanel(ESailingPanel::None);
         ToggleSkipper(*Yacht);
         return true;
     }
     if (Panel != ESailingPanel::None) return bHandled;
     if (Explorer.Away())
     {
-        if (Key == EKeys::SpaceBar)
-            Explorer.Jump();
-        else if (Key == EKeys::C || bCrouchKey)
-            Explorer.Crouch();
-        else if (Key == EKeys::F)
-            Explorer.ToggleTorch();
-        else if (Key == EKeys::E)
+        if (Key == EKeys::E)
         {
             Explorer.Interact(*Yacht);
             if (!Explorer.Away())
@@ -537,6 +674,17 @@ bool ASailingPlayerController::InputKey(const FInputKeyEventArgs& Params)
                 UpdatePointerMode();
             }
         }
+        else if (Explorer.Mode() == ESkipperMode::JetSki)
+        {
+            if (Key != EKeys::R) return bHandled;
+            Explorer.RecenterJetSkiView();
+        }
+        else if (Key == EKeys::SpaceBar)
+            Explorer.Jump();
+        else if (Key == EKeys::C || bCrouchKey)
+            Explorer.CrouchOrDive(*Yacht);
+        else if (Key == EKeys::F)
+            Explorer.ToggleTorch();
         else
             return bHandled;
         return true;
@@ -562,7 +710,10 @@ bool ASailingPlayerController::InputKey(const FInputKeyEventArgs& Params)
     else if (Key == EKeys::C)
         Yacht->SetRudder(0);
     else if (Key == EKeys::SpaceBar)
+    {
         Yacht->SetEngineRunning(!Yacht->ReadHelm().bEngineOn);
+        if (Drag == EDrag::Throttle) Drag = EDrag::None;
+    }
     else if (Key == EKeys::W || Key == EKeys::Up)
         Yacht->SetEngineRunning(true);
     else if (Key == EKeys::Y)
@@ -586,22 +737,39 @@ void ASailingPlayerController::PostProcessInput(float DeltaTime, bool bGamePause
 {
     Super::PostProcessInput(DeltaTime, bGamePaused);
     ASailingYachtPawn* Yacht = GetPawn<ASailingYachtPawn>();
-    if (!Yacht || bGamePaused) return;
-    USailingExplorer& Explorer = Yacht->Explorer();
-    if (bLeaping && Explorer.Mode() == ESkipperMode::Swim)
+    if (!Yacht) return;
+    if (Drag == EDrag::Chart && Panel == ESailingPanel::Chart)
     {
-        Yacht->DisturbSurface(Explorer.GetComponentLocation(), .34f);
-        VoyageSound->Cue(ESailingCue::Splash);
+        FVector2D Mouse;
+        if (GetMousePosition(Mouse.X, Mouse.Y)) MovePointer(Mouse, *Yacht, Cast<ASailingTrialHUD>(GetHUD()));
     }
-    bLeaping = Explorer.Mode() == ESkipperMode::Leap;
+    if (bGamePaused) return;
+    USailingExplorer& Explorer = Yacht->Explorer();
+    const auto& Entry = Explorer.LastWaterEntry();
+    if (LastWaterEntry != Entry.Sequence)
+    {
+        LastWaterEntry = Entry.Sequence;
+        const float Force = FMath::Clamp(Entry.ImpactCmS/650.f,.08f,1.f);
+        Yacht->DisturbSurface(Entry.ContactCm,.34f*Force);
+        if (Weather) Weather->SkipperSplash(*Yacht,Entry.ContactCm,Entry.VelocityCmS,Force,true);
+        if (Entry.ImpactCmS >= 260.f) VoyageSound->Cue(ESailingCue::Splash);
+    }
+    const auto& Step = Explorer.LastFootfall();
+    if (LastSplashingStep != Step.Sequence)
+    {
+        LastSplashingStep = Step.Sequence;
+        if (Step.WaterDepthM > .05f && Step.Surface == USailingExplorer::EFootSurface::Water)
+        {
+            const float Force = FMath::SmoothStep(.05f,.68f,Step.WaterDepthM)*Step.Strength;
+            Yacht->DisturbSurface(Step.ContactCm,.012f+.034f*Force);
+            if (Weather) Weather->SkipperSplash(*Yacht,Step.ContactCm,Step.VelocityCmS,Force,false);
+        }
+    }
     Chart.Track(Yacht->GetActorLocation());
     if (SignalShot.IsValid() && SignalShot->Age() > 5.5f) EndSignalView(*Yacht);
     if (Panel == ESailingPanel::Chart)
     {
         if (Chart.bFollowing) Chart.Recenter(*Yacht);
-        FVector2D Mouse;
-        if (Drag == EDrag::Chart && GetMousePosition(Mouse.X, Mouse.Y))
-            MovePointer(Mouse, *Yacht, Cast<ASailingTrialHUD>(GetHUD()));
     }
     if (Panel != ESailingPanel::None || (!Explorer.Away() && HasShortcutModifier()))
     {
@@ -615,7 +783,7 @@ void ASailingPlayerController::PostProcessInput(float DeltaTime, bool bGamePause
     if (Explorer.Away())
     {
         Explorer.SetMovement(
-            FVector2D(Throttle, Steering), IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift),
+            FVector2D(Throttle, Steering), bLeftShift || bRightShift,
             IsInputKeyDown(EKeys::SpaceBar),
             IsInputKeyDown(EKeys::C) || IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl));
         return;
@@ -629,30 +797,45 @@ void ASailingPlayerController::PostProcessInput(float DeltaTime, bool bGamePause
     }
 }
 
+bool ASailingPlayerController::PanelButton(FName Name, ASailingYachtPawn& Yacht, const ASailingTrialHUD& HUD)
+{
+    if (Name == TEXT("Close")) ClosePanel();
+    else if (Name == TEXT("GearPage")) OpenPanel(ESailingPanel::Gear);
+    else if (Name == TEXT("ChartPage")) OpenPanel(ESailingPanel::Chart);
+    else if (Name == TEXT("Follow")) Chart.Recenter(Yacht);
+    else if (Name == TEXT("FitChart")) Chart.Fit(ChartPlot(&HUD).GetSize(), Yacht);
+    else if (Name == TEXT("ClearWaypoint")) Chart.ClearWaypoint();
+    else if (Name == TEXT("ZoomIn")) Chart.Zoom(1, FVector2D::ZeroVector);
+    else if (Name == TEXT("ZoomOut")) Chart.Zoom(-1, FVector2D::ZeroVector);
+    else if (Name == TEXT("UseGear")) UseGear(Yacht);
+    else if (const int32 Index = Name.GetNumber() - 1; Index >= 0)
+    {
+        const FString Group = Name.GetPlainNameString();
+        if (Group == TEXT("GearEntry") && Index < int32(ESailingGear::Count))
+            GearSelection = ESailingGear(Index);
+        else return false;
+    }
+    else return false;
+    return true;
+}
+
 void ASailingPlayerController::PressPointer(FVector2D Position, ASailingYachtPawn& Yacht, ASailingTrialHUD* HUD)
 {
     Drag = EDrag::None;
     PressPosition = LastPosition = Position;
     const FHUDHitBox* Box =
         HUD && HUD->bShowHUD && !Yacht.IsCinematic() ? HUD->GetHitBoxAtCoordinates(Position) : nullptr;
-    if (Box)
+    const FName Name = Box ? Box->GetName() : NAME_None;
+    if (Box && (Name != TEXT("Throttle") || Yacht.ReadHelm().bEngineOn))
     {
         LastTapTime = -1;
-        const FName Name = Box->GetName();
+        if (Panel != ESailingPanel::None && PanelButton(Name, Yacht, *HUD)) return;
         if (Name == TEXT("World"))
             ToggleWorld();
-        else if (Name == TEXT("Close"))
-            OpenPanel(ESailingPanel::None);
         else if (Name == TEXT("Help"))
             OpenPanel(ESailingPanel::Controls);
         else if (Name == TEXT("Chart"))
             OpenPanel(ESailingPanel::Chart);
-        else if (Name == TEXT("Follow"))
-            Chart.Recenter(Yacht);
-        else if (Name == TEXT("ZoomIn"))
-            Chart.Zoom(1, FVector2D::ZeroVector);
-        else if (Name == TEXT("ZoomOut"))
-            Chart.Zoom(-1, FVector2D::ZeroVector);
         else if (Panel == ESailingPanel::None)
         {
             if (Name == TEXT("Engine"))
@@ -692,7 +875,11 @@ void ASailingPlayerController::PressPointer(FVector2D Position, ASailingYachtPaw
     }
     if (Panel == ESailingPanel::Chart)
     {
-        Drag = EDrag::Chart;
+        if (ChartPlot(HUD).IsInside(Position / (HUD ? HUD->InputScale() : 1.)))
+        {
+            Drag = EDrag::Chart;
+            bTapCandidate = true;
+        }
         return;
     }
     if (Panel != ESailingPanel::None) return;
@@ -706,7 +893,11 @@ void ASailingPlayerController::MovePointer(FVector2D Position, ASailingYachtPawn
 {
     const float Scale = HUD ? HUD->InputScale() : 1.f;
     if (Drag == EDrag::Chart)
+    {
+        if (bTapCandidate && FVector2D::DistSquared(Position, PressPosition) <= FMath::Square(6. * Scale)) return;
+        bTapCandidate = false;
         Chart.Pan((Position - LastPosition) / Scale);
+    }
     else if (Drag == EDrag::View)
     {
         const float DragThreshold = (Yacht.IsCinematic() ? 10.f : 8.f) * Scale;
@@ -717,15 +908,24 @@ void ASailingPlayerController::MovePointer(FVector2D Position, ASailingYachtPawn
         }
         Yacht.OrbitView((Position - LastPosition) / Scale);
     }
-    else if (Drag == EDrag::Throttle && HUD)
-        Yacht.SetThrottle(HUD->ThrottleAt(Position.Y));
+    else if (Drag == EDrag::Throttle)
+    {
+        if (HUD && Yacht.ReadHelm().bEngineOn) Yacht.SetThrottle(HUD->ThrottleAt(Position.Y));
+        else Drag = EDrag::None;
+    }
     LastPosition = Position;
 }
 
 void ASailingPlayerController::ReleasePointer(FVector2D Position, ASailingYachtPawn& Yacht, const ASailingTrialHUD* HUD)
 {
     MovePointer(Position, Yacht, HUD);
-    if (Drag == EDrag::View)
+    if (Drag == EDrag::Chart && bTapCandidate)
+    {
+        const FBox2D Plot = ChartPlot(HUD);
+        const FVector2D Cursor = Position / (HUD ? HUD->InputScale() : 1.);
+        if (Plot.IsInside(Cursor)) Chart.SetWaypoint(Chart.WorldAt(Cursor, Plot), Yacht);
+    }
+    else if (Drag == EDrag::View)
     {
         const double Now = FPlatformTime::Seconds();
         if (Yacht.IsCinematic())

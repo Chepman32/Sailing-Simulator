@@ -3,8 +3,10 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "SailingSpray.h"
+#include "SailingBreakers.h"
 #include "SailingWeather.generated.h"
 
+namespace Sailing { struct FSeaFrame; }
 class ADirectionalLight;
 class AExponentialHeightFog;
 class APostProcessVolume;
@@ -16,8 +18,10 @@ class AVolumetricCloud;
 class UExponentialHeightFogComponent;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
+class UMaterialParameterCollection;
 class UPointLightComponent;
 class UProceduralMeshComponent;
+class UStaticMeshComponent;
 
 UCLASS()
 class ASailingWeather : public AActor
@@ -32,16 +36,25 @@ public:
     void SelectCondition(int32 Index);
     void SelectLighting(int32 Choice);
     void SelectWeather(int32 Choice);
+    void SetGraphicsQuality(int32 Level);
     int32 LightingChoice() const { return bAutoTime ? 3 : (Condition == 3 ? 2 : Condition); }
     static constexpr int32 AutoChoice = 7, CalmChoice = 8;
     int32 WeatherChoice() const { return bAutoWeather ? AutoChoice : (Climate == 7 ? CalmChoice : Climate); }
     const TCHAR* ClimateName() const;
     static const TCHAR* WeatherName(int32 Index);
+    void WhaleSpray(FVector SourceM, FVector Course, Sailing::FSeaFrame Frame, bool bBlow, float Strength);
+    void BreachSpray(const ASailingYachtPawn& Yacht, FVector SourceM, FVector Course, bool bLanding, float Force);
+    void SkipperSplash(const ASailingYachtPawn& Yacht, FVector ContactCm, FVector VelocityCmS, float Force, bool bEntry);
     void RequestLightning() { bLightningRequested = true; }
 
 private:
+    UPROPERTY() TObjectPtr<UStaticMeshComponent> Floatplane;
+    UPROPERTY() TObjectPtr<UStaticMeshComponent> Airliner;
+    FVector2D FlightCenter = FVector2D(325.,35.);
+    void UpdateAircraft(float Time, float Dt, const FVector& Eye);
     void UpdateRain(float Strength, float DeltaSeconds, const FVector& Eye, const FVector& Right, const FVector& Wind);
     void UpdateSpindrift(const ASailingYachtPawn& Yacht, float Air, const FVector& Eye, const FVector& Forward, const FVector& Right);
+    void EmitShoreSpray(Sailing::FSeaFrame Frame, const FVector& EyeM, const FVector& Forward, const FVector& Right, const FVector& Wind);
     Sailing::FSprayPuff* AcquireBowPuff(int32 Side, float Now, bool bStrike);
     void StartStrike(float Time, const FVector& Eye, const FVector& Forward, const FVector& Right);
     void AddBolt(const TArray<FVector>& Path, const FVector& Eye, float WidthCm, float Strength);
@@ -56,13 +69,18 @@ private:
     UPROPERTY(EditAnywhere, Category = "Weather") TObjectPtr<APostProcessVolume> Optics;
     UPROPERTY(EditAnywhere, Category = "Weather") TObjectPtr<UMaterialInterface> RainMaterial;
     UPROPERTY(EditAnywhere, Category = "Weather") TObjectPtr<UMaterialInterface> LightningMaterial;
+    UPROPERTY(EditAnywhere, Category = "Weather") TObjectPtr<UMaterialParameterCollection> CoastalWeather;
     UPROPERTY() TObjectPtr<UProceduralMeshComponent> Rain;
     UPROPERTY() TObjectPtr<UProceduralMeshComponent> Spindrift;
+    UPROPERTY() TObjectPtr<UProceduralMeshComponent> BreakerLips;
+    Sailing::FBreakingSheets BreakingSheets;
     UPROPERTY() TObjectPtr<UProceduralMeshComponent> Bolt;
     UPROPERTY() TObjectPtr<UPointLightComponent> StrikeLight;
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> CloudInstance;
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> DistantSky;
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> BoltInstance;
+    UPROPERTY() TObjectPtr<UMaterialInterface> UnderwaterMaterial;
+    UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> UnderwaterOptics;
     UPROPERTY(Transient) TObjectPtr<UExponentialHeightFogComponent> HeightFog;
     UPROPERTY(Transient) TObjectPtr<ASailingSea> SeaActor;
     FVector RainTravel = FVector::ZeroVector;
@@ -72,16 +90,21 @@ private:
     FLinearColor AirSkyScatter = FLinearColor::White;
     float PreviousImmersion = 0;
     bool bAirUsesVolume = false;
+    bool bUnderwaterOpticsActive = false;
+    int32 GraphicsQuality = 2;
 
     FRandomStream Random{73};
-    TArray<FVector> RainSeeds;
-    TArray<FVector> RainVertices;
-    TArray<FVector2D> RainUVs;
-    TArray<FLinearColor> RainColors;
-    static constexpr int32 CrestPuffCount = 96, BowPuffsPerSide = 48;
-    Sailing::FSprayPuff SprayPuffs[CrestPuffCount + 2*BowPuffsPerSide];
+    UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> RainInstance;
+    static constexpr int32 CrestPuffCount = 96, BowPuffsPerSide = 48, WhalePuffCount = 16, BreachPuffCount = 48, SkipperPuffCount = 36;
+    static constexpr int32 FirstShorePuff = CrestPuffCount + 2*BowPuffsPerSide + WhalePuffCount + BreachPuffCount;
+    static constexpr int32 ShorePuffCount = 48;
+    Sailing::FSprayPuff SprayPuffs[FirstShorePuff + ShorePuffCount + SkipperPuffCount];
     FRandomStream SprayRandom{4387};
+    FRandomStream ShoreRandom{6831};
+    float NextShoreSpray = 0.f;
+    int32 NextShorePuff = 0;
     int32 NextCrestPuff = 0, NextBowPuff[2] = {};
+    int32 NextSkipperPuff = 0;
     float LastThrown[2] = {-10.f,-10.f};
     float NextSheet[2] = {};
     float NextSprayTime = 0;

@@ -12,6 +12,7 @@
 #include "SailingPlayerController.h"
 #include "SailingWeather.h"
 #include "SailingExplorer.h"
+#include "SailingJetSki.h"
 #include "SailingVoyageSound.h"
 
 namespace
@@ -59,8 +60,10 @@ struct FHelmPainter
 ASailingTrialHUD::ASailingTrialHUD()
 {
     static ConstructorHelpers::FObjectFinder<UTexture2D> Art(TEXT("/Game/Coastal/Interface/HelmAtlas"));
+    static ConstructorHelpers::FObjectFinder<UTexture2D> Gear(TEXT("/Game/Coastal/Interface/InventoryGear"));
     static ConstructorHelpers::FObjectFinder<UFont> Typeface(TEXT("/Engine/EngineFonts/Roboto"));
     HelmAtlas = Art.Object;
+    InventoryArt = Gear.Object;
     HelmFont = Typeface.Object;
 }
 
@@ -107,31 +110,13 @@ void ASailingTrialHUD::DrawHUD()
 
     const ESailingPanel Open = Player->GetPanel();
     const USailingExplorer& Explorer = Yacht->Explorer();
-    if (Open==ESailingPanel::World) return;
-    if (Open == ESailingPanel::Chart)
-    {
-        Player->ChartView().Draw(*this, *Canvas, {ScreenWidth, ScreenHeight}, *Yacht);
-        DrawButton(TEXT("Close"), TEXT("Close"), ScreenWidth - 91, 14, 75);
-        DrawButton(TEXT("Follow"), TEXT("Recenter"), ScreenWidth - 192, 14, 94);
-        DrawButton(TEXT("ZoomOut"), TEXT("−"), ScreenWidth - 270, 14, 32);
-        DrawButton(TEXT("ZoomIn"), TEXT("+"), ScreenWidth - 231, 14, 32);
-        return;
-    }
-    if (Open == ESailingPanel::Gear)
-    {
-        const float X = (ScreenWidth - 320) * .5f, Y = (ScreenHeight - 205) * .5f;
-        Paint.Box(ETile::Card, X, Y, 320, 205);
-        Paint.Label(TEXT("Dive equipment"), X+16, Y+14, 18, FLinearColor::White, true);
-        Paint.Label(FString::Printf(TEXT("Air tank     %.0f%%"), Explorer.AirFraction()*100), X+16, Y+65, 13, Muted);
-        Paint.Label(Explorer.TorchOn() ? TEXT("Dive torch    On") : TEXT("Dive torch    Off"), X+16, Y+95, 13, Muted);
-        DrawButton(TEXT("Close"), TEXT("Close"), X + 16, Y + 150, 90);
-        return;
-    }
+    if (Open == ESailingPanel::World || Open == ESailingPanel::Pause ||
+        DrawDeckPanel(*Player, *Yacht, {ScreenWidth, ScreenHeight})) return;
     if (Open != ESailingPanel::None)
     {
         const bool bHelp = Open == ESailingPanel::Controls;
         const float Width = FMath::Min(bHelp ? 560.f : 350.f, ScreenWidth - 16.f);
-        const float Height = bHelp ? 464.f : 108.f;
+        const float Height = bHelp ? 486.f : 108.f;
         const float X = (ScreenWidth - Width) * .5f;
         const float Y = FMath::Max(4.f, (ScreenHeight - Height) * .5f);
         Paint.Box(ETile::Card, X, Y, Width, Height);
@@ -149,8 +134,9 @@ void ASailingTrialHUD::DrawHUD()
                 {TEXT("R   or   Double-click"), TEXT("Recenter view")},
                 {TEXT("T   ·   E"), TEXT("Overboard / return   ·   Board / take helm")},
                 {TEXT("WASD   ·   Shift"), TEXT("Walk / swim   ·   Run / swim faster")},
-                {TEXT("Space   ·   C   ·   F"), TEXT("Jump / rise   ·   Crouch / dive   ·   Torch")},
-                {TEXT("Q / N   ·   Tab"), TEXT("Chart   ·   Dive equipment")},
+                {TEXT("Jet ski   ·   E   ·   WASD"), TEXT("Board / dismount   ·   Gas / brake / steer")},
+                {TEXT("Space   ·   C / Ctrl   ·   F"), TEXT("Jump / rise   ·   Crouch / dive   ·   Torch")},
+                {TEXT("Q / N   ·   Tab"), TEXT("Chart   ·   Inventory")},
                 {TEXT("J / B   ·   F / G"), TEXT("Horn / bell   ·   Red / green signal flare")},
                 {TEXT("M   ·   O or 0 / Shift+O"), TEXT("Sound   ·   Next / previous radio station")},
                 {TEXT("1–4   ·   L"), TEXT("Weather presets   ·   Squall lightning")},
@@ -177,6 +163,30 @@ void ASailingTrialHUD::DrawHUD()
         Paint.Box(ETile::Card, (ScreenWidth - Width) * .5f - 12, 145, Width + 24, 29);
         DrawText(Notice, FLinearColor::White, (ScreenWidth - Width) * .5f, 151);
     }
+    if (Player->ChartView().HasWaypoint())
+    {
+        const float X = (ScreenWidth - 270) * .5f;
+        Paint.Box(ETile::Card, X, 69, 270, 34, 8);
+        Paint.Label(FString::Printf(TEXT("Waypoint   %s"), *Player->ChartView().WaypointReadout(*Yacht)),
+                    X + 15, 76, 13, FLinearColor(1.f, .72f, .39f), true);
+    }
+    if (const auto* Ski = Explorer.MountedJetSki())
+    {
+        Paint.Box(ETile::Card, 16, 16, 208, 88);
+        Paint.Label(TEXT("Jet ski"), 29, 23, 14, Muted);
+        const auto& Drive = Ski->Drive();
+        Paint.Label(FString::Printf(TEXT("%.1f kn"), Drive.SpeedMps() * Sailing::KnotsPerMps),
+            29, 47, 26, Accent, true);
+        Paint.Box(ETile::Card, 16, ScreenHeight - 76, 438, 60);
+        Paint.Label(TEXT("W   Gas     S   Brake / reverse     A / D   Steer"), 29, ScreenHeight - 67, 12);
+        Paint.Label(TEXT("E   Dismount     T   Back to helm     Q   Chart     R   Recenter"), 29, ScreenHeight - 43, 11, Muted);
+        if (!Ski->CanDismount())
+        {
+            Paint.Box(ETile::Card, ScreenWidth * .5f - 94, ScreenHeight - 64, 188, 32);
+            Paint.Label(TEXT("Slow down to dismount"), ScreenWidth * .5f - 81, ScreenHeight - 57, 11, Muted);
+        }
+        return;
+    }
     if (Explorer.Away())
     {
         const TCHAR* Mode = TEXT("On deck");
@@ -199,11 +209,14 @@ void ASailingTrialHUD::DrawHUD()
         Paint.Label(FString::Printf(TEXT("Depth %.1f m   ·   Air %.0f%%"), Explorer.DepthM(), Explorer.AirFraction()*100),
             28, 60, 13, Muted);
         Paint.Box(ETile::Card, 16, ScreenHeight - 55, 388, 39);
-        Paint.Label(TEXT("T   Back to helm     Q   Chart     ,   World     H   Controls"), 29, ScreenHeight-46, 11, Muted);
+        const TCHAR* Actions = Explorer.Mode() == ESkipperMode::Swim
+            ? TEXT("C / Ctrl   Dive     Space   Rise     T   Back to helm     H   Controls")
+            : TEXT("T   Back to helm     Q   Chart     ,   World     H   Controls");
+        Paint.Label(Actions, 29, ScreenHeight-46, 11, Muted);
         if (const TCHAR* Prompt = Explorer.Prompt(*Yacht))
         {
-            Paint.Box(ETile::Card, ScreenWidth * .5f - 78, ScreenHeight - 100, 156, 32);
-            Paint.Label(Prompt, ScreenWidth*.5f-62, ScreenHeight-94, 11, Accent);
+            Paint.Box(ETile::Card, ScreenWidth * .5f - 123, ScreenHeight * .68f, 246, 42);
+            Paint.Label(Prompt, ScreenWidth*.5f-103, ScreenHeight*.68f+8, 15, Accent, true);
         }
         return;
     }
@@ -267,27 +280,36 @@ void ASailingTrialHUD::DrawHUD()
     TopAction(TEXT("World"),ETile::World,TEXT("World"),nullptr,92);
     if (Player->Sound().Station() >= 0) Paint.Label(Player->Sound().StationLabel(),22,139,13);
 
-    const float Bottom=ScreenHeight-26, LeverX=Right-224;
+    const float Bottom=ScreenHeight-26, SignalRight=Right-224;
     const float SignalY=Bottom-52;
-    Action(TEXT("Horn"),ETile::Horn,TEXT("Horn"),TEXT("J"),LeverX-746,SignalY,154,52);
-    Action(TEXT("Bell"),ETile::Bell,TEXT("Bell"),TEXT("B"),LeverX-583,SignalY,145,52);
-    DrawRect(Silver.CopyWithNewOpacity(.65f),LeverX-424,SignalY+10,1,32);
-    Action(TEXT("Red"),ETile::Flare,TEXT("Red flare"),TEXT("F"),LeverX-409,SignalY,184,52,
+    Action(TEXT("Horn"),ETile::Horn,TEXT("Horn"),TEXT("J"),SignalRight-746,SignalY,154,52);
+    Action(TEXT("Bell"),ETile::Bell,TEXT("Bell"),TEXT("B"),SignalRight-583,SignalY,145,52);
+    DrawRect(Silver.CopyWithNewOpacity(.65f),SignalRight-424,SignalY+10,1,32);
+    Action(TEXT("Red"),ETile::Flare,TEXT("Red flare"),TEXT("F"),SignalRight-409,SignalY,184,52,
            ETile::Button,FLinearColor(1.f,.16f,.13f));
-    Action(TEXT("Green"),ETile::Flare,TEXT("Green flare"),TEXT("G"),LeverX-216,SignalY,197,52,
+    Action(TEXT("Green"),ETile::Flare,TEXT("Green flare"),TEXT("G"),SignalRight-216,SignalY,197,52,
            ETile::Button,FLinearColor(.19f,1.f,.34f));
 
-    const float LeverY=FMath::Max(164.f,ScreenHeight*.333f);
-    Paint.Box(ETile::Card,LeverX,LeverY,224,Bottom-LeverY,19);
-    Paint.Label(TEXT("Throttle"),LeverX+17,LeverY+13,17);
-    ThrottleTop=LeverY+66;
-    ThrottleHeight=Bottom-98-ThrottleTop;
-    const float Axis=LeverX+112;
-    Paint.Box(ETile::Track,Axis-17,ThrottleTop,34,ThrottleHeight,8);
-    DrawRect(FLinearColor(.86f,.93f,.95f,.94f),Axis-3,ThrottleTop+2,6,ThrottleHeight-4);
-    const float Lever=ThrottleTop+(1.f-Helm.Throttle)*.5f*ThrottleHeight;
-    Paint.Box(ETile::Handle,Axis-27,Lever-10,54,21,9);
-    Hit(TEXT("Throttle"),{Axis-38,ThrottleTop-10},{76,ThrottleHeight+20});
+    constexpr float EngineWidth=132, EngineHeight=48;
+    const float EngineX=Right-15-EngineWidth, EngineY=Bottom-EngineHeight-2;
+    if (Helm.bEngineOn)
+    {
+        constexpr float LeverWidth=104;
+        const float Axis=EngineX+EngineWidth*.5f;
+        const float LeverX=Axis-LeverWidth*.5f;
+        const float LeverY=FMath::Max(164.f,ScreenHeight*.333f);
+        const float LeverBottom=EngineY-10;
+        Paint.Box(ETile::Card,LeverX,LeverY,LeverWidth,LeverBottom-LeverY,15);
+        Paint.Label(TEXT("Throttle"),LeverX+14,LeverY+12,14);
+        ThrottleTop=LeverY+53;
+        ThrottleHeight=LeverBottom-23-ThrottleTop;
+        Paint.Box(ETile::Track,Axis-13,ThrottleTop,26,ThrottleHeight,8);
+        DrawRect(FLinearColor(.86f,.93f,.95f,.94f),Axis-2,ThrottleTop+2,4,ThrottleHeight-4);
+        const float Lever=ThrottleTop+(1.f-Helm.Throttle)*.5f*ThrottleHeight;
+        Paint.Box(ETile::Handle,Axis-24,Lever-10,48,21,9);
+        Hit(TEXT("Throttle"),{Axis-38,ThrottleTop-10},{76,ThrottleHeight+20});
+    }
     Action(TEXT("Engine"),ETile::Engine,Helm.bEngineOn ? TEXT("Engine on") : TEXT("Engine off"),nullptr,
-           LeverX+15,Bottom-67,194,54,Helm.bEngineOn ? ETile::Running : ETile::Stopped);
+           EngineX,EngineY,EngineWidth,EngineHeight,Helm.bEngineOn ? ETile::Running : ETile::Stopped,
+           FLinearColor::White,true);
 }

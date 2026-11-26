@@ -1,5 +1,6 @@
 """Author the Coral Pass material graphs in the Unreal Editor."""
 
+import json
 import math
 import os
 from pathlib import Path
@@ -17,9 +18,10 @@ EDIT = unreal.MaterialEditingLibrary
 PROP = unreal.MaterialProperty
 OUTPUT = unreal.CustomMaterialOutputType
 MAT = unreal.MaterialShadingModel
-WATER_EXTINCTION_CM = (.004520, .00132, .00071)
+WATER_EXTINCTION_CM = (.00384, .00103, .00068)
 FOAM_ALBEDO = (.80, .86, .90)
 FOAM_DIFFUSE_SHARE = .25
+FOAM_GRAIN_SCALE = 24.
 
 
 def expression(material, cls, x=-480, y=0, **properties):
@@ -115,7 +117,9 @@ def import_texture(directory, name, semantic):
         raise RuntimeError(f"Could not import {path}")
     if semantic == "normal" and texture.get_editor_property("compression_settings") != unreal.TextureCompressionSettings.TC_NORMALMAP:
         texture.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_NORMALMAP)
-    if semantic in ("normal", "linear") and texture.get_editor_property("srgb"):
+    if semantic == "height" and texture.get_editor_property("compression_settings") != unreal.TextureCompressionSettings.TC_GRAYSCALE:
+        texture.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_GRAYSCALE)
+    if semantic in ("normal", "linear", "height") and texture.get_editor_property("srgb"):
         texture.set_editor_property("srgb", False)
     ASSETS.save_loaded_asset(texture)
     unreal.log(f"Coral Pass texture {name}: {texture.blueprint_get_size_x()} × {texture.blueprint_get_size_y()}")
@@ -145,7 +149,7 @@ def baked_maps(source, name):
 def texture_nodes(asset, textures):
     sampler = unreal.MaterialSamplerType
     types = {"color": sampler.SAMPLERTYPE_COLOR, "normal": sampler.SAMPLERTYPE_NORMAL,
-             "roughness": sampler.SAMPLERTYPE_LINEAR_COLOR}
+             "roughness": sampler.SAMPLERTYPE_LINEAR_COLOR, "opacity": sampler.SAMPLERTYPE_LINEAR_GRAYSCALE}
     return {kind: expression(asset, unreal.MaterialExpressionTextureSample, y=i * 175, texture=texture,
                              sampler_type=types[kind])
             for i, (kind, texture) in enumerate(textures.items())}
@@ -161,8 +165,8 @@ def submerged_specular(asset, world):
     assign(reflectance,PROP.MP_SPECULAR)
 
 
-def pbr(name, textures, arm=False, wet=False, two_sided=False, rain_on_timber=False):
-    asset = material(name, two_sided=two_sided)
+def pbr(name, textures, arm=False, wet=False, two_sided=False, rain_on_timber=False, skin=False):
+    asset = material(name, MAT.MSM_SUBSURFACE_PROFILE if skin else MAT.MSM_DEFAULT_LIT, two_sided=two_sided)
     nodes = texture_nodes(asset, textures)
     color = nodes["color"]
     rough, channel = nodes["roughness"], "G" if arm else "R"
@@ -185,7 +189,10 @@ def pbr(name, textures, arm=False, wet=False, two_sided=False, rain_on_timber=Fa
     assign(rough, PROP.MP_ROUGHNESS, channel)
     if arm:
         assign(nodes["roughness"], PROP.MP_AMBIENT_OCCLUSION, "R")
-        assign(nodes["roughness"], PROP.MP_METALLIC, "B")
+        if not skin:
+            assign(nodes["roughness"], PROP.MP_METALLIC, "B")
+    if skin:
+        assign(number(asset, .78), PROP.MP_OPACITY)
     return save(asset)
 
 
@@ -231,72 +238,204 @@ def pirate_finish(source, atlas):
 CAUSTICS = """
     float3 m = Position * .01;
     float depth = max(0.0, -m.z);
-    float2 p = m.xy + float2(.73,.22)*depth;
+    float3 ray = refract(-SunDir,float3(0,0,1),1./1.333);
+    float2 p = m.xy - ray.xy*(depth/max(.22,-ray.z));
     p += .32*float2(sin(p.y*1.66 - T*.83), cos(p.x*1.73 - T*.92));
     float a = sin(p.x*6.7 + sin(p.y*4.9 + T*.96)*.91 - T*1.9);
     float b = cos(p.y*6.3 + sin(p.x*4.3 - T*.75)*.87 + T*1.47);
     float c = abs(a + b + .33*sin(dot(p,float2(4.5,-5.4)) - T*1.2));
     float focus = (1 - smoothstep(.014,.21,c)) * (.38 + .62*abs(a*b));
-    return focus * smoothstep(.02,.45,depth) * exp(-depth*.25) * (1-smoothstep(2,8,depth));
+    return focus * smoothstep(.02,.45,depth) * exp(-depth*.25) * (1-smoothstep(2,8,depth))
+                 * smoothstep(.02,.22,SunDir.z);
 """
 
 
 def caustics(asset, world):
     time = expression(asset, unreal.MaterialExpressionTime)
-    return shader(asset, CAUSTICS, {"Position": world, "T": time}, OUTPUT.CMOT_FLOAT1, 650)
+    sun = expression(asset, unreal.MaterialExpressionSkyAtmosphereLightDirection)
+    return shader(asset, CAUSTICS, {"Position": world, "T": time, "SunDir": sun}, OUTPUT.CMOT_FLOAT1, 650)
 
 
-def ground(textures):
-    asset = material("M_CoastalGround")
+def underwater_optics(name):
+    asset = material(name, MAT.MSM_UNLIT)
+    asset.set_editor_property("material_domain", unreal.MaterialDomain.MD_POST_PROCESS)
+    asset.set_editor_property("blendable_location", unreal.BlendableLocation.BL_SCENE_COLOR_BEFORE_BLOOM)
+    scene = expression(asset, unreal.MaterialExpressionSceneTexture,
+                       scene_texture_id=unreal.SceneTextureId.PPI_POST_PROCESS_INPUT0)
+    depth = expression(asset, unreal.MaterialExpressionSceneTexture,
+                       scene_texture_id=unreal.SceneTextureId.PPI_SCENE_DEPTH)
+    color = shader(asset, """
+        float3 ray = -normalize(ViewRay);
+        float meters = min(110., DepthCm.r*.01/max(.15,dot(ray,ResolvedView.ViewForward)));
+        // On an upward ray only the segment below the interface scatters light.
+        if (ray.z > .014) meters = min(meters,(EyeDepth+.18)/ray.z);
+        float murk = lerp(1.,1.9,Weather) * (1+.24*smoothstep(4.,21.,EyeDepth));
+        float3 transmission = exp(-meters*murk*float3(.255,.092,.053));
+        float3 waterLight = Lighting * exp(-EyeDepth*.057) * float3(.077,.257,.418);
+        float3 fromSun = refract(-SunDir,float3(0,0,1),1./1.333);
+        float sunUp = smoothstep(.013,.21,SunDir.z);
+        float phase = .72+.28*pow(saturate(dot(ray,-fromSun)),5)*sunUp;
+        float3 scene = Image.rgb;
+        float shafts = 0.;
+        [branch] if (Detail > .5)
+        {
+            // Suspended material softens the far field without blurring close
+            // objects like the swimmer's bubbles or the rock beside the camera.
+            float diffusion = smoothstep(5.,32.,meters*murk);
+            [branch] if (diffusion > .02)
+            {
+                float2 uv = GetDefaultSceneTextureUV(Parameters,PPI_PostProcessInput0);
+                float2 tap = PixelSize*(.65+1.55*diffusion);
+                float3 soft = SceneTextureLookup(Parameters,uv+tap*float2(.82,.57),PPI_PostProcessInput0,true).rgb
+                            + SceneTextureLookup(Parameters,uv-tap*float2(.82,.57),PPI_PostProcessInput0,true).rgb
+                            + SceneTextureLookup(Parameters,uv+tap*float2(-.57,.82),PPI_PostProcessInput0,true).rgb
+                            + SceneTextureLookup(Parameters,uv-tap*float2(-.57,.82),PPI_PostProcessInput0,true).rgb;
+                scene = lerp(scene,.25*soft,.44*diffusion);
+            }
+            // Project each sample in the water column back along the refracted
+            // light direction. As the surface moves, the illuminated columns bend.
+            float reach = min(meters,26.);
+            [branch] if (sunUp > .01 && reach > .45)
+            {
+                int samples = Detail > 1.5 ? 14 : 8;
+                [loop] for (int i=0; i<samples; ++i)
+                {
+                    float along = reach*(i+.5)/samples;
+                    float z = max(0.,EyeDepth-along*ray.z);
+                    float2 p = Eye.xy*.01 + along*ray.xy - fromSun.xy*z/max(.2,-fromSun.z);
+                    p += .22*float2(sin(p.y*.8-T*.77),cos(p.x*.9-T*.62));
+                    // Broad groups of converging surface facets cast distinct
+                    // moving shafts, with darker channels between them.
+                    float group = .5+.5*cos(.31*p.x+.14*p.y+.46*sin(.3*p.y)-T*.26);
+                    float cells = abs(sin(dot(p,float2(.74,.46))+T*.79)
+                                + .83*cos(dot(p,float2(-.63,.86))-T*.53));
+                    float focus = (1.-smoothstep(.08,.48,cells))*smoothstep(.16,.88,group);
+                    shafts += focus*exp(-.094*z-.064*along);
+                }
+                shafts *= (.78+2.4*pow(saturate(dot(ray,-fromSun)),4))*sunUp
+                          * (1.-exp(-reach*.13))*(1.-.6*Weather)/samples;
+            }
+        }
+        float3 volume = waterLight*phase*(1.-transmission);
+        volume += Lighting * float3(.070,.224,.245) * shafts;
+        return lerp(Image.rgb,scene*transmission + volume,smoothstep(.025,.36,EyeDepth));
+        """, {"Image": (scene, "Color"), "PixelSize": (scene,"InvSize"), "DepthCm": (depth,"Color"),
+              "ViewRay": expression(asset,unreal.MaterialExpressionCameraVectorWS),
+              "Eye": expression(asset,unreal.MaterialExpressionCameraPositionWS),
+              "T": expression(asset,unreal.MaterialExpressionTime),
+              "EyeDepth": parameter(asset,"EyeDepth",0), "Weather": parameter(asset,"Turbidity",0),
+              "Detail": parameter(asset,"VolumeDetail",1), "Lighting": parameter(asset,"WaterLight",2500),
+              "SunDir": expression(asset,unreal.MaterialExpressionSkyAtmosphereLightDirection)}, OUTPUT.CMOT_FLOAT3)
+    assign(color, PROP.MP_EMISSIVE_COLOR)
+    return save(asset)
+
+
+def forest_floor_maps(source):
+    name = "forest_leaves_04"
+    folder = source / name
+    normal = import_texture(folder, f"{name}_nor_gl_4k", "normal")
+    normal.set_editor_property("flip_green_channel", True)
+    ASSETS.save_loaded_asset(normal)
+    return {"color": import_texture(folder, f"{name}_diff_4k", "color"), "normal": normal,
+            "roughness": import_texture(folder, f"{name}_rough_4k", "linear")}
+
+
+def ground(textures, litter_maps):
+    asset = material("M_CoastalGround", MAT.MSM_CLEAR_COAT)
     sand = texture_nodes(asset, textures["aerial_beach_01"])
-    stone = texture_nodes(asset, textures["coast_rocks_03"])
+    stone = texture_nodes(asset, textures["rock_face"])
+    litter = texture_nodes(asset, litter_maps)
     paint = expression(asset, unreal.MaterialExpressionVertexColor)
     world = expression(asset, unreal.MaterialExpressionWorldPosition)
+    stone_uv = shader(asset, """
+        float2 p = P.xy*.01 + P.z*.0017*float2(.7,-.54);
+        return p*.32+.16*float2(cos(p.y*.59),sin(p.x*.47));
+        """, {"P":world}, OUTPUT.CMOT_FLOAT2)
+    for node in stone.values():
+        link(stone_uv,node,"UVs")
+    litter_uv = shader(asset, "return P.xy / 150.;", {"P": world}, OUTPUT.CMOT_FLOAT2)
+    for node in litter.values():
+        link(litter_uv, node, "UVs")
+    forest = shader(asset, """
+        float patch = .85+.15*sin(P.x*.0026+sin(P.y*.006))*cos(P.y*.0021);
+        return patch*smoothstep(.16,.63,Grass)*smoothstep(150.,330.,P.z)*(1.-.93*Rock);
+        """, {"P": world, "Grass": (paint, "G"), "Rock": (paint, "R")}, OUTPUT.CMOT_FLOAT1)
     submerged_specular(asset,world)
     light = caustics(asset, world)
-    swash = shader(asset, WATER_MODEL + """
+    swash = shader(asset, ROCK_MODEL + """
         float3 p = P*.01;
         if (p.z < -.65) return float4(1,0,0,0);
         if (p.z > 1.45) return 0;
         SailingWaterMath water;
         float4 coast = water.Coast(p.x,p.y);
         if (abs(coast.x)>13) return float4(1-smoothstep(-.2,.6,p.z),0,0,0);
-        float t = T+water.Peel(p.x,p.y,coast.w).x;
-        float d = coast.x+.44*sin(.78*p.x+.51*p.y)+.21*sin(1.37*p.y-.62*p.x);
-        float front = water.SwashFront(t,Scale,coast.w);
-        float last = min(front,min(water.SwashFront(t-1.15,Scale,coast.w),water.SwashFront(t-2.4,Scale,coast.w)));
-        float shore = 1-smoothstep(.24,.84*sqrt(Scale)+.18,p.z);
-        float film = smoothstep(-.18,.52,d-front)*shore;
-        float lace = (1-smoothstep(.13,.95,abs(d-front-.22)))*shore;
-        float drain = smoothstep(.35,2.6,front-last)*(1-smoothstep(.25,2.9,abs(d-front)));
-        return float4(max(film,.78*shore*smoothstep(-.50,.68,d-last)),film,lace,drain*shore);
-        """, {"P": world, "T": parameter(asset,"SeaTime",0), "Scale": parameter(asset,"SeaScale",1)}, OUTPUT.CMOT_FLOAT4)
-    sand_uv = shader(asset,"return P.xy*.0034+float2(.032,-.017)*T;",
-                     {"P":world,"T":parameter(asset,"SeaTime",0)},OUTPUT.CMOT_FLOAT2)
+        TidalRocks rocks;
+        float4 bend;
+        float t = T+water.Peel(p.x,p.y,coast.w).x+rocks.Read(RockFlow,p.xy,coast.w,bend).x;
+        float4 tip = water.SwashTip(t,Scale,coast.w);
+        float last = water.SwashTip(t-tip.z,Scale,coast.w).x;
+        float shore = 1-smoothstep(.23,.78*sqrt(Scale)+.16,p.z);
+        float d = coast.x-tip.x;
+        float wash = smoothstep(-.06,.26,d)*shore;
+        float passed = smoothstep(.13,2.1,tip.x-last);
+        float seep = exp(-.20*tip.z)*smoothstep(-.16,.47,coast.x-last)*shore;
+        float retreat = smoothstep(.2,1.35,tip.y);
+        // The thin film drains through channels in the sand. The high-water
+        // mark stays damp while individual fingers still reflect the sky.
+        float2 offshore = normalize(coast.yz+float2(.00001,0));
+        float2 grain = p.xy + .14*float2(sin(p.y*2.2),cos(p.x*2.5));
+        float channel = .5+.5*sin(dot(grain,float2(-offshore.y,offshore.x))*5.3+sin(p.x*.61));
+        float film = max(wash*.72, seep*passed*(1-smoothstep(.15,2.1+1.7*channel,-d)));
+        // A centimetre-deep tongue can continue over sand finer than a water-grid cell.
+        float tongue=d+.15*sin(dot(p.xy,float2(.47,1.13))*4.8+.68*channel)+.11*(channel-.5);
+        float rim=exp(-pow((tongue-.13)/(.074+.084*channel),2.));
+        float islands=smoothstep(.29,.75,channel+.20*sin(4.3*grain.x+6.2*grain.y));
+        float residue=shore*(rim*(.10+.61*islands)*(.28+.52*smoothstep(.16,1.35,-tip.y))+
+                            .13*retreat*seep*smoothstep(-.95,-.60,d)*(1-smoothstep(-.29,.01,d)));
+        // Focus the transmitted light on the bed. At the thin leading edge the
+        // optical path vanishes, so the dry grains keep their diffuse colour.
+        float path=wash*saturate((.14*wash-p.z)/.14);
+        float2 ray=p.xy + path*.13*float2(sin(p.y*5.1+t*1.7),cos(p.x*4.2-t*1.6));
+        float lenses=sin(ray.x*10.3+sin(ray.y*8.6-t*.7)+t*.88)
+                   +cos(ray.y*13.2+.83*sin(ray.x*6.7+t*.91)-t*1.33);
+        float focus=path*(1.-smoothstep(.01,.17,abs(lenses)))*(.35+.65*channel);
+        return float4(max(wash,.91*seep),film,residue,focus);
+        """, {"P": world, "T": parameter(asset,"SeaTime",0), "Scale": parameter(asset,"SeaScale",1),
+              "RockFlow":survey_texture(asset,"RockFlow")}, OUTPUT.CMOT_FLOAT4)
+    sand_uv = shader(asset,"return (P.xy*.0034+float2(.032,-.017)*T)*Grain;",
+                     {"P":world,"T":parameter(asset,"SeaTime",0),"Grain":number(asset,FOAM_GRAIN_SCALE)},OUTPUT.CMOT_FLOAT2)
     bubbles = sample_texture(asset,unreal.load_asset(FOAM_TEXTURE),sand_uv)
     rain = parameter(asset,"RainWetness",0)
     base = shader(asset, """
         float3 p = Position * 0.01;
         float damp = max(Rain*.78,max(.23*(1-smoothstep(0,1.35,p.z)),Wash.x));
-        float3 beach = Sand * lerp(float3(.87,.85,.74),float3(.54,.58,.54),damp);
-        float bubbles = smoothstep(.22,.66,Lace);
-        float white = Wash.z*(.23+.77*bubbles)+Wash.w*smoothstep(.48,.80,Lace)*.53;
-        beach = lerp(beach,float3(.78,.89,.85),saturate(white));
+        float3 grains=lerp(Sand,float3(.46,.38,.26),.15*(1-smoothstep(.1,1.,p.z)));
+        float3 beach = grains * lerp(float3(.87,.85,.74),float3(.59,.49,.36),damp);
+        float bubbles = smoothstep(.30,.76,Lace);
+        beach *= 1.+.34*Wash.w;
+        beach = lerp(beach,float3(.79,.85,.83),Wash.z*bubbles);
         float mottling = 0.73 + 0.27 * sin(p.x*0.81 + sin(p.y*0.67)) * sin(p.y*0.56);
         float blade = dot(Sand,float3(.22,.68,.10));
         float3 grass = lerp(float3(.020,.078,.018),float3(.065,.182,.029), saturate(blade*2)) * mottling;
         float3 ground = lerp(lerp(beach, grass, smoothstep(.06,.88,Vegetation)), Stone * float3(1.26,1.19,1.04), Rock * .88);
-        return saturate(ground * (1-.19*Rain*max(Rock,Vegetation)) * (1 + Light * 1.8));
+        float3 humus = Litter * float3(.69,.76,.62) * (1-.31*Rain);
+        return saturate(lerp(ground * (1-.19*Rain*max(Rock,Vegetation)), humus, Forest) * (1 + Light * .66));
         """, {"Position": world, "Sand": sand["color"], "Stone": stone["color"],
               "Vegetation": (paint, "G"), "Rock": (paint, "R"), "Light": light, "Wash": swash,
-              "Lace":(bubbles,"R"), "Rain":rain}, OUTPUT.CMOT_FLOAT3)
+              "Lace":(bubbles,"R"), "Rain":rain, "Forest":forest, "Litter":litter["color"]}, OUTPUT.CMOT_FLOAT3)
     rough = shader(asset, """
         float dry = lerp(saturate(Sand*.75+.19), Stone, Rock);
-        return lerp(lerp(dry,.34+.13*Sand,max(Wash.x,.78*Rain)),.13+.10*Sand,Wash.y);
-        """, {"Wash": swash, "Rain":rain, "Sand": (sand["roughness"], "R"), "Stone": (stone["roughness"], "G"),
-              "Rock": (paint, "R")}, OUTPUT.CMOT_FLOAT1, 240)
-    normals = shader(asset, "return normalize(lerp(Sand, Stone, Rock * 0.84));",
-                     {"Sand": sand["normal"], "Stone": stone["normal"], "Rock": (paint, "R")}, OUTPUT.CMOT_FLOAT3, 470)
+        float substrate=lerp(lerp(dry,.25+.13*Sand,max(Wash.x,.78*Rain)),.035+.045*Sand,Wash.y);
+        return lerp(substrate,lerp(clamp(Litter,.48,.90),.28,Rain*.85),Forest);
+        """, {"Wash": swash, "Rain":rain, "Sand": (sand["roughness"], "R"), "Stone": (stone["roughness"], "R"),
+              "Rock": (paint, "R"), "Forest": forest, "Litter": (litter["roughness"], "R")}, OUTPUT.CMOT_FLOAT1, 240)
+    normals = shader(asset, """
+        float3 mineral=lerp(Sand,Stone,Rock*.84);
+        mineral.xy*=lerp(.52-.45*Wash.y,1.,Rock);
+        return normalize(lerp(mineral,Litter,Forest));
+        """,
+                     {"Sand": sand["normal"], "Stone": stone["normal"], "Rock": (paint, "R"),
+                      "Litter": litter["normal"], "Forest": forest, "Wash": swash}, OUTPUT.CMOT_FLOAT3, 470)
     # Diffuse daylight reaching submerged sand is spread over the sky hemisphere.
     # Attenuate incident sunlight on its refracted path to the bed. The water
     # renderer separately attenuates light returning from the bed to the camera.
@@ -315,7 +454,11 @@ def ground(textures):
            PROP.MP_BASE_COLOR)
     assign(shader(asset, "return Base * Bed.rgb;", {"Base":base,"Bed":bed_light}, OUTPUT.CMOT_FLOAT3),
            PROP.MP_EMISSIVE_COLOR)
-    assign(rough, PROP.MP_ROUGHNESS)
+    # A drained patch retains a dark, rough substrate after the smooth surface
+    # film has broken. Only the sheet still present carries the sky reflection.
+    finish = shader(asset,"return float3(lerp(R,.34,Wash.y),.46*Wash.y,.095+.10*(1-Wash.y));",
+                    {"R":rough,"Wash":swash},OUTPUT.CMOT_FLOAT3)
+    unreal.CoralMaterialAuthoring.set_coat_finish(asset,finish)
     assign(normals, PROP.MP_NORMAL)
     return save(asset)
 
@@ -364,6 +507,246 @@ def coastal_canopy():
     assign(number(asset,.17), PROP.MP_SPECULAR)
     assign(number(asset,.78), PROP.MP_ROUGHNESS)
     return save(asset)
+
+
+def coastal_weather_collection():
+    name = "MPC_CoastalWeather"
+    path = f"{ROOT}/Materials/{name}"
+    collection = ASSETS.load_asset(path) if ASSETS.does_asset_exist(path) else TOOLS.create_asset(
+        name, f"{ROOT}/Materials", unreal.MaterialParameterCollection, unreal.MaterialParameterCollectionFactoryNew())
+    vectors = list(collection.get_editor_property("vector_parameters"))
+    names = {str(p.get_editor_property("parameter_name")) for p in vectors}
+    for name, value in {"WindAndRain": (5.,3.,0.,1.), "Walker": (0.,0.,0.,0.)}.items():
+        if name not in names:
+            vector = unreal.CollectionVectorParameter()
+            vector.set_editor_property("parameter_name",name)
+            vector.set_editor_property("default_value",unreal.LinearColor(*value))
+            vectors.append(vector)
+    if len(vectors) != len(names):
+        collection.set_editor_property("vector_parameters",vectors)
+        ASSETS.save_loaded_asset(collection)
+    return collection
+
+
+def shore_blades(name, submerged):
+    asset = material(name, MAT.MSM_TWO_SIDED_FOLIAGE, two_sided=True)
+    world = expression(asset, unreal.MaterialExpressionWorldPosition,
+                       world_position_shader_offset=unreal.WorldPositionIncludedOffsets.WPT_EXCLUDE_ALL_SHADER_OFFSETS)
+    leaf = expression(asset, unreal.MaterialExpressionVertexColor)
+    uv = expression(asset, unreal.MaterialExpressionTextureCoordinate)
+    collection = coastal_weather_collection()
+    wind = expression(asset, unreal.MaterialExpressionCollectionParameter, collection=collection, parameter_name="WindAndRain")
+    time = expression(asset, unreal.MaterialExpressionTime)
+    base = shader(asset, """
+        float rib = exp(-pow(11.*(UV.x-.50),2));
+        float fibers = .5+.5*sin(PerBlade*35.8+UV.x*35.+.8*sin(UV.y*68.));
+        float2 p = P.xy*.01;
+        float dry = smoothstep(.27,.74,PerBlade)*smoothstep(.53,1.,UV.y);
+        float3 leaf = lerp(float3(.023,.072,.014),float3(.095,.159,.028),PerBlade);
+        leaf = lerp(leaf,float3(.237,.207,.079),dry*.8);
+        if (Sea > .5) leaf = lerp(float3(.009,.037,.024),float3(.055,.157,.047),PerBlade);
+        float mix = .71+.16*sin(dot(p,float2(.55,-.69)))+.11*fibers+.16*rib;
+        return leaf*mix*(.80+.27*UV.y)*(1.-.23*Wind.z);
+        """, {"P":world,"UV":uv,"PerBlade":(leaf,"R"),"Wind":wind,"Sea":number(asset,float(submerged))}, OUTPUT.CMOT_FLOAT3)
+    move = shader(asset, """
+        float2 m = P.xy*.01;
+        float weight = Tip*Tip;
+        float2 gust = Wind.xy*(.49+.24*sin(dot(m,float2(.41,-.32))-T*2.1)
+                               +.14*cos(dot(m,float2(.8,.55))-T*3.4));
+        float2 water = float2(10*sin(m.x*.29+m.y*.33-T*1.7),6.8*cos(m.x*.30-m.y*.25+T*1.4));
+        float2 offset = lerp(gust,water,Sea);
+        float2 fromWalker = m-Walker.xy;
+        float near = (1.-smoothstep(.27,.85,length(fromWalker)))*Walker.w*(1.-Sea);
+        near *= 1.-smoothstep(.50,1.,abs(P.z*.01-Walker.z));
+        offset += 28.*near*fromWalker/max(.20,length(fromWalker));
+        return weight*float3(offset,-length(offset)*(.16+.22*near));
+        """, {"P":world,"Tip":(leaf,"A"),"Wind":wind,"T":time,"Sea":number(asset,float(submerged)),
+              "Walker":expression(asset,unreal.MaterialExpressionCollectionParameter,
+                                  collection=collection,parameter_name="Walker")}, OUTPUT.CMOT_FLOAT3)
+    assign(base, PROP.MP_BASE_COLOR)
+    assign(shader(asset,"return Base*.58;",{"Base":base},OUTPUT.CMOT_FLOAT3),PROP.MP_SUBSURFACE_COLOR)
+    assign(move,PROP.MP_WORLD_POSITION_OFFSET)
+    assign(shader(asset,"return lerp(.71,.46,Wind.z);",{"Wind":wind},OUTPUT.CMOT_FLOAT1),PROP.MP_ROUGHNESS)
+    assign(number(asset,.22),PROP.MP_SPECULAR)
+    asset.set_editor_property("max_world_position_offset_displacement", 52)
+    return save(asset)
+
+
+def reef_coral_skin(name):
+    asset = material(name)
+    paint = expression(asset, unreal.MaterialExpressionVertexColor)
+    world = expression(asset, unreal.MaterialExpressionWorldPosition)
+    focus = caustics(asset,world)
+    pigment = shader(asset, """
+        float3 p = P*.63;
+        float pits = abs(sin(p.x+sin(p.z*.96)) + cos(p.y+cos(p.z*1.12)) + .34*sin(p.x-p.y));
+        float encrust = smoothstep(.32,.75,.5+.22*sin(dot(P,float3(.059,-.062,.026)))+.20*cos(P.z*.09));
+        float3 warm = lerp(float3(.232,.074,.036),float3(.43,.29,.155),Tone);
+        float3 purple = lerp(float3(.18,.073,.135),float3(.34,.152,.243),Tone);
+        float3 body = lerp(purple,warm,smoothstep(.18,.74,Tone));
+        float3 tips = lerp(body, float3(.54,.43,.295),smoothstep(.72,.99,Tip)*.78);
+        return lerp(tips,float3(.099,.124,.071),.28*encrust)*Grain*(.62+.38*smoothstep(.06,.47,pits));
+        """, {"P":world,"Tone":(paint,"R"),"Tip":(paint,"G"),"Grain":(paint,"B")},OUTPUT.CMOT_FLOAT3)
+    assign(shader(asset,"return .56*Pigment;",
+                  {"Pigment":pigment},OUTPUT.CMOT_FLOAT3),PROP.MP_BASE_COLOR)
+    filtered_sun = shader(asset, """
+        float3 light = Sun*exp(-Extinction*max(0.,-P.z)/.74);
+        return Pigment*light*(.054+.21*Caustic);
+        """,{"Sun":expression(asset,unreal.MaterialExpressionSkyAtmosphereLightIlluminanceOnGround),
+            "Pigment":pigment,"P":world,"Extinction":number(asset,WATER_EXTINCTION_CM),"Caustic":focus},OUTPUT.CMOT_FLOAT3)
+    assign(filtered_sun,PROP.MP_EMISSIVE_COLOR)
+    assign(number(asset,.64),PROP.MP_ROUGHNESS)
+    assign(number(asset,.18),PROP.MP_SPECULAR)
+    return save(asset)
+
+
+def channel_beacon_material():
+    name = "M_ChannelBuoyBeacon"
+    path = f"{ROOT}/Materials/{name}"
+    if ASSETS.does_asset_exist(path):
+        return ASSETS.load_asset(path)
+    asset = material(name)
+    uv = expression(asset, unreal.MaterialExpressionTextureCoordinate)
+    green = expression(asset, unreal.MaterialExpressionScalarParameter, parameter_name="GreenLight",
+                       use_custom_primitive_data=True, primitive_data_index=0)
+    phase = expression(asset, unreal.MaterialExpressionScalarParameter, parameter_name="SignalPhase",
+                       use_custom_primitive_data=True, primitive_data_index=1)
+    tint = shader(asset, "return lerp(float3(.95,.024,.006),float3(.025,.77,.16),Green);",
+                  {"Green": green}, OUTPUT.CMOT_FLOAT3)
+    lens = shader(asset, """
+        float seals=1.-smoothstep(.23,.29,abs(UV.y-.5));
+        return seals*(.85+.15*cos(UV.y*115.));
+        """, {"UV": uv}, OUTPUT.CMOT_FLOAT1)
+    assign(shader(asset, "return lerp(float3(.020,.024,.025),.18*Color,Lens);",
+                  {"Color": tint, "Lens": lens}, OUTPUT.CMOT_FLOAT3), PROP.MP_BASE_COLOR)
+    assign(shader(asset, "return lerp(.46,.21,Lens);", {"Lens": lens}, OUTPUT.CMOT_FLOAT1), PROP.MP_ROUGHNESS)
+    assign(shader(asset, """
+        float night=1.-smoothstep(-.12,.035,Sun.z);
+        float pulse=1.-smoothstep(.12,.19,frac((T+Phase)/4.));
+        return Color*Lens*night*pulse*6.;
+        """, {"Color": tint, "Lens": lens, "Phase": phase,
+              "Sun": expression(asset, unreal.MaterialExpressionSkyAtmosphereLightDirection),
+              "T": expression(asset, unreal.MaterialExpressionTime)}, OUTPUT.CMOT_FLOAT3), PROP.MP_EMISSIVE_COLOR)
+    return save(asset)
+
+
+def downloaded_coastal_materials(source):
+    folder = source / "CoastalModels"
+    collection = coastal_weather_collection()
+    definitions = json.loads((folder / "materials.json").read_text())
+    refresh = set(os.environ.get("SAILING_REFRESH_COASTAL_MATERIALS", "").split(","))
+    result = {}
+    for model, slots in definitions.items():
+        result[model] = {}
+        buoy = model == "LateralSeaMarker"
+        usages = [unreal.MaterialUsage.MATUSAGE_NANITE]
+        if not buoy:
+            usages.append(unreal.MaterialUsage.MATUSAGE_INSTANCED_STATIC_MESHES)
+        for index, (slot, finish) in enumerate(slots.items()):
+            name = f"M_{model}_{index}"
+            path = f"{ROOT}/Materials/{name}"
+            if ASSETS.does_asset_exist(path) and not ({"1", model} & refresh):
+                asset = ASSETS.load_asset(path)
+                missing = [usage for usage in usages if not EDIT.has_material_usage(asset, usage)]
+                if missing:
+                    for usage in missing:
+                        EDIT.set_material_usage(asset, usage)
+                    save(asset)
+                result[model][slot] = asset
+                continue
+            textures = {kind: import_texture(folder / "Textures", texture,
+                        {"roughness": "linear", "opacity": "height"}.get(kind, kind)) for kind, texture in finish["textures"].items()}
+            if "normal" in textures:
+                normal = textures["normal"]
+                normal.set_editor_property("flip_green_channel", True)
+                ASSETS.save_loaded_asset(normal)
+            leaf = finish["leaf"]
+            masked = "opacity" in textures
+            blend = unreal.BlendMode.BLEND_MASKED if masked else unreal.BlendMode.BLEND_OPAQUE
+            asset = material(name, MAT.MSM_TWO_SIDED_FOLIAGE if leaf else MAT.MSM_DEFAULT_LIT, blend, two_sided=True)
+            nodes = texture_nodes(asset, textures)
+            if masked:
+                asset.set_editor_property("opacity_mask_clip_value", .48)
+                assign(nodes["opacity"], PROP.MP_OPACITY_MASK, "R")
+            if finish["uv"]:
+                offset = finish["uv"].get("offset", [0., 0.])
+                scale = finish["uv"].get("scale", [1., 1.])
+                uv = expression(asset, unreal.MaterialExpressionTextureCoordinate)
+                mapped = shader(asset, f"return UV * float2({scale[0]},{scale[1]}) + float2({offset[0]},{offset[1]});",
+                                {"UV": uv}, OUTPUT.CMOT_FLOAT2)
+                for node in nodes.values():
+                    link(mapped, node, "UVs")
+            world = expression(asset, unreal.MaterialExpressionWorldPosition)
+            weather = expression(asset, unreal.MaterialExpressionCollectionParameter,
+                                 collection=collection, parameter_name="WindAndRain")
+            film = shader(asset, "return Weather.z;", {"Weather": weather}, OUTPUT.CMOT_FLOAT1)
+            base = nodes["color"]
+            rough = nodes["roughness"]
+            if "normal" in nodes:
+                normal = nodes["normal"]
+                if finish["normal_strength"] < 1.:
+                    normal = shader(asset, "return normalize(float3(N.xy*Strength,N.z));",
+                                    {"N": normal, "Strength": number(asset, finish["normal_strength"])}, OUTPUT.CMOT_FLOAT3)
+                assign(normal, PROP.MP_NORMAL)
+
+            if buoy:
+                green = expression(asset, unreal.MaterialExpressionScalarParameter, parameter_name="GreenPaint",
+                                   use_custom_primitive_data=True, primitive_data_index=0)
+                base = shader(asset, """
+                    float mask=smoothstep(.025,.15,C.r-C.g)*smoothstep(.09,.25,C.r);
+                    float3 paint=C.r*float3(.12,.70,.29)+C.g*.22;
+                    return lerp(C, paint, Green*mask)*lerp(.68,1.,smoothstep(-30.,30.,P.z));
+                    """, {"C": base, "Green": green, "P": world}, OUTPUT.CMOT_FLOAT3)
+                gloss = shader(asset, """
+                    float wet=max(Film,1.-smoothstep(-18.,43.,P.z));
+                    return lerp(clamp(R,.16,.94),.20,.56*wet);
+                    """, {"R": (rough, "G"), "Film": film, "P": world}, OUTPUT.CMOT_FLOAT1)
+                assign(rough, PROP.MP_METALLIC, "B")
+            else:
+                variance = expression(asset, unreal.MaterialExpressionPerInstanceRandom)
+                if model == "CoconutPalm":
+                    base = shader(asset, """
+                        float leaf=smoothstep(.003,.035,C.g-max(C.r,C.b)*.9);
+                        float gray=dot(C,float3(.22,.68,.10));
+                        float3 foliage=lerp(gray*float3(.80,1.,.85),C,.72)*float3(.72,.78,.83);
+                        return lerp(C,foliage,leaf);
+                        """, {"C": base}, OUTPUT.CMOT_FLOAT3)
+                base = shader(asset, "return Color*lerp(.94,1.06,Seed)*lerp(1.,.79,Film);",
+                              {"Color": base, "Seed": variance, "Film": film}, OUTPUT.CMOT_FLOAT3)
+                gloss = shader(asset, "return lerp(clamp(R*Factor,.34,.94),.24,.48*Film);",
+                               {"R": (rough, "G"), "Factor": number(asset, finish["roughness_factor"]),
+                                "Film": film}, OUTPUT.CMOT_FLOAT1)
+                paint = expression(asset, unreal.MaterialExpressionVertexColor)
+                motion = shader(asset, """
+                    float speed=length(Wind.xy);
+                    float2 heading=Wind.xy/max(.1,speed);
+                    float amplitude=saturate(speed/20.);
+                    float phase=dot(P.xy,float2(.0021,.0017));
+                    float gust=.65+.35*sin(Time*.92-phase)+.18*sin(Time*2.07+phase*.6);
+                    float flutter=sin(Time*3.8+phase*1.4+P.z*.013);
+                    float falloff=1.-smoothstep(.68*Range,Range,distance(P,Eye));
+                    return float3(heading*amplitude*(13.+22.*gust),flutter*6.*amplitude)*Flex*falloff*Bend;
+                    """, {"Wind": weather, "P": world, "Flex": (paint, "A"),
+                          "Eye": expression(asset, unreal.MaterialExpressionCameraPositionWS),
+                          "Time": expression(asset, unreal.MaterialExpressionTime), "Range": number(asset, 3800 if masked else 8000),
+                          "Bend": number(asset, .24 if masked else 1.)}, OUTPUT.CMOT_FLOAT3)
+                asset.set_editor_property("max_world_position_offset_displacement", 12. if masked else 48.)
+                assign(motion, PROP.MP_WORLD_POSITION_OFFSET)
+                if leaf:
+                    glow = shader(asset, """
+                        float chlorophyll=smoothstep(.004,.045,C.g-max(C.r,C.b)*.86);
+                        return C*(.46*chlorophyll)*float3(.77,1.16,.64);
+                        """, {"C": base}, OUTPUT.CMOT_FLOAT3)
+                    assign(glow, PROP.MP_SUBSURFACE_COLOR)
+                    assign(number(asset, .86), PROP.MP_OPACITY)
+            assign(base, PROP.MP_BASE_COLOR)
+            assign(gloss, PROP.MP_ROUGHNESS)
+            if model != "CoconutPalm":
+                assign(rough, PROP.MP_AMBIENT_OCCLUSION, "R")
+            for usage in usages:
+                EDIT.set_material_usage(asset, usage)
+            result[model][slot] = save(asset)
+    return result
 
 
 def tropical_clouds():
@@ -509,13 +892,38 @@ def eruption_column():
 
 # Cook the exact shoreline, breaker and hull-wave functions used by the native sampler.
 WATER_MODEL = (LAYOUT.parent / "SailingWaterMath.inl").read_text().replace(
-    '#include "CoralPassLayout.inl"', LAYOUT.read_text()).replace("Real4", "float4").replace("Real ", "float ")
-WAVE_MATH = WATER_MODEL + """
+    '#include "CoralPassLayout.inl"', LAYOUT.read_text()).replace('#include "CoralSurfTiles.inl"',
+    (LAYOUT.parent/"CoralSurfTiles.inl").read_text()).replace("Real4", "float4").replace("Real ", "float ").replace("UInt", "uint")
+ROCK_MODEL = WATER_MODEL + """
+struct TidalRocks {
+    float4 Read(Texture2D atlas, float2 p, float row, out float4 slope) {
+        SailingWaterMath w;
+        float4 grid = w.RockTile(p.x,p.y,row);
+        slope=0;
+        [branch] if (grid.z==0) return 0;
+        int2 i=int2(grid.xy);
+        float2 f=frac(grid.xy);
+        float4 a=atlas.Load(int3(i,0)), b=atlas.Load(int3(i+int2(1,0),0));
+        float4 c=atlas.Load(int3(i+int2(0,1),0)), d=atlas.Load(int3(i+1,0));
+        slope=grid.z*float4(lerp(b.x-a.x,d.x-c.x,f.y),lerp(c.x-a.x,d.x-b.x,f.x),
+                            lerp(b.w-a.w,d.w-c.w,f.y),lerp(c.w-a.w,d.w-b.w,f.x));
+        return lerp(lerp(a,b,f.x),lerp(c,d,f.x),f.y);
+    }
+};
+"""
+
+def survey_texture(asset, name):
+    return expression(asset,unreal.MaterialExpressionTextureObjectParameter,parameter_name=name,
+        texture=unreal.load_asset("/Engine/EngineResources/Black"),sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
+
+WAVE_MATH = ROCK_MODEL + """
 struct Surface {
     float4 Wave(float2 mode, float2 k, float waveNumber, float omega, float previousAmplitude,
-                float2 p, float cell, float sharpness, float2 history) {
+                float2 p, float cell, float2 history) {
         float wavelength = 6.2831853 / waveNumber;
-        float a = lerp(mode.x, previousAmplitude, history.y) * (1 - smoothstep(wavelength*.25, wavelength*.50, cell));
+        float amplitude = lerp(mode.x, previousAmplitude, history.y);
+        float sharpness = waveNumber * amplitude;
+        float a = amplitude * (1 - smoothstep(wavelength*.25, wavelength*.50, cell));
         if (a==0) return 0;
         float phase = dot(k,p) + mode.y + omega*history.x;
         float s,c;
@@ -543,33 +951,48 @@ def wave_terms(indices):
         length = math.hypot(k.x,k.y)
         omega = math.sqrt(9.81*length)
         terms.append(f"s.Wave(Wave{i}.zw,float2({k.x:.10g},{k.y:.10g}),{length:.10g},{omega:.10g},"
-                     f"PrevAmp{i//4}.{'xyzw'[i%4]},p,Footprint.x,CrestShape,History)")
+                     f"PrevAmp{i//4}.{'xyzw'[i%4]},p,Footprint.x,History)")
     return " + ".join(terms)
 
 
 LONG_WAVES = f"""
 float4 sea = {wave_terms(range(LONG_WIND_COUNT))};
-float4 storm = {wave_terms(range(WIND_WAVE_COUNT, WAVE_COUNT))};
+float4 storm = 0;
+[branch] if (SeaScale>1.6) storm = {wave_terms(range(WIND_WAVE_COUNT, WAVE_COUNT))};
 """ + """
 float foam = 0;
 if (Coast.x <= -8) sea = 0;
 else {
     if (Coast.x < 38) {
         float4 peel = water.Peel(p.x,p.y,Coast.w);
+        TidalRocks rocks;
+        float4 bend;
+        float4 flow=rocks.Read(RockFlow,p,Coast.w,bend);
+        peel.xyz+=float3(flow.x,bend.xy);
         float index=water.ProfileIndex(Coast.x);
         int2 texel=int2((int)index,2*(int)Coast.w);
-        float4 roller = water.Roller(Coast.x,T+peel.x,SeaScale,Coast.w,
-            Profile.Load(int3(texel,0)),Profile.Load(int3(texel+int2(1,0),0)),
-            Profile.Load(int3(texel+int2(0,1),0)),Profile.Load(int3(texel+int2(1,1),0)),frac(index));
+        float4 lo=Profile.Load(int3(texel,0)), hi=Profile.Load(int3(texel+int2(1,0),0));
+        float4 dlo=Profile.Load(int3(texel+int2(0,1),0)), dhi=Profile.Load(int3(texel+int2(1,1),0));
+        float4 roller=water.Roller(Coast.x,T+peel.x,SeaScale,Coast.w,lo,hi,dlo,dhi,frac(index));
+        float2 flankSlope=0;
+        [branch] if (flow.w>.035) {
+            float4 travel=water.Curve(lo.x,hi.x,dlo.x,dhi.x,frac(index));
+            float4 bore=water.RockBore(flow.w,T+peel.x+travel.x/water.BreakerFrequency(),SeaScale,Coast.w);
+            float4 gate=water.BoreWindow(Coast.x);
+            roller.xyz+=gate.x*float3(bore.x,bore.z*travel.y/water.BreakerFrequency(),bore.z);
+            roller.y+=gate.y*bore.x;
+            flankSlope=gate.x*bend.zw*bore.y;
+        }
         float swell = water.Swell(Coast.x);
         float lod = 1-smoothstep(2.5,6.0,Footprint.x);
-        sea.yz = sea.yz*swell + Coast.yz*(roller.y*lod+sea.x*water.SwellSlope(Coast.x)) + peel.yz*roller.z*lod;
+        sea.yz = sea.yz*swell + Coast.yz*(roller.y*lod+sea.x*water.SwellSlope(Coast.x)) + (peel.yz*roller.z+flankSlope)*lod;
         sea.x = sea.x*swell + roller.x*lod;
         sea.w *= swell;
         foam = roller.w;
     }
-    sea += storm*water.StormSwell(Coast.x);
-    sea.yz += Coast.yz*(storm.x*water.StormSwellSlope(Coast.x));
+    float3 transfer=water.StormTransfer(p.x,p.y,Coast,SeaScale).xyz;
+    sea += storm*transfer.x;
+    sea.yz += transfer.yz*storm.x;
 }
 """
 
@@ -606,6 +1029,9 @@ float4 rings = water.Impact(p.x-Ring0.x,p.y-Ring0.y,T-Ring0.z,Ring0.w)
              + water.Impact(p.x-Ring3.x,p.y-Ring3.y,T-Ring3.z,Ring3.w);
 sea += rings.xyz*(1-smoothstep(.6,1.9,Footprint.x));
 foam = max(foam,smoothstep(.08,.22,rings.x)*.48);
+float4 whaleRings=water.WhaleRing(p.x-NearWhalePrint.x,p.y-NearWhalePrint.y,T-NearWhalePrint.z,NearWhalePrint.w)
+                + water.WhaleRing(p.x-FarWhalePrint.x,p.y-FarWhalePrint.y,T-FarWhalePrint.z,FarWhalePrint.w);
+sea += whaleRings.xyz*(1-smoothstep(1.6,5.,Footprint.x));
 """
 
 
@@ -637,18 +1063,17 @@ def water_fields(asset, world, grid, pixel, time, scale):
                       default_value=unreal.LinearColor(0,0,0,0))
     shift = previous_frame(asset,number(asset,(0,0,0)),step)
     world = shader(asset,"return World+Step;",{"World":world,"Step":shift},OUTPUT.CMOT_FLOAT3)
-    waves = {"Position": world, "CrestShape": parameter(asset,"CrestShape",.27), "T": time, "SeaScale": scale,
+    waves = {"Position": world, "T": time, "SeaScale": scale,
              "History":history}
-    waves["Profile"] = expression(asset,unreal.MaterialExpressionTextureObjectParameter,
-        parameter_name="SurfProfile",texture=unreal.load_asset("/Engine/EngineResources/Black"),
-        sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
+    waves["Profile"] = survey_texture(asset,"SurfProfile")
+    waves["RockFlow"] = survey_texture(asset,"RockFlow")
     contacts = {"Position": world, "T": time, "WakeSpeed": parameter(asset,"WakeSpeed",0),
                 "WakeBias": parameter(asset,"WakeBias",0), "Footprint": grid}
     spectrum = [f"Wave{i}" for i in range(WAVE_COUNT)] + [f"PrevAmp{i}" for i in range((WAVE_COUNT+3)//4)]
     marks = [f"Mark{i}" for i in range(8)]
     axes = [f"Axes{i}" for i in range(4)]
     biases = [f"MarkBias{i}" for i in range(2)]
-    for i, name in enumerate(spectrum + ["WakePose"] + [f"Ring{i}" for i in range(4)] + marks + axes + biases):
+    for i, name in enumerate(spectrum + ["WakePose", "NearWhalePrint", "FarWhalePrint"] + [f"Ring{i}" for i in range(4)] + marks + axes + biases):
         vector = expression(asset, unreal.MaterialExpressionVectorParameter, y=i*125,
                             parameter_name=name, default_value=unreal.LinearColor(0,0,0,0))
         full = expression(asset, unreal.MaterialExpressionAppendVector, x=-240, y=i*125)
@@ -657,7 +1082,7 @@ def water_fields(asset, world, grid, pixel, time, scale):
         (waves if name in spectrum else contacts)[name] = full
     coast_enabled = parameter(asset,"CoralCoast",0)
     coast_code = """
-        if (Enabled<.5) return float4(1000,0,0,0);
+        if (Enabled<.5) return float4(1000,0,0,-1);
         SailingWaterMath w;
         return w.Coast(P.x*.01,P.y*.01);
         """
@@ -694,11 +1119,66 @@ def water_fields(asset, world, grid, pixel, time, scale):
     # Sub-metre vertices already resolve the surveyed shore profile. Farther
     # out, recompute it on coarse triangles that may cross an island's coast.
     pixel_coast = shader(asset,WATER_MODEL+"""
-        [branch] if (Grid.x<1.4 || (Grid.x<8 && Shore.x>500)) return Shore;
+        [branch] if (Grid.x<1.4 || Shore.x>100.+4.*Grid.x) return Shore;
         """+coast_code,{"P":world,"Enabled":coast_enabled,"Grid":grid,"Shore":interpolate_water(asset,coast)},
         OUTPUT.CMOT_FLOAT4)
-    # The shortest of the long modes is 10.6 m. Resolve its curvature per pixel
-    # as the mesh coarsens; the eight short waves always use the pixel footprint.
+    # A breaking crest advances with phase speed. Its detached surface film
+    # rides the much slower horizontal particle orbit. Invert the first-order
+    # displacement to sample the film in its undisturbed material coordinates.
+    def orbit_terms(indices):
+        terms = []
+        for i in indices:
+            k = WAVE_VECTORS[i]
+            length = math.hypot(k.x, k.y)
+            terms.append(f"Wave{i}.z * sin(dot(p,float2({k.x:.10g},{k.y:.10g}))+Wave{i}.w)"
+                         f" * float2({k.x/length:.10g},{k.y/length:.10g})"
+                         f" * (1-smoothstep({math.pi/(2*length):.10g},{math.pi/length:.10g},Grid.x))")
+        return " + ".join(terms)
+
+    long_modes = list(range(LONG_WIND_COUNT)) + list(range(WIND_WAVE_COUNT,WAVE_COUNT))
+    # Reconstruct the wind-sea compression at the birth of a foam patch.
+    # The lip moves on while the surface bubbles travel with their orbit and
+    # the wind drift. Two past phases give white water a footprint behind it.
+    past = []
+    for i in range(WIND_WAVE_COUNT, WAVE_COUNT):
+        k = WAVE_VECTORS[i]
+        length = math.hypot(k.x,k.y)
+        if 2*math.pi/length > 60:
+            continue
+        # Trace back a surface film drifting downwind at 1.35 m/s.
+        frequency = math.sqrt(9.81*length) - 1.35*(-.052336*k.x-.99863*k.y)
+        weights = [frequency*t for t in (.75,2.1)]
+        past.append(f"""
+            {{
+                float phase=dot(p,float2({k.x:.10g},{k.y:.10g}))+Wave{i}.w;
+                float s,c; sincos(phase,s,c);
+                history+=Wave{i}.z*{length:.10g}*(c*float2({math.cos(weights[0]):.10g},{math.cos(weights[1]):.10g})
+                                            -s*float2({math.sin(weights[0]):.10g},{math.sin(weights[1]):.10g}));
+            }}""")
+    orbital = shader(asset,WATER_MODEL + f"""
+        if (Coast.x<=-8) return 0;
+        SailingWaterMath water;
+        float2 p=Position.xy*.01;
+        float swell=water.StormTransfer(p.x,p.y,Coast,SeaScale).x;
+        float2 orbit=({orbit_terms(range(LONG_WIND_COUNT))}) * water.Swell(Coast.x);
+        float2 history=0;
+        [branch] if (SeaScale>1.6) {{
+            orbit+=({orbit_terms(range(WIND_WAVE_COUNT,WAVE_COUNT))}) * swell;
+            {''.join(past)}
+        }}
+        float2 wash=smoothstep(.11,.29,history*swell);
+        return float3(orbit,max(.72*wash.x,.40*wash.y)*(1-smoothstep(.8,3.8,Grid.x)));
+        """,{"Position":world,"Grid":grid,"Coast":coast,"SeaScale":scale,
+             **{f"Wave{i}":waves[f"Wave{i}"] for i in long_modes}}, OUTPUT.CMOT_FLOAT3)
+    # The local displacement is already consumed in the vertex stage. Its x
+    # slot can carry foam into the pixel stage. This keeps the mesh within
+    # eight UV channels, including in Metal's lightmap-density permutation.
+    local_film = interpolate_water(asset,shader(asset,"return float4(Motion.z,Local.yzw);",
+        {"Motion":orbital,"Local":local},OUTPUT.CMOT_FLOAT4))
+    orbit_xy = interpolate_water(asset,shader(asset,"return Motion.xy;",{"Motion":orbital},OUTPUT.CMOT_FLOAT2))
+    film = shader(asset,"return float3(Orbit,Local.x);",{"Orbit":orbit_xy,"Local":local_film},OUTPUT.CMOT_FLOAT3)
+    # Restore long-wave curvature per pixel as the mesh coarsens.
+    # The eight short waves always use the pixel footprint.
     surface = shader(asset,WAVE_MATH+SHORT_WAVES+"""
         float restore = smoothstep(.72,1.35,max(Grid.x,Footprint.x));
         float4 band = Resolved;
@@ -708,8 +1188,8 @@ def water_fields(asset, world, grid, pixel, time, scale):
         }
         return float4(band.x+chop.w,band.yz+chop.yz+Local.yz,max(band.w,Local.w));
         """,{**waves,"Coast":pixel_coast,"Footprint":pixel,"Grid":grid,"Resolved":interpolate_water(asset,long_vertex,"return"),
-             "Local":interpolate_water(asset,local)},OUTPUT.CMOT_FLOAT4)
-    return surface, pixel_coast, offset
+             "Local":local_film},OUTPUT.CMOT_FLOAT4)
+    return surface, pixel_coast, offset, film, {name:contacts[name] for name in ("NearWhalePrint","FarWhalePrint")}
 
 
 def sample_texture(asset, texture, coordinates, *, normal=False, linear=False):
@@ -741,7 +1221,7 @@ def wave_volume(source, name):
 
 
 def water(source):
-    asset = material("M_CoralWater")
+    asset = material("M_CoralWater", two_sided=True)
     asset.set_editor_property("tangent_space_normal", False)
     asset.set_editor_property("has_pixel_animation", True)
     world = expression(asset, unreal.MaterialExpressionWorldPosition,
@@ -754,11 +1234,67 @@ def water(source):
     # until the wavelength falls below a pixel, including beyond the last displaced ring.
     pixel = shader(asset, "return max(length(ddx(P.xy)),length(ddy(P.xy)))*.005;",
                    {"P": world}, OUTPUT.CMOT_FLOAT1)
-    sea, coast, offset = water_fields(asset,world,grid,pixel,time,scale)
+    sea, coast, offset, orbit, whale_prints = water_fields(asset,world,grid,pixel,time,scale)
+    view = expression(asset, unreal.MaterialExpressionCameraVectorWS)
+    side = expression(asset, unreal.MaterialExpressionTwoSidedSign)
+    depth = shader(asset, """
+        // From below, water lies between the camera and the surface.
+        float path = Side < 0 ? Surface : max(0.,Bed-Surface);
+        return float2(path,path*.01*max(.08,abs(View.z)));
+        """, {"Bed": expression(asset, unreal.MaterialExpressionSceneDepthWithoutWater),
+               "Surface": expression(asset, unreal.MaterialExpressionPixelDepth), "View": view, "Side": side}, OUTPUT.CMOT_FLOAT2)
+    shore = shader(asset, ROCK_MODEL+"""
+        Backwash=0;
+        if (Coast.x>=38 || Coast.x<=-8) return 0;
+        SailingWaterMath water;
+        TidalRocks rocks;
+        float2 p=P.xy*.01;
+        float4 bend;
+        float4 rock=rocks.Read(RockFlow,p,Coast.w,bend);
+        float t = T+water.Peel(p.x,p.y,Coast.w).x+rock.x;
+        float index=water.ProfileIndex(Coast.x);
+        int2 i=int2((int)index,2*(int)Coast.w);
+        float travel=lerp(Profile.Load(int3(i,0)).x,Profile.Load(int3(i+int2(1,0),0)).x,frac(index));
+        float local=t+travel/water.BreakerFrequency();
+        float2 offshore = Coast.yz/max(.1,length(Coast.yz));
+        float2 tangent = float2(-offshore.y,offshore.x);
+        // Rock walls turn both strokes along the scanned contour. Foam trapped
+        // in a pocket releases later than the exposed water on either flank.
+        float4 lag=water.SwashTip(max(t,local)-.62*saturate(rock.w),Scale,Coast.w);
+        float2 current=offshore+rock.yz;
+        current*=min(1.,1.8/max(.01,length(current)));
+        float across = (lag.x-1.25)*.60;
+        // Trace the film through the bend, rather than stretching a single
+        // texel's velocity across the whole excursion of a breaking wave.
+        [branch] if (dot(rock.yz,rock.yz)>.006 && rock.w<1.05) {
+            float4 mid=rocks.Read(RockFlow,p-.5*across*current,Coast.w,bend);
+            float2 halfway=offshore+mid.yz;
+            halfway*=min(1.,1.8/max(.01,length(halfway)));
+            current=lerp(current,halfway,.72*(1-smoothstep(.80,1.04,mid.w)));
+        }
+        float along = .24*sin(.27*t+.07*p.x-.03*p.y);
+        Backwash.z = travel/6.2831853;
+        Backwash.w = (water.BreakerFrequency()*t+Coast.w)/6.2831853;
+        [branch] if (rock.w>.002 && rock.w<1.05) {
+            float draining=smoothstep(.28,1.75,lag.y);
+            float reach=draining*clamp(1.1+lag.y*.42,.3,3.3);
+            float4 origin=rocks.Read(RockFlow,p-current*reach,Coast.w,bend);
+            float strand=smoothstep(.13,.82,origin.w)*smoothstep(.04,.43,origin.w-rock.w);
+            Backwash.x=draining*strand*(1-smoothstep(.8,1.04,rock.w));
+        }
+        Backwash.y=water.BoreWindow(Coast.x).x*water.RockBore(rock.w,local,Scale,Coast.w).w;
+        float weight = smoothstep(-8.,-5.,Coast.x)*(1-smoothstep(7.,35.,Coast.x));
+        return float4(current*across+tangent*along,weight,lag.y);
+        """, {"P": world, "Coast": coast, "T": time, "Scale": scale,
+              "Profile":survey_texture(asset,"SurfProfile"),"RockFlow":survey_texture(asset,"RockFlow")}, OUTPUT.CMOT_FLOAT4)
+    drain_pin=unreal.CustomOutput()
+    drain_pin.set_editor_property("output_name","Backwash")
+    drain_pin.set_editor_property("output_type",OUTPUT.CMOT_FLOAT4)
+    shore.set_editor_property("additional_outputs",[drain_pin])
     drift = shader(asset, """
         float2 p = Position.xy*.01;
-        return p+.82*Sea.yz+.36*float2(sin(.065*p.y+.047*p.x-.17*T),cos(.078*p.x-.031*p.y-.13*T));
-        """, {"Position":world, "Sea":sea, "T":time}, OUTPUT.CMOT_FLOAT2)
+        return p+Orbit.xy+.36*float2(sin(.065*p.y+.047*p.x-.17*T),cos(.078*p.x-.031*p.y-.13*T));
+        """, {"Position":world, "Orbit":orbit, "T":time}, OUTPUT.CMOT_FLOAT2)
     volumes = {name:expression(asset,unreal.MaterialExpressionTextureObject,texture=wave_volume(source,name),
                                sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
                for name in ("WindChop","Capillary")}
@@ -800,7 +1336,8 @@ def water(source):
         float gale=smoothstep(2.4,4.5,Scale);
         float patch=.5+.5*sin(.105*q.y+sin(.073*q.x-.23*T))*cos(.057*q.x-.12*T);
         float gust=lerp(.54,1.25,smoothstep(.10,.87,patch));
-        float energy=gust*pow(min(Scale,1.94),.34)*(1+.18*gale);
+        // Sub-metre waves flatten between gusts in fair weather.
+        float energy=gust*pow(min(Scale,1.94),.34)*lerp(.66,1.18,smoothstep(1.,3.9,Scale));
         float variance=1.28*max(0,chop.b*.76*.76-dot(a,a))+.72*max(0,fine.b*.43*.43-dot(b,b))
                       +.27*max(0,small.b*.43*.43-dot(c,c));
         // The crest's upwind face steepens as the short gravity wave passes;
@@ -812,38 +1349,46 @@ def water(source):
         """, {**volumes,"P":drift,"T":time,"Scale":scale},OUTPUT.CMOT_FLOAT4)
     lace_uv = shader(asset, """
         float gale = smoothstep(2.4,4.5,Scale);
-        float2 flow = lerp(float2(.48,.22),float2(-.10,-1.75),gale)*T;
-        if (Coast.x<38 && Coast.x>-8) {
-            float2 onshore = -Coast.yz/max(.1,length(Coast.yz));
-            float t = T+.020*P.x-.013*P.y+.86*sin(.042*P.x+.025*P.y+Coast.w)+.42*sin(.019*P.x-.062*P.y-1.7*Coast.w);
-            float phase = Coast.x*.34+t*1.16+Coast.w;
-            flow = float2(.10,-.055)*T + onshore*(1.4*sin(phase)-.48*cos(phase*.51))
-                 + float2(-onshore.y,onshore.x)*.35*cos(phase*.73);
-        }
-        return (P-flow)*.114;
-        """, {"P":drift,"T":time,"Coast":coast,"Scale":scale}, OUTPUT.CMOT_FLOAT2)
+        float2 drift = lerp(float2(.48,.22),float2(-.10,-1.75),gale)*T;
+        float2 p = P - lerp(drift,Shore.xy,Shore.z);
+        float2 eddy = float2(sin(.46*p.y-.37*T),cos(.40*p.x+.28*T));
+        return (p+.55*Shore.z*eddy)*.114;
+        """, {"P":drift,"T":time,"Shore":shore,"Scale":scale}, OUTPUT.CMOT_FLOAT2)
     foam_texture = import_texture(source,"T_BreakerFoam","linear")
-    lace = sample_texture(asset,foam_texture,lace_uv,linear=True)
+    grain = number(asset,FOAM_GRAIN_SCALE)
+    # Keep broad coverage on the breaker, then resolve the individual films at bubble scale.
+    density = sample_texture(asset,foam_texture,lace_uv,linear=True)
+    film_uv = shader(asset,"return UV*Grain;",{"UV":lace_uv,"Grain":grain},OUTPUT.CMOT_FLOAT2)
+    lace = sample_texture(asset,foam_texture,film_uv,linear=True)
+    # Roll and stretch the foam at decimetre scale while the whole raft travels
+    # with the wash. Two crossing eddies shear the same material coordinates.
+    strand_uv = shader(asset, """
+        float2 p = UV*8.77;
+        p += .23*float2(sin(2.3*p.y+.62*T+sin(p.x*1.6)),cos(2.8*p.x-.51*T));
+        p += .065*float2(cos(6.3*p.y-.70*T),sin(7.2*p.x+.65*T));
+        return float2(.28*p.x+.13*p.y,-.08*p.x+.17*p.y);
+        """,{"UV":lace_uv,"T":time},OUTPUT.CMOT_FLOAT2)
+    strands = sample_texture(asset,foam_texture,strand_uv,linear=True)
     windrows = shader(asset, """
         float2 wind=float2(-.052336,-.998630), across=float2(-wind.y,wind.x);
         float along=dot(P,wind)-1.35*T, side=dot(P,across);
         // Stretch old foam along the wind. Vary its direction and spacing over each wave group.
         float bend=1.7*sin(.053*along+.067*side)+.65*sin(.12*along-.095*side+.23*sin(.09*side));
-        return float2(along*.075+(side+bend)*.018,(side+bend)*.15);
-        """, {"P":drift,"T":time},OUTPUT.CMOT_FLOAT2)
+        return Grain*float2(along*.075+(side+bend)*.018,(side+bend)*.15);
+        """, {"P":drift,"T":time,"Grain":grain},OUTPUT.CMOT_FLOAT2)
     streaks = sample_texture(asset,unreal.load_asset(FOAM_TEXTURE),windrows)
     froth_uv = shader(asset, """
         float2 p = P - float2(-.12,-1.52)*T;
-        return .29*float2(dot(p,float2(.8,.6)),dot(p,float2(-.6,.8)));
-        """, {"P":drift,"T":time}, OUTPUT.CMOT_FLOAT2)
+        return (.29*Grain)*float2(dot(p,float2(.8,.6)),dot(p,float2(-.6,.8)));
+        """, {"P":drift,"T":time,"Grain":grain}, OUTPUT.CMOT_FLOAT2)
     froth_detail = sample_texture(asset,foam_texture,froth_uv,linear=True)
     # At a low camera angle a horizontal projection smears foam across the
     # front of a breaker. Sample its actual displaced height on that face.
     surface_position = expression(asset,unreal.MaterialExpressionWorldPosition)
     face_uv = shader(asset, """
         float alongRidge=dot(Position.xy*.01,float2(.99863,-.052336));
-        return float2(alongRidge*.37+.035*T,Position.z*.0041-.18*T);
-        """,{"Position":surface_position,"T":time},OUTPUT.CMOT_FLOAT2)
+        return Grain*float2(alongRidge*.37+.035*T,Position.z*.0041-.18*T);
+        """,{"Position":surface_position,"T":time,"Grain":grain},OUTPUT.CMOT_FLOAT2)
     face_froth = sample_texture(asset,foam_texture,face_uv,linear=True)
     foam_flow = expression(asset,unreal.MaterialExpressionTextureObject,texture=unreal.load_asset(FOAM_TEXTURE))
     pores = shader(asset, """
@@ -853,7 +1398,7 @@ def water(source):
         [branch] if (Scale<=2.4) return .65;
         float3 p=Position*.01;
         float2 uv=float2(dot(p.xy,float2(.82,.57)),dot(p.xy,float2(-.57,.82))+.34*p.z)*.35;
-        uv+=float2(.027,-.061)*T;
+        uv=Grain*(uv+float2(.027,-.061)*T);
         float2 dx=ddx(uv),dy=ddy(uv);
         float footprint=max(length(dx),length(dy));
         [branch] if (footprint>=.039) return .65;
@@ -861,7 +1406,7 @@ def water(source):
         float neighbourhood=Texture2DSampleGrad(Map,MapSampler,uv,dx*6,dy*6).r;
         float resolved=1-smoothstep(.010,.039,footprint);
         return lerp(.65,smoothstep(.21,.66,foam+2.2*(foam-neighbourhood)),resolved);
-        """,{"Position":surface_position,"Map":foam_flow,"T":time,"Scale":scale},OUTPUT.CMOT_FLOAT1)
+        """,{"Position":surface_position,"Map":foam_flow,"T":time,"Scale":scale,"Grain":grain},OUTPUT.CMOT_FLOAT1)
     field_view = expression(asset,unreal.MaterialExpressionVectorParameter,parameter_name="WakeFieldView",
                             default_value=unreal.LinearColor(0,0,0,0))
     field_inputs = {"P":world,"Flow":drift,"View":field_view,"Blend":(field_view,"A")}
@@ -874,15 +1419,48 @@ def water(source):
         if (View.z<=0 || max(box.x,box.y)>=.5) return 0;
         // Surface orbits bend the bubble lanes. The stored chart remains fixed
         // in the emission frame, including after a turn or throttle change.
-        float2 uv = lerp(p,Flow,.68)*View.z;
-        float3 field = lerp(Texture2DSampleLevel(A,ASampler,uv,0).rgb,
-                            Texture2DSampleLevel(B,BSampler,uv,0).rgb,Blend);
+        // The chart stores births in world space. A full storm orbit can be
+        // wider than a hull. Bend strand edges at sub-metre scale so a newly
+        // deposited sheet stays connected to the actual point of impact.
+        float2 bend = Flow-p;
+        float2 uv = (p+bend*(.68/max(1.,length(bend))))*View.z;
+        float4 field = lerp(Texture2DSampleLevel(A,ASampler,uv,0),
+                            Texture2DSampleLevel(B,BSampler,uv,0),Blend);
         // Older bubbles disperse in patches along their original course.
         float eddy = .5+.5*sin(dot(p,float2(.53,-.24))+.8*sin(dot(p,float2(.13,.40))));
         float dilute = 1-smoothstep(.16,.78,max(field.r,max(field.g,field.b)));
-        field *= 1-.28*dilute*eddy;
+        field.rgb *= 1-.28*dilute*eddy;
         return field*(1-smoothstep(.45,.5,max(box.x,box.y)));
-        """,field_inputs,OUTPUT.CMOT_FLOAT3)
+        """,field_inputs,OUTPUT.CMOT_FLOAT4)
+    whale_wash = shader(asset, """
+        struct Footprint {
+            float2 Coverage(float4 mark, float2 p, float time, float pores) {
+                float age=time-mark.z;
+                if (mark.w<=0 || age<0 || age>=16) return 0;
+                float2 delta=p-mark.xy;
+                if (dot(delta,delta)>36*36) return 0;
+                float radius=length(delta);
+                float edge=radius-2.5*age+.47*(pores-.5);
+                float patch=smoothstep(.18,.74,pores+.18*sin(dot(delta,float2(.34,-.28))));
+                float collar=exp(-edge*edge/(.42+.16*age))*exp(-.30*age)*(.12+.88*patch);
+                float boil=(1-smoothstep(.24,1.,radius/(2.3+.24*age)))*exp(-.18*age);
+                float wet=mark.w*smoothstep(0,.16,age)*(1-smoothstep(12,16,age));
+                float slick=(1-smoothstep(.35,1.,radius/(2.6+.4*age)))*smoothstep(.4,2.,age);
+                return wet*float2(.80*collar+.69*boil*(.35+.65*patch),slick);
+            }
+        }; Footprint wake;
+        return max(wake.Coverage(NearWhalePrint,P.xy*.01,T,Pores),wake.Coverage(FarWhalePrint,P.xy*.01,T,Pores));
+        """, {**whale_prints,"P":world,"T":time,"Pores":pores}, OUTPUT.CMOT_FLOAT2)
+    transport_map=expression(asset,unreal.MaterialExpressionTextureObject,texture=wave_volume(source,"SurfTransport"),
+        sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
+    transport=shader(asset,"""
+        if (Shore.z<=.001) return 0;
+        // Periodic surface transport is sampled in the same travelling phase as the breaker.
+        // A smooth world-space coordinate keeps the tracer continuous around headlands.
+        float2 p=P.xy*.01;
+        float along=dot(p,float2(.88,.47))/19.+.16*sin(.047*p.y-.034*p.x+.08*T);
+        return Texture3DSampleLevel(Map,MapSampler,float3(Phase.z,along,Phase.w),0);
+        """,{"P":world,"T":time,"Map":transport_map,"Phase":(shore,"Backwash"),"Shore":shore},OUTPUT.CMOT_FLOAT4)
     foam = shader(asset, """
         float gale = smoothstep(2.4,4.5,SeaScale);
         float face = -dot(Sea.yz,float2(-.052336,-.998630));
@@ -890,40 +1468,96 @@ def water(source):
         float compression = Sea.x;
         float surviving = smoothstep(.34,.74,Detail.w);
         float froth = smoothstep(.25,.72,Streak.r+.14*(bubbles.r-.5));
-        float front = compression+.57*face+.46*(Lace.g-.5)+.24*(bubbles.g-.5);
+        float front = compression+.44*face+.22*(Density-.5)+.12*(bubbles.g-.5);
         float breaker = smoothstep(lerp(.43,.18,gale),lerp(.73,.58,gale),front);
         // A spilling lip fills into an opaque sheet. Its thinner edge reveals
         // individual holes, with a raft of connected filaments behind the lip.
         float raft = smoothstep(.14,.84,.76*Lace.r+.48*bubbles.r);
-        float cover = smoothstep(.55,.90,breaker+.46*(Lace.g-.5)+.22*(bubbles.g-.5));
+        float cover = smoothstep(.55,.90,breaker+.46*(Density-.5)+.22*(bubbles.g-.5));
         // The newly broken lip contains milky sheets with sharply bounded
         // holes. As the water drains, only the rims of the holes stay white.
-        float airPocket=smoothstep(.39,.64,.55*Lace.g+.45*bubbles.b);
+        float airPocket=smoothstep(.39,.64,.55*Density+.45*bubbles.b);
         float dense = saturate(.05+.54*raft+.42*airPocket*(.3+.7*bubbles.b));
-        float cap = breaker*lerp(.45*raft,lerp(raft,dense,cover)*(.09+1.16*froth),gale);
+        float cap = breaker*lerp(.07*smoothstep(.49,.83,bubbles.b)*froth,lerp(raft,dense,cover)*(.09+1.16*froth),gale);
         // Long breakers throw the lip. Bubbles in the short wind waves travel
         // on under it, leaving rafts in the trough after compression subsides.
-        float back = smoothstep(-.23,.38,compression-.65*face+.25*(Lace.g-.5));
-        float afterwash = gale*surviving*(.30+.70*back)*froth*(.28+.72*max(bubbles.b,raft));
-        float localFoam = saturate(Sea.w)*lerp(.83*raft,dense,smoothstep(.42,.95,Sea.w));
+        float back = smoothstep(-.23,.38,compression-.65*face+.25*(Density-.5));
+        float afterwash = gale*surviving*(.08+.92*back*back)*froth*(.28+.72*max(bubbles.b,raft));
+        float local = saturate(Sea.w);
+        float localFoam = local*lerp(.83*raft,dense,smoothstep(.42,.95,local));
+        // New air enters only where a portion of the crest overtakes its face.
+        // The transported fraction survives the impact and thins on the outward stroke.
+        float fine = smoothstep(.25,.75,.64*bubbles.b+.36*Strands.g);
+        float spilling = Transport.g * smoothstep(.12,.64,local);
+        float residueAir = Transport.r * smoothstep(.08,.37,local+.24*Backwash.y);
+        float contact = Backwash.y*.23 + Backwash.x*.14;
+        // Entrained air collects between patches of clear water. Use the
+        // transported, decimetre-sized films here; the fine bubbles alone
+        // average to an opaque-looking stripe even at standing eye height.
+        float parcel=.72*Strands.g+.28*Density+.035*(Strands.r-.5);
+        float clumps=smoothstep(.39,.64,parcel);
+        float drainage=smoothstep(.46,.66,parcel+.025*(Lace.r-.5));
+        float surf = spilling*clumps*(.16+.59*fine) + residueAir*drainage*(.04+.27*fine)
+                   +contact*clumps*(.18+.39*fine);
+        // A thin aerated toe follows the actual bed intersection, including individual
+        // rock faces. As water recedes the wider foam fraction breaks into patches.
+        float cm=max(0.,Depth.y*100.);
+        float wetEdge=smoothstep(.06,.72,cm)*(1.-smoothstep(1.45,4.1,cm));
+        float spillingToe=smoothstep(.12,1.45,-Shore.w);
+        float beading=smoothstep(.24,.71,.56*bubbles.r+.27*Strands.g+.17*Streak.r);
+        float toe=0.;
+        [branch] if (wetEdge*Shore.z>.001) {
+            // Decimetre-scale patches of entrained air leave open windows along
+            // the leading edge. The same patches travel back with the thin sheet.
+            float2 bed=Pshore.xy*.01-Shore.xy;
+            float parcel=.5+.24*sin(6.1*bed.x-2.5*bed.y+.84*sin(4.7*bed.y))
+                           +.26*sin(6.5*bed.y+.9*sin(7.1*bed.x));
+            float patches=smoothstep(.28,.72,parcel+.19*(Strands.g-.5));
+            toe=wetEdge*(.14+.65*spillingToe+.17*residueAir)*beading*(.08+.92*patches);
+        }
+        localFoam = lerp(localFoam,max(surf,toe),Shore.z);
         // Most bubbles rise through the wake in patches. The broad turquoise
         // plume belongs to the water column; only fresh clusters whiten its surface.
-        float raftEdge = smoothstep(.47,.73,Lace.g+.19*(Fine.g-.5));
+        float raftEdge = smoothstep(.47,.73,Density+.19*(Fine.g-.5));
         float stern = .32*smoothstep(.30,1.,Trail.r)*raft;
         float bow = .47*smoothstep(.37,.96,Trail.g)*max(raft,.42*Fine.b);
         float propeller = .72*smoothstep(.31,1.,Trail.b)*dense;
         float wake = (.14+.86*raftEdge)*max(stern,max(bow,propeller));
-        float coverage=max(max(localFoam,wake),1-(1-cap)*(1-afterwash));
-        float films=lerp(1.,.06+1.43*Pores,gale);
+        float coverage=max(max(localFoam,wake),(1-(1-cap)*(1-afterwash))*(1-.84*Shore.z));
+        // Thick young foam covers the centres of cells. As the film thins,
+        // drainage opens holes and breaks their outlines at a second scale.
+        float torn=smoothstep(.24,.70,.57*bubbles.g+.43*Streak.r);
+        float drained=(.12+1.18*Pores)*(.46+.54*torn);
+        float films=lerp(1.,lerp(drained,.73+.43*bubbles.b,cover*froth),gale);
         // Old rafts increasingly consist of disconnected films in the trough.
-        float residue=.23*gale*surviving*Pores*Pores*(.23+.77*raft);
-        return saturate(coverage*films+(1-coverage)*residue);
-        """, {"Sea":sea,"Detail":detail,"Trail":history,"Lace":lace,"Streak":streaks,
-              "Fine":froth_detail,"FaceFroth":face_froth,"Pores":pores,"SeaScale":scale},OUTPUT.CMOT_FLOAT1,600)
+        float residue=.14*gale*surviving*Pores*Pores*(.23+.77*raft);
+        // In the wake of a spilling crest the air is concentrated in the
+        // stretched borders of draining films. Leave their interiors open.
+        float filmEdges=smoothstep(.16,.72,max(Lace.r,.58*bubbles.r));
+        float filmClumps=smoothstep(.27,.64,Density+.24*(Streak.r-.5));
+        float oldFoam=gale*Orbit.z*filmEdges*(.25+.75*filmClumps)*(.35+.65*torn);
+        // At re-entry the stem ventilates a dense sheet. As its air fraction
+        // falls the wet holes join up and only irregular bubble rims remain.
+        float wash=Trail.a;
+        float patch=.50*Density+.32*bubbles.g+.18*Streak.r;
+        float filled=smoothstep(.50,.79,wash+.52*(patch-.5));
+        float strands=smoothstep(.23,.65,raft+.28*(patch-.5));
+        float impact=wash*lerp(strands*(.20+.80*Pores),.79+.21*bubbles.b,filled);
+        float windFoam=max(oldFoam*(1-Shore.z),coverage*films+(1-coverage)*residue*(1-Shore.z));
+        return saturate(max(impact,max(WhaleWash.x*(.27+1.25*raft),windFoam)));
+        """, {"WhaleWash":whale_wash,"Sea":sea,"Orbit":orbit,"Detail":detail,"Trail":history,"Lace":lace,"Density":(density,"G"),"Streak":streaks,
+              "Fine":froth_detail,"FaceFroth":face_froth,"Pores":pores,"SeaScale":scale,"Shore":shore,"Depth":depth,
+              "Transport":transport,"Strands":strands,"Pshore":world,"Backwash":(shore,"Backwash")},OUTPUT.CMOT_FLOAT1,600)
     normal = shader(asset, """
-        float slick=saturate(Trail.r*.7+Trail.b*.4+Sea.w*.44);
+        float slick=max(WhaleWash.y,saturate(Trail.r*.7+Trail.b*.4+Sea.w*.44+.65*Trail.a));
+        // Shelter behind the breaking ridge leaves broader reflecting facets.
+        // The exposed face still carries the full crossing capillary field.
+        float shelter=smoothstep(2.4,4.5,Scale)*smoothstep(.08,.67,dot(Sea.yz,float2(-.052336,-.998630)));
         // Thick foam damps the capillary waves that reflect a sharp sky highlight.
-        float2 slopes=Detail.xy*(1-.70*max(slick,Foam));
+        float film = Shore.z*(1-smoothstep(.08,.90,Depth.y));
+        float grazing = 1-smoothstep(.045,.26,abs(View.z));
+        float2 breakerRipple=(Transport.ba-.5)*float2(.072,.063)*Shore.z*smoothstep(.08,.58,Sea.w);
+        float2 slopes=breakerRipple+Detail.xy*(1-.50*shelter)*(1-.70*max(slick,Foam))*(1-.68*film)*(1-.26*grazing);
         if (Rain>0 && Pixel<.05) {
             // Short dispersing wave packets from independent impacts, in metres.
             // A ring fits inside its cell throughout its lifetime.
@@ -938,8 +1572,10 @@ def water(source):
             slopes+=dp/max(.025,r)*cos(wave*82)*envelope*.23*Rain*(1-Foam)*(1-smoothstep(.004,.045,Pixel));
         }
         return normalize(float3(-Sea.yz-slopes,1));
-        """,{"Sea":sea,"Detail":detail,"Trail":history,"Foam":foam,"P":drift,"Rain":rainfall,"Pixel":pixel,"T":time},OUTPUT.CMOT_FLOAT3)
-    opacity = shader(asset, "return lerp(.085,.98,Foam);", {"Foam": foam}, OUTPUT.CMOT_FLOAT1)
+        """,{"Transport":transport,"WhaleWash":whale_wash,"Sea":sea,"Detail":detail,"Trail":history,"Foam":foam,"P":drift,"Rain":rainfall,
+              "Pixel":pixel,"T":time,"Scale":scale,"Shore":shore,"Depth":depth,"View":view},OUTPUT.CMOT_FLOAT3)
+    opacity = shader(asset, "return lerp(.042+.041*smoothstep(.14,1.8,Depth.y),.96,Foam);",
+                     {"Foam": foam, "Depth": depth}, OUTPUT.CMOT_FLOAT1)
     base = shader(asset, """
         float air = max(Air.w,max(Trail.r+Trail.g,Trail.b));
         float3 face = lerp(float3(.002,.009,.012),float3(.046,.186,.168),saturate(air)*.85);
@@ -951,23 +1587,43 @@ def water(source):
     rough = shader(asset, """
         // Slopes lost to minification become a wider specular lobe on the horizon.
         float distanceFilter=smoothstep(.045,1.8,Pixel);
-        float base=.048+.022*distanceFilter+.044*Rain;
+        float grazing=1-smoothstep(.045,.23,abs(View.z));
+        float film=Shore.z*(1-smoothstep(.05,.50,Depth.y));
+        float base=lerp(.057+.024*distanceFilter+.026*grazing,.044,film)+.044*Rain;
         // UE's GGX alpha is perceptual roughness squared. Add unresolved
         // slope variance before converting the lobe width back to roughness.
-        float rough=pow(pow(base,4)+.105*max(0,Detail.z),.25);
-        rough+=smoothstep(2.4,4.5,Scale)*.022;
-        return lerp(rough,.72,Foam);
-        """, {"Foam":foam,"Detail":detail,"Pixel":pixel,"Scale":scale,"Rain":rainfall}, OUTPUT.CMOT_FLOAT1)
+        float rough=pow(pow(base,4)+.09*max(0,Detail.z)*(1-.77*film),.25);
+        float gale=smoothstep(2.4,4.5,Scale);
+        float shelter=smoothstep(.08,.67,dot(Sea.yz,float2(-.052336,-.998630)));
+        rough=lerp(rough,rough*(1-.30*shelter)+.016*(1-shelter),gale);
+        // Air films scatter sky light diffusely. In the gaps the clean surface
+        // keeps the dark troughs and angled bands of reflected sky.
+        return lerp(rough,.72,smoothstep(.12,.88,Foam));
+        """, {"Foam":foam,"Detail":detail,"Sea":sea,"Pixel":pixel,"Scale":scale,"Rain":rainfall,
+              "Shore":shore,"Depth":depth,"View":view}, OUTPUT.CMOT_FLOAT1)
     assign(offset, PROP.MP_WORLD_POSITION_OFFSET)
     assign(normal, PROP.MP_NORMAL)
     assign(base, PROP.MP_BASE_COLOR)
     assign(rough, PROP.MP_ROUGHNESS)
     assign(opacity, PROP.MP_OPACITY)
     assign(number(asset, .255), PROP.MP_SPECULAR)
+    # Use the wave's refracted ray relative to calm water. The bounded offset
+    # keeps a steep crest from dragging the unwarped shore across the screen.
+    asset.set_editor_property("refraction_method", unreal.RefractionMode.RM_2D_OFFSET)
+    refraction = shader(asset, """
+        float eta = Side < 0 ? 1.333 : 1./1.333;
+        float3 flat = refract(-View,float3(0,0,Side),eta);
+        float3 bent = refract(-View,N*Side,eta);
+        float2 offset = TransformWorldVectorToView(bent-flat).xy;
+        float visible = smoothstep(.02,.18,Side*View.z)*(1-smoothstep(.04,.82,Foam));
+        float thickness=1.-exp(-max(0.,Path.x)*.012);
+        return clamp(offset*.057,-.016,.016)*visible*thickness;
+        """, {"View":view,"N":normal,"Foam":foam,"Side":side,"Path":depth}, OUTPUT.CMOT_FLOAT2)
+    assign(refraction, PROP.MP_REFRACTION)
     # Integrate the diffuse part of the water column separately. Projecting a
     # sharp surface shadow through all forty metres made a sail look like a fin.
     # Keep the total extinction so the visibility of hulls and reef stays depth dependent.
-    scattering = (.000012, .000089, .000168)
+    scattering = (.000016, .000114, .000146)
     diffuse_fraction = .94
     direct = tuple(s * (1 - diffuse_fraction) for s in scattering)
     absorption = tuple(e - d for e, d in zip(WATER_EXTINCTION_CM, direct))
@@ -978,43 +1634,70 @@ def water(source):
         float gale=smoothstep(1.5,4.2,Scale);
         return (1+.8*gale+1.2*gale*smoothstep(-.3,.7,Sea.x));
         """,{"Scale":scale,"Sea":sea},OUTPUT.CMOT_FLOAT1)
+    view_cos = shader(asset, "return saturate(dot(N,View)*Side);",
+                      {"N":normal,"View":view,"Side":side}, OUTPUT.CMOT_FLOAT1)
+    window = shader(asset, """
+        // At the critical angle for a water-to-air ray, the moving surface
+        // reflects the water column. Allow a pixel of transition as it ripples.
+        const float criticalCos = .661;
+        float width = clamp(fwidth(Cosine),.012,.07);
+        return Side > 0 ? 1. : smoothstep(criticalCos-width,criticalCos+width,Cosine);
+        """, {"Cosine":view_cos,"Side":side}, OUTPUT.CMOT_FLOAT1)
+    extinction = number(asset, WATER_EXTINCTION_CM)
+    sediment = shader(asset, """
+        // Turbulence suspends fine mineral grains on the sandy toe. Their
+        // extinction is nearly neutral beside the red absorption of seawater.
+        float stirred=.00009+.00061*saturate(Sea.w)+.00012*max(0.,Shore.w);
+        return Shore.z*(1.-smoothstep(2.5,18.,Coast.x))*stirred;
+        """,{"Coast":coast,"Shore":shore,"Sea":sea},OUTPUT.CMOT_FLOAT1)
+    behind = shader(asset, """
+        if (Side > 0) return 1.;
+        return lerp(.025,1.,Window)*exp(-(Extinction*Turbidity+Sediment)*Depth.x);
+        """, {"Side":side,"Window":window,"Extinction":extinction,"Turbidity":turbidity,"Depth":depth,"Sediment":sediment}, OUTPUT.CMOT_FLOAT3)
     ground_light = unreal.MaterialExpressionSkyAtmosphereLightIlluminanceOnGround
     fill = shader(asset, """
-        float pathCm = max(0, Bed - Surface);
-        float3 volume = DiffuseAlbedo * (1 - exp(-Extinction * Turbidity * pathCm));
-        float viewCos = saturate(dot(N, ViewDir));
-        float transmission = .98 * (1 - pow(1 - viewCos, 5)) * (1 - Opacity);
+        float pathCm = Depth.x;
+        float3 waterK=Extinction*Turbidity, totalK=waterK+Sediment;
+        float3 volume = (DiffuseAlbedo*waterK+float3(.34,.37,.24)*Sediment)/totalK
+                      * (1 - exp(-totalK*pathCm));
+        float transmission = .98 * (1 - pow(1 - Cosine, 5)) * (1 - Opacity);
         float3 incident = Sun*saturate(SunDir.z) + Moon*saturate(MoonDir.z);
         float3 diffuseVolume = incident * (1.0 / (4 * 3.14159265)) * volume * transmission;
         // Entrained bubbles return green-blue light beneath the white skin of
         // the wake. This blooms through its thin edges and dies with the trail.
         float aerated = saturate(.65*Trail.r+.55*Trail.g+.85*Trail.b);
-        diffuseVolume += incident * float3(.0007,.018,.021)*aerated*transmission;
+        diffuseVolume += incident * (float3(.0007,.028,.032)*aerated
+                       + float3(.013,.027,.030)*Trail.a)*transmission;
         // Light traversing a thin, aerated crest escapes on its shaded face.
         float lip = smoothstep(.16,.58,Sea.x)*smoothstep(.04,.45,length(Sea.yz));
         float through = .12+.88*pow(saturate(dot(-ViewDir,SunDir)),3);
-        diffuseVolume += Sun*float3(.0009,.0046,.0040)*lip*through*transmission*smoothstep(2.4,4.5,Scale);
+        float crestAir = (.12+.76*smoothstep(2.4,4.5,Scale))*lip+.22*Sea.w*Shore.z;
+        diffuseVolume += Sun*float3(.0011,.0057,.0046)*crestAir*through*transmission;
         float3 diffuseFoam = (Sun * saturate(SunDir.z) + Moon * saturate(MoonDir.z)) / 3.14159265;
-        return diffuseVolume + diffuseFoam * FoamReflectance * Foam;
+        float3 reflectedWater = (.6 + .4*Cosine) * incident * float3(.00007,.00043,.00055) * (1-Window);
+        return diffuseVolume + reflectedWater + diffuseFoam * FoamReflectance * Foam;
         """, {"Sun": expression(asset, ground_light), "Moon": expression(asset, ground_light, light_index=1),
               "SunDir": expression(asset, unreal.MaterialExpressionSkyAtmosphereLightDirection),
               "MoonDir": expression(asset, unreal.MaterialExpressionSkyAtmosphereLightDirection, light_index=1),
               "FoamReflectance":number(asset,tuple(x * FOAM_DIFFUSE_SHARE for x in FOAM_ALBEDO)), "Foam":foam,
-              "DiffuseAlbedo": number(asset, diffuse_albedo), "Extinction": number(asset, WATER_EXTINCTION_CM),"Turbidity":turbidity,
-              "Bed": expression(asset, unreal.MaterialExpressionSceneDepthWithoutWater),
-              "Surface": expression(asset, unreal.MaterialExpressionPixelDepth), "Opacity": opacity,
-              "N": normal, "ViewDir": expression(asset, unreal.MaterialExpressionCameraVectorWS),
-              "Sea":sea,"Scale":scale,"Trail":history}, OUTPUT.CMOT_FLOAT3)
+              "DiffuseAlbedo": number(asset, diffuse_albedo), "Extinction": extinction,"Turbidity":turbidity,"Sediment":sediment,
+              "Depth": depth, "Opacity": opacity, "Shore": shore, "Cosine":view_cos, "Window":window,
+              "ViewDir": view, "Sea":sea,"Scale":scale,"Trail":history}, OUTPUT.CMOT_FLOAT3)
     output = expression(asset, unreal.MaterialExpressionSingleLayerWaterMaterialOutput, -95, 1190)
     for pin, value in {
         "ScatteringCoefficients": direct,
         "AbsorptionCoefficients": absorption,
-        "PhaseG": .21, "ColorScaleBehindWater": 0.88,
+        "PhaseG": .25,
     }.items():
         coefficient=number(asset,value)
         if pin in ("AbsorptionCoefficients","ScatteringCoefficients"):
-            coefficient=shader(asset,"return K*Turbidity;",{"K":coefficient,"Turbidity":turbidity},OUTPUT.CMOT_FLOAT3)
+            # UE applies these coefficients to the distance beyond the surface.
+            # Below water this part of the ray is in air.
+            extra = "+Sediment" if pin == "AbsorptionCoefficients" else ""
+            coefficient=shader(asset,f"return Side > 0 ? K*Turbidity{extra} : 0.;",
+                               {"K":coefficient,"Turbidity":turbidity,"Side":side,"Sediment":sediment},OUTPUT.CMOT_FLOAT3)
         link(coefficient, output, pin)
+    link(behind, output, "ColorScaleBehindWater")
     # The single-layer model compiles only once all four optical inputs exist.
     asset.set_editor_property("shading_model", MAT.MSM_SINGLE_LAYER_WATER)
     assign(fill, PROP.MP_EMISSIVE_COLOR)
@@ -1029,10 +1712,68 @@ def transparent_effect(name, alpha_code, luminosity, blend=unreal.BlendMode.BLEN
     eye = expression(asset, unreal.MaterialExpressionEyeAdaptation)
     inputs = {"UV": uv, "Strength": (color, "A"), "Flash": fade, "Eye": eye}
     if name == "M_SquallRain":
+        # Each drop keeps one seed and a fall rate in the static vertex buffer.
+        # Reconstruct its camera-relative streak without streaming a mesh per frame.
+        rain_vectors = {key:expression(asset,unreal.MaterialExpressionVectorParameter,parameter_name="Rain"+key)
+                        for key in ("Eye","Travel","Drift","Right")}
+        rest = expression(asset,unreal.MaterialExpressionWorldPosition,
+                          world_position_shader_offset=unreal.WorldPositionIncludedOffsets.WPT_EXCLUDE_ALL_SHADER_OFFSETS)
+        flight = expression(asset,unreal.MaterialExpressionTextureCoordinate,coordinate_index=1)
+        streak = shader(asset,"""
+            float3 Seed=P-Eye;
+            float r=Flight.y, rate=Flight.x;
+            float3 span=float3(2*r,2*r,1.44*r), center=float3(0,0,.25*r);
+            float3 local=(frac((Seed+Travel*rate-Eye-center)/span+.5)-.5)*span+center;
+            float distanceCm=length(local);
+            // The fast near drops cross more of the exposure in a gale.
+            float squall=Rain*smoothstep(520.,1080.,length(Drift.xy));
+            float shutter=min(.016+.024*Rain+.016*squall,(.065+.034*squall)*distanceCm/(length(Drift)*rate+.001));
+            float3 corner=Right*((2*UV.x-1)*r*(.00060+.00017*squall)*rate) - Drift*(1-UV.y)*shutter*rate;
+            float visibility=Rain*smoothstep(40,210,distanceCm)*(1-smoothstep(.58*r,r,distanceCm));
+            return float4(local+corner-Seed,visibility);
+            """,{**rain_vectors,"P":rest,"Flight":flight,"UV":uv,"Rain":(rain_vectors["Right"],"A")},
+                       OUTPUT.CMOT_FLOAT4)
+        assign(shader(asset,"return Streak.xyz;",{"Streak":streak},OUTPUT.CMOT_FLOAT3), PROP.MP_WORLD_POSITION_OFFSET)
+        inputs["Strength"]=interpolate_water(asset,shader(asset,"return Streak.w;",{"Streak":streak},OUTPUT.CMOT_FLOAT1))
         inputs["Contact"] = expression(asset,unreal.MaterialExpressionDepthFade,fade_distance_default=32.)
         inputs["Sun"] = expression(asset,unreal.MaterialExpressionSkyAtmosphereLightIlluminanceOnGround)
     assign(shader(asset, alpha_code, inputs, OUTPUT.CMOT_FLOAT1), PROP.MP_OPACITY)
     assign(shader(asset, luminosity, inputs, OUTPUT.CMOT_FLOAT3, 250), PROP.MP_EMISSIVE_COLOR)
+    return save(asset)
+
+
+def breaker_lip(name, source):
+    asset = material(name, MAT.MSM_DEFAULT_LIT, unreal.BlendMode.BLEND_TRANSLUCENT, two_sided=True)
+    asset.set_editor_property("translucency_lighting_mode", unreal.TranslucencyLightingMode.TLM_SURFACE_PER_PIXEL_LIGHTING)
+    uv = expression(asset,unreal.MaterialExpressionTextureCoordinate)
+    paint = expression(asset,unreal.MaterialExpressionVertexColor)
+    flow = shader(asset, """
+        float2 q=float2(UV.x*1.42+Seed*8, UV.y*.18-.37*Age);
+        return q+.058*float2(sin(q.y*17+q.x*4),cos(q.x*8+Age*3));
+        """,{"UV":uv,"Seed":(paint,"G"),"Age":(paint,"B")},OUTPUT.CMOT_FLOAT2)
+    film = sample_texture(asset,import_texture(source,"T_BreakerFoam","linear"),flow,linear=True)
+    aeration = shader(asset, """
+        float tip=smoothstep(.58,.98,UV.y);
+        float impact=smoothstep(.32,.76,Age);
+        return tip*(.15+.85*impact)*Air*smoothstep(.15,.84,.62*Film.g+.54*Film.r);
+        """,{"UV":uv,"Age":(paint,"B"),"Air":(paint,"R"),"Film":film},OUTPUT.CMOT_FLOAT1)
+    assign(shader(asset,"return lerp(float3(.014,.13,.14),float3(.77,.85,.84),Air);",
+                  {"Air":aeration},OUTPUT.CMOT_FLOAT3), PROP.MP_BASE_COLOR)
+    assign(shader(asset,"return .085+.39*Air;",{"Air":aeration},OUTPUT.CMOT_FLOAT1), PROP.MP_ROUGHNESS)
+    assign(shader(asset,"return Weight*(.10+.69*Air+.19*pow(1-abs(dot(N,V)),3))*Edge;",
+                  {"Weight":(paint,"A"),"Air":aeration,
+                   "N":expression(asset,unreal.MaterialExpressionPixelNormalWS),"V":expression(asset,unreal.MaterialExpressionCameraVectorWS),
+                   "Edge":expression(asset,unreal.MaterialExpressionDepthFade,fade_distance_default=3.)},OUTPUT.CMOT_FLOAT1), PROP.MP_OPACITY)
+    asset.set_editor_property("refraction_method", unreal.RefractionMode.RM_2D_OFFSET)
+    assign(shader(asset,"return TransformWorldVectorToView(N).xy*(.008*Weight*(1-Air));",
+        {"Weight":(paint,"A"),"Air":aeration,"N":expression(asset,unreal.MaterialExpressionPixelNormalWS)},OUTPUT.CMOT_FLOAT2),PROP.MP_REFRACTION)
+    return save(asset)
+
+
+def aircraft_paint(name):
+    asset=material(name)
+    assign(expression(asset,unreal.MaterialExpressionVertexColor),PROP.MP_BASE_COLOR)
+    assign(number(asset,.39),PROP.MP_ROUGHNESS)
     return save(asset)
 
 
@@ -1089,6 +1830,8 @@ def distant_sky(source):
             image.set_editor_property("max_texture_size",8192)
             ASSETS.save_loaded_asset(image)
         inputs[role] = expression(asset, unreal.MaterialExpressionTextureObject, texture=image)
+    inputs["Jet"] = expression(asset,unreal.MaterialExpressionVectorParameter,parameter_name="JetTrack",default_value=unreal.LinearColor(0,0,0,0))
+    inputs["Eye"] = expression(asset,unreal.MaterialExpressionCameraPositionWS)
     sky = shader(asset, """
         float3 gaze = normalize(-EyeVector);
         float u = atan2(gaze.y,gaze.x) * .15915494 + T*.000011;
@@ -1109,7 +1852,22 @@ def distant_sky(source):
         // blue daylight overpowers the whole storm panorama during a downpour.
         float3 panorama = (day*mix.r + evening*mix.g + storm*mix.b)*exp2(dot(mix,log2(float3(6180,2100,340))));
         float nearHorizon = smoothstep(-.029,.038,gaze.z);
-        return lerp(Air,panorama,nearHorizon*dot(Weights,float3(.96,.91,.99)));
+        float3 background=lerp(Air,panorama,nearHorizon*dot(Weights,float3(.96,.91,.99)));
+        if (gaze.z<=.025 || Jet.z<1) return background;
+        float distance=(Jet.z-Eye.z*.01)/gaze.z;
+        if (distance<=0) return background;
+        float2 rel=Eye.xy*.01+gaze.xy*distance-Jet.xy;
+        const float2 heading=float2(.932327,.361615);
+        float age=-dot(rel,heading)/172.;
+        if (age<=.3 || age>100) return background;
+        float across=dot(rel,float2(-heading.y,heading.x)) - .87*age;
+        across-=age*(.19*sin(age*.19+Jet.x*.0004)+.12*sin(age*.53));
+        float width=2.8+.39*age;
+        float coverage=exp(-.5*pow((abs(across)-6.)/width,2));
+        float billow=.69+.20*sin(age*.82+across*.087)+.11*sin(age*2.13-across*.14);
+        float alpha=.52*coverage*billow*smoothstep(.3,1.8,age)*(1-smoothstep(36.,100.,age));
+        float daylight=dot(Weights,float3(1,.52,.18));
+        return lerp(background,panorama+float3(.92,.93,.94)*daylight*max(1.,dot(panorama,float3(.22,.66,.12))),alpha*daylight);
         """, inputs, OUTPUT.CMOT_FLOAT3)
     assign(sky, PROP.MP_EMISSIVE_COLOR)
     return save(asset)
@@ -1220,10 +1978,28 @@ def gelcoat():
     return save(asset)
 
 
-def painted_masonry(name, tint, textures):
+def painted_masonry(name, tint, textures, height=None):
     asset = material(name)
     tex = texture_nodes(asset, textures)
     world = expression(asset, unreal.MaterialExpressionWorldPosition)
+    if height:
+        pom = expression(asset, unreal.MaterialExpressionMaterialFunctionCall)
+        function = unreal.load_asset("/Engine/Functions/Engine_MaterialFunctions01/Texturing/ParallaxOcclusionMapping")
+        if not pom.set_material_function(function):
+            raise RuntimeError("Could not load the engine's parallax occlusion function")
+        height_object = expression(asset, unreal.MaterialExpressionTextureObject, texture=height,
+                                   sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_GRAYSCALE)
+        link(height_object, pom, "Heightmap Texture")
+        channel = expression(asset, unreal.MaterialExpressionConstant4Vector, constant=unreal.LinearColor(1, 0, 0, 0))
+        link(channel, pom, "Heightmap Channel")
+        link(number(asset, .024), pom, "Height Ratio")
+        link(number(asset, 6), pom, "Min Steps")
+        link(number(asset, 18), pom, "Max Steps")
+        coordinates = expression(asset, unreal.MaterialExpressionQualitySwitch)
+        link(expression(asset, unreal.MaterialExpressionTextureCoordinate), coordinates, "Default")
+        link(pom, coordinates, "High", "Parallax UVs")
+        for node in tex.values():
+            link(coordinates, node, "")
     color = shader(asset, """
         float3 p = Position*.01;
         float flow = sin(p.x*7.7 + p.y*5.4 + sin(p.z*.21)) * cos(p.x*3.0-p.y*6.1);
@@ -1283,7 +2059,7 @@ def fresnel_lens():
     return save(asset)
 
 
-def volcano_surface(textures):
+def volcano_surface(textures, height):
     asset = material("M_VolcanicRock")
     tex = texture_nodes(asset, textures)
     world = expression(asset, unreal.MaterialExpressionWorldPosition)
@@ -1295,6 +2071,14 @@ def volcano_surface(textures):
     detail = shader(asset,"return UV*94;",{"UV":uv},OUTPUT.CMOT_FLOAT2)
     for node in tex.values():
         link(detail,node,"")
+    displacement = expression(asset, unreal.MaterialExpressionTextureSample, texture=height,
+                              sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_GRAYSCALE)
+    link(detail, displacement, "")
+    asset.set_editor_property("enable_tessellation", True)
+    asset.set_editor_property("enable_displacement_fade", True)
+    asset.set_editor_property("displacement_scaling", unreal.DisplacementScaling(magnitude=35., center=.5))
+    asset.set_editor_property("displacement_fade_range", unreal.DisplacementFadeRange(start_size_pixels=5., end_size_pixels=1.5))
+    unreal.CoralMaterialAuthoring.set_displacement_height(asset, displacement)
     masks = shader(asset, """
         struct Terrain {
             float Corner(int2 cell) {
@@ -1408,32 +2192,51 @@ def reef_shark_skin(source):
     folder = source / "model_maps"
     color = import_texture(folder, "reefshark_diff", "color")
     normal = import_texture(folder, "reefshark_normal", "normal")
-    normal.set_editor_property("flip_green_channel", True)
-    ASSETS.save_loaded_asset(normal)
+    if not normal.get_editor_property("flip_green_channel"):
+        normal.set_editor_property("flip_green_channel", True)
+        ASSETS.save_loaded_asset(normal)
     tex = texture_nodes(asset, {"color":color, "normal":normal})
+    from_space = unreal.MaterialVectorCoordTransformSource
+    to_space = unreal.MaterialVectorCoordTransform
+    local_normal = expression(asset, unreal.MaterialExpressionTransform,
+                              transform_source_type=from_space.TRANSFORMSOURCE_WORLD,
+                              transform_type=to_space.TRANSFORM_LOCAL)
+    link(expression(asset, unreal.MaterialExpressionPixelNormalWS), local_normal, "")
     space = unreal.MaterialPositionTransformSource
     relative = expression(asset,unreal.MaterialExpressionTransformPosition,
                           transform_source_type=space.TRANSFORMPOSSOURCE_WORLD,transform_type=space.TRANSFORMPOSSOURCE_LOCAL)
     link(expression(asset,unreal.MaterialExpressionWorldPosition),relative,"")
     shade = shader(asset, """
-        float flank = (1-smoothstep(-94,-49,P.z)) * (1-smoothstep(.04,.62,N.z));
-        float belly = (1-smoothstep(-126,-97,P.z)) * (1-smoothstep(-.64,-.14,N.z));
+        float up = normalize(N).z;
+        float flank = (1-smoothstep(-94,-49,P.z)) * (1-smoothstep(.04,.62,up));
+        float belly = (1-smoothstep(-126,-97,P.z)) * (1-smoothstep(-.64,-.14,up));
         float3 pigment = lerp(float3(.19,.27,.29),float3(.34,.45,.46),flank);
         return Skin*lerp(pigment,float3(.70,.75,.72),belly);
-        """, {"Skin":tex["color"], "N":expression(asset,unreal.MaterialExpressionPixelNormalWS),"P":relative}, OUTPUT.CMOT_FLOAT3)
+        """, {"Skin":tex["color"], "N":local_normal, "P":relative}, OUTPUT.CMOT_FLOAT3)
     assign(shade, PROP.MP_BASE_COLOR)
     assign(tex["normal"], PROP.MP_NORMAL)
     assign(number(asset,.52), PROP.MP_ROUGHNESS)
     assign(number(asset,.24), PROP.MP_SPECULAR)
-    phase = expression(asset, unreal.MaterialExpressionScalarParameter, parameter_name="SwimPhase",
-                       use_custom_primitive_data=True, primitive_data_index=0)
-    side = expression(asset, unreal.MaterialExpressionVectorParameter, parameter_name="SwimRight",
-                      use_custom_primitive_data=True, primitive_data_index=1)
-    stroke = expression(asset, unreal.MaterialExpressionTextureCoordinate, coordinate_index=1)
-    bend = shader(asset, "return Right * 100 * dot(UV*2-1,float2(cos(Phase),sin(Phase)));",
-                  {"UV":stroke, "Phase":phase, "Right":side}, OUTPUT.CMOT_FLOAT3)
-    assign(bend, PROP.MP_WORLD_POSITION_OFFSET)
-    asset.set_editor_property("max_world_position_offset_displacement", 75)
+    current = expression(asset, unreal.MaterialExpressionVectorParameter, parameter_name="SwimStroke",
+                         use_custom_primitive_data=True, primitive_data_index=0)
+    previous = expression(asset, unreal.MaterialExpressionVectorParameter, parameter_name="PreviousSwimStroke",
+                          use_custom_primitive_data=True, primitive_data_index=4)
+    uv = expression(asset, unreal.MaterialExpressionTextureCoordinate, coordinate_index=1)
+    rest = expression(asset, unreal.MaterialExpressionPreSkinnedPosition)
+    bend = shader(asset, """
+        // Pin the dorsal tip and let the tail curve into the turn below the surface.
+        float aft = saturate(-P.x/215.);
+        float fore = saturate(P.x/220.);
+        float tail = 100*dot(UV*2-1,Swim.xy);
+        return float3(0, tail+(aft*aft+.24*fore*fore)*Swim.z, -aft*aft*Swim.w);
+        """, {"UV":uv, "Swim":previous_frame(asset, (current,"RGBA"), (previous,"RGBA")),
+              "P":rest}, OUTPUT.CMOT_FLOAT3)
+    world_bend = expression(asset, unreal.MaterialExpressionTransform,
+                            transform_source_type=from_space.TRANSFORMSOURCE_LOCAL,
+                            transform_type=to_space.TRANSFORM_WORLD)
+    link(bend, world_bend, "")
+    assign(world_bend, PROP.MP_WORLD_POSITION_OFFSET)
+    asset.set_editor_property("max_world_position_offset_displacement", 115)
     return save(asset)
 
 
@@ -1581,6 +2384,7 @@ def wake_foam():
 
 def create_materials(source):
     pbr_maps = None
+    rock_height = None
 
     def maps():
         nonlocal pbr_maps
@@ -1588,15 +2392,27 @@ def create_materials(source):
             pbr_maps = import_textures(source)
         return pbr_maps
 
+    def heightmap():
+        nonlocal rock_height
+        if rock_height is None:
+            rock_height = import_texture(source / "rock_face", "rock_face_disp_2k", "height")
+        return rock_height
+
     builders = {
+        "aircraft_paint": ("M_AircraftPaint", aircraft_paint),
         "tanker": ("M_ProductTanker", lambda name: marine_finish(name,source,"product",176)),
         "lng": ("M_GasCarrier", lambda name: marine_finish(name,source,"gas",184)),
         "blue_whale": ("M_BlueWhale", lambda _: blue_whale_skin(source)),
         "reef_shark": ("M_ReefShark", lambda _: reef_shark_skin(source)),
         "entry_bubble": ("M_EntryBubble", entry_bubble),
+        "underwater_optics": ("M_UnderwaterOptics", underwater_optics),
+        "dune_grass": ("M_DuneGrass", lambda name: shore_blades(name,False)),
+        "sea_grass": ("M_SeaGrass", lambda name: shore_blades(name,True)),
+        "reef_coral": ("M_ReefCoral", reef_coral_skin),
         "station_lens": ("M_StationLens", lambda _: fresnel_lens()),
-        "ground": ("M_CoastalGround", lambda _: ground(maps())),
+        "ground": ("M_CoastalGround", lambda _: ground(maps(), forest_floor_maps(source))),
         "water": ("M_CoralWater", lambda _: water(source)),
+        "breaker_lip": ("M_BreakerLip", lambda name: breaker_lip(name,source)),
         "spindrift": ("M_StormSpindrift", lambda _: storm_spindrift(source)),
         "leaves": ("M_PalmFronds", lambda _: foliage()),
         "canopy": ("M_CoastalCanopy", lambda _: coastal_canopy()),
@@ -1606,10 +2422,10 @@ def create_materials(source):
         "bark": ("M_PalmBark", lambda name: pbr(name, maps()["palm_tree_bark"])),
         "rock": ("M_TidalRock", lambda name: pbr(name, maps()["coast_rocks_03"], arm=True, wet=True)),
         "boulder": ("M_Boulder", lambda name: pbr(name, maps()["boulder_01"], arm=True, wet=True)),
-        "volcano": ("M_VolcanicRock", lambda _: volcano_surface(maps()["rock_face"])),
-        "plaster": ("M_LighthouseStone", lambda name: painted_masonry(name, (.81,.78,.70), maps()["rock_face"])),
+        "volcano": ("M_VolcanicRock", lambda _: volcano_surface(maps()["rock_face"], heightmap())),
+        "plaster": ("M_LighthouseStone", lambda name: painted_masonry(name, (.81,.78,.70), maps()["rock_face"], heightmap())),
         "paint": ("M_LighthouseRed", lambda name: painted_masonry(name, (.62,.087,.047), maps()["rock_face"])),
-        "concrete": ("M_QuayConcrete", lambda name: painted_masonry(name, (.32,.31,.25), maps()["rock_face"])),
+        "concrete": ("M_QuayConcrete", lambda name: painted_masonry(name, (.32,.31,.25), maps()["rock_face"], heightmap())),
         "lantern": ("M_LanternGlass", lambda _: lantern_glass()),
         "beacon": ("M_LighthouseBeacon", lambda name: simple(name, (.61,.33,.10), .29, emissive=(7700, 3450, 690))),
         "wood": ("M_CoastalTimber", lambda name: pbr(name, maps()["wooden_planks"], rain_on_timber=True)),
@@ -1630,12 +2446,12 @@ def create_materials(source):
         "rain": ("M_SquallRain", lambda name: transparent_effect(name, """
             float x=2*UV.x-1;
             return Contact*Strength*exp(-3*x*x)*sin(UV.y*3.14159)*lerp(.48,.81,1-UV.y);
-            """, "return .038*Sun + float3(.21,.25,.28) / max(Eye, .00001);")),
+            """, "return .038*Sun + float3(.32,.38,.44) / max(Eye, .00001);")),
         "lightning": ("M_Lightning", lambda name: transparent_effect(name, """
             float x = abs(UV.x*2-1); return Strength*Flash*(exp(-x*x*25)*.24 + exp(-x*x*136)*.76);
             """, "return float3(12000,31000,75000);", unreal.BlendMode.BLEND_ADDITIVE)),
     }
-    builders["skipper"] = ("M_Skipper", lambda name: pbr(name,baked_maps(source,"skipper"),arm=True))
+    builders["skipper"] = ("M_Skipper", lambda name: pbr(name,baked_maps(source,"skipper"),arm=True,skin=True))
     for atlas in ATLASES:
         builders["pirate" + atlas.lower()] = (f"M_Sirens{atlas}", lambda _, atlas=atlas: pirate_finish(source, atlas))
     for part in ("granite", "iron", "render", "rock", "slate", "trim", "wood", "brass"):
@@ -1647,9 +2463,9 @@ def create_materials(source):
         result[role] = build(name) if role in refresh or not ASSETS.does_asset_exist(path) else ASSETS.load_asset(path)
     nanite = unreal.MaterialUsage.MATUSAGE_NANITE
     instances = unreal.MaterialUsage.MATUSAGE_INSTANCED_STATIC_MESHES
-    for role in ("ground", "leaves", "bark", "canopy", "rock", "boulder", "volcano"):
+    for role in ("ground", "leaves", "bark", "canopy", "rock", "boulder", "volcano", "dune_grass", "sea_grass", "reef_coral"):
         asset = result[role]
-        required = (nanite, instances) if role in ("leaves", "bark", "canopy") else (nanite,)
+        required = (nanite, instances) if role in ("leaves", "bark", "canopy", "dune_grass", "sea_grass", "reef_coral") else (nanite,)
         missing = [usage for usage in required if not EDIT.has_material_usage(asset, usage)]
         if missing:
             for usage in missing:

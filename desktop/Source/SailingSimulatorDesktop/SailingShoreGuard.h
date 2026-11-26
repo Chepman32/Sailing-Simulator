@@ -6,6 +6,9 @@ class UWorld;
 
 namespace Sailing
 {
+inline constexpr double HullHalfLengthM = 5.5;
+inline constexpr double HullHalfBeamM = 2.7;
+
 struct FShoreContact
 {
     double ClearanceM = TNumericLimits<double>::Max();
@@ -13,13 +16,14 @@ struct FShoreContact
     FVector2D HullOffsetM = FVector2D::ZeroVector;
 };
 
-// A horizontal slice of each island's collision surface at a safe keel depth.
+// Horizontal sections of island shelves and rocks at a safe keel depth.
 // The game thread builds it once. Fixed-step physics only reads these polygons.
 class FShoreMap
 {
 public:
     explicit FShoreMap(UWorld& World);
     FShoreContact AtHull(FVector2D CenterM, FVector2D Bow) const;
+    bool CorridorClear(FVector2D StartM, FVector2D EndM, double MarginM) const;
 
 private:
     struct FEdge
@@ -27,12 +31,12 @@ private:
         FVector2D Start, Delta;
         double InverseLengthSquared;
     };
-    struct FIsland
+    struct FBarrier
     {
-        FBox2D Vicinity{ForceInit};
+        FBox2D Bounds{ForceInit};
         TArray<FEdge> Edges;
     };
-    TArray<FIsland> Islands;
+    TArray<FBarrier> Barriers;
 };
 
 struct FShoreGuard

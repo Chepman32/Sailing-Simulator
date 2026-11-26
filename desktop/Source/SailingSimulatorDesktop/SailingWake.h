@@ -24,4 +24,5 @@ private:
     TWeakObjectPtr<UMaterialInstanceDynamic> BoundWater;
     int32 Latest = 0;
     float Published = -1;
+    float LastBreak[2]{-10.f,-10.f};
 };

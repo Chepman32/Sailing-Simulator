@@ -13,6 +13,7 @@
 #include "SailingTrial.h"
 #include "SailingSharks.h"
 #include "SailingWhales.h"
+#include "SailingEntryBubbles.h"
 #include "SailingEncounter.h"
 #include "SailingWeather.h"
 #include "UnrealClient.h"
@@ -38,11 +39,23 @@ public:
         TActorIterator<ASailingDolphinPod> Dolphin(Boat.GetWorld());
         if (Dolphin) Pod=*Dolphin;
         TActorIterator<ASailingWhales> Whales(Boat.GetWorld());
-        if (Whales) Whales->GetComponents(WhaleBodies);
+        if (Whales)
+        {
+            Whales->GetComponents(WhaleBodies);
+            WhaleBodies.RemoveAll([](const auto* Mesh){ return Mesh->template IsA<USailingEntryBubbles>(); });
+            Whales->GetComponents(WhaleBubbles);
+        }
         Test.TestEqual(TEXT("Surfacing and distant whales in the play world"),WhaleBodies.Num(),2);
-        const FTransform Departure=Ship ? Ship->GetActorTransform() : FTransform::Identity;
+        FTransform Departure=Ship ? Ship->GetActorTransform() : FTransform::Identity;
         FVector StartPoint(0,0,20);
-        if (Ship) StartPoint = Ship->ActorHasTag(TEXT("SailingPirate")) ? FVector(-1400,-1550,35) : FVector(-4800,-2050,35);
+        if (Ship && Ship->ActorHasTag(TEXT("SailingPirate")))
+        {
+            const FVector Wreck=Departure.GetLocation();
+            Departure.SetLocation({Wreck.X,Wreck.Y,0});
+            Departure.SetRotation(FRotator(0,Departure.Rotator().Yaw,0).Quaternion());
+            StartPoint={-1400,-1550,35};
+        }
+        else if (Ship) StartPoint={-4800,-2050,35};
         auto* Body = CastChecked<UPrimitiveComponent>(Boat.GetRootComponent());
         OriginalVelocity = Body->GetPhysicsLinearVelocity();
         OriginalSpin = Body->GetPhysicsAngularVelocityInRadians();
@@ -82,26 +95,44 @@ public:
         if (Sailing::SharkDive(Now)==1 && Bodies.Num()==1)
         {
             ++DeepSamples;
-            if (Bodies[0]->IsVisible()) ++Unexpected;
+            if (Bodies[0]->IsVisible()) ++VisibleAtDepth;
         }
-        if (Pod.IsValid() && !Pod->IsHidden() && Fins) ++Unexpected;
+        if (Pod.IsValid() && !Pod->IsHidden() && Fins) ++WithPod;
         for (const UStaticMeshComponent* Whale : WhaleBodies)
         {
             if (!Whale || !Whale->IsVisible() || !Whale->GetStaticMesh()) continue;
             const FVector P=Whale->GetComponentLocation();
+            const bool bNearWhale = Whale->GetFName() == TEXT("SurfacingWhale");
+            if (bNearWhale)
+            {
+                const FVector Belly=Whale->GetComponentTransform().TransformPosition({125.,0.,-263.})*.01;
+                MaxBellyClearance=FMath::Max(MaxBellyClearance,Belly.Z-Yacht->SurfaceHeightM(FVector2D(Belly)));
+            }
             if (P.Z*.01 > Yacht->SurfaceHeightM(FVector2D(P)*.01))
             {
-                bSawBack |= Whale->GetFName()==TEXT("SurfacingWhale");
-                bSawBreach |= Whale->GetFName()==TEXT("DistantWhale");
+                bSawBack |= bNearWhale;
+                bSawDistant |= Whale->GetFName()==TEXT("DistantWhale");
             }
         }
+        for (const auto& Ring : Yacht->SurfaceImpacts().WhalePrints)
+            bSawWhaleRing |= Ring.A>.50 && Yacht->SeaFrame().TimeS-Ring.B<12.;
+        for (const auto* Bubbles : WhaleBubbles)
+            bSawBubbles |= Bubbles->GetInstanceCount()>0;
         PeakSpeed=FMath::Max(PeakSpeed,Yacht->GetVelocity().Size2D()*.01);
         if (Age<101) return false;
         Test.AddInfo(FString::Printf(TEXT("Single fin at 24–36 m in %d/%d surface samples; %d deep samples"),One,Samples,DeepSamples));
         Test.TestTrue(TEXT("The shark patrols about thirty metres offshore"),Samples>0 && One>=.80*Samples);
-        Test.TestTrue(TEXT("The shark retreats and never accompanies the pod"),DeepSamples>0 && Unexpected==0);
+        Test.TestTrue(TEXT("The shark completed a deep interval"), DeepSamples>0);
+        Test.TestEqual(TEXT("Frames with the deep shark still rendered"), VisibleAtDepth, 0);
+        Test.TestEqual(TEXT("Frames with the shark fin among the dolphins"), WithPod, 0);
         Test.TestTrue(TEXT("The yacht was actually under way"),PeakSpeed>2.);
-        if (!bAlongside) Test.TestTrue(TEXT("Both whales break the actual sea surface"),bSawBack && bSawBreach);
+        if (!bAlongside)
+        {
+            Test.TestTrue(TEXT("The near whale surfaces and the distant whale breaches"),bSawBack && bSawDistant);
+            Test.TestTrue(TEXT("The near whale keeps its belly underwater when it surfaces"),MaxBellyClearance<-.25);
+            Test.TestTrue(TEXT("Whale contacts leave persistent water rings and air bubbles"),bSawWhaleRing && bSawBubbles);
+            Test.AddInfo(FString::Printf(TEXT("Highest surfacing whale belly relative to the water %.2f m"),MaxBellyClearance));
+        }
         Yacht->SetThrottle(Helm.Throttle);
         Yacht->SetRudder(Helm.Rudder);
         Yacht->SetEngineRunning(Helm.bEngineOn);
@@ -120,9 +151,12 @@ private:
     FTransform Original;
     FVector OriginalVelocity, OriginalSpin;
     TArray<UStaticMeshComponent*> WhaleBodies;
-    bool bAlongside, bSawBack=false, bSawBreach=false;
+    bool bAlongside, bSawBack=false, bSawDistant=false;
+    TArray<USailingEntryBubbles*> WhaleBubbles;
+    double MaxBellyClearance=-100.;
+    bool bSawWhaleRing=false, bSawBubbles=false;
     TWeakObjectPtr<ASailingDolphinPod> Pod;
-    int32 Samples=0, One=0, DeepSamples=0, Unexpected=0;
+    int32 Samples=0, One=0, DeepSamples=0, VisibleAtDepth=0, WithPod=0;
 };
 
 // Optional photographs of the real play world. Keep the fine sea mesh beside
@@ -130,9 +164,14 @@ private:
 class FPhotographCoast : public IAutomationLatentCommand
 {
 public:
+    FPhotographCoast(ASailingYachtPawn& InYacht, TArray<FCoastView> InViews, FString InFolder)
+        : Yacht(&InYacht), Folder(MoveTemp(InFolder)), Original(InYacht.GetActorTransform()), Views(MoveTemp(InViews))
+    {
+    }
+
     FPhotographCoast(ASailingYachtPawn& InYacht, const FTransform& Ship, const FTransform& OuterShip,
                      const FVector& Station, FString InFolder)
-        : Yacht(&InYacht), Folder(MoveTemp(InFolder)), Original(InYacht.GetActorTransform())
+        : FPhotographCoast(InYacht, {}, MoveTemp(InFolder))
     {
         const auto Point = [&Ship](double X,double Y,double Z) { return Ship.TransformPosition({X*100,Y*100,Z*100})*.01; };
         const FVector Light = Station*.01;
@@ -221,6 +260,9 @@ bool FPirateAnchorageTest::RunTest(const FString&)
     if (!TestNotNull(TEXT("Playable level"), World)) return false;
     TActorIterator<APlayerStart> Start(World);
     if (!TestTrue(TEXT("Charted departure"), bool(Start))) return false;
+    TArray<UStaticMeshComponent*> WreckRocks;
+    for (TActorIterator<AStaticMeshActor> It(World); It; ++It)
+        if (It->ActorHasTag(TEXT("SailingWreckRock"))) WreckRocks.Add(It->GetStaticMeshComponent());
     int32 Ships = 0;
     for (TActorIterator<AStaticMeshActor> It(World); It; ++It)
     {
@@ -239,6 +281,21 @@ bool FPirateAnchorageTest::RunTest(const FString&)
         }
         const FTransform Pose = It->GetActorTransform();
         const FBox Bounds = Ship->GetBoundingBox();
+        TestTrue(TEXT("The entire wreck sits above mean sea level"), Component->Bounds.GetBox().Min.Z > 0);
+        int32 Supports = 0;
+        for (double X : {-1690., 1330.})
+        {
+            const FVector Keel = Pose.TransformPosition({X, 14., -348.});
+            FHitResult Hit;
+            for (auto* Rock : WreckRocks)
+                if (Rock->LineTraceComponent(Hit, Keel + FVector(0, 0, 70), FVector(Keel.X, Keel.Y, 0),
+                                            FCollisionQueryParams(NAME_None, true)) && Hit.ImpactPoint.Z >= Keel.Z - 40.)
+                {
+                    ++Supports;
+                    break;
+                }
+        }
+        TestEqual(TEXT("Emergent rocks meet the keel fore and aft"), Supports, 2);
         const FVector Across = Start->GetActorRightVector();
         const double SideOfCourse = FMath::Sign(FVector::DotProduct(Pose.GetLocation() - Start->GetActorLocation(), Across));
         double Clearance = TNumericLimits<double>::Max();
@@ -260,7 +317,57 @@ bool FPirateAnchorageTest::RunTest(const FString&)
                 Blocked && Hit.GetActor() == *It && Side*Pose.InverseTransformPosition(Hit.ImpactPoint).Y > 300);
         }
     }
-    TestEqual(TEXT("One charted pirate anchorage"), Ships, 1);
+    TestEqual(TEXT("One charted pirate wreck"), Ships, 1);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSharkMotionTest, "Sailing.Wildlife.SharkMotion",
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FSharkMotionTest::RunTest(const FString&)
+{
+    auto SwimTurn = [this](int32 Fps)
+    {
+        const double Dt = 1. / Fps;
+        Sailing::FSharkMotion Shark;
+        bool bContinuedForward = true, bEasedTurn = true;
+        double PeakBank = 0.;
+        for (int32 Frame=0; Frame<4*Fps; ++Frame)
+        {
+            const Sailing::FSharkMotion Before = Shark;
+            Sailing::AdvanceSharkMotion(Shark,{0,400},true,0,1,Dt);
+            bContinuedForward &= FVector2D::DotProduct(Shark.Position-Before.Position,Before.Direction)>0.;
+            bEasedTurn &= FMath::Abs(Shark.YawRate) <= Sailing::SharkTurnRate &&
+                FMath::Abs(Shark.YawRate-Before.YawRate) <= Sailing::SharkTurnAcceleration*Dt+1.e-6;
+            PeakBank = FMath::Max(PeakBank,Shark.Bank);
+        }
+        TestTrue(TEXT("The shark carries forward momentum through a turn"),bContinuedForward);
+        TestTrue(TEXT("A sharp change of course still eases into a bounded turn"),bEasedTurn);
+        TestTrue(TEXT("The body banks into the turn and levels out on the new course"),
+            PeakBank>3. && PeakBank<=12. && Shark.Bank<PeakBank*.5 && Shark.Direction.Y>.99);
+        return Shark.Position;
+    };
+    const FVector2D At30 = SwimTurn(30), At60 = SwimTurn(60);
+    TestTrue(TEXT("The turn follows nearly the same arc at thirty and sixty frames a second"),
+        FVector2D::Distance(At30,At60)<12.);
+
+    auto Cruise = [](double Speed)
+    {
+        Sailing::FSharkMotion Shark;
+        Shark.Speed = Speed;
+        for (int32 Frame=0; Frame<180; ++Frame)
+            Sailing::AdvanceSharkMotion(Shark,{Speed,0},true,0,1,1./60.);
+        return Shark;
+    };
+    const auto Patrol = Cruise(156.), Pursuit = Cruise(730.);
+    TestTrue(TEXT("The slow patrol uses smaller strokes than a fast pass"), Patrol.Stroke < .6*Pursuit.Stroke);
+    auto TailSpeed = [](Sailing::FSharkMotion Shark)
+    {
+        const double Before = Shark.Phase;
+        Sailing::AdvanceSharkMotion(Shark,{Shark.Speed,0},true,0,1,1./60.);
+        return FMath::Fmod(Shark.Phase-Before+UE_DOUBLE_TWO_PI,UE_DOUBLE_TWO_PI);
+    };
+    TestTrue(TEXT("The tail beats faster as the shark picks up speed"),TailSpeed(Pursuit)>2.*TailSpeed(Patrol));
     return true;
 }
 
@@ -336,7 +443,7 @@ bool FCoastalShipTest::RunTest(const FString& Parameters)
             Light = *It;
             TestTrue(TEXT("The imported light station has the authored surface finishes"), Mesh->GetNumMaterials() >= 10);
         }
-        if (!It->ActorHasTag(TEXT("SailingMerchant"))) continue;
+        if (!It->ActorHasTag(TEXT("SailingMerchant")) || It->ActorHasTag(TEXT("SailingRegionalMerchant"))) continue;
         ++Count;
         const UStaticMesh* ShipMesh=Mesh->GetStaticMesh();
         const bool Tanker=ShipMesh->GetFName()==TEXT("SM_ProductTanker");
@@ -383,6 +490,128 @@ bool FCoastalShipTest::RunTest(const FString& Parameters)
     if (NearShip && OuterShip && Light && FParse::Value(FCommandLine::Get(),TEXT("SailingCoastShots="), Folder))
         ADD_LATENT_AUTOMATION_COMMAND(FPhotographCoast(*Yacht,NearShip->GetActorTransform(),OuterShip->GetActorTransform(),
                                                      Light->GetActorLocation(),Folder));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMerchantCoverageTest, "Sailing.Coast.MerchantCoverage",
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::NonNullRHI | EAutomationTestFlags::EngineFilter)
+
+bool FMerchantCoverageTest::RunTest(const FString&)
+{
+    UWorld* World = GEngine->GameViewport ? GEngine->GameViewport->GetWorld() : nullptr;
+    auto* Player = World ? World->GetFirstPlayerController() : nullptr;
+    auto* Yacht = Player ? Player->GetPawn<ASailingYachtPawn>() : nullptr;
+    if (!TestNotNull(TEXT("A yacht in Coral Pass"), Yacht)) return false;
+    const FName Merchant = TEXT("SailingMerchant"), Regional = TEXT("SailingRegionalMerchant");
+    TArray<const AStaticMeshActor*> Ships;
+    TArray<UStaticMeshComponent*> Islands;
+    TSet<FName> ShipModels;
+    int32 RegionalCount = 0;
+    for (TActorIterator<AStaticMeshActor> It(World); It; ++It)
+    {
+        auto* Mesh = It->GetStaticMeshComponent();
+        if (!Mesh || !Mesh->GetStaticMesh()) continue;
+        const FName Model = Mesh->GetStaticMesh()->GetFName();
+        if (Model.ToString().EndsWith(TEXT("Cay")) || Model == TEXT("SM_CloudHead") || Model == TEXT("SM_Volcano"))
+            Islands.Add(Mesh);
+        if (!It->ActorHasTag(Merchant)) continue;
+        Ships.Add(*It);
+        ShipModels.Add(Model);
+        if (!It->ActorHasTag(Regional)) continue;
+        ++RegionalCount;
+        const UStaticMesh* Asset = Mesh->GetStaticMesh();
+        const FBox Local = Asset->GetBoundingBox();
+        TestTrue(TEXT("An authored large merchant hull fills each anchorage"), Local.GetSize().X > 14000.);
+        if (TestEqual(TEXT("The regional merchant mesh has three LODs"), Asset->GetNumLODs(), 3))
+            TestTrue(TEXT("The furthest LOD is under a quarter of the close geometry"),
+                Asset->GetNumTriangles(2) < Asset->GetNumTriangles(0) / 4);
+
+        const auto Pose = Mesh->GetComponentTransform();
+        FCollisionQueryParams CheckBed(SCENE_QUERY_STAT(MerchantDepth), true, *It);
+        CheckBed.AddIgnoredActor(Yacht);
+        const double SafeBedZ = FMath::Min(-1200., Mesh->Bounds.Origin.Z - Mesh->Bounds.BoxExtent.Z - 300.);
+        for (double Along : {.05, .25, .5, .75, .95})
+        for (double Across : {.12, .5, .88})
+        {
+            const FVector At = Pose.TransformPosition({
+                FMath::Lerp(Local.Min.X, Local.Max.X, Along), FMath::Lerp(Local.Min.Y, Local.Max.Y, Across), 0.});
+            TestFalse(TEXT("The hull footprint leaves at least three metres below its keel"),
+                World->LineTraceTestByChannel({At.X, At.Y, -40.}, {At.X, At.Y, SafeBedZ}, ECC_Visibility, CheckBed));
+        }
+        const FVector Start = Pose.TransformPosition({Local.GetCenter().X, Local.Max.Y + 900., 45.});
+        const FVector End = Pose.TransformPosition({Local.GetCenter().X, Local.GetCenter().Y, 45.});
+        for (ECollisionChannel Channel : {ECC_Camera, ECC_PhysicsBody})
+        {
+            FHitResult Hit;
+            const bool bBlocked = World->SweepSingleByChannel(Hit, Start, End, FQuat::Identity, Channel,
+                FCollisionShape::MakeSphere(28.), FCollisionQueryParams(NAME_None, false, Yacht));
+            TestTrue(TEXT("The added hull blocks an approach at its broadside"), bBlocked && Hit.GetActor() == *It);
+        }
+    }
+    TestEqual(TEXT("Two harbour ships and seven distributed anchorages"), Ships.Num(), 9);
+    TestEqual(TEXT("All seven regional anchorages are present"), RegionalCount, 7);
+    TestEqual(TEXT("There are tankers, LNG carriers and container ships"), ShipModels.Num(), 3);
+    TestEqual(TEXT("All major land masses are checked"), Islands.Num(), 7);
+
+    const FCollisionQueryParams Query(SCENE_QUERY_STAT(MerchantVisibility), true, Yacht);
+    constexpr double RangeCm = 90000.;
+    int32 Probes = 0, PreviouslyUnserved = 0;
+    double FurthestM = 0.;
+    for (auto* Island : Islands)
+    {
+        const bool bVolcano = Island->GetStaticMesh()->GetFName() == TEXT("SM_Volcano");
+        const FVector2D Centre(Island->GetComponentLocation());
+        const double Reach = 2. * Island->Bounds.SphereRadius;
+        int32 CoastProbes = 0;
+        for (int32 Bearing = 0; Bearing < 12; ++Bearing)
+        {
+            const double Angle = UE_DOUBLE_TWO_PI * Bearing / 12.;
+            const FVector2D Out(FMath::Cos(Angle), FMath::Sin(Angle));
+            FHitResult Beach;
+            if (!Island->LineTraceComponent(Beach, FVector(Centre + Out * Reach, -100.), FVector(Centre, -100.), Query))
+                continue;
+            const FVector2D At = FVector2D(Beach.ImpactPoint) + Out * (bVolcano ? 19000. : 10000.);
+            const FVector Eye(At, 400.);
+            if (World->LineTraceTestByChannel(Eye, FVector(At, -140.), ECC_Visibility, Query)) continue;
+            ++CoastProbes;
+            ++Probes;
+            double Nearest = RangeCm + 1.;
+            bool bOldCoverage = false;
+            for (const auto* Ship : Ships)
+            {
+                const auto Box = Ship->GetStaticMeshComponent()->Bounds;
+                const double Distance = FVector::Dist2D(Box.Origin, Eye);
+                if (Distance > RangeCm) continue;
+                const FVector Mast = Box.Origin + FVector(0., 0., .5 * Box.BoxExtent.Z);
+                FHitResult Occlusion;
+                if (World->LineTraceSingleByChannel(Occlusion, Eye, Mast, ECC_Visibility, Query))
+                {
+                    const auto* Blocker = Occlusion.GetActor();
+                    if (!Blocker || !Blocker->ActorHasTag(Merchant)) continue;
+                }
+                Nearest = FMath::Min(Nearest, Distance);
+                bOldCoverage |= !Ship->ActorHasTag(Regional);
+            }
+            PreviouslyUnserved += !bOldCoverage;
+            FurthestM = FMath::Max(FurthestM, Nearest * .01);
+            TestTrue(FString::Printf(TEXT("%s, bearing %d, has a merchant ship in sight within 900 m"),
+                *Island->GetStaticMesh()->GetName(), Bearing * 30), Nearest <= RangeCm);
+        }
+        TestTrue(TEXT("The coast was surveyed from at least eight navigable bearings"), CoastProbes >= 8);
+    }
+    AddInfo(FString::Printf(TEXT("%d navigable coastal views, %d without a visible harbour ship, longest range %.0f m"),
+        Probes, PreviouslyUnserved, FurthestM));
+
+    FString Folder;
+    if (FParse::Value(FCommandLine::Get(), TEXT("SailingRegionalShipShots="), Folder))
+    {
+        TArray<FCoastView> Views{
+            {TEXT("west-volcano.png"), {499, -2779, 7}, {990, -3115, 12}},
+            {TEXT("outer-cay.png"), {1751, -270, 8}, {1930, -390, 12}},
+            {TEXT("south-cay.png"), {-378, 408, 7}, {-530, 615, 11}}
+        };
+        ADD_LATENT_AUTOMATION_COMMAND(FPhotographCoast(*Yacht, MoveTemp(Views), Folder));
+    }
     return true;
 }
 
@@ -651,6 +880,46 @@ bool FBeachContactTest::RunTest(const FString&)
     return false;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCoastalHazardsTest,"Sailing.Coast.RocksAndReef",
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::NonNullRHI | EAutomationTestFlags::EngineFilter)
+bool FCoastalHazardsTest::RunTest(const FString&)
+{
+    UWorld* World=GEngine->GameViewport ? GEngine->GameViewport->GetWorld() : nullptr;
+    if (!TestNotNull(TEXT("Playable world"),World)) return false;
+    TMap<FName, int32> Hazards{
+        {TEXT("SM_Boulder"), 0}, {TEXT("SM_CoastRocks"), 0}, {TEXT("SM_ReefShelf"), 0}
+    };
+    const UStaticMeshComponent* Reef = nullptr;
+    for (TActorIterator<AStaticMeshActor> It(World); It; ++It)
+    {
+        const UStaticMeshComponent* Mesh = It->GetStaticMeshComponent();
+        if (!Mesh || !Mesh->GetStaticMesh()) continue;
+        const FName Name = Mesh->GetStaticMesh()->GetFName();
+        if (Name == TEXT("SM_ReefShelf")) Reef = Mesh;
+        if (int32* Count = Hazards.Find(Name))
+        {
+            ++*Count;
+            TestTrue(It->GetActorNameOrLabel() + TEXT(" blocks the yacht's rigid body"),
+                Mesh->GetCollisionEnabled() == ECollisionEnabled::QueryAndPhysics &&
+                Mesh->GetCollisionResponseToChannel(ECC_PhysicsBody) == ECR_Block);
+        }
+    }
+    for (const auto& Hazard : Hazards)
+        TestTrue(Hazard.Key.ToString() + TEXT(" is present in the level"), Hazard.Value > 0);
+
+    FHitResult Hit;
+    const bool Blocked = World->SweepSingleByChannel(Hit, {100,2395,-100}, {100,2395,-500}, FQuat::Identity,
+        ECC_PhysicsBody, FCollisionShape::MakeSphere(25));
+    TestTrue(FString::Printf(TEXT("The reef shelf stops a collision sweep at its real surface (hit Z %.1f cm)"), Hit.ImpactPoint.Z),
+        Blocked && Hit.GetComponent() == Reef && FMath::IsNearlyEqual(Hit.ImpactPoint.Z,-242.,15.));
+
+    const Sailing::FShoreMap Map(*World);
+    TestTrue(TEXT("The guard recognizes the shallow coral head off the departure channel"),
+        Map.AtHull({32.8,19.9},{1,0}).ClearanceM < 2.);
+    TestTrue(TEXT("The departure itself has room to sail"), Map.AtHull({0,0},{1,0}).ClearanceM > 12.);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FNavigableWaterTest,"Sailing.Coast.NavigableWater",
     EAutomationTestFlags::ClientContext | EAutomationTestFlags::NonNullRHI | EAutomationTestFlags::EngineFilter)
 bool FNavigableWaterTest::RunTest(const FString&)
@@ -671,7 +940,7 @@ bool FNavigableWaterTest::RunTest(const FString&)
     else Islands={{550,205},{805,-497},{1330,518}};
     for (const FVector2D Center : Islands)
         TestTrue(TEXT("A yacht inside the island at ")+Center.ToString(),Map.AtHull(Center,{1,0}).ClearanceM<0);
-    TestTrue(TEXT("Open sea is freely navigable"), Map.AtHull({0,0},{1,0}).ClearanceM>30);
+    TestTrue(TEXT("Open sea is freely navigable"), Map.AtHull({-55,-30},{1,0}).ClearanceM>30);
     if (Coral)
     {
         const FVector2D Bow(-1,0);

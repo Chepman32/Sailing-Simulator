@@ -50,6 +50,8 @@ test("he swims level at the surface where he faces, and dives when asked or when
   assert.ok(Math.abs(ahead.y - SURFACE_EYE) < 0.05, "stays at the surface");
   const down = run(calm, still({ vertical: -1 }), 4).state;
   assert.ok(-down.y > 3, `sinks on purpose (${(-down.y).toFixed(1)} m)`);
+  const lookingUp = run(calm, still({ moveY: 1, vertical: -1, pitch: 1.2, sprint: true }), 2).state;
+  assert.ok(-lookingUp.y > 1, "the dive control still descends while looking up and swimming forward");
   const duck = run(calm, still({ moveY: 1, pitch: -0.9 }), 5).state;
   assert.ok(-duck.y > 3, "a duck dive takes him down");
   assert.equal(isFloating(0.1, still({ moveY: 1, pitch: -0.9 }), false), false);

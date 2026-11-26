@@ -1,7 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
-#include "GameFramework/GameUserSettings.h"
+#include "Framework/Application/SlateApplication.h"
 #include "GameFramework/HUDHitBox.h"
 #include "HAL/IConsoleManager.h"
 #include "InputKeyEventArgs.h"
@@ -27,6 +27,14 @@ bool FSailingDisplayTest::RunTest(const FString&)
         Sailing::SelectableResolutions(Reported,{1920,1200}) == Laptop);
     TestTrue(TEXT("A sub-HD display offers no invented mode"),
         Sailing::SelectableResolutions(Reported,{1024,600}).IsEmpty());
+    TestEqual(TEXT("720p renders at half scale on a 1440p display"),
+        Sailing::RenderResolutionFraction({1280,720},{2560,1440}),.5f);
+    TestEqual(TEXT("A different aspect ratio fits within both render dimensions"),
+        Sailing::RenderResolutionFraction({1920,1080},{2560,1600}),.675f);
+    TestEqual(TEXT("Native uses full resolution"),
+        Sailing::RenderResolutionFraction({3840,2160},{3840,2160}),1.f);
+    TestEqual(TEXT("An old selection above the current display is capped at native"),
+        Sailing::RenderResolutionFraction({3840,2160},{1920,1080}),1.f);
     return true;
 }
 
@@ -91,6 +99,27 @@ bool FSailingWorldTest::RunTest(const FString&)
         TEXT("r.DynamicRes.MaxScreenPercentage"))->GetFloat(),72.f);
     TestEqual(TEXT("Low restores the faster water budget"),
         CVars.FindConsoleVariable(TEXT("r.DynamicRes.FrameTimeBudget"))->GetFloat(),16.67f);
+    const auto ReadCVar = [&CVars](const TCHAR* Name) { return CVars.FindConsoleVariable(Name)->GetInt(); };
+    TestEqual(TEXT("Low uses inexpensive sky reflections"),ReadCVar(TEXT("r.Water.SingleLayer.Reflection")),2);
+    TestEqual(TEXT("Low disables volumetric fog"),ReadCVar(TEXT("r.VolumetricFog")),0);
+    TestEqual(TEXT("Low skips Lumen GI"),ReadCVar(TEXT("r.Lumen.DiffuseIndirect.Allow")),0);
+    TestEqual(TEXT("Low skips Nanite displacement"),ReadCVar(TEXT("r.Nanite.Tessellation")),0);
+    Player->SetWorldChoice(EWorldSetting::Graphics,3);
+    TestEqual(TEXT("High enables volumetric fog"),ReadCVar(TEXT("r.VolumetricFog")),1);
+    TestEqual(TEXT("High enables sun shafts"),ReadCVar(TEXT("r.LightShaftQuality")),1);
+    TestEqual(TEXT("High uses Lumen GI"),ReadCVar(TEXT("r.Lumen.DiffuseIndirect.Allow")),1);
+    TestEqual(TEXT("High enables Nanite displacement"),ReadCVar(TEXT("r.Nanite.Tessellation")),1);
+    TestEqual(TEXT("High uses screen-space water reflections"),ReadCVar(TEXT("r.Water.SingleLayer.Reflection")),3);
+    TestEqual(TEXT("High uses higher quality screen-space rays"),ReadCVar(TEXT("r.SSR.Quality")),3);
+    Player->SetWorldChoice(EWorldSetting::Graphics,4);
+    TestEqual(TEXT("Ultra increases VSM sampling and resolution"),ReadCVar(TEXT("sg.ShadowQuality")),3);
+    TestEqual(TEXT("Ultra takes six samples per sun shadow ray"),ReadCVar(TEXT("r.Shadow.Virtual.SMRT.SamplesPerRayDirectional")),6);
+    TestEqual(TEXT("Ultra uses Lumen reflections for water"),ReadCVar(TEXT("r.Water.SingleLayer.Reflection")),1);
+    TestEqual(TEXT("Ultra uses full-quality TSR"),ReadCVar(TEXT("r.TSR.History.UpdateQuality")),3);
+    Player->SetWorldChoice(EWorldSetting::Graphics,1);
+    TestEqual(TEXT("Switching down releases screen-space reflections"),ReadCVar(TEXT("r.SSR.Quality")),0);
+    TestEqual(TEXT("Switching down releases Ultra's optics"),ReadCVar(TEXT("r.LensFlareQuality")),0);
+    TestEqual(TEXT("Switching down releases hardware RT"),ReadCVar(TEXT("r.Lumen.HardwareRayTracing")),0);
     Player->SetWorldChoice(EWorldSetting::Graphics,Original);
     if (!Saved)
     {
@@ -102,39 +131,43 @@ bool FSailingWorldTest::RunTest(const FString&)
         Display.MonitorIndex!=INDEX_NONE && Display.Desktop.GetMin()>0);
     if (!Display.Sizes.IsEmpty())
     {
-        auto* Settings=GEngine->GetGameUserSettings();
         const FIntPoint OriginalSize=Player->WorldResolution();
-        const FIntPoint SavedSize=Settings->GetScreenResolution();
-        const auto SavedMode=Settings->GetFullscreenMode();
-        const FString SavedID = Settings->GetDisplayID();
-        const int32 SavedIndex = Settings->GetDisplayIndex();
+        const FIntPoint OriginalOutput=View->GetSizeXY();
+        const FIntPoint OriginalSystemResolution(GSystemResolution.ResX,GSystemResolution.ResY);
+        const auto OriginalMode=View->GetWindowMode();
+        if (!FSlateApplication::Get().IsRenderingOffScreen())
+            TestTrue(TEXT("The standalone game starts fullscreen"),OriginalMode==EWindowMode::WindowedFullscreen);
+        FString OriginalSetting;
+        const bool bHadSetting = GConfig->GetString(TEXT("Sailing.World"),TEXT("RenderResolution"),OriginalSetting,GGameUserSettingsIni);
         FString Listed;
         for (FIntPoint Size : Display.Sizes) Listed += FString::Printf(TEXT(" %dx%d"),Size.X,Size.Y);
         AddInfo(FString::Printf(TEXT("Display %s, desktop %dx%d, selectable:%s"),
             *Display.MonitorID,Display.Desktop.X,Display.Desktop.Y,*Listed));
+        AddInfo(FString::Printf(TEXT("Fullscreen output %dx%d, mode %d"),
+            OriginalOutput.X, OriginalOutput.Y, int32(OriginalMode)));
         TestTrue(TEXT("Legacy window sizes below 720p stay out of the menu"), !Display.Sizes.Contains(FIntPoint(960,600)));
-        const FIntPoint* Other=Display.Sizes.FindByPredicate([OriginalSize](FIntPoint Size) { return Size!=OriginalSize; });
+        const FIntPoint* Other=Display.Sizes.FindByPredicate([&](FIntPoint Size) {
+            return Size!=OriginalSize && Size!=Display.Desktop && Sailing::RenderResolutionFraction(Size,OriginalOutput) < 1.f;
+        });
         if (Other)
         {
             Player->SetWorldResolution(*Other);
-            TestEqual(TEXT("The selection applies a new output width"),GSystemResolution.ResX,Other->X);
-            TestEqual(TEXT("The selection applies a new output height"),GSystemResolution.ResY,Other->Y);
-            TestEqual(TEXT("The choice is confirmed for the next launch"),Settings->GetLastConfirmedScreenResolution(),*Other);
+            TestEqual(TEXT("The selected render size appears in the settings"),Player->WorldResolution(),*Other);
+            TestEqual(TEXT("The backbuffer still fills the display"),View->GetSizeXY(),OriginalOutput);
+            TestEqual(TEXT("The display mode is unchanged"),View->GetWindowMode(),OriginalMode);
+            TestEqual(TEXT("No physical display mode change is requested"),
+                FIntPoint(GSystemResolution.ResX,GSystemResolution.ResY),OriginalSystemResolution);
+            TestEqual(TEXT("A fixed resolution disables adaptation"),ReadCVar(TEXT("r.DynamicRes.OperationMode")),0);
+            FString SavedResolution;
+            GConfig->GetString(TEXT("Sailing.World"),TEXT("RenderResolution"),SavedResolution,GGameUserSettingsIni);
+            TestEqual(TEXT("The render size is saved for the next launch"),SavedResolution,Other->ToString());
             Player->SetWorldResolution({960,600});
-            TestEqual(TEXT("An unsupported selection cannot overwrite the confirmed mode"),Settings->GetLastConfirmedScreenResolution(),*Other);
-            if (Display.Sizes.Contains(Display.Desktop))
-            {
-                Player->SetWorldResolution(Display.Desktop);
-                TestEqual(TEXT("Native fullscreen uses the active display's pixels"),
-                    FIntPoint(GSystemResolution.ResX,GSystemResolution.ResY),Display.Desktop);
-                TestTrue(TEXT("Native size fills the display"),Settings->GetFullscreenMode()==EWindowMode::WindowedFullscreen);
-            }
-            Settings->SetDisplayProperties(SavedID,SavedIndex);
-            Settings->SetScreenResolution(SavedSize);
-            Settings->SetFullscreenMode(SavedMode);
-            Settings->ApplyResolutionSettings(false);
-            Settings->ConfirmVideoMode();
-            Settings->SaveSettings();
+            TestEqual(TEXT("An unsupported selection keeps the previous render size"),Player->WorldResolution(),*Other);
+            Player->SetWorldResolution(FIntPoint::ZeroValue);
+            TestEqual(TEXT("Adaptive re-enables the resolution governor"),ReadCVar(TEXT("r.DynamicRes.OperationMode")),2);
+            Player->SetWorldResolution(OriginalSize);
+            if (!bHadSetting) GConfig->RemoveKey(TEXT("Sailing.World"),TEXT("RenderResolution"),GGameUserSettingsIni);
+            GConfig->Flush(false,GGameUserSettingsIni);
         }
     }
     Player->SetWorldChoice(EWorldSetting::Lighting,0);

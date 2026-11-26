@@ -72,6 +72,88 @@ bool FSailingShoalingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("All shore profiles solve finite-depth dispersion"),DispersionError<2e-6);
     TestTrue(TEXT("Incoming wave energy flux is conserved up to breaking"),FluxError<2e-5);
     TestTrue(TEXT("Spacing between crests follows the integrated wavenumber"),PhaseError<.025);
+    Sailing::FShoreLip Lip;
+    TestFalse(TEXT("Offshore spray cannot start a beach breaker"), Sailing::FindShoreLip({0,0},{8,1},Lip));
+    int32 Attached=0;
+    for (int32 I=0; I<60; ++I)
+    {
+        const Sailing::FSeaFrame Frame{8.f+I/12.f,1.f};
+        if (!Sailing::FindShoreLip({322.,68.},Frame,Lip)) continue;
+        ++Attached;
+        TestEqual(TEXT("The lip starts on the buoyancy surface"),Lip.PositionM.Z,
+            Sailing::SeaHeight(FVector2D(Lip.PositionM),Frame,true));
+        TestTrue(TEXT("Surf spills inland at Long Cay"), Lip.Shoreward.Y>.45 && Lip.Aeration>=.22f);
+    }
+    TestTrue(TEXT("A passing train breaks at the beach"),Attached>0);
+    // Water on either side of the nose of the scanned Long Cay headland.
+    const auto Atlas=Sailing::RockSurfTexels();
+    const auto RockCell=[&](int32 X,int32 Y) {
+        constexpr int32 N=Sailing::RockTileWidth;
+        return Atlas[2*N*N+Y*N+X].GetFloats();
+    };
+    const auto West=RockCell(57,35), East=RockCell(74,35);
+    TestTrue(TEXT("The offshore and return strokes wrap around both sides of the rock"),
+        West.G>.20f && East.G<-.20f && West.A>0 && East.A>0 && RockCell(63,48).A>=1.f);
+    const FVector2D Flank(370.12,62.83);
+    constexpr double Epsilon=.004;
+    const auto Water=Sailing::SampleSea(Flank,9.7,0.,1.,true);
+    for (const auto Axis : {FVector2D(1,0),FVector2D(0,1)})
+    {
+        const double Slope=(Sailing::SeaHeight(Flank+Axis*Epsilon,{9.7f,1.f},true)
+                           -Sailing::SeaHeight(Flank-Axis*Epsilon,{9.7f,1.f},true))/(2*Epsilon);
+        TestEqual(TEXT("Crest normal on the flank follows the displaced surface"),
+            FVector2D::DotProduct(Water.Gradient,Axis),Slope,.002);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOpenSeaSpectrumTest, "Sailing.Sea.OffshoreStokesSpectrum",
+    EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+
+bool FOpenSeaSpectrumTest::RunTest(const FString&)
+{
+    // Reconstruct the reference from the initial modes, deep-water dispersion
+    // and the bound second harmonic, independently of the running phase/height.
+    for (float Scale : {1.f, Sailing::StormSeaScale, Sailing::HurricaneSeaScale})
+    {
+        double Error2 = 0, Energy = 0, PeakError = 0;
+        for (int32 I = 0; I < 256; ++I)
+        {
+            const FVector2D P(9.35*I, 76.*FMath::Sin(I*.31));
+            const float T = I*.375f;
+            double Expected = 0;
+            for (int32 J = 0; J < Sailing::SeaWaveCount; ++J)
+            {
+                const FLinearColor Mode = Sailing::SeaWaveParameter(J, {0.f, Scale});
+                const FVector2D K(Mode.R, Mode.G);
+                const double Phase = FVector2D::DotProduct(K,P) - FMath::Sqrt(9.81*K.Size())*T + Mode.A;
+                Expected += Mode.B*FMath::Cos(Phase) + .5*K.Size()*Mode.B*Mode.B*FMath::Cos(2.*Phase);
+            }
+            const double Error = Sailing::SeaHeight(P,{T, Scale},false) - Expected;
+            PeakError = FMath::Max(PeakError,FMath::Abs(Error));
+            Error2 += Error*Error;
+            Energy += Expected*Expected;
+        }
+        const double RelativeRms = FMath::Sqrt(Error2/Energy);
+        AddInfo(FString::Printf(TEXT("Sea scale %.1f, relative RMS height error %.6f%%, peak error %.6f m"),
+            Scale, RelativeRms*100., PeakError));
+        TestTrue(TEXT("Offshore height agrees with the second-order reference"),RelativeRms < .0001);
+        // Independent virtual wave gauge, eight samples per second for one hour.
+        constexpr int32 Samples = 8*3600;
+        double Sum = 0, SumSquared = 0;
+        for (int32 I = 0; I < Samples; ++I)
+        {
+            const double H = Sailing::SeaHeight({54.,-28.},{I*.125f,Scale},false);
+            Sum += H;
+            SumSquared += H*H;
+        }
+        const double GaugeHs = 4.*FMath::Sqrt(SumSquared/Samples-FMath::Square(Sum/Samples));
+        const double SpectrumHs = Sailing::SignificantWaveHeight(Scale);
+        AddInfo(FString::Printf(TEXT("Spectral and gauge significant heights %.4f and %.4f m, difference %.3f%%"),
+            SpectrumHs, GaugeHs,100.*FMath::Abs(GaugeHs/SpectrumHs-1.)));
+        TestTrue(TEXT("Gauge significant height within one percent of spectral height"),
+            FMath::Abs(GaugeHs/SpectrumHs-1.) < .01);
+    }
     return true;
 }
 
@@ -89,9 +171,13 @@ bool FSailingSurfaceTest::RunTest(const FString& Parameters)
     const double Dt = (Sailing::SampleSea(Position, Time + Step).HeightM
         - Sailing::SampleSea(Position, Time - Step).HeightM) / (2.0 * Step);
     TestEqual(TEXT("Normal uses the slope of the rendered height function"), Water.Gradient.X, Dx, 1e-6);
-    TestEqual(TEXT("Surface rise matches vertical water velocity"), Water.VelocityMps.Z, Dt, 1e-6);
+    TestEqual(TEXT("Surface rise at the fixed gauge"), Water.SurfaceRiseMps, Dt, 1e-6);
+    const FVector2D Travel = FVector2D(Water.VelocityMps) * Step;
+    TestEqual(TEXT("A drifting particle stays on the moving surface"), Water.VelocityMps.Z,
+        (Sailing::SampleSea(Position+Travel,Time+Step).HeightM -
+         Sailing::SampleSea(Position-Travel,Time-Step).HeightM)/(2.*Step),1e-6);
     TestTrue(TEXT("Wind chop motion fades at depth"),
-        Sailing::SampleSea(Position, Time, 200.0).VelocityMps.Size() < 1e-6);
+        Sailing::SampleSea(Position, Time, 400.0).VelocityMps.Size() < 1e-6);
 
     const Sailing::FSeaFrame Storm{ 76.25f, Sailing::HurricaneSeaScale };
     const FVector2D AlongRoute(382.13, -90.24);
@@ -119,9 +205,9 @@ bool FSailingSurfaceTest::RunTest(const FString& Parameters)
             GaleWindSeaEnergy+=FMath::Square(Mode.B*WaveNumber.Size());
         const double Phase = FVector2D::DotProduct(WaveNumber, AlongRoute) + Mode.A;
         const double Crest = FMath::Cos(Phase);
-        PackedHeight += Mode.B * (Crest + Sailing::SeaCrestShape * (Crest * Crest - 0.5));
+        PackedHeight += Mode.B*Crest + .5*WaveNumber.Size()*Mode.B*Mode.B*FMath::Cos(2.*Phase);
         PackedCompression += Mode.B * WaveNumber.Size() * Crest;
-        PackedGradient -= WaveNumber * Mode.B * FMath::Sin(Phase) * (1.0 + 2.0 * Sailing::SeaCrestShape * Crest);
+        PackedGradient -= WaveNumber * Mode.B * FMath::Sin(Phase) * (1.0 + 2.0 * WaveNumber.Size() * Mode.B * Crest);
     }
     const Sailing::FSeaSample StormSurface = Sailing::SampleSea(AlongRoute, Storm.TimeS, 0, Storm.Scale);
     TestEqual(TEXT("Packed GPU spectrum preserves storm draft"), PackedHeight, StormSurface.HeightM, 1e-5);
@@ -152,7 +238,49 @@ bool FSailingSurfaceTest::RunTest(const FString& Parameters)
     }
     TestEqual(TEXT("A sustained gale raises the full hurricane sea"),Developing,Sailing::HurricaneSeaScale,.001f);
     TestTrue(TEXT("A clearing sky leaves residual swell"),Sailing::AdvanceSeaScale(Developing,.16f,1)>4.3f);
-    TestTrue(TEXT("Hurricane has significant wave heights of eight to ten metres"), HurricaneHeight>=8.0 && HurricaneHeight<=10.0);
+    const double StormHeight=Sailing::SignificantWaveHeight(Sailing::StormSeaScale);
+    TestTrue(TEXT("Developed storm seas exceed nine metres"),StormHeight>9. && StormHeight<11.);
+    TestTrue(TEXT("Hurricane seas are higher than twelve metres and distinct from storm"),
+        HurricaneHeight>12. && HurricaneHeight<15. && HurricaneHeight>1.28*StormHeight);
+    // A high swell can still look flat if none of its height changes over the
+    // length of a yacht. Measure the faces on a 15 m baseline in the wind sea.
+    for (const auto Scale : {Sailing::StormSeaScale,Sailing::HurricaneSeaScale})
+    {
+        double SumSquares=0.;
+        for (int32 I=0; I<512; ++I)
+        {
+            const FVector2D P(I*2.7,I*8.1);
+            const Sailing::FSeaFrame Frame{I*.37f,Scale};
+            SumSquares+=FMath::Square(Sailing::SeaHeight(P+FVector2D(0,15),Frame,false)-Sailing::SeaHeight(P,Frame,false));
+        }
+        const double Rms=FMath::Sqrt(SumSquares/512.);
+        AddInfo(FString::Printf(TEXT("Sea scale %.1f: 15 m wave-face RMS relief %.2f m"),Scale,Rms));
+        TestTrue(TEXT("The chase sees steep, yacht-sized wave faces"),Rms>(Scale==Sailing::StormSeaScale ? 1.8 : 2.5));
+    }
+
+    double OnReef=0., InDeepWater=0., AtDeparture=0., UnbrokenAtDeparture=0.;
+    const FVector2D ReefCenter(20,19);
+    for (int32 I=0; I<512; ++I)
+    {
+        const Sailing::FSeaFrame Sea{I*.37f,Sailing::HurricaneSeaScale};
+        OnReef+=FMath::Square(Sailing::SeaHeight(ReefCenter,Sea,true));
+        InDeepWater+=FMath::Square(Sailing::SeaHeight(ReefCenter,Sea,false));
+        AtDeparture+=FMath::Square(Sailing::SeaHeight(FVector2D::ZeroVector,Sea,true));
+        UnbrokenAtDeparture+=FMath::Square(Sailing::SeaHeight(FVector2D::ZeroVector,Sea,false));
+    }
+    TestTrue(TEXT("The shallow coral cap dissipates the offshore hurricane swell"),OnReef<.20*InDeepWater);
+    TestTrue(TEXT("The deep departure channel retains large waves beside the coral"),AtDeparture>.33*UnbrokenAtDeparture);
+    const FVector2D ReefEdge(60,-8);
+    const auto ReefSurface=Sailing::SampleSea(ReefEdge,Time,0,Sailing::HurricaneSeaScale,true);
+    for (const FVector2D Axis : {FVector2D(1,0),FVector2D(0,1)})
+    {
+        const auto Elevation=[&](FVector2D P){return Sailing::SampleSea(P,Time,0,Sailing::HurricaneSeaScale,true).HeightM;};
+        TestEqual(TEXT("The buoyancy and lighting normal include the reef depth gradient"),
+            FVector2D::DotProduct(ReefSurface.Gradient,Axis),
+            (Elevation(ReefEdge+Step*Axis)-Elevation(ReefEdge-Step*Axis))/(2*Step),2e-6);
+    }
+    TestEqual(TEXT("Storm energy recovers in deep water beyond the reef"),
+        Sailing::SeaHeight({-160,-60},Storm,true),Sailing::SeaHeight({-160,-60},Storm,false),1e-8);
 
     const FVector2D Shoal(281.0, -120.8);
     const auto Breaker = Sailing::SampleSea(Shoal, Time, 0, 1.65, true);
@@ -163,7 +291,7 @@ bool FSailingSurfaceTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("Breaking wave normal follows the coastline and run-up envelope"),
             FVector2D::DotProduct(Breaker.Gradient, Direction),
             (Height(Shoal+Direction*Step,Time)-Height(Shoal-Direction*Step,Time))/(2*Step), 2e-6);
-    TestEqual(TEXT("The swimmer and hull feel the vertical speed of the breaker"), Breaker.VelocityMps.Z,
+    TestEqual(TEXT("Crossing the breaker at a fixed point"), Breaker.SurfaceRiseMps,
               (Height(Shoal,Time+Step)-Height(Shoal,Time-Step))/(2*Step), 2e-6);
     TestEqual(TEXT("Height-only wave contacts follow the same surface"),
               Sailing::SeaHeight(Shoal, {float(Time),1.65f}, true), Breaker.HeightM, 2e-6);
@@ -213,6 +341,16 @@ bool FSailingSurfaceTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Ring velocity matches the changing surface"), Ring.VelocityMps.Z,
         (Impacts.At(RingPoint,16+Step).HeightM-Impacts.At(RingPoint,16-Step).HeightM)/(2*Step),2e-6);
     TestEqual(TEXT("A spent impact releases its water"), Impacts.At(RingPoint,22).HeightM, 0.);
+    Impacts.WhalePrints[1] = FLinearColor(200.,40.,18.,.95f);
+    for (int32 I=0; I<12; ++I) Impacts.Emit({0.,0.},19.f+.1f*I,.22f);
+    const FVector2D WhaleRim(210.,40.);
+    const auto Wash=Impacts.At(WhaleRim,22.);
+    const double Expected=.95*.82*FMath::Exp(-.49*2.)*FMath::Sqrt(2.2/12.2);
+    TestEqual(TEXT("The fluke ring survives bow impacts and loses energy as its circumference grows"),Wash.HeightM,Expected,.002);
+    TestEqual(TEXT("Fluke ring slope matches its displaced surface"), Wash.Gradient.X,
+        (Impacts.At(WhaleRim+FVector2D(Step,0),22).HeightM-Impacts.At(WhaleRim-FVector2D(Step,0),22).HeightM)/(2*Step),2e-6);
+    TestEqual(TEXT("Fluke ring velocity includes radial spreading"),Wash.VelocityMps.Z,
+        (Impacts.At(WhaleRim,22+Step).HeightM-Impacts.At(WhaleRim,22-Step).HeightM)/(2*Step),2e-6);
     return true;
 }
 
@@ -254,10 +392,18 @@ bool FSailingFoamTest::RunTest(const FString& Parameters)
     Field.Record({{64,0},{0,1},-.02f,-.02f,0},16.14f);
     TestTrue(TEXT("Drifting through neutral keeps the old foam in view"),
         FVector2D::Distance(Ahead,Field.Center()) < Sailing::FFoamField::CellM);
-    Field.Record({{420,200},{1,0},0,0,0},16.2f);
+    // A falling bow produces foam even with the propeller stopped and no surge.
+    Field.BreakAtBow({68,2}, {1,0}, 1, 4.f, {0,0}, 16.14f);
+    Field.Rasterize(Pixels);
+    TestTrue(TEXT("Impact foam starts at the immersed bow"), At(68,2).A > 150);
+    Field.Record({{64,0},{0,1},0,0,0},17.14f);
+    Field.Rasterize(Pixels);
+    TestTrue(TEXT("The detached impact fan spreads outboard and aft after the yacht turns"),
+        At(66,5).A > 80 && At(66,-5).A == 0);
+    Field.Record({{420,200},{1,0},0,0,0},17.2f);
     Field.Rasterize(Pixels);
     TestTrue(TEXT("Relocation does not connect distant wakes"),!Pixels.ContainsByPredicate(
-        [](const FColor& C){ return C.R || C.G || C.B; }));
+        [](const FColor& C){ return C.R || C.G || C.B || C.A; }));
     return true;
 }
 
@@ -295,6 +441,24 @@ bool FSailingForcesTest::RunTest(const FString& Parameters)
     Helm.Rudder = 0.0;
     TestTrue(TEXT("Rudder response reverses under backward flow"),
         SteeredAstern < Sailing::CalculateLoads(Hull, Helm, Time).TorqueNm.Z);
+    Hull.VelocityMps = FVector::ZeroVector;
+    const double NeutralAtRest = Sailing::CalculateLoads(Hull, Helm, Time, 0.).TorqueNm.Z;
+    Helm.Rudder = 1.0;
+    TestEqual(TEXT("The rudder needs flow to turn the yacht"),
+        Sailing::CalculateLoads(Hull, Helm, Time, 0.).TorqueNm.Z, NeutralAtRest, 1e-6);
+    Helm.Rudder = 0.0;
+    Helm.bEngineOn = true;
+    Helm.Throttle = 1.;
+    Hull.VelocityMps = FVector(3.,1.,0.);
+    for (int32 I=0; I<24; ++I)
+    {
+        Helm.Rudder = (I%2) ? 1. : -1.;
+        const auto Turn = Sailing::CalculateLoads(Hull,Helm,I*.65,Sailing::HurricaneSeaScale);
+        TestTrue(TEXT("A commanded turn keeps its sign through a hurricane crest and trough"),
+            Turn.TorqueNm.Z*Helm.Rudder > 20000.);
+        TestTrue(TEXT("Ahead throttle accelerates through the same seas"),Turn.ForceN.X>0.);
+    }
+    Helm.Rudder=0.;
     // Settle the actual longitudinal force balance in still water.
     Helm.bEngineOn = true;
     Helm.Throttle = 1.;

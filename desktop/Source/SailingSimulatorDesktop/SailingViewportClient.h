@@ -4,6 +4,7 @@
 #include "SailingViewportClient.generated.h"
 
 class ACameraActor;
+class SWidget;
 UCLASS()
 class USailingViewportClient : public UGameViewportClient
 {
@@ -11,10 +12,21 @@ class USailingViewportClient : public UGameViewportClient
 
 public:
     void Init(FWorldContext& WorldContext, UGameInstance* Instance, bool bCreateAudioDevice) override;
+    void DetachViewportClient() override;
     void FinalizeViews(FSceneViewFamily* Family, const TMap<ULocalPlayer*, FSceneView*>& PlayerViews) override;
     float FramesPerSecond() const { return DisplayFPS; }
+    FIntPoint RenderResolution() const { return RequestedResolution; }
+    void SetRenderResolution(FIntPoint Size);
 
 private:
+    void InitializeDisplay();
+    void ApplyRenderResolution();
+    FIntPoint RequestedResolution = FIntPoint::ZeroValue;
+    void ShowStartupOverlay();
+    void RemoveStartupOverlay();
+    TSharedPtr<SWidget> StartupOverlay;
+    bool bSubmittedStartupFrame = false;
+
     void RecordBenchmark(FIntPoint Size, double Now);
     bool PrepareDiveBenchmark();
     bool PrepareAlongsideBenchmark();
@@ -24,6 +36,9 @@ private:
     float WaterViewStart = -1, EntryTime = -1;
     int32 CapturedFrames = 0, WaterFrameCount = 150;
     bool bStartAlongside = false;
+#if PLATFORM_MAC
+    bool bActivatePreview = false;
+#endif
     FIntPoint PreviousSize = FIntPoint::ZeroValue;
     float ReconstructionScale = 1;
     double GpuTotalMs = 0;
@@ -34,9 +49,10 @@ private:
 
     FString BenchmarkPath;
     TArray<double> FrameTimesMs;
+    TArray<FVector4f> ThreadTimesMs;
     double BenchmarkStart = 0;
     double PreviousFrame = 0;
-    int32 BenchmarkFrames = 0;
+    int32 BenchmarkFrames = 0, MeasuredFrameCount = 600;
     enum class EDiveReplay : uint8 { None, Leave, Submerge, Settle };
     EDiveReplay DiveReplay = EDiveReplay::None;
     double DiveInputStart = 0;

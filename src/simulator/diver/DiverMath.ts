@@ -279,7 +279,7 @@ export function stepSwim(state: SwimState, input: SwimInput, world: SwimWorld, d
     : input.sprint ? DIVE_SPRINT_SPEED : DIVE_SPEED) * (input.speedScale ?? 1);
   const targetVx = wishX * speed;
   const targetVz = wishZ * speed;
-  let targetVy = wishY * speed + clamp(input.vertical, -1, 1) * VERTICAL_SPEED;
+  let targetVy = input.vertical === 0 ? wishY * speed : clamp(input.vertical, -1, 1) * VERTICAL_SPEED;
   if (state.ascending) targetVy = Math.max(targetVy, VERTICAL_SPEED * 0.8);
 
   const effort = Math.hypot(moveX, moveY) + Math.abs(input.vertical);

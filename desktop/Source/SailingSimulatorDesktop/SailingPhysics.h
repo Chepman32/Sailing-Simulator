@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Math/Float16Color.h"
 
 namespace Sailing
 {
@@ -9,7 +10,6 @@ inline constexpr double MassKg = 9800.0;
 inline constexpr double KnotsPerMps = 1.94384449;
 inline constexpr double MaxRudderDegrees = 32.0;
 inline constexpr int32 SeaWaveCount = 22;
-inline constexpr double SeaCrestShape = 0.27;
 inline constexpr float StormSeaScale = 3.9f;
 inline constexpr float HurricaneSeaScale = 4.5f;
 
@@ -23,11 +23,23 @@ struct FSeaSample
 {
     double HeightM = 0.0;
     FVector2D Gradient = FVector2D::ZeroVector;
-    FVector VelocityMps = FVector::ZeroVector;
+    FVector VelocityMps = FVector::ZeroVector; // Water particle velocity at the requested depth.
+    double SurfaceRiseMps = 0.; // Height rate at a fixed horizontal position.
     double Compression = 0.; // Convergence of the horizontal wave orbits at the surface.
     double SwellRiseMps = 0.; // Long-wave surface rise along a hull station's course.
     double SwellAccelerationMps2 = 0.; // Long-wave vertical acceleration along a hull station's course.
 };
+
+// Find the nearby shore-breaking crest, starting at a point on the island shelf.
+// The position is in world metres and the normal points inland.
+struct FShoreLip
+{
+    FVector PositionM;
+    FVector2D Shoreward;
+    float Aeration;
+    float SpeedMps;
+};
+bool FindShoreLip(FVector2D ProbeM, FSeaFrame Frame, FShoreLip& Out);
 
 struct FBoatWake
 {
@@ -61,6 +73,8 @@ struct FWaterImpacts
     static constexpr int32 Count = 4;
     // Encoded as material vectors: origin in metres, birth time, crest height.
     FLinearColor Rings[Count] = {};
+    // One persistent contact per animal, independent of frequent bow impacts.
+    FLinearColor WhalePrints[2] = {FLinearColor::Transparent, FLinearColor::Transparent};
     void Emit(FVector2D CenterM, float TimeS, float HeightM);
     FSeaSample At(FVector2D XYm, double TimeS, double DepthM = 0) const;
 };
@@ -105,6 +119,8 @@ double SeaHeight(FVector2D XYm, FSeaFrame Frame, bool bCoralPass);
 // Two rows per surveyed beach, holding phase, shoaling and depth, then their spatial derivatives.
 inline constexpr int32 SurfProfileWidth = 97;
 TConstArrayView<FLinearColor> SurfProfileTexels();
+inline constexpr int32 RockTileWidth = 128;
+TConstArrayView<FFloat16Color> RockSurfTexels();
 double SeaWaveAmplitude(int32 Index, double Scale);
 FLinearColor SeaWaveParameter(int32 Index, FSeaFrame Frame);
 double SignificantWaveHeight(double Scale);

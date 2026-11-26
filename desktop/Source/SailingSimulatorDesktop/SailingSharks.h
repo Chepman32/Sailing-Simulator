@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "SailingSharkMotion.h"
 #include "SailingSharks.generated.h"
 
 class ASailingYachtPawn;
@@ -19,11 +20,12 @@ public:
 private:
     struct FSwimmer
     {
-        FVector2D Position = FVector2D::ZeroVector, Direction = FVector2D(1,0);
+        Sailing::FSharkMotion Motion;
         FVector2D Avoidance = FVector2D::ZeroVector;
-        double Speed = 0, Phase = 0, NextLook = 0;
+        FVector2D FollowVelocity = FVector2D::ZeroVector;
+        double NextLook = 0, HoldCourseUntil = 0, FilteredSurfaceCm = 0;
         int32 Turn = 1;
-        bool bHasRoom = false, bPlaced = false;
+        bool bHasRoom = false, bForwardClear = false, bPlaced = false;
     };
     bool OpenWater(FVector2D Cm, const ASailingYachtPawn& Yacht) const;
     UPROPERTY(EditAnywhere, Category="Wildlife") TObjectPtr<UStaticMesh> SharkMesh;

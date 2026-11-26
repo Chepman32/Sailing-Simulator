@@ -3,6 +3,8 @@
 #include "Engine/Texture2D.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "SailingExplorer.h"
+#include "SailingJetSki.h"
 #include "SailingTrial.h"
 
 ASailingWake::ASailingWake()
@@ -41,18 +43,39 @@ void ASailingWake::Tick(float DeltaSeconds)
         Water->SetTextureParameterValue(TEXT("WakeFieldB"),Maps[1]);
         BoundWater=Water;
     }
-    const FVector2D Bow(Yacht->GetActorForwardVector().GetSafeNormal2D());
-    const UPrimitiveComponent* Hull = CastChecked<UPrimitiveComponent>(Yacht->GetRootComponent());
-    const FVector Heading(Bow,0);
-    const auto Surge = [&](double Side)
-    {
-        const FVector Point = Yacht->GetActorTransform().TransformPositionNoScale({-470,Side*193,-28});
-        return float(FVector::DotProduct(Hull->GetPhysicsLinearVelocityAtPoint(Point),Heading)*.01);
-    };
-    const auto& Helm = Yacht->ReadHelm();
+    const ASailingJetSki* Ski = Yacht->Explorer().MountedJetSki();
     const float Now = Yacht->SeaFrame().TimeS;
-    const bool Reset = Field.Record({FVector2D(Yacht->GetActorLocation())*.01,Bow,Surge(-1),Surge(1),
-        float(Helm.bEngineOn ? Helm.Throttle : 0)},Now);
+    bool Reset;
+    if (Ski)
+    {
+        const auto& Drive = Ski->Drive();
+        const float Speed = Drive.SurgeMps();
+        Reset = Field.Record({FVector2D(Ski->GetActorLocation()) * .01, Drive.Bow(), Speed, Speed, float(Drive.Jet), true}, Now);
+    }
+    else
+    {
+        const FVector2D Bow(Yacht->GetActorForwardVector().GetSafeNormal2D());
+        const UPrimitiveComponent* Hull = CastChecked<UPrimitiveComponent>(Yacht->GetRootComponent());
+        const FVector Heading(Bow,0);
+        const auto Surge = [&](double Side)
+        {
+            const FVector Point = Yacht->GetActorTransform().TransformPositionNoScale({-470,Side*193,-28});
+            return float(FVector::DotProduct(Hull->GetPhysicsLinearVelocityAtPoint(Point),Heading)*.01);
+        };
+        const auto& Helm = Yacht->ReadHelm();
+        Reset = Field.Record({FVector2D(Yacht->GetActorLocation())*.01,Bow,Surge(-1),Surge(1),
+            float(Helm.bEngineOn ? Helm.Throttle : 0)},Now);
+        const auto Contacts = Yacht->BowContacts();
+        for (int32 Side=0; Side<Contacts.Num(); ++Side)
+        {
+            const auto& Contact = Contacts[Side];
+            if (Reset) LastBreak[Side] = -10.f;
+            const float Age = Now-Contact.LastStrikeS;
+            if (Age < 0 || Age > .24f || Contact.LastStrikeS == LastBreak[Side]) continue;
+            LastBreak[Side] = Contact.LastStrikeS;
+            Field.BreakAtBow(FVector2D(Contact.StrikeM), Bow, Side, Contact.StrikeMps, Contact.FoamDriftMps, Contact.LastStrikeS);
+        }
+    }
     constexpr int32 Size = Sailing::FFoamField::Size;
     constexpr float Interval = Sailing::FFoamField::Interval;
     if (Reset || Now-Published>=Interval)

@@ -24,8 +24,9 @@ USailingEntryBubbles::USailingEntryBubbles()
     if (Skin.Get()) SetMaterial(0,Skin.Get());
 }
 
-void USailingEntryBubbles::Splash(const ASailingYachtPawn& Yacht, FVector Eye, FVector Forward, float ImpactCmS)
+void USailingEntryBubbles::Splash(const ASailingYachtPawn& Yacht, FVector Eye, FVector Forward, float ImpactCmS, float PlumeScale)
 {
+    WaterSource = &Yacht;
     const float Strength = FMath::Clamp(ImpactCmS/650.f, .22f, 1.f);
     const int32 Count = FMath::RoundToInt(26 + 48*Strength);
     if (Bubbles.Num()+Count > Capacity)
@@ -40,20 +41,43 @@ void USailingEntryBubbles::Splash(const ASailingYachtPawn& Yacht, FVector Eye, F
         // Air drawn down by the impact and broken up around the shoulders.
         const float Radius = I%9==0 ? Random.FRandRange(1.7,2.65) :
                              I%3==0 ? Random.FRandRange(.60,1.45) : Random.FRandRange(.16,.60);
-        FVector P = Eye + Ahead*(32. + 72.*T) + Out*Random.FRandRange(12.f,49.f);
+        FVector P = Eye + (Ahead*(32. + 72.*T) + Out*Random.FRandRange(12.f,49.f))*PlumeScale;
         P.Z = Surface - (13 + T*(43 + 88*Strength)) + Random.FRandRange(-10,10);
         const FVector V = Out*Random.FRandRange(7.f,38.f) + Ahead*Random.FRandRange(5.f,28.f)
                         - FVector::UpVector*(Random.FRandRange(40.f,142.f)*Strength);
-        Bubbles.Add({P,V,Radius,0,Random.FRandRange(2.8f,4.7f),Angle});
+        Bubbles.Add({P,V,Radius*FMath::Sqrt(PlumeScale),0,Random.FRandRange(2.8f,4.7f),Angle});
     }
     DrawBubbles();
     SetComponentTickEnabled(true);
 }
 
+void USailingEntryBubbles::Exhale(const ASailingYachtPawn& Yacht, FVector Eye, const FRotator& View, FVector MovementCmS)
+{
+    WaterSource = &Yacht;
+    const FVector Ahead = View.Vector();
+    const FVector Side = View.RotateVector(FVector::RightVector);
+    const FVector Origin = Eye + Ahead*40. + Side*19. - FVector(0,0,27);
+    const int32 Count = FMath::Min(18, Capacity-Bubbles.Num());
+    for (int32 I=0; I<Count; ++I)
+    {
+        const float Radius = I%6 == 0 ? Random.FRandRange(.74,1.32) : Random.FRandRange(.18,.62);
+        const FVector Point = Origin + Ahead*Random.FRandRange(-8,16) + Side*Random.FRandRange(-9,14)
+                             + FVector(0,0,Random.FRandRange(-6,9));
+        const FVector Velocity = Ahead*Random.FRandRange(10,32) + .23*MovementCmS + FVector(0,0,10);
+        Bubbles.Add({Point,Velocity,Radius,0,Random.FRandRange(2.9,5.1),Random.FRandRange(0,UE_TWO_PI)});
+    }
+    if (Count>0)
+    {
+        DrawBubbles();
+        SetComponentTickEnabled(true);
+    }
+}
+
 void USailingEntryBubbles::TickComponent(float Dt, ELevelTick TickType, FActorComponentTickFunction* Tick)
 {
     Super::TickComponent(Dt,TickType,Tick);
-    const auto* Yacht = CastChecked<ASailingYachtPawn>(GetOwner());
+    const auto* Yacht = WaterSource.Get();
+    if (!Yacht) { SetComponentTickEnabled(false); return; }
     // Across this metre-wide plume the moving water is locally planar. Three
     // shared height samples include waves and wake even when the yacht moves on.
     if (Bubbles.IsEmpty()) return;

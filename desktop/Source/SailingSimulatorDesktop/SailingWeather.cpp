@@ -15,6 +15,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "ProceduralMeshComponent.h"
@@ -25,7 +26,7 @@
 
 namespace
 {
-constexpr int32 RainCount = 2350;
+constexpr int32 RainCount = 4096;
 
 struct FWeather
 {
@@ -45,9 +46,9 @@ struct FWeather
 
 constexpr FWeather Conditions[] = {
     { TEXT("Trade winds"), 36, -23, 86000, 0, 1.08f, 0.0028f, 1.0f, -0.48f, 0.0f, 1.0f, 0 },
-    { TEXT("Golden hour"), 11, 3, 65000, 0, 1.04f, 0.0036f, 3.5f, -0.15f, 0.012f, 1.05f, 0 },
+    { TEXT("Golden hour"), 11, 3, 65000, 0, 1.04f, 0.0027f, 2.75f, -0.15f, 0.012f, 1.05f, 0 },
     { TEXT("Squall"), 19, -28, 3800, 0, 0.60f, 0.0135f, 2.4f, 0.13f, 0.030f, 2.43f, 1 },
-    { TEXT("Moonlight"), -13, 25, 0, 4.5f, 0.74f, 0.0031f, 1.8f, -0.28f, 0.010f, 0.70f, 0 },
+    { TEXT("Moonlight"), -13, 25, 0, .65f, 0.38f, 0.0031f, 1.8f, -0.28f, 0.010f, 0.70f, 0 },
 };
 
 struct FClimate
@@ -72,17 +73,6 @@ constexpr FClimate Climates[] = {
     {TEXT("Hurricane"),.028f, .49f, RainExtinction(330.f), .037f, .76f,Sailing::HurricaneSeaScale,1.f,1.f},
     {TEXT("Calm"),     1.f,   1.f,  0,      0,     0,   .16f, 0,    0},
 };
-
-FVector WrapRain(const FVector& Position, const FVector& Eye, double Radius)
-{
-    const auto Wrap = [](double Value, double Center, double Radius)
-    {
-        const double Size = 2 * Radius;
-        return Value - Size * FMath::FloorToDouble((Value - Center + Radius) / Size);
-    };
-    return FVector(Wrap(Position.X, Eye.X, Radius), Wrap(Position.Y, Eye.Y, Radius),
-        Wrap(Position.Z, Eye.Z + .25*Radius, .72*Radius));
-}
 }
 
 ASailingWeather::ASailingWeather()
@@ -97,13 +87,33 @@ ASailingWeather::ASailingWeather()
         Mesh->SetAbsolute(true, true, true);
         Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
         Mesh->SetCastShadow(false);
+        Mesh->SetVisibleInRayTracing(false);
         Mesh->SetVisibility(false);
         return Mesh;
     };
+    auto Aircraft = [this](FName Name, UStaticMesh* Model) {
+        auto* Mesh=CreateDefaultSubobject<UStaticMeshComponent>(Name);
+        Mesh->SetupAttachment(GetRootComponent());
+        Mesh->SetStaticMesh(Model);
+        Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        Mesh->SetCanEverAffectNavigation(false);
+        return Mesh;
+    };
+    static ConstructorHelpers::FObjectFinder<UStaticMesh> BushModel(TEXT("/Game/Coastal/Meshes/SM_Floatplane.SM_Floatplane"));
+    static ConstructorHelpers::FObjectFinder<UStaticMesh> JetModel(TEXT("/Game/Coastal/Meshes/SM_Airliner.SM_Airliner"));
+    Floatplane=Aircraft(TEXT("Sightseeing floatplane"),BushModel.Object);
+    Airliner=Aircraft(TEXT("Cruising airliner"),JetModel.Object);
+    Airliner->SetCastShadow(false);
     Rain = Effect(TEXT("Rain"));
     Spindrift = Effect(TEXT("CrestSpray"));
     static ConstructorHelpers::FObjectFinder<UMaterialInterface> SprayMaterial(TEXT("/Game/Coastal/Materials/M_StormSpindrift.M_StormSpindrift"));
     Spindrift->SetMaterial(0,SprayMaterial.Object);
+    BreakerLips = Effect(TEXT("BreakerLips"));
+    static ConstructorHelpers::FObjectFinder<UMaterialInterface> LipMaterial(TEXT("/Game/Coastal/Materials/M_BreakerLip.M_BreakerLip"));
+    BreakerLips->SetMaterial(0,LipMaterial.Object);
+    static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> WaterVolume(
+        TEXT("/Game/Coastal/Materials/M_UnderwaterOptics.M_UnderwaterOptics"), LOAD_Quiet | LOAD_NoWarn);
+    UnderwaterMaterial = WaterVolume.Get();
     Bolt = Effect(TEXT("Lightning"));
     StrikeLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("LightningBounce"));
     StrikeLight->SetupAttachment(GetRootComponent());
@@ -152,7 +162,8 @@ void ASailingWeather::BeginPlay()
     }
     BoltInstance = UMaterialInstanceDynamic::Create(LightningMaterial, this);
     Bolt->SetMaterial(0, BoltInstance);
-    Rain->SetMaterial(0, RainMaterial);
+    RainInstance = Rain->CreateDynamicMaterialInstance(0,RainMaterial);
+    if (Optics && UnderwaterMaterial) UnderwaterOptics = UMaterialInstanceDynamic::Create(UnderwaterMaterial, this);
     FString StartingWeather;
     if (FParse::Value(FCommandLine::Get(), TEXT("SailingWeather="), StartingWeather))
     {
@@ -171,22 +182,37 @@ void ASailingWeather::BeginPlay()
     FParse::Value(FCommandLine::Get(), TEXT("SailingCapture="), CapturePath);
     FRandomStream Drops(1249);
     TArray<int32> Indices;
+    FProcMeshSection DropsSection;
+    const FVector2D Corners[] = {{0,1},{1,1},{0,0},{1,0}};
     for (int32 I = 0; I < RainCount; ++I)
     {
-        RainSeeds.Emplace(Drops.FRandRange(-3600, 3600), Drops.FRandRange(-3600, 3600), Drops.FRandRange(0, 5000));
-        const int32 V = I * 4;
-        RainUVs.Append({ {0, 1}, {1, 1}, {0, 0}, {1, 0} });
-        Indices.Append({ V, V + 1, V + 2, V + 1, V + 3, V + 2 });
+        const FVector Seed(Drops.FRandRange(-3600,3600), Drops.FRandRange(-3600,3600), Drops.FRandRange(0,5000));
+        const FVector2D Flight(.72+.56*((I*13)%127)/126., I%3 == 0 ? 1250. : 3600.);
+        for (const FVector2D Corner : Corners)
+        {
+            FProcMeshVertex& Vertex = DropsSection.ProcVertexBuffer.AddDefaulted_GetRef();
+            Vertex.Position = Seed;
+            Vertex.UV0 = Corner;
+            Vertex.UV1 = Flight;
+        }
+        const uint32 V = I*4;
+        DropsSection.ProcIndexBuffer.Append({V,V+1,V+2,V+1,V+3,V+2});
     }
-    RainVertices.Init(FVector::ZeroVector, RainCount * 4);
-    RainColors.Init(FLinearColor::Transparent, RainCount * 4);
-    Rain->CreateMeshSection_LinearColor(0, RainVertices, Indices, {}, RainUVs, RainColors, {}, false);
+    // The shader wraps drops about the eye and trails their tails upwind.
+    DropsSection.SectionLocalBox = FBox(FVector(-3800),FVector(3800));
+    Rain->SetProcMeshSection(0,DropsSection);
+
     constexpr int32 PuffCount = UE_ARRAY_COUNT(SprayPuffs);
     SprayVertices.Init(FVector::ZeroVector,4*PuffCount);
     SprayColors.Init(FLinearColor::Transparent,4*PuffCount);
-    SprayUVs.Append(RainUVs.GetData(),4*PuffCount);
-    Indices.SetNum(6*PuffCount);
+    for (int32 I = 0; I < PuffCount; ++I)
+    {
+        SprayUVs.Append(Corners,4);
+        const int32 V = I*4;
+        Indices.Append({V,V+1,V+2,V+1,V+3,V+2});
+    }
     Spindrift->CreateMeshSection_LinearColor(0,SprayVertices,Indices,{},SprayUVs,SprayColors,{},false);
+    BreakingSheets.Initialize(*BreakerLips);
 }
 
 const TCHAR* ASailingWeather::ConditionName() const
@@ -226,6 +252,28 @@ void ASailingWeather::SelectWeather(int32 Choice)
     bAtmosphereDirty = true;
 }
 
+void ASailingWeather::UpdateAircraft(float Time, float Dt, const FVector& Eye)
+{
+    // The floatplane flies a continuous banked circuit over the inshore route.
+    // When the player sails farther afield, move the route gradually with them.
+    const FVector2D Offset=FVector2D(Eye)*.01-FlightCenter;
+    if (Offset.SizeSquared()>FMath::Square(460.))
+        FlightCenter+=Offset.GetSafeNormal()*FMath::Min(Offset.Size()-460.,double(Dt)*14.);
+    const double Phase=Time*.084-1.70, S=FMath::Sin(Phase), C=FMath::Cos(Phase);
+    const FVector Position(FlightCenter.X+350*C,FlightCenter.Y+175*S,49.+14.*C);
+    const FVector Tangent(-350*S,175*C,-14*S);
+    FRotator Pose=Tangent.Rotation();
+    const double Speed=Tangent.Size2D()*.084;
+    const double Curvature=350.*175./FMath::Pow(Tangent.Size2D(),3.);
+    Pose.Roll=-FMath::RadiansToDegrees(FMath::Atan(Speed*Speed*Curvature/9.81));
+    Floatplane->SetWorldLocationAndRotation(Position*100.,Pose);
+    const FVector Course(.932327,.361615,0.);
+    const double Along=FMath::Fmod(Time*172.+18400.,38000.)-19000.;
+    const FVector Jet=FVector(80.,-1250.,2700.)+Course*Along;
+    Airliner->SetWorldLocationAndRotation(Jet*100.,Course.Rotation());
+    if (DistantSky) DistantSky->SetVectorParameterValue(TEXT("JetTrack"),FLinearColor(Jet.X,Jet.Y,Jet.Z));
+}
+
 void ASailingWeather::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
@@ -247,6 +295,7 @@ void ASailingWeather::Tick(float DeltaSeconds)
         bAtmosphereDirty=true;
     }
     const FVector Eye = Player->PlayerCameraManager->GetCameraLocation();
+    UpdateAircraft(Time,DeltaSeconds,Eye);
     const FRotator View = Player->PlayerCameraManager->GetCameraRotation();
     const FVector Forward = View.Vector().GetSafeNormal2D();
     const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward);
@@ -283,6 +332,8 @@ void ASailingWeather::Tick(float DeltaSeconds)
     const float StormSky = ClimateValue(&FClimate::StormSky);
     const float SunLux = Value(&FWeather::SunLux)*ClimateValue(&FClimate::Sun);
     const float MoonLux = Value(&FWeather::MoonLux)*ClimateValue(&FClimate::Sky);
+    const bool bDetailed = GraphicsQuality >= 2;
+    const bool bUltra = GraphicsQuality == 3;
     bool bForceStrike = bLightningRequested;
     bLightningRequested = false;
     const bool bCapture = !CapturePath.IsEmpty() && ++Frames > 120 && Time > 7.0f;
@@ -313,24 +364,31 @@ void ASailingWeather::Tick(float DeltaSeconds)
             Light->SetIntensity(SunLux);
             // Dense cloud spreads the remaining direct light over a broad patch of sky.
             const float Obscured = FMath::SmoothStep(.10f,.81f,StormSky);
+            Light->SetLightColor(FMath::Lerp(FLinearColor::White, FLinearColor(.72f,.83f,1.f), Obscured));
             Light->SetLightSourceAngle(.53f + 1.5f*Obscured);
             Light->SetLightSourceSoftAngle(3.f*Obscured);
             // The real-time sky capture supplies the broad reflection. Only the
             // visible fraction of the sun should still form a directional glint.
             // Keep the sun's compact core distinct from the bright sky around
             // it, which already reaches the water through the reflection pass.
-            Light->SetSpecularScale(FMath::Lerp(.24f,.014f,Obscured));
-            Light->SetVolumetricScatteringIntensity(Value(&FWeather::Scattering)*(1.f-.85f*Obscured));
+            Light->SetSpecularScale(FMath::Lerp(bUltra ? .54f : bDetailed ? .38f : .24f,.014f,Obscured));
+            const float ShaftStrength = bUltra ? 1.82f : bDetailed ? 1.48f : 1.f;
+            Light->SetVolumetricScatteringIntensity(ShaftStrength*Value(&FWeather::Scattering)*(1.f-.85f*Obscured));
+            Light->SetEnableLightShaftOcclusion(bDetailed && SunLux > 500.f);
+            Light->SetEnableLightShaftBloom(bDetailed && SunLux > 500.f);
         }
         if (Moon) Moon->GetLightComponent()->SetIntensity(MoonLux);
         if (Optics)
         {
             const float Noon = Strengths[0] * FMath::SmoothStep(32000.f, 82500.f, SunLux);
-            Optics->Settings.AutoExposureBias = .13f + .6f * Strengths[3] - .16f * Noon - .37f*StormSky;
+            Optics->Settings.AutoExposureBias = .13f - 1.35f*Strengths[3] - .16f*Noon - .24f*Strengths[1] - .37f*StormSky;
             Optics->Settings.bOverride_ColorGainHighlights = true;
-            Optics->Settings.ColorGainHighlights = FVector4(1, 1, 1, 1 - .19f * Noon);
+            // The pale foam and reflected overcast take their colour from the
+            // cool skylight once the warm solar disc disappears behind rain.
+            Optics->Settings.ColorGainHighlights = FVector4(1.f-.025f*StormSky, 1.f+.025f*StormSky,
+                1.f+.14f*StormSky, 1.f-.19f*Noon);
             Optics->Settings.bOverride_BloomIntensity = true;
-            Optics->Settings.BloomIntensity = .16f - .10f * Noon;
+            Optics->Settings.BloomIntensity = (bUltra ? .42f : bDetailed ? .28f : .13f) - .10f * Noon;
             Optics->Settings.bOverride_ColorSaturation = true;
             Optics->Settings.ColorSaturation = FVector4(1 - RainStrength * .35, 1 - RainStrength * .29, 1 - RainStrength * .19, 1);
             Optics->Settings.bOverride_ColorGain = true;
@@ -350,29 +408,57 @@ void ASailingWeather::Tick(float DeltaSeconds)
     }
     if (Sky && (bAtmosphereDirty || Flash != PreviousFlash))
     {
-        Sky->GetLightComponent()->SetIntensity(Value(&FWeather::SkyIntensity)*ClimateValue(&FClimate::Sky)*(1.0f + Flash * 2.45f));
+        const float SkyFill = 1.f + (bUltra ? .15f : bDetailed ? .09f : 0.f)*Strengths[1];
+        Sky->GetLightComponent()->SetIntensity(Value(&FWeather::SkyIntensity)*ClimateValue(&FClimate::Sky)*(SkyFill + Flash * 2.45f));
     }
     PreviousFlash = Flash;
     ASailingYachtPawn* Yacht = Cast<ASailingYachtPawn>(Player->GetPawn());
-    const float Depth = Yacht ? Yacht->Explorer().DepthM() : 0.f;
+    // Dive optics follow the active camera, including the fixed water replays.
+    const float Depth = !Yacht ? 0.f : Player->GetViewTarget() == Yacht ? Yacht->Explorer().DepthM()
+        : Eye.Z < 350. ? Yacht->SurfaceHeightM(FVector2D(Eye)*.01) - Eye.Z*.01 : 0.f;
     const float Immersion = FMath::RoundToFloat(12 * FMath::SmoothStep(.04f, .62f, Depth)) / 12;
+    if (UnderwaterOptics)
+    {
+        if (Depth > .025f)
+        {
+            const float Light = .032f*SunLux + 2.5f*MoonLux + 1.5f;
+            UnderwaterOptics->SetScalarParameterValue(TEXT("EyeDepth"),Depth);
+            UnderwaterOptics->SetScalarParameterValue(TEXT("Turbidity"),StormSky);
+            UnderwaterOptics->SetScalarParameterValue(TEXT("WaterLight"),Light);
+            UnderwaterOptics->SetScalarParameterValue(TEXT("VolumeDetail"),bUltra ? 2.f : bDetailed ? 1.f : 0.f);
+        }
+        if (bUnderwaterOpticsActive != (Depth > .025f))
+        {
+            bUnderwaterOpticsActive = Depth > .025f;
+            Optics->AddOrUpdateBlendable(UnderwaterOptics, bUnderwaterOpticsActive ? 1.f : 0.f);
+        }
+    }
     if (bAtmosphereDirty || Immersion != PreviousImmersion)
     {
         if (HeightFog)
         {
-            // The existing fog pass supplies underwater visibility. Clear water
-            // scatters blue-green light over tens of metres, with no air shafts.
             const float Light = .034f*SunLux + .075f*MoonLux + .015f;
-            const FLinearColor WaterScatter = FLinearColor(.011f, .097f, .185f) * Light;
-            HeightFog->SetFogDensity(FMath::Lerp(Value(&FWeather::Fog)+ClimateValue(&FClimate::Fog), .64f, Immersion));
+            const FLinearColor WaterScatter = FLinearColor(.013f, .112f, .159f) * Light;
+            HeightFog->SetFogDensity(FMath::Lerp(Value(&FWeather::Fog)+ClimateValue(&FClimate::Fog),
+                UnderwaterOptics ? 0.f : .64f, Immersion));
             // Rain obscures distant land while light still reaches the nearby
             // windward faces. Keep the wet boundary layer low over the sea.
             const float RainBank = StormSky*(1-Immersion);
             HeightFog->SetFogHeightFalloff(.22f+.31f*RainBank);
-            HeightFog->SetVolumetricFogScatteringDistribution(.60f-.36f*RainBank);
+            // A shallow layer of humid air catches the shadows of the palms at
+            // dawn and dusk. Spend the fog slices on that coastal layer.
+            FExponentialHeightFogData SeaMist;
+            SeaMist.FogDensity = (bUltra ? .009f : bDetailed ? .0065f : 0.f)
+                * (.32f*Strengths[0] + .78f*Strengths[1]) * (1.f-.85f*StormSky) * (1.f-Immersion);
+            SeaMist.FogHeightFalloff = .68f;
+            SeaMist.FogHeightOffset = 80.f;
+            HeightFog->SetSecondFogData(SeaMist);
+            HeightFog->SetVolumetricFogDistance(FMath::Lerp(bUltra ? 105000.f : 80000.f, 160000.f, StormSky));
+            HeightFog->SetVolumetricFogScatteringDistribution(FMath::Lerp(.49f+.14f*Strengths[1], .24f, RainBank));
             HeightFog->SetVolumetricFogExtinctionScale(1.18f-.54f*RainBank);
             const FLinearColor RainLight = FLinearColor(.013f,.016f,.020f)*(SunLux + MoonLux)*RainBank;
-            HeightFog->SetFogInscatteringColor(FMath::Lerp(AirFogColor+RainLight, WaterScatter, Immersion));
+            HeightFog->SetFogInscatteringColor(FMath::Lerp(AirFogColor+RainLight,
+                UnderwaterOptics ? FLinearColor::Black : WaterScatter, Immersion));
             HeightFog->SetSkyAtmosphereAmbientContributionColorScale(AirSkyScatter * (1 - Immersion));
             HeightFog->SetVolumetricFog(bAirUsesVolume && Immersion < .75f);
         }
@@ -394,7 +480,18 @@ void ASailingWeather::Tick(float DeltaSeconds)
         if (SeaActor) SeaActor->SetPrecipitation(RainStrength,Film);
         UpdateSpindrift(*Yacht,1-Immersion,Eye,Forward,Right);
         const auto Frame = Yacht->SeaFrame();
-        UpdateRain(RainStrength*(1-Immersion),DeltaSeconds,Eye,Right,Sailing::TrueWind(Frame.TimeS,Frame.Scale));
+        const FVector Wind = Sailing::TrueWind(Frame.TimeS, Frame.Scale);
+        if (CoastalWeather)
+        {
+            auto* Parameters = GetWorld()->GetParameterCollectionInstance(CoastalWeather);
+            Parameters->SetVectorParameterValue(TEXT("WindAndRain"),FLinearColor(Wind.X,Wind.Y,Film,1.f));
+            const auto& Explorer = Yacht->Explorer();
+            const bool bWalking = Explorer.Mode() == ESkipperMode::Shore;
+            const FVector FeetM = Explorer.ShoreFooting()*.01;
+            Parameters->SetVectorParameterValue(TEXT("Walker"),bWalking
+                ? FLinearColor(FeetM.X,FeetM.Y,FeetM.Z,1.f) : FLinearColor(0,0,0,0));
+        }
+        UpdateRain(RainStrength*(1-Immersion),DeltaSeconds,Eye,Right,Wind);
     }
 
     if (bCapture && CaptureFrame == 0)
@@ -413,32 +510,178 @@ void ASailingWeather::Tick(float DeltaSeconds)
     }
 }
 
+void ASailingWeather::SetGraphicsQuality(int32 Level)
+{
+    GraphicsQuality = Level;
+    if (Level < 2)
+        for (int32 I=0; I<ShorePuffCount; ++I) SprayPuffs[FirstShorePuff+I].Born=-10.f;
+    const bool bDetailed = Level >= 2;
+    const bool bUltra = Level == 3;
+    if (Sun)
+    {
+        auto* Light = Sun->FindComponentByClass<UDirectionalLightComponent>();
+        Light->SetCastVolumetricShadow(bDetailed);
+        Light->SetOcclusionDepthRange(bUltra ? 62000.f : 42000.f);
+        Light->SetOcclusionMaskDarkness(bUltra ? .24f : .42f);
+        Light->SetBloomScale(bUltra ? .29f : .18f);
+        Light->SetBloomThreshold(1.7f);
+        Light->CloudShadowStrength = bUltra ? .94f : bDetailed ? .87f : .78f;
+        Light->CloudShadowOnSurfaceStrength = bDetailed ? .88f : .78f;
+        Light->CloudShadowExtent = bDetailed ? 5.f : 10.f;
+        Light->ContactShadowLengthInWS = true;
+        // Screen-space contact rays hit the water prepass above the refracted bed.
+        // The directional shadow map already resolves rocks, boats and foliage.
+        Light->ContactShadowLength = 0.f;
+        Light->ContactShadowCastingIntensity = .72f;
+        Light->ContactShadowNonCastingIntensity = .18f;
+        Light->MarkRenderStateDirty();
+    }
+    if (Sky) Sky->GetLightComponent()->SetVolumetricScatteringIntensity(bUltra ? .56f : bDetailed ? .68f : 1.f);
+    if (Optics)
+    {
+        auto& Settings = Optics->Settings;
+        Settings.bOverride_LensFlareIntensity = true;
+        Settings.LensFlareIntensity = bUltra ? .22f : bDetailed ? .13f : 0.f;
+        Settings.bOverride_LensFlareThreshold = true;
+        Settings.LensFlareThreshold = 3.5f;
+        Settings.bOverride_SceneFringeIntensity = true;
+        Settings.SceneFringeIntensity = bUltra ? .35f : bDetailed ? .18f : 0.f;
+        Settings.bOverride_ChromaticAberrationStartOffset = true;
+        Settings.ChromaticAberrationStartOffset = .68f;
+        Settings.bOverride_MotionBlurAmount = true;
+        Settings.MotionBlurAmount = bUltra ? .23f : bDetailed ? .16f : Level == 1 ? .07f : 0.f;
+        Settings.bOverride_MotionBlurMax = true;
+        Settings.MotionBlurMax = 2.5f;
+        Settings.bOverride_DepthOfFieldFstop = true;
+        Settings.DepthOfFieldFstop = bUltra ? 2.2f : bDetailed ? 3.2f : 5.6f;
+        Settings.bOverride_AmbientOcclusionIntensity = true;
+        Settings.AmbientOcclusionIntensity = bDetailed ? .65f : Level == 1 ? .45f : 0.f;
+        Settings.bOverride_LumenSceneLightingQuality = true;
+        Settings.LumenSceneLightingQuality = bUltra ? 1.10f : 1.f;
+        Settings.bOverride_LumenFinalGatherQuality = true;
+        Settings.LumenFinalGatherQuality = 1.f;
+        Settings.bOverride_LumenReflectionQuality = true;
+        Settings.LumenReflectionQuality = bUltra ? 1.10f : 1.f;
+        Settings.bOverride_ScreenSpaceReflectionQuality = bDetailed;
+        Settings.ScreenSpaceReflectionQuality = bUltra ? 85.f : 68.f;
+        Settings.bOverride_LocalExposureHighlightContrastScale = bDetailed;
+        Settings.LocalExposureHighlightContrastScale = bUltra ? .82f : .90f;
+        Settings.bOverride_LocalExposureShadowContrastScale = bDetailed;
+        Settings.LocalExposureShadowContrastScale = bUltra ? .76f : .86f;
+        Settings.bOverride_ColorContrast = true;
+        Settings.ColorContrast = FVector4(1.f, 1.f, 1.f, bDetailed ? 1.04f : 1.f);
+    }
+    bAtmosphereDirty = true;
+}
+
 void ASailingWeather::UpdateRain(float Strength, float DeltaSeconds, const FVector& Eye, const FVector& Right, const FVector& Wind)
 {
     Rain->SetVisibility(Strength > 0.02f);
-    if (Strength <= 0.02f) return;
+    if (Strength <= .02f || !RainInstance) return;
     const FVector Drift(Wind.X*32., Wind.Y*32., -980.);
     RainTravel += Drift*DeltaSeconds;
-    for (int32 I = 0; I < RainCount; ++I)
+    Rain->SetWorldLocation(Eye);
+    RainInstance->SetVectorParameterValue(TEXT("RainEye"),FLinearColor(Eye.X,Eye.Y,Eye.Z));
+    RainInstance->SetVectorParameterValue(TEXT("RainTravel"),FLinearColor(RainTravel.X,RainTravel.Y,RainTravel.Z));
+    RainInstance->SetVectorParameterValue(TEXT("RainDrift"),FLinearColor(Drift.X,Drift.Y,Drift.Z));
+    RainInstance->SetVectorParameterValue(TEXT("RainRight"),FLinearColor(Right.X,Right.Y,Right.Z,Strength));
+}
+
+void ASailingWeather::WhaleSpray(FVector SourceM, FVector Course, Sailing::FSeaFrame Frame, bool bBlow, float Strength)
+{
+    auto* Puffs = SprayPuffs + CrestPuffCount + 2*BowPuffsPerSide;
+    const FVector Wind = Sailing::TrueWind(Frame.TimeS, Frame.Scale);
+    const FVector Beam = FVector::CrossProduct(FVector::UpVector,Course);
+    for (int32 I=0; I<WhalePuffCount; ++I)
     {
-        const double Rate = 0.72 + 0.56 * ((I * 13) % 127) / 126.0;
-        const double Radius = I%3 == 0 ? 1250. : 3600.;
-        const FVector Drop = WrapRain(RainSeeds[I] + RainTravel*Rate, Eye, Radius);
-        const double DistanceM = FVector::Distance(Drop, Eye) / 100.0;
-        const double Shutter = FMath::Min(.016+.019*Strength, .065*DistanceM*100/(Drift.Size()*Rate));
-        const FVector Tail = Drop - Drift*(Shutter*Rate);
-        const FVector Side = Right*(Radius*.00060*Rate);
-        const int32 V = I * 4;
-        RainVertices[V] = Drop - Side;
-        RainVertices[V + 1] = Drop + Side;
-        RainVertices[V + 2] = Tail - Side;
-        RainVertices[V + 3] = Tail + Side;
-        // Scene depth clips the drops at the displaced sea, even in a deep trough.
-        const float Alpha = Strength * FMath::SmoothStep(.4,2.1,DistanceM)
-            * (1.-FMath::SmoothStep(.58*Radius*.01,Radius*.01,DistanceM));
-        for (int32 Corner = 0; Corner < 4; ++Corner) RainColors[V + Corner].A = Alpha;
+        auto& P = Puffs[I];
+        P = {};
+        const float Phase = (I+SprayRandom.FRand())/WhalePuffCount;
+        const FVector Radial = Course.RotateAngleAxis(360.*Phase,FVector::UpVector);
+        P.OriginM = SourceM + (bBlow ? Radial*.14 : Beam*SprayRandom.FRandRange(-1.7f,1.7f));
+        P.Born = Frame.TimeS + Phase*(bBlow ? .56f : .18f);
+        P.Seed = SprayRandom.FRand();
+        P.Sheet = bBlow ? .08f : SprayRandom.FRandRange(.45f,.85f);
+        P.Suspension = bBlow ? .85f : .05f;
+        P.StormThrow = 1.f;
+        P.VelocityMps = Radial*(bBlow ? .9 : 2.8) + Course*(bBlow ? 1.4 : .6);
+        P.VelocityMps.Z = bBlow ? 5.7+1.5*P.Seed : (2.3+2.5*P.Seed)*FMath::Sqrt(Strength);
+        P.WindMps = Wind*(bBlow ? .38 : .14);
+        P.Life = bBlow ? 2.3f+.65f*P.Seed : 1.1f+.4f*P.Seed;
+        P.WidthM = bBlow ? .29+.17*Phase : .55+.45*P.Seed;
+        P.HeightM = bBlow ? .64+.35*Phase : .42+.42*P.Seed;
+        P.Strength = bBlow ? .95f : .45f+.43f*Strength;
     }
-    Rain->UpdateMeshSection_LinearColor(0, RainVertices, {}, RainUVs, RainColors, {}, false);
+}
+
+void ASailingWeather::BreachSpray(const ASailingYachtPawn& Yacht, FVector SourceM, FVector Course, bool bLanding, float Force)
+{
+    auto* Puffs = SprayPuffs + CrestPuffCount + 2*BowPuffsPerSide + WhalePuffCount;
+    const auto Frame = Yacht.SeaFrame();
+    const FVector Wind = Sailing::TrueWind(Frame.TimeS, Frame.Scale);
+    const FVector Beam = FVector::CrossProduct(FVector::UpVector, Course);
+    const float Energy = FMath::Lerp(.64f, 1.f, Force);
+    const int32 Count = bLanding ? BreachPuffCount : 12;
+    for (int32 I = 0; I < Count; ++I)
+    {
+        auto& P = Puffs[I];
+        P = {};
+        const bool bMist = bLanding && I%4 == 0;
+        P.Seed = SprayRandom.FRand();
+        const float Along = SprayRandom.FRandRange(-1.f, 1.f);
+        const float Across = SprayRandom.FRandRange(-1.f, 1.f);
+        const float Azimuth = 360.f*(I + SprayRandom.FRand())/Count;
+        const FVector Out = Course.RotateAngleAxis(Azimuth, FVector::UpVector);
+        P.OriginM = SourceM + Course*(Along*(bLanding ? 5.6 : 2.4)) + Beam*Across*(bLanding ? 1.4 : .7);
+        P.OriginM.Z = Yacht.RenderedSurfaceHeightM(FVector2D(P.OriginM)) + .14;
+        // The flank drives a wide sheet, followed by finer spray that drifts downwind.
+        P.Born = Frame.TimeS + (bLanding ? .02f + .14f*Along*Along + (bMist ? .13f : 0.f) : .15f*P.Seed);
+        P.VelocityMps = Out*((bLanding ? 3.6 : 2.1) + 3.4*P.Seed)*Energy + Course*(bLanding ? 1.6 : 2.3);
+        P.VelocityMps.Z = bLanding ? (bMist ? 2.7 + 2.7*P.Seed : 5.3 + 5.1*P.Seed)*Energy : 2.7 + 2.6*P.Seed;
+        P.WindMps = Wind*(bMist ? .34 : .12);
+        P.Life = bLanding ? (bMist ? 2.1f + .75f*P.Seed : 1.28f + .50f*P.Seed) : .78f + .44f*P.Seed;
+        P.Suspension = bMist ? .50f : .04f;
+        P.Sheet = bMist ? .10f : .88f;
+        P.StormThrow = 1.f;
+        P.WidthM = bLanding ? (bMist ? .8 + .85*P.Seed : .58 + .72*P.Seed) : .49 + .48*P.Seed;
+        P.HeightM = bLanding ? .68 + .76*P.Seed : .45 + .54*P.Seed;
+        P.Strength = bLanding ? (bMist ? .48f : .92f)*Energy : .76f;
+    }
+}
+
+void ASailingWeather::SkipperSplash(const ASailingYachtPawn& Yacht,FVector ContactCm,FVector VelocityCmS,float Force,bool bEntry)
+{
+    auto* Slots = SprayPuffs + UE_ARRAY_COUNT(SprayPuffs) - SkipperPuffCount;
+    const auto Frame = Yacht.SeaFrame();
+    const FVector Wind = Sailing::TrueWind(Frame.TimeS,Frame.Scale);
+    const FVector Course = VelocityCmS.GetSafeNormal2D();
+    const FVector Travel(VelocityCmS.X*.01,VelocityCmS.Y*.01,0);
+    const int32 Count = bEntry ? 9+FMath::RoundToInt(12*Force) : 3+FMath::RoundToInt(3*Force);
+    const float Size = bEntry ? .54f+.46f*Force : .28f+.21f*Force;
+    for (int32 I=0; I<Count; ++I)
+    {
+        auto& Puff = Slots[NextSkipperPuff];
+        NextSkipperPuff = (NextSkipperPuff+1)%SkipperPuffCount;
+        Puff = {};
+        Puff.Seed = SprayRandom.FRand();
+        const bool bMist = bEntry && I%4==0;
+        const float Angle = UE_TWO_PI*(I+Puff.Seed)/Count;
+        const FVector Out(FMath::Cos(Angle),FMath::Sin(Angle),0);
+        const float Along = bEntry ? .91f+.37f*FVector::DotProduct(Out,Course) : .9f;
+        Puff.OriginM = ContactCm*.01 + Out*(Size*SprayRandom.FRandRange(.11,.31));
+        Puff.OriginM.Z = Yacht.RenderedSurfaceHeightM(FVector2D(Puff.OriginM)) + .035;
+        Puff.Born = Frame.TimeS + (bMist ? .065f : 0.f) + .045f*Puff.Seed;
+        Puff.VelocityMps = Out*(.51f+2.65f*Size)*Along + Travel*(bEntry ? .28 : .13);
+        Puff.VelocityMps.Z = Size*(bMist ? 1.2f+1.5f*Puff.Seed : 2.8f+2.6f*Puff.Seed);
+        Puff.WindMps = Wind*(bMist ? .14 : .035);
+        Puff.Life = Size*(bMist ? .76f+.42f*Puff.Seed : .47f+.31f*Puff.Seed);
+        Puff.Sheet = bMist ? .13f : .84f;
+        Puff.StormThrow = .96f;
+        Puff.Suspension = bMist ? .42f : 0.f;
+        Puff.WidthM = Size*(bMist ? .32f+.24f*Puff.Seed : .10f+.13f*Puff.Seed);
+        Puff.HeightM = Size*(bMist ? .23f+.22f*Puff.Seed : .20f+.30f*Puff.Seed);
+        Puff.Strength = (bMist ? .45f : .89f)*(.38f+.62f*Force);
+    }
 }
 
 Sailing::FSprayPuff* ASailingWeather::AcquireBowPuff(int32 Side, float Now, bool bStrike)
@@ -460,17 +703,57 @@ Sailing::FSprayPuff* ASailingWeather::AcquireBowPuff(int32 Side, float Now, bool
     return bStrike ? &Slots[Oldest] : nullptr;
 }
 
+void ASailingWeather::EmitShoreSpray(Sailing::FSeaFrame Frame, const FVector& EyeM, const FVector& Forward,
+                                     const FVector& Right, const FVector& Wind)
+{
+    const bool Ultra = GraphicsQuality==3;
+    if (GraphicsQuality<2 || Frame.TimeS<NextShoreSpray || EyeM.Z>55.) return;
+    NextShoreSpray=Frame.TimeS+(Ultra ? .068f : .12f);
+    for (int32 Probe=0; Probe<(Ultra ? 14 : 9); ++Probe)
+    {
+        const float Ahead=ShoreRandom.FRandRange(1.6f,Ultra ? 52.f : 36.f);
+        const FVector2D XY(EyeM + Forward*Ahead + Right*ShoreRandom.FRandRange(-Ahead,Ahead));
+        Sailing::FShoreLip Lip;
+        if (!Sailing::FindShoreLip(XY,Frame,Lip)) continue;
+        BreakingSheets.BreakAt(Lip,Frame,Ultra,ShoreRandom.FRand());
+        const FVector2D Ridge(-Lip.Shoreward.Y,Lip.Shoreward.X);
+        const int32 Count = Ultra ? 5 : 3;
+        for (int32 J=0; J<Count; ++J)
+        {
+            auto& Puff=SprayPuffs[FirstShorePuff+NextShorePuff];
+            if (Frame.TimeS<Puff.Born+Puff.Life) return;
+            NextShorePuff=(NextShorePuff+1)%ShorePuffCount;
+            const FVector2D Point=FVector2D(Lip.PositionM)+Ridge*((J-.5*(Count-1))*.41);
+            const float Strength=Lip.Aeration*ShoreRandom.FRandRange(.70f,1.f);
+            Puff.OriginM=FVector(Point,Sailing::SeaHeight(Point,Frame,true)+.025);
+            Puff.VelocityMps=FVector(Lip.Shoreward*(.82*Lip.SpeedMps),.70+1.42*Strength);
+            Puff.WindMps=Wind*.20;
+            Puff.Sheet=ShoreRandom.FRandRange(.68f,.90f);
+            Puff.WidthM=.15f+.21f*Strength;
+            Puff.HeightM=.072f+.12f*Strength;
+            Puff.Born=Frame.TimeS;
+            Puff.Life=.23f+.28f*Strength;
+            Puff.Strength=Strength*.54f;
+            Puff.Seed=ShoreRandom.FRand();
+        }
+        return;
+    }
+}
+
 void ASailingWeather::UpdateSpindrift(const ASailingYachtPawn& Yacht,float Air,const FVector& Eye,const FVector& Forward,const FVector& Right)
 {
     const auto Frame = Yacht.SeaFrame();
     if (Air < .01f)
     {
         Spindrift->SetVisibility(false);
+        BreakerLips->SetVisibility(false);
         return;
     }
     const float Now = Frame.TimeS;
     const float Gale = FMath::SmoothStep(2.f,Sailing::HurricaneSeaScale,Frame.Scale);
     const FVector Wind = Sailing::TrueWind(Now,Frame.Scale);
+    if (Yacht.HasCoralCoast()) EmitShoreSpray(Frame,Eye*.01,Forward,Right,Wind);
+    BreakingSheets.Update(*BreakerLips,Frame,GraphicsQuality,Air);
     const FVector2D Downwind(Wind.GetSafeNormal2D());
     if (Gale>.02f && Now>=NextSprayTime)
     {

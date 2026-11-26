@@ -21,6 +21,8 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Sailing|Editor")
     static void SetCoatFinish(UMaterial* Material, UMaterialExpression* Finish);
     UFUNCTION(BlueprintCallable, Category = "Sailing|Editor")
+    static void SetDisplacementHeight(UMaterial* Material, UMaterialExpression* Height);
+    UFUNCTION(BlueprintCallable, Category = "Sailing|Editor")
     static bool ImportWaveVolume(UVolumeTexture* Texture, const FString& Filename, int32 Size, int32 Frames);
 #endif
 };

@@ -54,7 +54,13 @@ build_dmg() (
   compile_editor
   "$ue/Engine/Build/BatchFiles/RunUAT.sh" BuildCookRun -project="$project" -platform=Mac \
     -clientconfig=Shipping -build -cook -iterativecooking -stage -pak -iostore -package -archive \
-    -archivedirectory="$archive" -NoP4 -unattended -utf8output -nodebuginfo -nocompileeditor
+    -archivedirectory="$archive" -NoP4 -unattended -utf8output -nodebuginfo -nocompileeditor | tee "$work/cook.log"
+  # A successful cook can still substitute a flat default material in the game.
+  if grep -Fi 'Failed to compile Material' "$work/cook.log" |
+    grep -Ei '/M_(CoralWater|BreakerLip|CoastalGround|UnderwaterOptics|DuneGrass|SeaGrass|ReefCoral|SquallRain|StormSpindrift|ChannelBuoyBeacon|(CoconutPalm|IslandTree02|JacarandaTree|LateralSeaMarker|Fern02|Anthurium)_[0-9]+)\.' > /dev/null; then
+    echo 'A required ocean, weather, or coastal shader failed to compile.' >&2
+    exit 1
+  fi
 
   app="$archive/Mac/$project_name.app"
   if [[ ! -d "$app" ]]; then

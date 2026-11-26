@@ -20,7 +20,10 @@ class UPointLightComponent;
 class UProceduralMeshComponent;
 class USpringArmComponent;
 class UStaticMeshComponent;
+class AStaticMeshActor;
 class ASailingWeather;
+class ASailingJetSki;
+class ASailingPlayerController;
 class USailingExplorer;
 class USailingEntryBubbles;
 
@@ -29,6 +32,7 @@ enum class EYachtView : uint8 { Chase, Helm, Orbit, Drone };
 struct FBowContact
 {
     FVector WaterlineM = FVector::ZeroVector, StrikeM = FVector::ZeroVector;
+    FVector2D FoamDriftMps = FVector2D::ZeroVector;
     float LastStrikeS = -10.f, StrikeMps = 0.f, Sheet = 0.f;
 };
 
@@ -40,17 +44,21 @@ class ASailingYachtPawn : public APawn
 public:
     ASailingYachtPawn();
     void BeginPlay() override;
+    void EndPlay(const EEndPlayReason::Type Reason) override;
     void Tick(float DeltaSeconds) override;
     void CalcCamera(float DeltaSeconds, FMinimalViewInfo& OutView) override;
     void AsyncPhysicsTickActor(float DeltaSeconds, float SimTime) override;
     Sailing::FSeaFrame SeaFrame() const { return WaterFrame.load(std::memory_order_relaxed); }
     Sailing::FBoatWake BoatWake() const;
     bool HasCoralCoast() const { return bCoralPass; }
+    const Sailing::FShoreMap* ShoreGeometry() const { return ShoreMap.Get(); }
     double SurfaceHeightM(FVector2D XYm) const;
+    double RenderedSurfaceHeightM(FVector2D XYm) const;
     const Sailing::FWaterImpacts& SurfaceImpacts() const { return Impacts; }
     TConstArrayView<FBowContact> BowContacts() const { return BowWater; }
     const Sailing::FWakeHistory& ShedWake() const { return WakeTrail; }
     void DisturbSurface(FVector PositionCm, float HeightM);
+    void WhaleContact(FVector PositionCm, float Strength, bool bDistant);
     void SetSeaScale(float Scale) { SeaScale.store(Scale, std::memory_order_relaxed); }
     void SetDeckLights(float Strength);
     void SetSurfaceWetness(float Wetness);
@@ -71,6 +79,7 @@ public:
     bool IsCinematic() const { return bCinematic; }
     const TCHAR* ViewName() const;
     USailingExplorer& Explorer() const { return *SkipperView; }
+    TConstArrayView<TObjectPtr<ASailingJetSki>> JetSkis() const { return JetSkiFleet; }
     USailingEntryBubbles& EntryBubbles() const { return *Bubbles; }
     void ToggleExplorer();
     FVector WorldFocus() const;
@@ -84,6 +93,7 @@ private:
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Catamaran;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> SkipperModel;
     UPROPERTY() TObjectPtr<USailingExplorer> SkipperView;
+    UPROPERTY(Transient) TArray<TObjectPtr<ASailingJetSki>> JetSkiFleet;
     UPROPERTY() TObjectPtr<USailingEntryBubbles> Bubbles;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Rig;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Jib;
@@ -143,14 +153,23 @@ private:
     void BuildSurface();
     void BindSurfProfile();
     void SetSurfaceFrame(Sailing::FSeaFrame Frame);
+    void UpdateChannelBuoys(const ASailingYachtPawn& Yacht, float DeltaSeconds);
+
+    struct FChannelBuoy
+    {
+        TWeakObjectPtr<AStaticMeshActor> Actor;
+        FTransform Mooring;
+    };
+    TArray<FChannelBuoy> ChannelBuoys;
 
     UPROPERTY(EditAnywhere, Category = "Sea") TObjectPtr<UMaterialInterface> WaterMaterial;
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> Water;
     UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> Shore;
     UPROPERTY(Transient) TObjectPtr<UTexture2D> SurfProfile;
+    UPROPERTY(Transient) TObjectPtr<UTexture2D> RockFlow;
     uint32 SentWakeRevision = MAX_uint32;
     Sailing::FSeaFrame PreviousSurfaceFrame{};
-    UPROPERTY() TObjectPtr<UProceduralMeshComponent> Surface;
+    UPROPERTY() TArray<TObjectPtr<UProceduralMeshComponent>> SurfaceTiles;
 };
 
 UCLASS()
@@ -166,8 +185,10 @@ public:
     float InputScale() const { return UIScale; }
 
 private:
+    bool DrawDeckPanel(const ASailingPlayerController& Player, const ASailingYachtPawn& Yacht, FVector2D Size);
     UPROPERTY() TObjectPtr<ASailingWeather> Weather;
     UPROPERTY() TObjectPtr<UTexture2D> HelmAtlas;
+    UPROPERTY() TObjectPtr<UTexture2D> InventoryArt;
     UPROPERTY() TObjectPtr<UFont> HelmFont;
     float ThrottleTop = 0;
     float ThrottleHeight = 1;

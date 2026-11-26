@@ -17,6 +17,8 @@ class FSailingMacKeyboard;
 #endif
 
 enum class ESailingPanel : uint8 { None, Controls, Pause, Chart, Gear, World };
+enum class ESailingGear : uint8 { Tank, Torch, RedFlare, GreenFlare, Count };
+enum class ESailingPausePage : uint8 { Menu, Graphics, Sound, Music };
 enum class EWorldSetting : uint8 { Lighting, Weather, Audio, Graphics, Camera };
 
 UCLASS()
@@ -32,13 +34,22 @@ public:
     void PostProcessInput(float DeltaTime, bool bGamePaused) override;
     void FlushPressedKeys() override;
     ESailingPanel GetPanel() const { return Panel; }
+    ESailingGear SelectedGear() const { return GearSelection; }
+    ESailingPausePage PausePage() const { return Pause; }
+    void OpenPausePage(ESailingPausePage Page);
+    void BackFromPause();
+    bool CanUseGear(ESailingGear Gear) const;
+    bool CanUseGear() const { return CanUseGear(GearSelection); }
     const FSailingChart& ChartView() const { return Chart; }
+    USailingVoyageSound& Sound() { return *VoyageSound; }
     const USailingVoyageSound& Sound() const { return *VoyageSound; }
     const ASailingSignal* CurrentSignal() const { return SignalShot.Get(); }
     FString NoticeText() const;
     void ToggleWorld();
+    void UpdatePointerMode();
     void SetWorldChoice(EWorldSetting Row, int32 Index);
     bool WorldChoiceSelected(EWorldSetting Row, int32 Index) const;
+    bool CanChangeResolution() const;
     Sailing::FDisplayModes WorldDisplayModes() const;
     FIntPoint WorldResolution() const;
     void SetWorldResolution(FIntPoint Size);
@@ -47,15 +58,17 @@ public:
 private:
     enum class EDrag : uint8 { None, View, Throttle, Chart };
     void OpenPanel(ESailingPanel Next);
+    void ClosePanel();
+    void UseGear(ASailingYachtPawn& Yacht);
+    bool PanelButton(FName Name, ASailingYachtPawn& Yacht, const ASailingTrialHUD& HUD);
+    FBox2D ChartPlot(const ASailingTrialHUD* HUD) const;
     void ApplyGraphics(int32 Choice);
-    bool CanChangeResolution() const;
-    TSharedPtr<SWidget> WorldWidget;
+    TSharedPtr<SWidget> SettingsWidget;
 #if PLATFORM_MAC
     TSharedPtr<FSailingMacKeyboard> MacKeyboard;
 #endif
     ESailingPanel WorldReturn = ESailingPanel::None;
     int32 GraphicsChoice = 0;
-    void UpdatePointerMode();
     void ToggleSkipper(ASailingYachtPawn& Yacht);
     void Signal(ASailingYachtPawn& Yacht, FKey Key);
     void EndSignalView(ASailingYachtPawn& Yacht);
@@ -63,7 +76,7 @@ private:
     void PressPointer(FVector2D Position, ASailingYachtPawn& Yacht, ASailingTrialHUD* HUD);
     void MovePointer(FVector2D Position, ASailingYachtPawn& Yacht, const ASailingTrialHUD* HUD);
     void ReleasePointer(FVector2D Position, ASailingYachtPawn& Yacht, const ASailingTrialHUD* HUD);
-    bool HasShortcutModifier() const;
+    bool HasShortcutModifier(bool bIgnoreControl = false) const;
 
     UPROPERTY() TObjectPtr<ASailingWeather> Weather;
     UPROPERTY() TObjectPtr<USailingVoyageSound> VoyageSound;
@@ -74,6 +87,8 @@ private:
     double NoticeUntil = 0;
     float LastFlareTime = -10;
     ESailingPanel Panel = ESailingPanel::None;
+    ESailingGear GearSelection = ESailingGear::Tank;
+    ESailingPausePage Pause = ESailingPausePage::Menu;
     EDrag Drag = EDrag::None;
     FVector2D PressPosition = FVector2D::ZeroVector;
     FVector2D LastPosition = FVector2D::ZeroVector;
@@ -81,6 +96,6 @@ private:
     double PressTime = 0;
     double LastTapTime = -1;
     bool bTapCandidate = false;
-    bool bLeaping = false;
+    uint32 LastWaterEntry = 0, LastSplashingStep = 0;
     bool bLeftShift = false, bRightShift = false;
 };

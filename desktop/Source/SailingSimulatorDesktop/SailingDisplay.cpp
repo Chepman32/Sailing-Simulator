@@ -30,6 +30,13 @@ TArray<FIntPoint> SelectableResolutions(TConstArrayView<FIntPoint> Reported, FIn
     return Sizes;
 }
 
+float RenderResolutionFraction(FIntPoint Target, FIntPoint Output)
+{
+    if (Target.GetMin() <= 0 || Output.GetMin() <= 0) return 1.f;
+    // Keep the fullscreen projection and constrain both render dimensions on a differently shaped display.
+    return FMath::Min3(1.f, float(Target.X) / Output.X, float(Target.Y) / Output.Y);
+}
+
 FDisplayModes ReadDisplayModes(const FViewport& Viewport, const SWindow& Window)
 {
     FDisplayModes Display;
@@ -70,12 +77,6 @@ FDisplayModes ReadDisplayModes(const FViewport& Viewport, const SWindow& Window)
 #endif
     }
     Display.Desktop = {FMath::RoundToInt(ScreenRect.Right-ScreenRect.Left),FMath::RoundToInt(ScreenRect.Bottom-ScreenRect.Top)};
-    // Query at the screen centre so an offset desktop, a notch or a dock is accounted for.
-    const auto Center = ScreenRect.GetCenter();
-    const auto Work = FSlateApplication::Get().GetWorkArea(FSlateRect(Center.X,Center.Y,Center.X+1,Center.Y+1));
-    const FMargin Border = Window.GetWindowBorderSize(true);
-    Display.WindowLimit = {FMath::FloorToInt(Work.Right-Work.Left-Border.Left-Border.Right),
-                           FMath::FloorToInt(Work.Bottom-Work.Top-Border.Top-Border.Bottom)};
     FIntPoint Native(Monitor.NativeWidth,Monitor.NativeHeight);
     TArray<FIntPoint> Modes;
 #if PLATFORM_MAC
@@ -116,8 +117,8 @@ FDisplayModes ReadDisplayModes(const FViewport& Viewport, const SWindow& Window)
     UKismetSystemLibrary::GetSupportedFullscreenResolutions(Modes);
 #endif
     if (Native.GetMin() <= 0) Native = Display.Desktop;
-    Modes.Add(Display.Desktop);
-    Display.Sizes = SelectableResolutions(Modes,Native);
+    Display.Sizes = SelectableResolutions(Modes, {FMath::Min(Native.X, Display.Desktop.X), FMath::Min(Native.Y, Display.Desktop.Y)});
+    if (Display.Desktop.GetMin() > 0) Display.Sizes.AddUnique(Display.Desktop);
     return Display;
 }
 }

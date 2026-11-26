@@ -5,12 +5,23 @@ namespace Sailing
 {
 namespace
 {
-struct FStamp { FVector2D Center; float Radius, Strength; };
+struct FStamp { FVector2D Center = FVector2D::ZeroVector; float Radius = 0, Strength = 0; };
 using FTracks = TStaticArray<FStamp,5>;
 
 FTracks Tracks(const FFoamPose& P, float Age, float Birth)
 {
     FTracks Out;
+    if (P.bWaterJet)
+    {
+        const float Power = FMath::Abs(P.Thrust);
+        const float Speed = FMath::Abs(P.PortMps);
+        const float Fade = 1.f - FMath::SmoothStep(4.f, 7.f, Age);
+        const FVector2D Stern = P.CenterM - P.Bow * 1.55;
+        const FVector2D Jet = Stern - P.Bow * FMath::Sign(P.Thrust) * FMath::Min(Age * (1.1f + 1.65f * Power), 5.5f);
+        Out[0] = {Stern, .46f + .22f * Age, .75f * FMath::SmoothStep(1.3f, 8.f, Speed) * Fade};
+        Out[4] = {Jet, .4f + .19f * Age, Power * FMath::Exp(-.43f * Age) * Fade};
+        return Out;
+    }
     const FVector2D Beam(-P.Bow.Y,P.Bow.X);
     const double Sign = P.PortMps+P.StarboardMps>=0 ? 1. : -1.;
     const FVector2D Forward = P.Bow*Sign;
@@ -58,7 +69,7 @@ void Stroke(TArray<FColor>& Pixels, const FStamp& A, const FStamp& B, int32 Trac
         if (Fall<=0) continue;
         const uint8 Value = uint8(FMath::RoundToInt(255*Fall*FMath::Lerp(A.Strength,B.Strength,U)));
         FColor& Cell = Pixels[FFoamField::Texel(X,Y)];
-        uint8& Channel = Track<2 ? Cell.R : (Track<4 ? Cell.G : Cell.B);
+        uint8& Channel = Track<2 ? Cell.R : (Track<4 ? Cell.G : (Track==4 ? Cell.B : Cell.A));
         Channel = FMath::Max(Channel,Value);
     }
 }
@@ -66,10 +77,11 @@ void Stroke(TArray<FColor>& Pixels, const FStamp& A, const FStamp& B, int32 Trac
 
 bool FFoamField::Record(const FFoamPose& Pose, float Now)
 {
-    const bool Reset = !Count || Now<Head.Time || Now-Head.Time>2 ||
+    const bool Reset = !Count || Now<Head.Time || Now-Head.Time>2 || Pose.bWaterJet != Head.Pose.bWaterJet ||
         FVector2D::DistSquared(Pose.CenterM,Head.Pose.CenterM)>625;
     if (Reset)
     {
+        for (auto& Impact : Breaks) Impact.Energy = 0;
         Count=Next=0;
         NextTime=Now;
         Head={Pose,Now};
@@ -80,7 +92,7 @@ bool FFoamField::Record(const FFoamPose& Pose, float Now)
         const FFoamPose& Old = Head.Pose;
         History[Next] = {{FMath::Lerp(Old.CenterM,Pose.CenterM,U), FMath::Lerp(Old.Bow,Pose.Bow,U).GetSafeNormal(),
             FMath::Lerp(Old.PortMps,Pose.PortMps,U), FMath::Lerp(Old.StarboardMps,Pose.StarboardMps,U),
-            FMath::Lerp(Old.Thrust,Pose.Thrust,U)}, NextTime};
+            FMath::Lerp(Old.Thrust,Pose.Thrust,U), Pose.bWaterJet}, NextTime};
         Next = (Next+1)%Capacity;
         Count = FMath::Min(Count+1,Capacity);
         NextTime += Interval;
@@ -94,6 +106,14 @@ FVector2D FFoamField::Center() const
     const double Surge = .5*(Head.Pose.PortMps+Head.Pose.StarboardMps);
     // Bias the field astern at speed. Swell near neutral must not move its edge across old foam.
     return Head.Pose.CenterM-Head.Pose.Bow*(12.*FMath::Clamp(Surge/3.,-1.,1.));
+}
+
+void FFoamField::BreakAtBow(FVector2D OriginM, FVector2D Bow, int32 Side, float ClosingMps, FVector2D DriftMps, float Now)
+{
+    const float Energy = FMath::SmoothStep(.48f, 3.7f, ClosingMps);
+    if (Energy <= 0) return;
+    Breaks[NextBreak] = {OriginM, Bow, DriftMps, Side ? 1.f : -1.f, Energy, Now};
+    NextBreak = (NextBreak+1) % Breaks.Num();
 }
 
 void FFoamField::Rasterize(TArray<FColor>& Pixels) const
@@ -112,6 +132,23 @@ void FFoamField::Rasterize(TArray<FColor>& Pixels) const
         const FTracks Older = Tracks(Mark.Pose,Age,Mark.Time);
         for (int32 J=0; J<Newer.Num(); ++J) Stroke(Pixels,Newer[J],Older[J],J,Corner);
         Newer=Older;
+    }
+    for (const auto& Impact : Breaks)
+    {
+        const float Age = Head.Time-Impact.Born;
+        if (Impact.Energy <= 0 || Age < 0 || Age >= 8) continue;
+        // The initial fan of aerated water travels out and aft. Its momentum
+        // decays while the underlying current and wind carry the foam on.
+        const float Spread = (1-FMath::Exp(-.78f*Age))*(1.6f+4.2f*Impact.Energy);
+        const float Strength = Impact.Energy*FMath::Exp(-.28f*Age)*(1-FMath::SmoothStep(6.f,8.f,Age));
+        const FVector2D Beam = FVector2D(-Impact.Bow.Y,Impact.Bow.X)*Impact.Side;
+        const FVector2D Center = Impact.Origin+Impact.Drift*Age;
+        const float Rad = .55f+.60f*Impact.Energy+.26f*Age;
+        const FStamp Root{Center+Beam*(.25*Spread), Rad, .90f*Strength};
+        const FStamp Shoulder{Center+Beam*(.82*Spread)-Impact.Bow*(.48*Spread), 1.32f*Rad, Strength};
+        const FStamp End{Center+Beam*Spread-Impact.Bow*(1.40*Spread), Rad, .48f*Strength};
+        Stroke(Pixels,Root,Shoulder,5,Corner);
+        Stroke(Pixels,Shoulder,End,5,Corner);
     }
 }
 }

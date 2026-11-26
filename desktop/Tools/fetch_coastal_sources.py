@@ -18,7 +18,7 @@ SOURCES = {
     "boulder_01": ("Diffuse", "nor_dx", "arm", "gltf"),
     "coast_rocks_03": ("Diffuse", "nor_dx", "arm", "gltf"),
     "palm_tree_bark": ("Diffuse", "nor_dx", "Rough"),
-    "rock_face": ("Diffuse", "nor_dx", "Rough"),
+    "rock_face": ("Diffuse", "nor_dx", "Rough", "Displacement"),
     "wooden_planks": ("Diffuse", "nor_dx", "Rough"),
 }
 SKIES = ("kloofendal_48d_partly_cloudy_puresky", "qwantani_sunset_puresky", "wasteland_clouds_puresky")
@@ -103,7 +103,10 @@ def main():
         with request(f"https://api.polyhaven.com/files/{asset}") as stream:
             metadata = json.load(stream)
         for kind in maps:
-            source = metadata[kind]["4k"]["gltf" if kind == "gltf" else "jpg"]
+            if kind == "Displacement":
+                source = metadata[kind]["2k"]["png"]
+            else:
+                source = metadata[kind]["4k"]["gltf" if kind == "gltf" else "jpg"]
             files[DEST / asset / source["url"].rsplit("/", 1)[-1]] = source
             for path, dependency in source.get("include", {}).items():
                 files[DEST / asset / path] = dependency

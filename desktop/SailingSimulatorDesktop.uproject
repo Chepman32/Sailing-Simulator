@@ -4,6 +4,7 @@
     "Category": "Games",
     "Description": "Sailing Simulator Pro desktop sea trial",
     "Modules": [
+        { "Name": "SailingLoadingScreen", "Type": "Runtime", "LoadingPhase": "PostSplashScreen" },
         { "Name": "SailingSimulatorDesktop", "Type": "Runtime", "LoadingPhase": "Default" }
     ],
     "Plugins": [

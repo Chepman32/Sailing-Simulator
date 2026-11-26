@@ -12,6 +12,7 @@ import {
   GRAVITY,
   hop,
   hullDistance,
+  isFloating,
   JUMP_SPEED,
   plunge,
   plunge as plunge_,
@@ -118,6 +119,7 @@ export class DiverController {
   private stickY = 0;
   private holdUp = false;
   private holdDown = false;
+  private diveStroke = 0;
   private sprintHeld = false;
   /** Diving gear bought from the traders: fins (× swimming speed) and tank (× air). */
   readonly gear = { swim: 1, air: 1 };
@@ -316,6 +318,7 @@ export class DiverController {
   }
 
   private setMode(mode: DiverMode): void {
+    this.diveStroke = 0;
     if (mode !== "land") {
       this.crouched = false;
       this.crouchBlend = 0;
@@ -333,8 +336,16 @@ export class DiverController {
   }
 
   setHold(up: boolean, down: boolean): void {
+    if (down && !this.holdDown) this.startDiveStroke();
+    if (up && !this.holdUp) this.diveStroke = 0;
     this.holdUp = up;
     this.holdDown = down;
+  }
+
+  private startDiveStroke(): void {
+    if (this.mode === "swim" && this.inControl && !this.frozen && this.swim.air > 0 && this.depth < DIVE_DEPTH) {
+      this.diveStroke = 1;
+    }
   }
 
   setSprint(on: boolean): void {
@@ -510,6 +521,7 @@ export class DiverController {
     this.stickY = 0;
     this.holdUp = false;
     this.holdDown = false;
+    this.diveStroke = 0;
     this.sprintHeld = false;
     this.interactRequested = false;
     this.jumpRequested = 0;
@@ -524,7 +536,8 @@ export class DiverController {
   }
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (!this.active || this.frozen || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (!this.active || this.frozen || event.metaKey || event.altKey) return;
+    if (event.ctrlKey && event.code !== "ControlLeft" && event.code !== "ControlRight") return;
     if (event.code !== "Escape") this.retakeLook();
     const action = this.actionOf(event.code);
     if (!action) return;
@@ -532,7 +545,9 @@ export class DiverController {
     if (target instanceof HTMLInputElement && target.type !== "range") return;
     if (target instanceof HTMLTextAreaElement) return;
     this.keys.add(action);
+    if (action === "crouch" && !event.repeat) this.startDiveStroke();
     if (action === "jump" && !event.repeat) {
+      this.diveStroke = 0;
       // In the water the jump key is also held to rise; at the surface a press kicks him up.
       if (this.mode !== "swim" || this.depth < DIVE_DEPTH * 0.8) this.jump();
     }
@@ -550,6 +565,7 @@ export class DiverController {
 
   private readonly onBlur = (): void => {
     this.keys.clear();
+    this.diveStroke = 0;
   };
 
   private moveInput(): { x: number; y: number; vertical: number; sprint: boolean } {
@@ -801,7 +817,9 @@ export class DiverController {
     const swimInput = this.swimInput;
     swimInput.moveX = input.x;
     swimInput.moveY = input.y;
-    swimInput.vertical = input.vertical;
+    // Finish the first fin stroke even when keydown and keyup arrive between frames.
+    swimInput.vertical = this.diveStroke > 0 ? -1 : input.vertical;
+    if (!swim.airborne) this.diveStroke = Math.max(0, this.diveStroke - dt);
     swimInput.sprint = input.sprint;
     swimInput.yaw = this.yaw;
     swimInput.pitch = this.pitch;
@@ -946,7 +964,8 @@ export class DiverController {
       camera.position.set(swim.x, swim.y + sway + this.eyeLag, swim.z);
       // Floating, the eyes never dip into the drawn surface (it would show
       // the sea from inside, neither from above nor from below).
-      if (swim.airborne || (this.depth < DIVE_DEPTH * 0.5 && !swim.ascending && !swim.plunging)) {
+      if (swim.airborne || (this.depth < DIVE_DEPTH * 0.5 && !swim.ascending && !swim.plunging &&
+          isFloating(this.depth, this.swimInput, false))) {
         const line = (this.world.floatLine ?? this.world.surface)(swim.x, swim.z);
         camera.position.y = Math.max(camera.position.y, line + SURFACE_EYE * 0.6);
       }

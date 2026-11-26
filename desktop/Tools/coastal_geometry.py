@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from coastal_layout import CAYS, SURVEY_SIZE, VOLCANO_RADIUS, reef_floor, relief, shore_scale, volcano_raster, volcano_relief
 from ocean_spectrum import bake as bake_wind_waves
 from breaker_foam import bake as bake_breaker_foam
+from surf_transport import bake as bake_surf_transport
 
 
 OUT = Path(__file__).resolve().parents[1] / "Saved" / "CoastalSources"
@@ -334,25 +335,80 @@ def lighthouse():
     export("LightStation", parts)
 
 
-def dune_grass():
-    rng = random.Random(2307)
+def dune_grass(submerged=False):
+    rng = random.Random(3341 if submerged else 2307)
     patch = Mesh()
-    for _ in range(15):
-        root = Vector((rng.uniform(-1.45,1.45), rng.uniform(-1.45,1.45), 0))
-        for blade in range(11):
+    radius = .72 if submerged else 1.12
+    for _ in range(10 if submerged else 12):
+        root = Vector((rng.uniform(-radius,radius), rng.uniform(-radius,radius), 0))
+        for blade in range(9):
             a = 2.39996 * blade + rng.uniform(-.4,.4)
             along = Vector((math.cos(a),math.sin(a),0))
-            across = Vector((-along.y,along.x,0))*rng.uniform(.015,.035)
+            across = Vector((-along.y,along.x,0))
             foot = root + along*rng.uniform(0,.09)
-            height = rng.uniform(.21,.68)
-            knee = foot + along*(height*.27) + Vector((0,0,height*.66))
-            tip = foot + along*(height*.80) + Vector((0,0,height))
-            base = len(patch.points)
-            for point,t in ((foot-across,0),(foot+across,0),(knee+across,.62),(knee-across,.62),(tip,1)):
-                patch.vertex(point,(0,t),(.82,.35+.63*t,1,t))
-            patch.face((base,base+1,base+2,base+3))
-            patch.face((base+3,base+2,base+4))
-    return patch.create("DuneGrass", ["Canopy"])
+            height = rng.uniform(.28,.94) if submerged else rng.uniform(.22,.83)
+            width = rng.uniform(.025,.055) if submerged else rng.uniform(.011,.030)
+            flare, tint = rng.uniform(.32,.85), rng.uniform(.23,.95)
+            last = None
+            for t in (0.,.26,.53,.77,.94):
+                center = foot + along*height*flare*t*t + Vector((0,0,height*(1.17*t-.25*t*t*t)))
+                half = width*(1.-.80*t*t)*(.73+.27*math.sin(t*math.pi))
+                row = [patch.vertex(center-across*half,(0,t),(tint,t,.62,t)),
+                       patch.vertex(center+along*half*.45,(.5,t),(tint,t,.90,t)),
+                       patch.vertex(center+across*half,(1,t),(tint,t,.59,t))]
+                if last:
+                    patch.face((last[0],last[1],row[1],row[0]))
+                    patch.face((last[1],last[2],row[2],row[1]))
+                last = row
+            tip = patch.vertex(foot+along*height*flare+Vector((0,0,height*.92)),(.5,1),(tint,1,.85,1))
+            patch.face((last[0],last[1],tip))
+            patch.face((last[1],last[2],tip))
+    name = "SeaGrass" if submerged else "DuneGrass"
+    return patch.create(name, [name])
+
+
+def reef_coral():
+    rng = random.Random(7118)
+    colony = Mesh()
+    up = Vector((0,0,1))
+
+    def branch(start, end, base_radius, tip_radius, tint, bend):
+        axis = (end-start).normalized()
+        side = axis.cross(Vector((1,0,0))).normalized()
+        other = axis.cross(side).normalized()
+        previous = None
+        for i in range(6):
+            t = i/5
+            center = start.lerp(end,t) + side*(bend*math.sin(math.pi*t))
+            radius = (base_radius*(1-t)+tip_radius*t)*(.97+.10*math.sin(14*t))
+            row = []
+            for k in range(8):
+                angle = TAU*k/8
+                offset = (side*math.cos(angle) + other*math.sin(angle))*radius
+                color = (tint,.48+.48*t,.64+.28*math.sin(angle+11*t)**2,1)
+                row.append(colony.vertex(center+offset, (k/8,t), color))
+            if previous:
+                for k in range(8):
+                    j = (k+1)%8
+                    colony.face((previous[k],previous[j],row[j],row[k]))
+            previous = row
+        colony.face(tuple(previous))
+
+    for i in range(8):
+        azimuth = i*2.39996
+        base = Vector((math.sin(azimuth),math.cos(azimuth),.035))*rng.uniform(.09,.56)
+        height, tint = rng.uniform(.27,.65), rng.uniform(.08,1)
+        crown = base + up*height
+        branch(base,crown,.064,.016,tint,rng.uniform(-.045,.045))
+        for j in range(5):
+            a = azimuth+j*2.39996
+            away = Vector((math.cos(a),math.sin(a),0))
+            start = base.lerp(crown,rng.uniform(.22,.71))
+            end = start + away*rng.uniform(.16,.34) + up*rng.uniform(.16,.43)
+            branch(start,end,rng.uniform(.026,.041),.011,tint,rng.uniform(-.044,.044))
+            fork = start.lerp(end,.58)
+            branch(fork,end+away*.08+up*.15,.022,.009,tint,.032)
+    return colony.create("ReefCoral", ["ReefCoral"])
 
 
 def jib():
@@ -927,6 +983,7 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     bake_wind_waves()
     bake_breaker_foam(OUT)
+    bake_surf_transport(OUT)
     clear_scene()
     for cay in CAYS:
         export(cay.name, [cay_mesh(cay)])
@@ -935,6 +992,8 @@ def main():
         export(palm.name, [palm])
     export("CoastalCanopy", [coastal_canopy()])
     export("DuneGrass", [dune_grass()])
+    export("SeaGrass", [dune_grass(submerged=True)])
+    export("ReefCoral", [reef_coral()])
     export("ReefShelf", [reef_shelf()])
     export("Volcano", [volcano()])
     lighthouse()
