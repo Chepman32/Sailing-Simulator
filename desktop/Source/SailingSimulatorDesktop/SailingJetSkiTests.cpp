@@ -14,6 +14,7 @@
 #include "Misc/Paths.h"
 #include "SailingExplorer.h"
 #include "SailingJetSki.h"
+#include "SailingMarineTraffic.h"
 #include "SailingPlayerController.h"
 #include "SailingTrial.h"
 #include "SailingVoyageSound.h"
@@ -136,9 +137,19 @@ public:
             Deadline = Now + 2.25;
             return false;
         case EStage::Accelerate:
+        {
             if (Now < Deadline) return false;
             Test.TestTrue(TEXT("Holding gas planes away from the beach"),
                 Ski->Drive().SpeedMps() > 9. && FVector::DistSquaredXY(Start, Ski->GetActorLocation()) > FMath::Square(950.));
+            const FVector2D Center=FVector2D(Ski->GetActorLocation())*.01;
+            const FVector2D Bow=Ski->Drive().Bow(), Beam(-Bow.Y,Bow.X);
+            double Wave=0;
+            for (int32 Aft=3; Aft<=18; ++Aft)
+            {
+                const auto Sample=Yacht->Traffic().Field().At(Center-Bow*Aft+Beam*(.70+.035*Aft),Yacht->SeaFrame().TimeS);
+                Wave=FMath::Max(Wave,FMath::Abs(Sample.HeightM));
+            }
+            Test.TestTrue(TEXT("The moving ski sends a gravity wave outside its jet wash"),Wave>.002);
             Test.TestTrue(TEXT("The running engine produces samples and revs up"),
                 Voice.IsValid() && Voice->IsPlaying() && Voice->PitchMultiplier > IdlePitch && Peak > .001f);
             Tap(EKeys::E);
@@ -148,6 +159,7 @@ public:
             Stage = EStage::Turn;
             Deadline = Now + .85;
             return false;
+        }
         case EStage::Turn:
             if (Now < Deadline) return false;
             Test.TestTrue(TEXT("The rider can turn and bank under power"),

@@ -26,6 +26,9 @@ class ASailingJetSki;
 class ASailingPlayerController;
 class USailingExplorer;
 class USailingEntryBubbles;
+class USailingMarineTraffic;
+class USailingCrabs;
+class ASailingSea;
 
 enum class EYachtView : uint8 { Chase, Helm, Orbit, Drone };
 
@@ -50,6 +53,8 @@ public:
     void AsyncPhysicsTickActor(float DeltaSeconds, float SimTime) override;
     Sailing::FSeaFrame SeaFrame() const { return WaterFrame.load(std::memory_order_relaxed); }
     Sailing::FBoatWake BoatWake() const;
+    USailingMarineTraffic& Traffic() const { return *MarineTraffic; }
+    USailingCrabs& Crabs() const { return *ShoreCrabs; }
     bool HasCoralCoast() const { return bCoralPass; }
     const Sailing::FShoreMap* ShoreGeometry() const { return ShoreMap.Get(); }
     double SurfaceHeightM(FVector2D XYm) const;
@@ -109,6 +114,9 @@ private:
     UPROPERTY() TObjectPtr<UPointLightComponent> PortLamp;
     UPROPERTY() TObjectPtr<UPointLightComponent> StarboardLamp;
 
+    UPROPERTY() TObjectPtr<USailingMarineTraffic> MarineTraffic;
+    UPROPERTY() TObjectPtr<USailingCrabs> ShoreCrabs;
+    Sailing::FTrafficWater PhysicsTraffic;
     Sailing::FHelm Helm;
     FCriticalSection HelmMutex;
     Sailing::FHelm PhysicsHelm;
@@ -137,6 +145,7 @@ private:
     float CinematicDistanceCm = 0;
     bool bCinematic = false;
     bool bCoralPass = false;
+    TWeakObjectPtr<ASailingSea> SurfaceForSampling;
     bool bKeyboardRudder = false;
     uint32 TravelSerial = 0;
     std::atomic<bool> bResetPhysicsTravel{false};

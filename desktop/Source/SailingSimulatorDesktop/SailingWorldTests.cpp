@@ -115,7 +115,10 @@ bool FSailingWorldTest::RunTest(const FString&)
     TestEqual(TEXT("Ultra increases VSM sampling and resolution"),ReadCVar(TEXT("sg.ShadowQuality")),3);
     TestEqual(TEXT("Ultra takes six samples per sun shadow ray"),ReadCVar(TEXT("r.Shadow.Virtual.SMRT.SamplesPerRayDirectional")),6);
     TestEqual(TEXT("Ultra uses Lumen reflections for water"),ReadCVar(TEXT("r.Water.SingleLayer.Reflection")),1);
-    TestEqual(TEXT("Ultra uses full-quality TSR"),ReadCVar(TEXT("r.TSR.History.UpdateQuality")),3);
+    TestEqual(TEXT("Ultra leaves time for compositing a 60 Hz frame"),
+        CVars.FindConsoleVariable(TEXT("r.DynamicRes.FrameTimeBudget"))->GetFloat(),12.f);
+    TestEqual(TEXT("Ultra selects the platform's TSR history quality"),
+        ReadCVar(TEXT("r.TSR.History.UpdateQuality")),PLATFORM_MAC ? 1 : 3);
     Player->SetWorldChoice(EWorldSetting::Graphics,1);
     TestEqual(TEXT("Switching down releases screen-space reflections"),ReadCVar(TEXT("r.SSR.Quality")),0);
     TestEqual(TEXT("Switching down releases Ultra's optics"),ReadCVar(TEXT("r.LensFlareQuality")),0);

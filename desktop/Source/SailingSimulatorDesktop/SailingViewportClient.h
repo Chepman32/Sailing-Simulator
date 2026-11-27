@@ -17,9 +17,6 @@ public:
     float FramesPerSecond() const { return DisplayFPS; }
     FIntPoint RenderResolution() const { return RequestedResolution; }
     void SetRenderResolution(FIntPoint Size);
-#if PLATFORM_MAC
-    void SetAdaptiveUltra(bool bEnabled);
-#endif
 
 private:
     void InitializeDisplay();
@@ -38,13 +35,11 @@ private:
     TWeakObjectPtr<ACameraActor> WaterCamera;
     float WaterViewStart = -1, EntryTime = -1;
     int32 CapturedFrames = 0, WaterFrameCount = 150;
+    bool bCaptureJpeg = false;
     bool bStartAlongside = false;
 #if PLATFORM_MAC
-    bool bActivatePreview = false, bAdaptiveUltra = false;
-    TOptional<float> UnpacedFrameLimit;
-    int32 HeadroomWindows = 0;
-    void RestoreFrameLimit();
-    void PaceUltra(double GpuMs,float Floor);
+    bool bActivatePreview = false;
+    bool bArmBackgroundIdle = false;
 #endif
     FIntPoint PreviousSize = FIntPoint::ZeroValue;
     float ReconstructionScale = 1;

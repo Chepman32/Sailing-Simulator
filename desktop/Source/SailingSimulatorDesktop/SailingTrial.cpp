@@ -1,4 +1,6 @@
 #include "SailingTrial.h"
+#include "SailingMarineTraffic.h"
+#include "SailingCrabs.h"
 #include "SailingEncounter.h"
 #include "SailingExplorer.h"
 #include "SailingJetSki.h"
@@ -31,9 +33,17 @@
 namespace
 {
 constexpr double CmPerM = 100.0;
-constexpr int32 SeaCells = 160;
+constexpr int32 SeaCells = 112;
 constexpr double CellM = 0.36;
 constexpr double SeaRadiusM = SeaCells * CellM * 0.5;
+constexpr double FootCellM = .10;
+// Concentrate the same vertex budget around the feet. The outer square shares
+// its perimeter vertices with the existing annular LODs.
+double WaterCoordinate(int32 Index)
+{
+    const double T=(Index-SeaCells*.5)/(SeaCells*.5);
+    return (SeaCells*.5*FootCellM)*T + (SeaRadiusM-SeaCells*.5*FootCellM)*T*T*T;
+}
 // Four quadrants in the dense lattice, eight octants in each of two outer bands.
 constexpr int32 SeaTileCount = 4 + 8 * 2;
 int32 SeaTileAt(const FVector& Center)
@@ -128,6 +138,8 @@ void BuildSailMesh(UProceduralMeshComponent& Mesh)
 
 ASailingYachtPawn::ASailingYachtPawn()
 {
+    MarineTraffic=CreateDefaultSubobject<USailingMarineTraffic>(TEXT("Marine traffic"));
+    ShoreCrabs=CreateDefaultSubobject<USailingCrabs>(TEXT("Littoral crabs"));
     PrimaryActorTick.bCanEverTick = true;
     PrimaryActorTick.TickGroup = TG_PostPhysics;
     bAsyncPhysicsTickEnabled = true;
@@ -232,6 +244,7 @@ void ASailingYachtPawn::BeginPlay()
 {
     Super::BeginPlay();
     bCoralPass = GetWorld()->GetMapName().EndsWith(TEXT("CoralPass"));
+    if (TActorIterator<ASailingSea> Sea{GetWorld()}; Sea) SurfaceForSampling=*Sea;
     auto Coast=MakeShared<Sailing::FShoreMap,ESPMode::ThreadSafe>(*GetWorld());
     {
         FScopeLock Lock(&HelmMutex);
@@ -262,7 +275,12 @@ void ASailingYachtPawn::BeginPlay()
         BuildHullMesh(*HullVisual);
         BuildSailMesh(*MainSail);
     }
-    if (bCoralPass) ASailingJetSki::SpawnFleet(*this, JetSkiFleet);
+    if (bCoralPass)
+    {
+        ASailingJetSki::SpawnFleet(*this, JetSkiFleet);
+        MarineTraffic->Launch(*this);
+        ShoreCrabs->Populate();
+    }
 }
 
 void ASailingYachtPawn::EndPlay(const EEndPlayReason::Type Reason)
@@ -427,6 +445,7 @@ bool ASailingYachtPawn::TravelTo(FVector ApprovedSpot)
         WakeTrail.Revision = NextRevision;
         for (int32 Side=0; Side<2; ++Side) { BowWater[Side]={}; LastBowClearance[Side]=0.; }
         FScopeLock Lock(&HelmMutex);
+        PhysicsTraffic = MarineTraffic->Field();
         PhysicsHelm = Helm;
         PhysicsImpacts = Impacts;
         bResetPhysicsTravel.store(true);
@@ -598,9 +617,12 @@ void ASailingYachtPawn::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
     if (!Controller) Helm = {};
     if (bRefloatRequested.exchange(false)) RefloatIfGrounded();
+    MarineTraffic->Advance(*this,SeaFrame().TimeS);
+    ShoreCrabs->Advance(*this,DeltaSeconds);
     UpdateBowContact();
     {
         FScopeLock Lock(&HelmMutex);
+        PhysicsTraffic = MarineTraffic->Field();
         PhysicsHelm = Helm;
         PhysicsImpacts = Impacts;
         if (WakeTrail.Revision != PhysicsWakeTrail.Revision) WakeTrail = PhysicsWakeTrail;
@@ -638,6 +660,7 @@ void ASailingYachtPawn::AsyncPhysicsTickActor(float DeltaSeconds, float SimTime)
 
     Sailing::FHelm Controls;
     Sailing::FWaterImpacts ContactWaves;
+    Sailing::FTrafficWater TrafficWaves;
     TSharedPtr<const Sailing::FShoreMap,ESPMode::ThreadSafe> Coast;
     const FVector OriginCm = Body->X();
     const FQuat Rotation = Body->R();
@@ -647,6 +670,7 @@ void ASailingYachtPawn::AsyncPhysicsTickActor(float DeltaSeconds, float SimTime)
         FScopeLock Lock(&HelmMutex);
         Controls = PhysicsHelm;
         ContactWaves = PhysicsImpacts;
+        TrafficWaves = PhysicsTraffic;
         Coast = ShoreMap;
         if (bResetPhysicsTravel.exchange(false))
         {
@@ -660,7 +684,7 @@ void ASailingYachtPawn::AsyncPhysicsTickActor(float DeltaSeconds, float SimTime)
         OriginCm / CmPerM, CenterOfMassCm / CmPerM, Rotation, Body->V() / CmPerM, Body->W()
     };
     const float Scale = SeaScale.load(std::memory_order_relaxed);
-    Sailing::FLoads Loads = Sailing::CalculateLoads(State, Controls, SimTime, Scale, bCoralPass, &ContactWaves, &PhysicsWakeTrail);
+    Sailing::FLoads Loads = Sailing::CalculateLoads(State, Controls, SimTime, Scale, bCoralPass, &ContactWaves, &PhysicsWakeTrail, &TrafficWaves);
     if (Coast && PhysicsShoreGuard.Constrain(*Coast,State,Controls,DeltaSeconds,Loads))
         bRefloatRequested.store(true);
     Body->AddForce(Loads.ForceN * CmPerM);
@@ -709,24 +733,37 @@ double ASailingYachtPawn::SurfaceHeightM(FVector2D XYm) const
 {
     const auto Frame = SeaFrame();
     return Sailing::SeaHeight(XYm, Frame, bCoralPass) + BoatWake().HeightAt(XYm)
-        + Impacts.At(XYm,Frame.TimeS).HeightM + WakeTrail.At(XYm,Frame.TimeS).HeightM;
+        + Impacts.At(XYm,Frame.TimeS).HeightM + WakeTrail.At(XYm,Frame.TimeS).HeightM + MarineTraffic->Field().At(XYm,Frame.TimeS).HeightM;
 }
 
 double ASailingYachtPawn::RenderedSurfaceHeightM(FVector2D XYm,Sailing::FSeaFrame Frame) const
 {
     const auto Wake=BoatWake();
     const auto Height=[&](FVector2D P) {
-        return Sailing::SeaHeight(P,Frame,bCoralPass)+Wake.HeightAt(P)+Impacts.At(P,Frame.TimeS).HeightM+WakeTrail.At(P,Frame.TimeS).HeightM;
+        return Sailing::SeaHeight(P,Frame,bCoralPass)+Wake.HeightAt(P)+Impacts.At(P,Frame.TimeS).HeightM+WakeTrail.At(P,Frame.TimeS).HeightM + MarineTraffic->Field().At(P,Frame.TimeS).HeightM;
     };
-    // The sea snaps to this lattice around the swimmer. Match the diagonal
-    // in BuildSurface so the waterline follows the displaced triangles.
-    const FVector2D Corner(FMath::FloorToDouble(XYm.X/CellM)*CellM, FMath::FloorToDouble(XYm.Y/CellM)*CellM);
-    const FVector2D UV = (XYm-Corner)/CellM;
-    const double East = Height(Corner+FVector2D(CellM,0));
-    const double North = Height(Corner+FVector2D(0,CellM));
-    if (UV.X+UV.Y <= 1.)
-        return Height(Corner)*(1.-UV.X-UV.Y) + East*UV.X + North*UV.Y;
-    return Height(Corner+FVector2D(CellM,CellM))*(UV.X+UV.Y-1.) + East*(1.-UV.Y) + North*(1.-UV.X);
+    // Barycentric interpolation on the same cell and diagonal as BuildSurface.
+    // The diver can sit within a centimetre of the water/air boundary.
+    const FVector2D Center=SurfaceForSampling.IsValid() ? FVector2D(SurfaceForSampling->GetActorLocation())/CmPerM : FVector2D::ZeroVector;
+    const FVector2D Local=XYm-Center;
+    if (FMath::Max(FMath::Abs(Local.X),FMath::Abs(Local.Y))>=SeaRadiusM) return Height(XYm);
+    const auto Interval=[](double Value)
+    {
+        int32 Low=0,High=SeaCells;
+        while (High-Low>1)
+        {
+            const int32 Mid=(Low+High)/2;
+            if (WaterCoordinate(Mid)<=Value) Low=Mid;
+            else High=Mid;
+        }
+        return FVector2D(WaterCoordinate(Low),WaterCoordinate(High));
+    };
+    const FVector2D X=Interval(Local.X)+FVector2D(Center.X,Center.X);
+    const FVector2D Y=Interval(Local.Y)+FVector2D(Center.Y,Center.Y);
+    const FVector2D UV((XYm.X-X.X)/(X.Y-X.X),(XYm.Y-Y.X)/(Y.Y-Y.X));
+    const double East=Height({X.Y,Y.X}),North=Height({X.X,Y.Y});
+    if (UV.X+UV.Y<=1.) return Height({X.X,Y.X})*(1.-UV.X-UV.Y)+East*UV.X+North*UV.Y;
+    return Height({X.Y,Y.Y})*(UV.X+UV.Y-1.)+East*(1.-UV.Y)+North*(1.-UV.X);
 }
 
 void ASailingYachtPawn::DisturbSurface(FVector PositionCm, float HeightM)
@@ -937,8 +974,11 @@ void ASailingSea::BuildSurface()
     {
         for (int32 X = 0; X <= SeaCells; ++X)
         {
-            const int32 A = Vertices.Add(FVector(X * CellM - SeaRadiusM, Y * CellM - SeaRadiusM, 0) * CmPerM);
-            UVs.Emplace(CellM, 0);
+            const double Px=WaterCoordinate(X), Py=WaterCoordinate(Y);
+            const int32 A = Vertices.Add(FVector(Px,Py,0)*CmPerM);
+            const double Dx=.5*(WaterCoordinate(X+1)-WaterCoordinate(X-1));
+            const double Dy=.5*(WaterCoordinate(Y+1)-WaterCoordinate(Y-1));
+            UVs.Emplace(FMath::Max(Dx,Dy),0);
             if (X < SeaCells && Y < SeaCells)
             {
                 Indices.Append({ A, A + Stride, A + 1, A + 1, A + Stride, A + Stride + 1 });
@@ -979,7 +1019,7 @@ void ASailingSea::BuildSurface()
         // Keep several vertices on a wind-sea ridge well past the yacht. Once even the
         // longest swell has fallen below the grid cutoff, a final ring reaches the horizon.
         StepM = StepM >= 90.0 ? 38000.0 - Radius
-            : CellM + .030 * (Radius - SeaRadiusM) + .055 * FMath::Max(0., Radius - 320.);
+            : CellM + .047 * (Radius - SeaRadiusM) + .080 * FMath::Max(0., Radius - 320.);
     }
     // A single horizon-sized bounding box submits even the water behind the camera
     // to the displacement, velocity and depth passes. Partition the existing faces
@@ -1079,7 +1119,7 @@ void ASailingSea::Tick(float DeltaSeconds)
         const FVector FromFocus = PC->PlayerCameraManager->GetCameraLocation() - Position;
         Position += FromFocus.GetClampedToMaxSize2D(SeaRadiusM * 2 * CmPerM) * .5;
     }
-    const FVector2D CenterM(FMath::GridSnap(Position.X / CmPerM, CellM), FMath::GridSnap(Position.Y / CmPerM, CellM));
+    const FVector2D CenterM(FMath::GridSnap(Position.X / CmPerM, FootCellM), FMath::GridSnap(Position.Y / CmPerM, FootCellM));
     const FVector CenterCm(CenterM.X * CmPerM, CenterM.Y * CmPerM, 0.0);
     // Re-centring the grid changes which vertices draw the water. It does not move the sea horizontally.
     const FVector GridStep = CenterCm-GetActorLocation();
@@ -1090,6 +1130,7 @@ void ASailingSea::Tick(float DeltaSeconds)
     const auto& History = Yacht->ShedWake();
     if (Water)
     {
+        Yacht->Traffic().Publish(*Water,Yacht->SeaFrame().TimeS);
         const auto Wake = Yacht->BoatWake();
         Water->SetVectorParameterValue(TEXT("WakePose"), FLinearColor(Wake.SternM.X, Wake.SternM.Y, Wake.Forward.X, Wake.Forward.Y));
         Water->SetScalarParameterValue(TEXT("WakeSpeed"), Wake.SpeedMps);

@@ -39,8 +39,7 @@ FTracks Tracks(const FFoamPose& P, float Age, float Birth)
         // lengths aft their bubble plumes meet and dilute into a single slick.
         Out[Side] = {Hull-Forward*4.7 + Outboard*(.013*Travel+Eddy),
             .65f+.18f*FMath::Sqrt(Travel)+.092f*Travel,Energy*FMath::Exp(-.16f*Age)};
-        Out[Side+2] = {Hull+Forward*4.1+Outboard*(.315*Travel),
-            .40f+.050f*Travel,Energy*FMath::Exp(-.30f*Age)};
+        // The unbroken divergent waves carry no foam. Bow slams emit separate transient fans.
     }
     const float Power = FMath::Abs(P.Thrust);
     const FVector2D Prop = P.CenterM-P.Bow*4.35-P.Bow*FMath::Sign(P.Thrust)*FMath::Min(Age*(1.4+1.8*Power),14.);

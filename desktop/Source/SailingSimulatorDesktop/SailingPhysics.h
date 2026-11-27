@@ -68,6 +68,28 @@ private:
     bool bHasPosition = false;
 };
 
+// Two records per row go to the water material: XY stern at emission, time,
+// speed; and the travelling direction and propeller load.
+struct FTrafficTrail
+{
+    static constexpr int32 Samples = 8;
+    FLinearColor Mark[Samples]{}, Axis[Samples]{};
+    float LengthM = 0, BeamM = 0;
+    FBox2D Bounds{ForceInit};
+    void Record(FVector2D Stern, FVector2D Direction, float Speed, float Power, float Now);
+    FSeaSample At(FVector2D Point, float Now) const;
+private:
+    float LastSample = -1, LastUpdate = -1;
+};
+
+struct FTrafficWater
+{
+    static constexpr int32 JetSkiCount = 8;
+    static constexpr int32 Capacity = 3 + JetSkiCount;
+    FTrafficTrail Trails[Capacity]{};
+    FSeaSample At(FVector2D Point, float Now) const;
+};
+
 struct FWaterImpacts
 {
     static constexpr int32 Count = 4;
@@ -119,7 +141,7 @@ double SeaHeight(FVector2D XYm, FSeaFrame Frame, bool bCoralPass);
 // Two rows per surveyed beach, holding phase, shoaling and depth, then their spatial derivatives.
 inline constexpr int32 SurfProfileWidth = 97;
 TConstArrayView<FLinearColor> SurfProfileTexels();
-inline constexpr int32 RockTileWidth = 128, RockWashFrames = 32;
+inline constexpr int32 RockTileWidth = 128, RockWashFrames = 64;
 inline constexpr int32 RockTileCount = 0
 #define SURF_TILE(...) +1
 #include "CoralSurfTiles.inl"
@@ -134,5 +156,6 @@ float AdvanceSeaScale(float Current, float Target, float DeltaSeconds);
 FVector TrueWind(double TimeS, double SeaScale = 1.0);
 FSail SolveSail(const FVector& Forward, const FVector& RelativeAir, const FHelm& Helm);
 FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS, double SeaScale = 1.0,
-                      bool bCoralPass = false, const FWaterImpacts* Impacts = nullptr, const FWakeHistory* Wake = nullptr);
+                      bool bCoralPass = false, const FWaterImpacts* Impacts = nullptr, const FWakeHistory* Wake = nullptr,
+                      const FTrafficWater* Traffic = nullptr);
 }

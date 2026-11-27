@@ -361,6 +361,29 @@ bool FSailingSurfaceTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingShipTrainTest,"Sailing.Sea.TrafficWake",
+    EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+bool FSailingShipTrainTest::RunTest(const FString&)
+{
+    for (const float L : {3.15f,11.2f,176.f})
+    {
+        Sailing::FTrafficTrail Trail;
+        Trail.LengthM=L; Trail.BeamM=.22f*L;
+        for (int T=0; T<=50; ++T) Trail.Record({5.*T,0},{1,0},5,.8f,T);
+        double Max=0,Min=0;
+        for (double A=4; A<65; A+=.29)
+        {
+            const double H=Trail.At({250.-A,.24*A},50).HeightM;
+            Max=FMath::Max(Max,H); Min=FMath::Min(Min,H);
+        }
+        TestTrue(TEXT("Each moving craft sheds crests and troughs outside its propeller wash"),Max>.012 && Min<-.012);
+        TestEqual(TEXT("Waves stay within the ship wedge"),Trail.At({240,100},50).HeightM,0.);
+        Trail.Record({0,500},{0,1},0,0,51);
+        TestEqual(TEXT("A relocated craft leaves no wave bridge"),Trail.At({229,5},51).HeightM,0.);
+    }
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingFoamTest,"Sailing.Sea.TwinFoam",
     EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
 
@@ -389,6 +412,8 @@ bool FSailingFoamTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Both hull lanes remain visible under sail"),At(57,-2).R>100 && At(57,2).R>100);
     TestTrue(TEXT("There is clear water between the transoms under sail"),At(57,0).R<12 && At(57,0).B==0);
     TestTrue(TEXT("Dispersing hull bubbles meet farther down the wake under sail"),At(42,0).R>20 && At(42,0).B==0);
+    TestFalse(TEXT("Steady sailing does not paint foam along the divergent crests"),
+        Pixels.ContainsByPredicate([](const FColor& C){return C.G>0;}));
     Sail(30,1).Rasterize(Pixels);
     TestTrue(TEXT("Prop wash occupies its own channel only under power"),At(57,0).B>80);
     Field.Record({{64,0},{0,1},0,0,0},16.1f);

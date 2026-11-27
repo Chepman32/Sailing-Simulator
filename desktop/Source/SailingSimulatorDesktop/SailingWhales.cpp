@@ -11,7 +11,7 @@
 
 namespace
 {
-constexpr double GravityCmS2 = 981.;
+constexpr double WhaleGravityCmS2 = 981.;
 constexpr double RunUpS = 4.8, DiveS = 3.5;
 constexpr double DeepApproachS = 2.3;
 constexpr double ViewLeadS = RunUpS - DeepApproachS + .9;
@@ -23,7 +23,7 @@ const FVector ContactPoints[] = {
     {125., 0., -263.}, {30., 0., -3.}, {-430., 0., -155.},
 };
 
-double WaterAt(const ASailingYachtPawn& Yacht, FVector Point)
+double WhaleWaterAt(const ASailingYachtPawn& Yacht, FVector Point)
 {
     return 100. * Yacht.RenderedSurfaceHeightM(FVector2D(Point)*.01);
 }
@@ -120,7 +120,7 @@ bool ASailingWhales::FindLane(const ASailingYachtPawn& Yacht, bool bBreach, FVec
         const FVector Start = Middle - Across*3450. + Depth, End = Middle + Across*3450. + Depth;
         if (GetWorld()->SweepTestByChannel(Start, End, FQuat::Identity, ECC_Visibility,
             FCollisionShape::MakeBox(FVector(520., 520., 1100.)), Query)) continue;
-        const FVector Target(Middle.X, Middle.Y, WaterAt(Yacht, Middle) + (bBreach ? 420. : 75.));
+        const FVector Target(Middle.X, Middle.Y, WhaleWaterAt(Yacht, Middle) + (bBreach ? 420. : 75.));
         if (GetWorld()->LineTraceTestByChannel(Eye, Target, ECC_Visibility, Query)) continue;
         if (bBreach)
         {
@@ -256,7 +256,7 @@ void ASailingWhales::Jump(ASailingYachtPawn& Yacht, float Dt)
         const double Remaining = RunUpS - Far.Age;
         const double Ramp = Remaining / RunUpS;
         FVector Centre = Far.Launch - Far.Course * (Far.ForwardSpeed * Remaining * (1. - .27*Ramp));
-        Centre.Z = WaterAt(Yacht, Far.Launch) - Far.RiseSpeed * Remaining * (1. - .33*Ramp);
+        Centre.Z = WhaleWaterAt(Yacht, Far.Launch) - Far.RiseSpeed * Remaining * (1. - .33*Ramp);
         PoseBreach(*Breacher, Centre, FRotator(UpPitch, Yaw, .14*Far.Roll * FMath::Square(1. - Ramp)));
         return;
     }
@@ -280,15 +280,15 @@ void ASailingWhales::Jump(ASailingYachtPawn& Yacht, float Dt)
 
     if (!Far.bLaunched)
     {
-        Far.Launch.Z = WaterAt(Yacht, Far.Launch);
+        Far.Launch.Z = WhaleWaterAt(Yacht, Far.Launch);
         Far.bLaunched = true;
         if (Weather) Weather->BreachSpray(Yacht, Far.Launch*.01, Far.Course, false, .5f);
     }
     const double AirTime = Far.Age - RunUpS;
-    const double ApexTime = Far.RiseSpeed / GravityCmS2;
+    const double ApexTime = Far.RiseSpeed / WhaleGravityCmS2;
     const double RollIn = FMath::SmoothStep(.06, 1.9*ApexTime, AirTime);
     FVector Centre = Far.Launch + Far.Course*(Far.ForwardSpeed * AirTime);
-    Centre.Z += (Far.RiseSpeed - .5*GravityCmS2 * AirTime) * AirTime;
+    Centre.Z += (Far.RiseSpeed - .5*WhaleGravityCmS2 * AirTime) * AirTime;
     const FRotator Rotation(FMath::Lerp(UpPitch, -12., RollIn), Yaw, FMath::Lerp(.14, 1., RollIn)*Far.Roll);
     PoseBreach(*Breacher, Centre, Rotation);
     if (AirTime < ApexTime) return;
@@ -301,13 +301,13 @@ void ASailingWhales::Jump(ASailingYachtPawn& Yacht, float Dt)
     for (const FVector& Local : ContactPoints)
     {
         const FVector Point = Pose.TransformPosition(Local);
-        const double Water = WaterAt(Yacht, Point);
+        const double Water = WhaleWaterAt(Yacht, Point);
         const double Clearance = Point.Z - Water;
         if (Clearance >= Lowest) continue;
         Lowest = Clearance;
         Contact = {Point.X, Point.Y, Water};
     }
-    if (Lowest <= 0.) Land(Yacht, Contact, Centre, Rotation, GravityCmS2 * AirTime - Far.RiseSpeed);
+    if (Lowest <= 0.) Land(Yacht, Contact, Centre, Rotation, WhaleGravityCmS2 * AirTime - Far.RiseSpeed);
 }
 
 void ASailingWhales::Land(ASailingYachtPawn& Yacht, FVector Contact, FVector Centre, FRotator Rotation, double DescentSpeed)

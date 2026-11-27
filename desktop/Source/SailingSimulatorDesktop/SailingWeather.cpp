@@ -360,6 +360,12 @@ void ASailingWeather::Tick(float DeltaSeconds)
             const float SunShadow=1.f-FMath::SmoothStep(.78f,.97f,StormSky);
             Light->SetShadowAmount(SunShadow);
             Light->SetCastShadows(SunShadow>0.f);
+            const bool bCloudShadow=SunShadow>.015f && bDetailed;
+            if (bool(Light->bCastCloudShadows)!=bCloudShadow)
+            {
+                Light->bCastCloudShadows=bCloudShadow;
+                Light->MarkRenderStateDirty();
+            }
 #endif
             Light->SetLightColor(FMath::Lerp(FLinearColor::White, FLinearColor(.72f,.83f,1.f), Obscured));
             Light->SetLightSourceAngle(.53f + 1.5f*Obscured);

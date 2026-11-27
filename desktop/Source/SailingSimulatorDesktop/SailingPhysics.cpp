@@ -102,9 +102,12 @@ FLinearColor ShoalingAt(const FShelf& Shelf, double D)
 {
     const double Offshore=FMath::Max(0.,D);
     const double R=FMath::Min(1.,Offshore/(.86*Shelf.Reach));
-    // The swash is a thin wet layer. Ease the survey's square-root toe into it.
+    // Match coastal_layout.shelf_depth: the sandy foreshore joins the reef
+    // smoothly, allowing the bore to spend its energy over several metres.
+    const double Width=FMath::Clamp(.11*Shelf.Reach,2.,12.);
+    const double Reef=.1+23.*FMath::Pow(R,1.55)+4.8*FMath::Sqrt(R);
     const double Bed=Shelf.bVolcanic ? .6+93.*Offshore/Shelf.Reach
-        : .1+23.*FMath::Pow(R,1.55)+4.8*FMath::Sqrt(R);
+        : FMath::Lerp(.1+.075*Offshore,Reef,FMath::SmoothStep(.2*Width,Width,Offshore));
     const double H=FMath::Max(.46,Bed);
     const double Omega=SailingWaterMath().BreakerFrequency(), K0=Omega*Omega/Gravity;
     double Low=K0, High=2.;
@@ -224,7 +227,7 @@ static FRockWash SampleWash(Real4 Grid, double Phase)
         Wash.Current+=Weight/48.*FVector2D(Channel(1),Channel(2));
     }
     SailingWaterMath Water;
-    Wash.Rise=(Heights[1]-Heights[0])*RockWashFrames*Water.BreakerFrequency()/(2*PI);
+    Wash.Rise=(Heights[1]-Heights[0])*RockWashFrames*Water.BreakerFrequency()/(4*PI);
     return Wash;
 }
 
@@ -390,7 +393,7 @@ static FSeaSample EvaluateSea(FVector2D XYm, double TimeS, double DepthM, double
                 Surf.z+=Gate.x*Bore.z;
                 BoreContactSlope=Gate.x*Bore.y;
             }
-            const auto Wash=SampleWash(Water.RockTile(XYm.X,XYm.Y,Coast.w),TimeS*Water.BreakerFrequency()*RockWashFrames/(2*PI));
+            const auto Wash=SampleWash(Water.RockTile(XYm.X,XYm.Y,Coast.w),TimeS*Water.BreakerFrequency()*RockWashFrames/(4*PI));
             const Real4 WashGate=Water.BoreWindow(Coast.x);
             const double WashScale=.84*std::sqrt(FMath::Min(Scale,2.5)), Gain=WashGate.x*WashScale;
             const FVector2D WashSlope=Gain*Wash.Slope + WashScale*WashGate.y*Wash.Height*FVector2D(Coast.y,Coast.z);
@@ -468,7 +471,7 @@ double FBoatWake::HeightAt(FVector2D XYm) const
 {
     const FVector2D Delta = XYm - SternM;
     return SailingWaterMath().HullWave(-FVector2D::DotProduct(Delta, Forward),
-        Forward.X*Delta.Y - Forward.Y*Delta.X, SpeedMps, HullBias);
+        Forward.X*Delta.Y - Forward.Y*Delta.X, SpeedMps, HullBias).x;
 }
 
 void FWakeHistory::Record(const FBoatWake& Wake, float TimeS)
@@ -508,6 +511,84 @@ FSeaSample FWakeHistory::At(FVector2D XYm, double TimeS) const
         Result.VelocityMps.Z += Packet.w;
     }
     return Result;
+}
+
+void FTrafficTrail::Record(FVector2D Stern, FVector2D Direction, float Speed, float Power, float Now)
+{
+    if (LastUpdate >= 0 && (Now < LastUpdate || Now-LastUpdate>2.f ||
+        FVector2D::DistSquared(Stern,{Mark[0].R,Mark[0].G})>FMath::Square(FMath::Max(35.f,LengthM))))
+    {
+        for (int32 I=0; I<Samples; ++I) Mark[I]=Axis[I]=FLinearColor::Transparent;
+        LastSample=-1;
+    }
+    const float Interval=FMath::Clamp(.52f*LengthM/FMath::Max(2.f,Speed),1.25f,7.f);
+    if (Axis[1].A<=0 || Now-LastSample>=Interval)
+    {
+        for (int32 I=Samples-1; I>=2; --I) { Mark[I]=Mark[I-1]; Axis[I]=Axis[I-1]; }
+        Mark[1]={float(Stern.X),float(Stern.Y),Now,Speed};
+        Axis[1]={float(Direction.X),float(Direction.Y),Power,1.f};
+        LastSample=Now;
+    }
+    Mark[0]={float(Stern.X),float(Stern.Y),Now,Speed};
+    Axis[0]={float(Direction.X),float(Direction.Y),Power,1.f};
+    LastUpdate=Now;
+    Bounds=FBox2D(ForceInit);
+    for (int32 I=0; I<Samples; ++I)
+    {
+        const auto& M=Mark[I];
+        if (M.A<.65f && Axis[I].B<=.02f) continue;
+        const FVector2D Dir(Axis[I].R,Axis[I].G), P(M.R,M.G);
+        const double Age=FMath::Max(0.f,Now-M.B);
+        const FVector2D Group=P+Dir*(.40*M.A*Age);
+        const double Reach=BeamM+LengthM*.55+.5*M.A*(Age+Interval);
+        Bounds+=Group-FVector2D(Reach,Reach);
+        Bounds+=Group+FVector2D(Reach,Reach);
+        Bounds+=P-Dir*FMath::Max(7.f,BeamM);
+        const FVector2D BowGroup=Group+Dir*(.92*LengthM);
+        Bounds+=BowGroup-FVector2D(BeamM,BeamM);
+        Bounds+=BowGroup+FVector2D(BeamM,BeamM);
+    }
+}
+
+FSeaSample FTrafficTrail::At(FVector2D P, float Now) const
+{
+    FSeaSample Out;
+    if (!Bounds.bIsValid || !Bounds.IsInsideOrOn(P)) return Out;
+    double Nearest=1.e30;
+    for (int32 I=1; I<Samples && Axis[I].A>0; ++I)
+    {
+        const auto A=Mark[I-1], B=Mark[I];
+        const FVector2D DA(Axis[I-1].R,Axis[I-1].G), DB(Axis[I].R,Axis[I].G);
+        const FVector2D PA(A.R,A.G), PB(B.R,B.G);
+        const FVector2D G=PA+DA*(.40*A.A*(Now-A.B));
+        const FVector2D Segment=PB+DB*(.40*B.A*(Now-B.B))-G;
+        const double Frac=FMath::Clamp(FVector2D::DotProduct(P-G,Segment)/FMath::Max(.001,Segment.SizeSquared()),0.,1.);
+        const double Dist=(P-G-Frac*Segment).SizeSquared();
+        if (Dist>=Nearest) continue;
+        Nearest=Dist;
+        const FVector2D Dir=FMath::Lerp(DA,DB,Frac).GetSafeNormal();
+        const FVector2D Across(-Dir.Y,Dir.X), Delta=P-FMath::Lerp(PA,PB,Frac);
+        const double Age=Now-FMath::Lerp(A.B,B.B,Frac), U=FMath::Lerp(A.A,B.A,Frac);
+        const double Along=FVector2D::DotProduct(Delta,Dir), Aft=U*Age-Along;
+        const double Span=FMath::Max(2.,.42*LengthM+1.3*U);
+        const double Envelope=1.-FMath::SmoothStep(.22*Span,Span,FMath::Max(.40*U*Age-Along,Along-.40*U*Age-.92*LengthM));
+        const Real4 Wave=SailingWaterMath().Kelvin(Aft,FVector2D::DotProduct(Delta,Across),U,LengthM,BeamM);
+        Out.HeightM=Envelope*Wave.x;
+        Out.Gradient=Envelope*(-Dir*Wave.y+Across*Wave.z);
+    }
+    return Out;
+}
+
+FSeaSample FTrafficWater::At(FVector2D P,float Now) const
+{
+    FSeaSample Total;
+    for (const auto& Trail : Trails)
+    {
+        const FSeaSample Wave=Trail.At(P,Now);
+        Total.HeightM+=Wave.HeightM;
+        Total.Gradient+=Wave.Gradient;
+    }
+    return Total;
 }
 
 void FWaterImpacts::Emit(FVector2D CenterM, float TimeS, float HeightM)
@@ -626,7 +707,7 @@ FSail SolveSail(const FVector& Forward, const FVector& RelativeAir, const FHelm&
 }
 
 FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS, double SeaScale,
-                      bool bCoralPass, const FWaterImpacts* Impacts, const FWakeHistory* Wake)
+                      bool bCoralPass, const FWaterImpacts* Impacts, const FWakeHistory* Wake, const FTrafficWater* Traffic)
 {
     FLoads Loads;
     const auto Point = [&State](const FVector& LocalM) { return State.OriginM + State.Rotation.RotateVector(LocalM); };
@@ -666,6 +747,7 @@ FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS,
                 const FSeaSample Trail = Wake->At(XY,TimeS);
                 Sea.HeightM += Trail.HeightM;
             }
+            if (Traffic) Sea.HeightM += Traffic->At(XY,TimeS).HeightM;
             const double Wet = FMath::SmoothStep(0.,StaticDraftM*.55,Sea.HeightM-Station.Z);
             WetStations += Wet;
             if (X == StationsX[UE_ARRAY_COUNT(StationsX)-1])

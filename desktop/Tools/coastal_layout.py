@@ -45,14 +45,24 @@ def shore_scale(theta, phase):
             + 0.021 * math.cos(13 * theta - 3 * phase))
 
 
+def shelf_depth(reach, distance):
+    """Cross-shore depth in metres, shared by the island mesh and surf bake."""
+    out = max(0., distance)
+    shelf = min(1., out / (.86 * reach))
+    reef = .1 + 23 * shelf**1.55 + 4.8 * math.sqrt(shelf)
+    width = min(12., max(2., .11 * reach))
+    u = min(1., max(0., (out / width - .2) / .8))
+    return .1 + .075 * out + u*u*(3-2*u) * (reef - .1 - .075 * out)
+
+
 def relief(cay, x, y):
     u, v = x / cay.length, y / cay.width
     theta = math.atan2(v, u)
     radius = math.hypot(u, v) / shore_scale(theta, cay.phase)
     # The same height function drives the mesh, reefs and foliage placement.
     if radius >= 1:
-        shelf = min(1.0, (radius - 1) / 0.86)
-        return -0.1 - 23 * shelf**1.55 - 4.8 * shelf**0.5, 0.0, 0.0
+        reach = min(cay.length, cay.width)
+        return -shelf_depth(reach, (radius-1)*reach), 0.0, 0.0
 
     interior = 1 - radius
     mound = max(0.0, 1.0 - (1.35 * (u - 0.26))**2 - (1.6 * (v - 0.16))**2)

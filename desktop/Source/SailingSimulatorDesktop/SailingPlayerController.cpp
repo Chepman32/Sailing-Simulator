@@ -181,7 +181,7 @@ void ASailingPlayerController::ApplyGraphics(int32 Choice)
 #if PLATFORM_MAC
         // Resolve the sky and sea mist at lower frequency than the water
         // normals. The 4K display composite shares the GPU frame budget.
-        {3, 58,100,.83f,     14,64,144,20,40,18}  // Ultra on Metal
+        {3, 62,100,1.0f,     16,56,96,14,36,16}  // Ultra on Metal
 #else
         {3, 64,100,.83f,     10,80,224,28,56,28}  // Ultra
 #endif
@@ -202,11 +202,8 @@ void ASailingPlayerController::ApplyGraphics(int32 Choice)
     Set(TEXT("r.DynamicRes.MaxScreenPercentage"),P.Max);
     const bool bDetailedWater = P.ScalabilityLevel >= 2;
     const bool bUltra = P.ScalabilityLevel == 3;
-#if PLATFORM_MAC
-    if (auto* Viewport=Cast<USailingViewportClient>(GetWorld()->GetGameViewport()))
-        Viewport->SetAdaptiveUltra(bUltra && GetWorld()->WorldType==EWorldType::Game);
-#endif
-    const float BudgetMs = PLATFORM_MAC && bUltra ? 16.67f : bDetailedWater ? 33.33f : 16.67f;
+    // Reserve time for the display composite and frame-to-frame GPU variance.
+    const float BudgetMs = bUltra ? 12.0f : bDetailedWater ? 33.33f : 16.67f;
     Set(TEXT("r.DynamicRes.FrameTimeBudget"),BudgetMs);
     Set(TEXT("r.Water.SingleLayer.Reflection"),bUltra ? 1 : bDetailedWater ? 3 : 2);
     Set(TEXT("r.SSR.Quality"),bUltra ? 4 : GraphicsChoice == 3 ? 3 : P.ScalabilityLevel > 0 ? 2 : 0);
@@ -219,7 +216,7 @@ void ASailingPlayerController::ApplyGraphics(int32 Choice)
     Set(TEXT("r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor"),2);
     Set(TEXT("r.Lumen.Reflections.ScreenSpaceReconstruction.NumSamples"),3);
     Set(TEXT("r.Lumen.Reflections.DownsampleFactor"),2);
-    Set(TEXT("r.Lumen.ScreenProbeGather.DownsampleFactor"),bDetailedWater ? 24 : 32);
+    Set(TEXT("r.Lumen.ScreenProbeGather.DownsampleFactor"),PLATFORM_MAC && bUltra ? 32 : bDetailedWater ? 24 : 32);
     Set(TEXT("r.Water.SingleLayer.RefractionDownsampleFactor"),2);
     Set(TEXT("r.Shadow.Virtual.SMRT.RayCountDirectional"),bDetailedWater ? 4 : 2);
     Set(TEXT("r.Nanite.MaxPixelsPerEdge"),P.NaniteEdge);

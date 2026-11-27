@@ -370,6 +370,15 @@ def ground(textures, litter_maps):
     litter = texture_nodes(asset, litter_maps)
     paint = expression(asset, unreal.MaterialExpressionVertexColor)
     world = expression(asset, unreal.MaterialExpressionWorldPosition)
+    # The islands' tidal flats are sand. Rock outcrops use scanned geometry
+    # with their own materials. Coarse terrain colours must not bleed those
+    # upland and deep-bed pigments onto the flooded sand.
+    substrate = shader(asset, """
+        float flat=smoothstep(-420.,-140.,P.z)*(1.-smoothstep(52.,145.,P.z));
+        return 1.-flat;
+        """, {"P":world}, OUTPUT.CMOT_FLOAT1)
+    rock_weight = shader(asset,"return Paint*Substrate;",{"Paint":(paint,"R"),"Substrate":substrate},OUTPUT.CMOT_FLOAT1)
+    grass_weight = shader(asset,"return Paint*Substrate;",{"Paint":(paint,"G"),"Substrate":substrate},OUTPUT.CMOT_FLOAT1)
     stone_uv = shader(asset, """
         float2 p = P.xy*.01 + P.z*.0017*float2(.7,-.54);
         return p*.32+.16*float2(cos(p.y*.59),sin(p.x*.47));
@@ -402,19 +411,12 @@ def ground(textures, litter_maps):
         float wash = smoothstep(-.06,.26,d)*shore;
         float passed = smoothstep(.13,2.1,tip.x-last);
         float seep = exp(-.20*tip.z)*smoothstep(-.16,.47,coast.x-last)*shore;
-        float retreat = smoothstep(.2,1.35,tip.y);
         // The thin film drains through channels in the sand. The high-water
         // mark stays damp while individual fingers still reflect the sky.
         float2 offshore = normalize(coast.yz+float2(.00001,0));
         float2 grain = p.xy + .14*float2(sin(p.y*2.2),cos(p.x*2.5));
         float channel = .5+.5*sin(dot(grain,float2(-offshore.y,offshore.x))*5.3+sin(p.x*.61));
         float film = max(wash*.72, seep*passed*(1-smoothstep(.15,2.1+1.7*channel,-d)));
-        // A centimetre-deep tongue can continue over sand finer than a water-grid cell.
-        float tongue=d+.15*sin(dot(p.xy,float2(.47,1.13))*4.8+.68*channel)+.11*(channel-.5);
-        float rim=exp(-pow((tongue-.13)/(.074+.084*channel),2.));
-        float islands=smoothstep(.29,.75,channel+.20*sin(4.3*grain.x+6.2*grain.y));
-        float residue=shore*(rim*(.10+.61*islands)*(.28+.52*smoothstep(.16,1.35,-tip.y))+
-                            .13*retreat*seep*smoothstep(-.95,-.60,d)*(1-smoothstep(-.29,.01,d)));
         // Focus the transmitted light on the bed. At the thin leading edge the
         // optical path vanishes, so the dry grains keep their diffuse colour.
         float path=wash*saturate((.14*wash-p.z)/.14);
@@ -422,21 +424,16 @@ def ground(textures, litter_maps):
         float lenses=sin(ray.x*10.3+sin(ray.y*8.6-t*.7)+t*.88)
                    +cos(ray.y*13.2+.83*sin(ray.x*6.7+t*.91)-t*1.33);
         float focus=path*(1.-smoothstep(.01,.17,abs(lenses)))*(.35+.65*channel);
-        return float4(max(wash,.91*seep),film,residue,focus);
+        return float4(max(wash,.91*seep),film,0,focus);
         """, {"P": world, "T": parameter(asset,"SeaTime",0), "Scale": parameter(asset,"SeaScale",1),
               "RockFlow":survey_texture(asset,"RockFlow")}, OUTPUT.CMOT_FLOAT4)
-    sand_uv = shader(asset,"return (P.xy*.0034+float2(.032,-.017)*T)*Grain;",
-                     {"P":world,"T":parameter(asset,"SeaTime",0),"Grain":number(asset,FOAM_GRAIN_SCALE)},OUTPUT.CMOT_FLOAT2)
-    bubbles = sample_texture(asset,unreal.load_asset(FOAM_TEXTURE),sand_uv)
     rain = parameter(asset,"RainWetness",0)
     base = shader(asset, """
         float3 p = Position * 0.01;
         float damp = max(Rain*.78,max(.23*(1-smoothstep(0,1.35,p.z)),Wash.x));
         float3 grains=lerp(Sand,float3(.46,.38,.26),.15*(1-smoothstep(.1,1.,p.z)));
         float3 beach = grains * lerp(float3(.87,.85,.74),float3(.59,.49,.36),damp);
-        float bubbles = smoothstep(.30,.76,Lace);
-        beach *= 1.+.34*Wash.w;
-        beach = lerp(beach,float3(.79,.85,.83),Wash.z*bubbles);
+        beach *= 1.+.12*Wash.w;
         float mottling = 0.73 + 0.27 * sin(p.x*0.81 + sin(p.y*0.67)) * sin(p.y*0.56);
         float blade = dot(Sand,float3(.22,.68,.10));
         float3 grass = lerp(float3(.020,.078,.018),float3(.065,.182,.029), saturate(blade*2)) * mottling;
@@ -444,20 +441,20 @@ def ground(textures, litter_maps):
         float3 humus = Litter * float3(.69,.76,.62) * (1-.31*Rain);
         return saturate(lerp(ground * (1-.19*Rain*max(Rock,Vegetation)), humus, Forest) * (1 + Light * .66));
         """, {"Position": world, "Sand": sand["color"], "Stone": stone["color"],
-              "Vegetation": (paint, "G"), "Rock": (paint, "R"), "Light": light, "Wash": swash,
-              "Lace":(bubbles,"R"), "Rain":rain, "Forest":forest, "Litter":litter["color"]}, OUTPUT.CMOT_FLOAT3)
+              "Vegetation": grass_weight, "Rock": rock_weight, "Light": light, "Wash": swash,
+              "Rain":rain, "Forest":forest, "Litter":litter["color"]}, OUTPUT.CMOT_FLOAT3)
     rough = shader(asset, """
         float dry = lerp(saturate(Sand*.75+.19), Stone, Rock);
-        float substrate=lerp(lerp(dry,.25+.13*Sand,max(Wash.x,.78*Rain)),.035+.045*Sand,Wash.y);
+        float substrate=lerp(lerp(dry,.31+.15*Sand,max(Wash.x,.78*Rain)),.23+.10*Sand,Wash.y);
         return lerp(substrate,lerp(clamp(Litter,.48,.90),.28,Rain*.85),Forest);
         """, {"Wash": swash, "Rain":rain, "Sand": (sand["roughness"], "R"), "Stone": (stone["roughness"], "R"),
-              "Rock": (paint, "R"), "Forest": forest, "Litter": (litter["roughness"], "R")}, OUTPUT.CMOT_FLOAT1, 240)
+              "Rock": rock_weight, "Forest": forest, "Litter": (litter["roughness"], "R")}, OUTPUT.CMOT_FLOAT1, 240)
     normals = shader(asset, """
         float3 mineral=lerp(Sand,Stone,Rock*.84);
         mineral.xy*=lerp(.52-.45*Wash.y,1.,Rock);
         return normalize(lerp(mineral,Litter,Forest));
         """,
-                     {"Sand": sand["normal"], "Stone": stone["normal"], "Rock": (paint, "R"),
+                     {"Sand": sand["normal"], "Stone": stone["normal"], "Rock": rock_weight,
                       "Litter": litter["normal"], "Forest": forest, "Wash": swash}, OUTPUT.CMOT_FLOAT3, 470)
     # Diffuse daylight reaching submerged sand is spread over the sky hemisphere.
     # Attenuate incident sunlight on its refracted path to the bed. The water
@@ -479,7 +476,7 @@ def ground(textures, litter_maps):
            PROP.MP_EMISSIVE_COLOR)
     # A drained patch retains a dark, rough substrate after the smooth surface
     # film has broken. Only the sheet still present carries the sky reflection.
-    finish = shader(asset,"return float3(lerp(R,.34,Wash.y),.46*Wash.y,.095+.10*(1-Wash.y));",
+    finish = shader(asset,"return float3(lerp(R,.34,Wash.y),.34*Wash.y,.15+.12*(1-Wash.y));",
                     {"R":rough,"Wash":swash},OUTPUT.CMOT_FLOAT3)
     unreal.CoralMaterialAuthoring.set_coat_finish(asset,finish)
     assign(normals, PROP.MP_NORMAL)
@@ -919,21 +916,21 @@ WATER_MODEL = (LAYOUT.parent / "SailingWaterMath.inl").read_text().replace(
     (LAYOUT.parent/"CoralSurfTiles.inl").read_text()).replace("Real4", "float4").replace("Real ", "float ").replace("UInt", "uint")
 ROCK_MODEL = WATER_MODEL + """
 struct TidalRocks {
-    // The staggered-grid bake is 8 surveyed tiles across and 32 phases down.
+    // The staggered-grid bake is 8 surveyed tiles across and 64 phases down.
     float4 Wash(Texture2D atlas, SamplerState samp, float4 grid, float clock, out float2 slope, bool normals) {
         slope=0;
         [branch] if (grid.z==0) return 0;
-        float phase=frac(clock*(1.16/6.28318530718))*32;
+        float phase=frac(clock*(1.16/12.56637061436))*64;
         float2 cell=float2(grid.x+128*floor(grid.y/128),fmod(grid.y,128));
-        const float2 invSize=float2(1./1024.,1./4096.);
+        const float2 invSize=float2(1./1024.,1./8192.);
         float2 uv=(cell+.5)*invSize;
-        float2 uv0=uv+float2(0,floor(phase)/32), uv1=uv+float2(0,fmod(floor(phase)+1,32)/32);
+        float2 uv0=uv+float2(0,floor(phase)/64), uv1=uv+float2(0,fmod(floor(phase)+1,64)/64);
         float4 a=Texture2DSampleLevel(atlas,samp,uv0,0), b=Texture2DSampleLevel(atlas,samp,uv1,0);
         float4 wash=lerp(a,b,frac(phase));
         if (normals) {
             // Bilinear interpolation within the four texels, just as in the CPU sampler.
             int2 i=int2(floor(cell)), j=i+int2(0,128*(int)floor(phase));
-            int2 k=i+int2(0,128*((1+(int)floor(phase))%32));
+            int2 k=i+int2(0,128*((1+(int)floor(phase))%64));
             float4 h0=float4(atlas.Load(int3(j,0)).r,atlas.Load(int3(j+int2(1,0),0)).r,
                              atlas.Load(int3(j+int2(0,1),0)).r,atlas.Load(int3(j+1,0)).r);
             float4 h1=float4(atlas.Load(int3(k,0)).r,atlas.Load(int3(k+int2(1,0),0)).r,
@@ -1068,14 +1065,11 @@ float2 dir = WakePose.zw, right = float2(-dir.y,dir.x);
 float2 relative = p-WakePose.xy;
 float a = -dot(relative,dir), b = dot(relative,right);
 if (WakeSpeed>.35 && a>-10 && a<53 && abs(b)<23) {
-    float h = water.HullWave(a,b,WakeSpeed,WakeBias);
+    float4 h = water.HullWave(a,b,WakeSpeed,WakeBias);
     float lod = 1-smoothstep(.7,2.5,Footprint.x);
-    const float e = .04;
-    float da = (water.HullWave(a+e,b,WakeSpeed,WakeBias)-water.HullWave(a-e,b,WakeSpeed,WakeBias))/(2*e);
-    float db = (water.HullWave(a,b+e,WakeSpeed,WakeBias)-water.HullWave(a,b-e,WakeSpeed,WakeBias))/(2*e);
-    sea.x += h*lod;
-    sea.yz += (-dir*da+right*db)*lod;
-    foam = max(foam, smoothstep(.12,.30,h)*.68);
+    sea.x += h.x*lod;
+    sea.yz += (-dir*h.y+right*h.z)*lod;
+    // A free gravity wave changes the reflecting normal without entraining air.
 }
 float4 rings = water.Impact(p.x-Ring0.x,p.y-Ring0.y,T-Ring0.z,Ring0.w)
              + water.Impact(p.x-Ring1.x,p.y-Ring1.y,T-Ring1.z,Ring1.w)
@@ -1086,6 +1080,62 @@ foam = max(foam,smoothstep(.08,.22,rings.x)*.48);
 float4 whaleRings=water.WhaleRing(p.x-NearWhalePrint.x,p.y-NearWhalePrint.y,T-NearWhalePrint.z,NearWhalePrint.w)
                 + water.WhaleRing(p.x-FarWhalePrint.x,p.y-FarWhalePrint.y,T-FarWhalePrint.z,FarWhalePrint.w);
 sea += whaleRings.xyz*(1-smoothstep(1.6,5.,Footprint.x));
+"""
+
+
+TRAFFIC_WATER = WATER_MODEL + """
+struct Tracks {
+    float4 Sample(Texture2D chart, int row, float4 box, float2 p, float time) {
+        [branch] if (any(p<box.xy) || any(p>box.zw) || box.z<=box.x) return 0;
+        float2 size=chart.Load(int3(0,row,0)).rg;
+        float4 m=chart.Load(int3(1,row,0)), axis=chart.Load(int3(2,row,0));
+        float2 group=m.xy+.40*axis.xy*m.a*(time-m.z);
+        float best=1e28, aft=0, lateral=0, speed=0, envelope=0, foam=0;
+        float2 direction=0;
+        [loop] for (int j=1; j<8; ++j) {
+            float4 older=chart.Load(int3(1+2*j,row,0)), nextAxis=chart.Load(int3(2+2*j,row,0));
+            if (nextAxis.a<=0) break;
+            float2 g=older.xy+.40*nextAxis.xy*older.a*(time-older.z);
+            float2 segment=g-group, offset=p-group;
+            float u=saturate(dot(offset,segment)/max(.001,dot(segment,segment)));
+            float2 near=offset-u*segment;
+            float distance2=dot(near,near);
+            if (distance2<best) {
+                best=distance2;
+                direction=lerp(axis.xy,nextAxis.xy,u);
+                direction*=rsqrt(max(.001,dot(direction,direction)));
+                float2 delta=p-lerp(m.xy,older.xy,u);
+                float along=dot(delta,direction), age=time-lerp(m.z,older.z,u);
+                speed=lerp(m.a,older.a,u);
+                aft=speed*age-along;
+                lateral=dot(delta,float2(-direction.y,direction.x));
+                float span=max(2.,.42*size.x+1.3*speed);
+                envelope=1.-smoothstep(.22*span,span,max(.4*speed*age-along,along-.4*speed*age-.92*size.x));
+            }
+            // Bubbles are carried by the slower water left behind the stern.
+            // Project onto the actual emission path, independently of wave group velocity.
+            float2 route=older.xy-m.xy, fromStern=p-m.xy;
+            float v=saturate(dot(fromStern,route)/max(.001,dot(route,route)));
+            float seconds=max(0,time-lerp(m.z,older.z,v));
+            float width=.16*size.y+sqrt(seconds)*(.16+.032*size.y);
+            float r=length(fromStern-v*route)/max(.24,width);
+            foam=max(foam,lerp(axis.z,nextAxis.z,v)*(1-smoothstep(.18,1.,r))
+                       *exp(-seconds/(1.3+.14*size.y)));
+            m=older; axis=nextAxis; group=g;
+        }
+        SailingWaterMath w;
+        float3 h=w.Kelvin(aft,lateral,speed,size.x,size.y).xyz*envelope;
+        return float4(h.x,-direction*h.y+float2(-direction.y,direction.x)*h.z,foam);
+    }
+};
+Tracks tracks;
+float2 p=Position.xy*.01;
+float4 sum=tracks.Sample(Map,0,B0,p,T)+tracks.Sample(Map,1,B1,p,T)+tracks.Sample(Map,2,B2,p,T);
+[branch] if (all(p>=B3.xy) && all(p<=B3.zw)) {
+    [loop] for (int row=3; row<11; ++row)
+        sum+=tracks.Sample(Map,row,Map.Load(int3(17,row,0)),p,T);
+}
+return sum;
 """
 
 
@@ -1159,7 +1209,7 @@ def water_fields(asset, world, grid, pixel, time, scale):
         }}""")
     local = shader(asset, CONTACT_MATH + "float3 trail = 0;\n" + "".join(packets) + """
         sea += trail*(1-smoothstep(.85,3.2,Footprint.x));
-        return float4(sea,max(foam,.36*smoothstep(.12,.30,trail.x)));
+        return float4(sea,foam);
         """, contacts, OUTPUT.CMOT_FLOAT4)
     # The displacement and the interpolator share the long-wave and shore-breaker result.
     long_vertex = shader(asset,WAVE_MATH+LONG_WAVES+"Height=sea.x; return float4(sea.w,sea.yz,foam);",
@@ -1168,9 +1218,18 @@ def water_fields(asset, world, grid, pixel, time, scale):
     height_pin.set_editor_property("output_name","Height")
     height_pin.set_editor_property("output_type",OUTPUT.CMOT_FLOAT1)
     long_vertex.set_editor_property("additional_outputs",[height_pin])
-    short_height = shader(asset,WAVE_MATH+SHORT_WAVES+"return chop.x;",vertex_inputs,OUTPUT.CMOT_FLOAT1)
-    offset = shader(asset, "return float3(Step.xy,100*(LongHeight+ShortHeight+Local.x));",
-                    {"LongHeight":(long_vertex,"Height"),"ShortHeight":short_height,"Local":local,"Step":shift},OUTPUT.CMOT_FLOAT3)
+    short_vertex = shader(asset,WAVE_MATH+SHORT_WAVES+"return chop;",vertex_inputs,OUTPUT.CMOT_FLOAT4)
+    tracks = {"Position":world, "T":time, "Map":survey_texture(asset,"TrainTracks")}
+    for i in range(4):
+        box = expression(asset,unreal.MaterialExpressionVectorParameter,parameter_name=f"TrainBox{i}",
+                         default_value=unreal.LinearColor(1,1,-1,-1))
+        bounds = expression(asset,unreal.MaterialExpressionAppendVector)
+        link(box,bounds,"A")
+        link(box,bounds,"B","A")
+        tracks[f"B{i}"] = bounds
+    fleet = shader(asset,TRAFFIC_WATER,tracks,OUTPUT.CMOT_FLOAT4)
+    offset = shader(asset, "return float3(Step.xy,100*(LongHeight+ShortHeight.x+Local.x+Fleet.x));",
+                    {"LongHeight":(long_vertex,"Height"),"ShortHeight":short_vertex,"Fleet":fleet,"Local":local,"Step":shift},OUTPUT.CMOT_FLOAT3)
     # Sub-metre vertices already resolve the surveyed shore profile. Farther
     # out, recompute it on coarse triangles that may cross an island's coast.
     pixel_coast = shader(asset,WATER_MODEL+"""
@@ -1228,23 +1287,24 @@ def water_fields(asset, world, grid, pixel, time, scale):
     # The local displacement is already consumed in the vertex stage. Its x
     # slot can carry foam into the pixel stage. This keeps the mesh within
     # eight UV channels, including in Metal's lightmap-density permutation.
-    local_film = interpolate_water(asset,shader(asset,"return float4(Motion.z,Local.yzw);",
-        {"Motion":orbital,"Local":local},OUTPUT.CMOT_FLOAT4))
+    local_film = interpolate_water(asset,shader(asset,"return float4(Motion.z,Local.yz, Fleet.a);",
+        {"Motion":orbital,"Local":local,"Fleet":fleet},OUTPUT.CMOT_FLOAT4))
+    resolved=interpolate_water(asset,shader(asset,"return Water+float4(Chop.w,Chop.yz,Gust.w)+float4(0,Fleet.yz,0);",
+        {"Water":long_vertex,"Chop":short_vertex,"Gust":local,"Fleet":fleet},OUTPUT.CMOT_FLOAT4))
     orbit_xy = interpolate_water(asset,shader(asset,"return Motion.xy;",{"Motion":orbital},OUTPUT.CMOT_FLOAT2))
     film = shader(asset,"return float3(Orbit,Local.x);",{"Orbit":orbit_xy,"Local":local_film},OUTPUT.CMOT_FLOAT3)
-    # Restore long-wave curvature per pixel as the mesh coarsens.
-    # The eight short waves always use the pixel footprint.
-    surface = shader(asset,WAVE_MATH+SHORT_WAVES+"""
-        float restore = smoothstep(.72,1.35,max(Grid.x,Footprint.x));
-        float4 band = Resolved;
-        [branch] if (restore>0) {
-        """+LONG_WAVES+"""
-            band = lerp(band,float4(sea.w,sea.yz,foam),restore);
-        }
-        return float4(band.x+chop.w,band.yz+chop.yz+Local.yz,max(band.w,Local.w));
-        """,{**waves,"Coast":pixel_coast,"Footprint":pixel,"Grid":grid,"Resolved":interpolate_water(asset,long_vertex,"return"),
-             "Local":local_film},OUTPUT.CMOT_FLOAT4)
-    return surface, pixel_coast, offset, film, {name:contacts[name] for name in ("NearWhalePrint","FarWhalePrint")}
+    # Reuse the surface already solved for displacement in the fine foreground mesh.
+    # Only coarse triangles need the short crests and gravity waves restored per pixel.
+    distant_fleet=shader(asset, "if (Cell.x<.80) return float4(0,0,0,Local.a);\n"+TRAFFIC_WATER,
+                         {**tracks,"Cell":grid,"Local":local_film},OUTPUT.CMOT_FLOAT4)
+    surface = shader(asset,WAVE_MATH+"""
+        float restore=smoothstep(.65,1.30,Grid.x);
+        if (restore<=0) return Resolved+float4(0,Local.yz,0);
+        """+SHORT_WAVES+LONG_WAVES+"""
+        float4 fine=float4(sea.w+chop.w,sea.yz+chop.yz+Fleet.yz,foam);
+        return lerp(Resolved,fine,restore)+float4(0,Local.yz,0);
+        """,{**waves,"Coast":pixel_coast,"Footprint":pixel,"Grid":grid,"Resolved":resolved,"Local":local_film,"Fleet":distant_fleet},OUTPUT.CMOT_FLOAT4)
+    return surface, pixel_coast, offset, film, distant_fleet, {name:contacts[name] for name in ("NearWhalePrint","FarWhalePrint")}
 
 
 def sample_texture(asset, texture, coordinates, *, normal=False, linear=False):
@@ -1289,7 +1349,7 @@ def water(source):
     # until the wavelength falls below a pixel, including beyond the last displaced ring.
     pixel = shader(asset, "return max(length(ddx(P.xy)),length(ddy(P.xy)))*.005;",
                    {"P": world}, OUTPUT.CMOT_FLOAT1)
-    sea, coast, offset, orbit, whale_prints = water_fields(asset,world,grid,pixel,time,scale)
+    sea, coast, offset, orbit, fleet, whale_prints = water_fields(asset,world,grid,pixel,time,scale)
     view = expression(asset, unreal.MaterialExpressionCameraVectorWS)
     side = expression(asset, unreal.MaterialExpressionTwoSidedSign)
     depth = shader(asset, """
@@ -1299,7 +1359,7 @@ def water(source):
         """, {"Bed": expression(asset, unreal.MaterialExpressionSceneDepthWithoutWater),
                "Surface": expression(asset, unreal.MaterialExpressionPixelDepth), "View": view, "Side": side}, OUTPUT.CMOT_FLOAT2)
     shore = shader(asset, ROCK_MODEL+"""
-        Backwash=0;
+        Backwash=0; Front=40;
         if (Coast.x>=38 || Coast.x<=-8) return 0;
         SailingWaterMath water;
         TidalRocks rocks;
@@ -1315,25 +1375,33 @@ def water(source):
         float2 tangent = float2(-offshore.y,offshore.x);
         // Rock walls turn both strokes along the scanned contour. Foam trapped
         // in a pocket releases later than the exposed water on either flank.
+        float4 tip=water.SwashTip(t,Scale,Coast.w);
         float4 lag=water.SwashTip(max(t,local)-.62*saturate(rock.w),Scale,Coast.w);
+        Front=Coast.x-tip.x;
         float2 current=offshore+rock.yz;
         current*=min(1.,1.8/max(.01,length(current)));
         float across = (lag.x-1.25)*.60;
         float2 unused;
-        float4 wash=rocks.Wash(RockWash,RockWashSampler,water.RockTile(p.x,p.y,Coast.w),T,unused,false);
+        float4 tile=water.RockTile(p.x,p.y,Coast.w);
+        float4 wash=rocks.Wash(RockWash,RockWashSampler,tile,T,unused,false);
         float along = .24*sin(.27*t+.07*p.x-.03*p.y);
         Backwash.z = travel/6.2831853;
         Backwash.w = (water.BreakerFrequency()*t+Coast.w)/6.2831853;
-        Backwash.x=wash.a*(1-smoothstep(.90,1.22,rock.w));
-        Backwash.y=water.BoreWindow(Coast.x).x*water.RockBore(rock.w,local,Scale,Coast.w).w;
+        Backwash.x=wash.a;
+        float2 inTile=float2(tile.x,fmod(tile.y,128.));
+        float2 margin=min(inTile,127.-inTile);
+        Backwash.y=tile.z>0 ? smoothstep(1.,8.,min(margin.x,margin.y))*smoothstep(.025,.70,rock.w) : 0.;
         float weight = smoothstep(-8.,-5.,Coast.x)*(1-smoothstep(7.,35.,Coast.x));
-        return float4(current*across+tangent*along+.84*wash.yz,weight,lag.y);
+        return float4(current*across+tangent*along+1.12*wash.yz,weight,tip.y);
         """, {"P": world, "Coast": coast, "T": time, "Scale": scale,
               "Profile":survey_texture(asset,"SurfProfile"),"RockFlow":survey_texture(asset,"RockFlow"),"RockWash":survey_texture(asset,"RockWash")}, OUTPUT.CMOT_FLOAT4)
     drain_pin=unreal.CustomOutput()
     drain_pin.set_editor_property("output_name","Backwash")
     drain_pin.set_editor_property("output_type",OUTPUT.CMOT_FLOAT4)
-    shore.set_editor_property("additional_outputs",[drain_pin])
+    front_pin=unreal.CustomOutput()
+    front_pin.set_editor_property("output_name","Front")
+    front_pin.set_editor_property("output_type",OUTPUT.CMOT_FLOAT1)
+    shore.set_editor_property("additional_outputs",[drain_pin,front_pin])
     drift = shader(asset, """
         float2 p = Position.xy*.01;
         return p+Orbit.xy+.36*float2(sin(.065*p.y+.047*p.x-.17*T),cos(.078*p.x-.031*p.y-.13*T));
@@ -1438,7 +1506,7 @@ def water(source):
         // At the scale of a hand-sized foam patch, light and dark pockets
         // coexist even on a fully white crest. Remove the map's broad bias
         // before reconstructing coverage so it also works in a dark trough.
-        [branch] if (Scale<=2.4) return .65;
+        [branch] if (Scale<=2.4 && Shore.z<.05) return .65;
         float3 p=Position*.01;
         float2 uv=float2(dot(p.xy,float2(.82,.57)),dot(p.xy,float2(-.57,.82))+.34*p.z)*.35;
         uv=Grain*(uv+float2(.027,-.061)*T);
@@ -1449,17 +1517,18 @@ def water(source):
         float neighbourhood=Texture2DSampleGrad(Map,MapSampler,uv,dx*6,dy*6).r;
         float resolved=1-smoothstep(.010,.039,footprint);
         return lerp(.65,smoothstep(.21,.66,foam+2.2*(foam-neighbourhood)),resolved);
-        """,{"Position":surface_position,"Map":foam_flow,"T":time,"Scale":scale,"Grain":grain},OUTPUT.CMOT_FLOAT1)
+        """,{"Position":surface_position,"Map":foam_flow,"T":time,"Scale":scale,"Grain":grain,"Shore":shore},OUTPUT.CMOT_FLOAT1)
     field_view = expression(asset,unreal.MaterialExpressionVectorParameter,parameter_name="WakeFieldView",
                             default_value=unreal.LinearColor(0,0,0,0))
-    field_inputs = {"P":world,"Flow":drift,"View":field_view,"Blend":(field_view,"A")}
+    field_inputs = {"P":world,"Flow":drift,"View":field_view,"Blend":(field_view,"A"),"Fleet":fleet}
     for channel in ("A","B"):
         field_inputs[channel] = expression(asset,unreal.MaterialExpressionTextureObjectParameter,
             parameter_name=f"WakeField{channel}",texture=unreal.load_asset("/Engine/EngineResources/Black"),
             sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
     history = shader(asset, """
         float2 p = P.xy*.01, box = abs((p-View.xy)*View.z);
-        if (View.z<=0 || max(box.x,box.y)>=.5) return 0;
+        float4 other=float4(0,0,saturate(Fleet.a),0);
+        if (View.z<=0 || max(box.x,box.y)>=.5) return other;
         // Surface orbits bend the bubble lanes. The stored chart remains fixed
         // in the emission frame, including after a turn or throttle change.
         // The chart stores births in world space. A full storm orbit can be
@@ -1473,7 +1542,7 @@ def water(source):
         float eddy = .5+.5*sin(dot(p,float2(.53,-.24))+.8*sin(dot(p,float2(.13,.40))));
         float dilute = 1-smoothstep(.16,.78,max(field.r,max(field.g,field.b)));
         field.rgb *= 1-.28*dilute*eddy;
-        return field*(1-smoothstep(.45,.5,max(box.x,box.y)));
+        return max(other,field*(1-smoothstep(.45,.5,max(box.x,box.y))));
         """,field_inputs,OUTPUT.CMOT_FLOAT4)
     whale_wash = shader(asset, """
         struct Footprint {
@@ -1532,16 +1601,16 @@ def water(source):
         // The transported fraction survives the impact and thins on the outward stroke.
         float fine = smoothstep(.25,.75,.64*bubbles.b+.36*Strands.g);
         float spilling = Transport.g * smoothstep(.12,.64,local);
-        float residueAir = Transport.r * smoothstep(.08,.37,local+.24*Backwash.y);
+        float residueAir = Transport.r * smoothstep(.08,.37,local);
         // A dense packet at the toe breaks into narrow filaments as it drains.
-        float contact = Backwash.y*.12 + Backwash.x*.46*smoothstep(.36,.66,Strands.g+.22*(Density-.5));
+        float contact = Backwash.x*.92*smoothstep(.28,.65,Strands.g+.22*(Density-.5));
         // Entrained air collects between patches of clear water. Use the
         // transported, decimetre-sized films here; the fine bubbles alone
         // average to an opaque-looking stripe even at standing eye height.
         float parcel=.72*Strands.g+.28*Density+.035*(Strands.r-.5);
         float clumps=smoothstep(.46,.69,parcel);
         float drainage=smoothstep(.50,.70,parcel+.025*(Lace.r-.5));
-        float surf = spilling*clumps*(.10+.47*fine) + residueAir*drainage*(.08+.38*fine)
+        float surf = spilling*clumps*(.06+.38*fine) + residueAir*drainage*(.04+.22*fine)
                    +contact*clumps*(.12+.39*fine);
         // A thin aerated toe follows the actual bed intersection, including individual
         // rock faces. As water recedes the wider foam fraction breaks into patches.
@@ -1557,7 +1626,7 @@ def water(source):
             float parcel=.5+.24*sin(6.1*bed.x-2.5*bed.y+.84*sin(4.7*bed.y))
                            +.26*sin(6.5*bed.y+.9*sin(7.1*bed.x));
             float patches=smoothstep(.28,.72,parcel+.19*(Strands.g-.5));
-            toe=wetEdge*(.14+.65*spillingToe+.17*residueAir)*beading*(.08+.92*patches);
+            toe=wetEdge*(.52*spillingToe*saturate(Backwash.x+.40*local)+.10*residueAir)*beading*(.08+.92*patches);
         }
         // Clear windows open between the draining cells. The foam field
         // moves their borders back through the channels around the stone.
@@ -1567,9 +1636,9 @@ def water(source):
         // plume belongs to the water column; only fresh clusters whiten its surface.
         float raftEdge = smoothstep(.47,.73,Density+.19*(Fine.g-.5));
         float stern = .32*smoothstep(.30,1.,Trail.r)*raft;
-        float bow = .47*smoothstep(.37,.96,Trail.g)*max(raft,.42*Fine.b);
+
         float propeller = .72*smoothstep(.31,1.,Trail.b)*dense;
-        float wake = (.14+.86*raftEdge)*max(stern,max(bow,propeller));
+        float wake = (.14+.86*raftEdge)*max(stern,propeller);
         float coverage=max(max(localFoam,wake),(1-(1-cap)*(1-afterwash))*(1-.84*Shore.z));
         // Thick young foam covers the centres of cells. As the film thins,
         // drainage opens holes and breaks their outlines at a second scale.
@@ -1591,10 +1660,36 @@ def water(source):
         float strands=smoothstep(.23,.65,raft+.28*(patch-.5));
         float impact=wash*lerp(strands*(.20+.80*Pores),.79+.21*bubbles.b,filled);
         float windFoam=max(oldFoam*(1-Shore.z),coverage*films+(1-coverage)*residue*(1-Shore.z));
-        return saturate(max(impact,max(WhaleWash.x*(.27+1.25*raft),windFoam)));
+        // In a surveyed rock pool the solver already knows exactly where the
+        // water has compressed and carried air. Depth contours by themselves
+        // must never paint a solid ribbon around a bare stone.
+        float air=smoothstep(.018,.42,Backwash.x);
+        float islands=smoothstep(.38,.78,.48*Density+.32*Strands.g+.20*bubbles.b+.20*air);
+        float poreFilm=smoothstep(.25,.72,.50*Lace.r+.32*bubbles.b+.18*Pores);
+        float film=air*(.008+.33*islands*poreFilm)*smoothstep(.003,.036,Depth.y);
+        // In the swash, a few centimetres of moving water can carry an open
+        // lace of air over clear sand. The rising bore entrains new bubbles;
+        // in backwash only its detached, draining filaments persist.
+        float moving=smoothstep(.19,1.5,-Shore.w);
+        float thin=smoothstep(.002,.023,Depth.y)*(1-smoothstep(.09,.24,Depth.y));
+        float frontDistance=Front+.17*(Density-.5)+.074*(Strands.g-.5);
+        // The fresh bore carries a narrow, aerated lip. Behind it the bubbles
+        // stretch into open cells; most of the water ahead remains transparent.
+        float lip=(1-smoothstep(.055,.29,abs(frontDistance-.29)))*moving;
+        float apron=smoothstep(.18,.48,frontDistance)*(1-smoothstep(.49,1.18,frontDistance));
+        float lace=smoothstep(.28,.74,.61*Lace.r+.23*bubbles.g+.16*Pores);
+        float lipPatch=smoothstep(.27,.75,.54*Density+.46*Strands.g);
+        float lipAir=lip*(.17+.79*lipPatch)*(.23+.77*lace);
+        float tailAir=(.34*moving*apron+.17*thin)*lace*lipPatch*(.21+.79*Pores);
+        float edgeFoam=(lipAir+tailAir)*smoothstep(.001,.023,Depth.y);
+        float swashZone=Shore.z*(1-smoothstep(.15,.56,Depth.y));
+        float breaking=lerp(windFoam,edgeFoam,swashZone);
+        breaking=lerp(breaking,film,Backwash.y*Shore.z);
+        breaking=max(breaking,wake);
+        return saturate(max(impact,max(WhaleWash.x*(.27+1.25*raft),breaking)));
         """, {"WhaleWash":whale_wash,"Sea":sea,"Orbit":orbit,"Detail":detail,"Trail":history,"Lace":lace,"Density":(density,"G"),"Streak":streaks,
               "Fine":froth_detail,"FaceFroth":face_froth,"Pores":pores,"SeaScale":scale,"Shore":shore,"Depth":depth,
-              "Transport":transport,"Strands":strands,"Pshore":world,"Backwash":(shore,"Backwash")},OUTPUT.CMOT_FLOAT1,600)
+              "Transport":transport,"Strands":strands,"Pshore":world,"Backwash":(shore,"Backwash"),"Front":(shore,"Front")},OUTPUT.CMOT_FLOAT1,600)
     normal = shader(asset, """
         float slick=max(WhaleWash.y,saturate(Trail.r*.7+Trail.b*.4+Sea.w*.44+.65*Trail.a));
         // Shelter behind the breaking ridge leaves broader reflecting facets.
@@ -1663,9 +1758,15 @@ def water(source):
         float3 bent = refract(-View,N*Side,eta);
         float2 offset = TransformWorldVectorToView(bent-flat).xy;
         float visible = smoothstep(.02,.18,Side*View.z)*(1-smoothstep(.04,.82,Foam));
+        // A given lateral ray displacement subtends more pixels directly
+        // below the observer. For deep water cap the screen-space lookup at
+        // the existing horizon scale to avoid sampling past silhouettes.
         float thickness=1.-exp(-max(0.,Path.x)*.012);
-        return clamp(offset*.057,-.016,.016)*visible*thickness;
-        """, {"View":view,"N":normal,"Foam":foam,"Side":side,"Path":depth}, OUTPUT.CMOT_FLOAT2)
+        float2 shallow=offset*(max(0.,Path.x)/max(32.,EyeDistance))*.56;
+        float2 deep=clamp(offset*.057,-.016,.016)*thickness;
+        return clamp(lerp(shallow,deep,smoothstep(28.,105.,Path.x)),-.021,.021)*visible;
+        """, {"View":view,"N":normal,"Foam":foam,"Side":side,"Path":depth,
+              "EyeDistance":expression(asset,unreal.MaterialExpressionPixelDepth)}, OUTPUT.CMOT_FLOAT2)
     assign(refraction, PROP.MP_REFRACTION)
     # Integrate the diffuse part of the water column separately. Projecting a
     # sharp surface shadow through all forty metres made a sail look like a fin.
@@ -1694,7 +1795,7 @@ def water(source):
     sediment = shader(asset, """
         // Turbulence suspends fine mineral grains on the sandy toe. Their
         // extinction is nearly neutral beside the red absorption of seawater.
-        float stirred=.00009+.00061*saturate(Sea.w)+.00012*max(0.,Shore.w);
+        float stirred=.00003+.00026*saturate(Sea.w)+.00005*max(0.,Shore.w);
         return Shore.z*(1.-smoothstep(2.5,18.,Coast.x))*stirred*.60;
         """,{"Coast":coast,"Shore":shore,"Sea":sea},OUTPUT.CMOT_FLOAT1)
     behind = shader(asset, """
@@ -1711,10 +1812,10 @@ def water(source):
         float3 incident = Sun*saturate(SunDir.z) + Moon*saturate(MoonDir.z);
         float thinShelf=Shore.z*(1.-smoothstep(.8,5.5,Depth.y));
         float3 diffuseVolume = incident * (1.0 / (4 * 3.14159265)) * volume * transmission
-            * lerp(float3(1.,1.,1.),float3(.89,.70,.82),thinShelf);
+            * lerp(float3(1.,1.,1.),float3(.90,.62,.74),thinShelf);
         // Entrained bubbles return green-blue light beneath the white skin of
         // the wake. This blooms through its thin edges and dies with the trail.
-        float aerated = saturate(.65*Trail.r+.55*Trail.g+.85*Trail.b);
+        float aerated = saturate(.33*Trail.r+.82*Trail.b);
         diffuseVolume += incident * (float3(.0007,.028,.032)*aerated
                        + float3(.013,.027,.030)*Trail.a)*transmission;
         // Light traversing a thin, aerated crest escapes on its shaded face.
@@ -1839,6 +1940,36 @@ def display_smoke(name):
         float cloud=.67+.19*sin(24*UV.x+6*UV.y)+.14*cos(55*UV.x-11*UV.y);
         return Density*cloud*(1-smoothstep(.06,.97,abs(UV.y*2.-1.)));
         """,{"UV":uv,"Density":(paint,"A")},OUTPUT.CMOT_FLOAT1),PROP.MP_OPACITY)
+    return save(asset)
+
+
+def crab_material(kind, source):
+    asset=material(f"M_Crab{kind}")
+    coat=expression(asset,unreal.MaterialExpressionTextureSample,
+                    texture=import_texture(source,f"T_Crab{kind}Color","color"))
+    paint=expression(asset,unreal.MaterialExpressionVertexColor)
+    # Wet carapace values in daylight. The source photo contains baked highlights.
+    color=shader(asset,"float3 shell=lerp(dot(Coat,float3(.21,.72,.07)).xxx,Coat,.76); return lerp(Flat,.60*shell,saturate(Mask));",
+                 {"Coat":coat,"Flat":paint,"Mask":(paint,"A")},OUTPUT.CMOT_FLOAT3)
+    assign(color,PROP.MP_BASE_COLOR)
+    if kind=="Blue":
+        normal=import_texture(source,"T_CrabBlueNormal","normal")
+        normal.set_editor_property("flip_green_channel",True)
+        ASSETS.save_loaded_asset(normal)
+        assign(expression(asset,unreal.MaterialExpressionTextureSample,texture=normal,
+                          sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL),PROP.MP_NORMAL)
+    assign(number(asset,.49 if kind=="Red" else .38),PROP.MP_ROUGHNESS)
+    rest=expression(asset,unreal.MaterialExpressionPreSkinnedPosition)
+    phase=expression(asset,unreal.MaterialExpressionPerInstanceCustomData,data_index=0)
+    moving=expression(asset,unreal.MaterialExpressionPerInstanceCustomData,data_index=1)
+    gait=shader(asset,"""
+        float side=sign(P.y), distal=smoothstep(12.,45.,abs(P.y));
+        float step=Phase+side*1.57+P.x*.32;
+        float3 offset=float3(0,3.1*cos(step),4.5*max(0.,sin(step)))*distal*Moving;
+        return TransformLocalVectorToWorld(Parameters,offset);
+        """,{"P":rest,"Phase":phase,"Moving":moving},OUTPUT.CMOT_FLOAT3)
+    assign(gait,PROP.MP_WORLD_POSITION_OFFSET)
+    EDIT.set_material_usage(asset,unreal.MaterialUsage.MATUSAGE_INSTANCED_STATIC_MESHES)
     return save(asset)
 
 
@@ -2538,6 +2669,8 @@ def create_materials(source):
             float x = abs(UV.x*2-1); return Strength*Flash*(exp(-x*x*25)*.24 + exp(-x*x*136)*.76);
             """, "return float3(12000,31000,75000);", unreal.BlendMode.BLEND_ADDITIVE)),
     }
+    for kind in ("Red","Blue"):
+        builders["crab_"+kind.lower()] = (f"M_Crab{kind}",lambda _,kind=kind: crab_material(kind,source))
     builders["skipper"] = ("M_Skipper", lambda name: pbr(name,baked_maps(source,"skipper"),arm=True,skin=True))
     for atlas in ATLASES:
         builders["pirate" + atlas.lower()] = (f"M_Sirens{atlas}", lambda _, atlas=atlas: pirate_finish(source, atlas))
