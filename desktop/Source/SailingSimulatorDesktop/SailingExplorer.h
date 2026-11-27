@@ -9,6 +9,7 @@ class ASailingJetSki;
 class USpotLightComponent;
 
 enum class ESkipperMode : uint8 { Helm, Leap, Swim, Deck, Shore, JetSki };
+enum class ESailingCrab : uint8;
 
 UCLASS()
 class USailingExplorer : public UCameraComponent
@@ -26,7 +27,7 @@ public:
     void Jump();
     void CrouchOrDive(const ASailingYachtPawn& Yacht);
     void ToggleTorch();
-    void Interact(ASailingYachtPawn& Yacht);
+    TOptional<ESailingCrab> Interact(ASailingYachtPawn& Yacht);
     const TCHAR* Prompt(const ASailingYachtPawn& Yacht) const;
     ASailingJetSki* MountedJetSki() const;
     void RecenterJetSkiView();
@@ -75,6 +76,8 @@ private:
     FVector MoveDirection() const;
     bool AtLadder(const ASailingYachtPawn& Yacht) const;
     bool AtHelm() const;
+    TOptional<ESailingCrab> CrabHabitat() const;
+    FVector CrabReachOrigin() const;
     ASailingJetSki* NearbyJetSki(const ASailingYachtPawn& Yacht) const;
     void MountJetSki(ASailingJetSki& Ski);
     void DismountJetSki(const ASailingYachtPawn& Yacht, ASailingJetSki& Ski);

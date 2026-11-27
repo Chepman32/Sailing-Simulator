@@ -227,7 +227,22 @@ void USailingViewportClient::FinalizeViews(FSceneViewFamily* Family, const TMap<
             Family->EngineShowFlags.ScreenPercentage = true;
             // Run temporal AA and post-processing at the selected size too.
             // Slate still composites the HUD into the full-resolution window.
-            Family->SecondaryViewFraction = Sailing::RenderResolutionFraction(RequestedResolution, Size);
+            const float Fraction = Sailing::RenderResolutionFraction(RequestedResolution, Size);
+            Family->SecondaryViewFraction = Fraction;
+#if PLATFORM_MAC
+            // Fixed high-resolution views already shade one sample per output pixel.
+            // Use temporal AA without the extra reconstruction passes at that size.
+            if (double(Size.X) * Size.Y * FMath::Square(Fraction) >= 2560. * 1440.)
+            {
+                for (const auto& Entry : PlayerViews)
+                {
+                    FSceneView& View = *Entry.Value;
+                    if (View.AntiAliasingMethod != AAM_TSR) continue;
+                    View.AntiAliasingMethod = AAM_TemporalAA;
+                    View.PrimaryScreenPercentageMethod = EPrimaryScreenPercentageMethod::SpatialUpscale;
+                }
+            }
+#endif
             Family->SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(*Family, 1.f));
         }
         return;
@@ -280,13 +295,15 @@ void USailingViewportClient::UpdateWaterView()
     auto* Yacht=Player ? Player->GetPawn<ASailingYachtPawn>() : nullptr;
     if (!Yacht) return;
     const bool Beach=WaterView==TEXT("beach"), WorldMenu=WaterView==TEXT("world");
+    const bool Flare=WaterView==TEXT("flare");
     const bool Strand=WaterView==TEXT("strand");
     const bool RockWash=WaterView==TEXT("rockwash");
     const bool SeabedCrab=WaterView==TEXT("seabed-crabs");
     const bool CrabView=SeabedCrab || WaterView==TEXT("shore-crabs");
     const bool MerchantWake=WaterView==TEXT("merchant-wake");
+    const bool Contrail=WaterView==TEXT("contrail");
     const bool AircraftView=WaterView==TEXT("aircraft") || WaterView==TEXT("banner")
-        || WaterView==TEXT("stunt") || WaterView==TEXT("contrail");
+        || WaterView==TEXT("stunt") || Contrail;
     const bool Canopy=WaterView==TEXT("canopy");
     const bool ShoreWalk=WaterView==TEXT("shore-walk");
     const bool SandRock=WaterView==TEXT("sand-rock");
@@ -329,7 +346,7 @@ void USailingViewportClient::UpdateWaterView()
             Explorer.StandAt(Footing, FVector::ZeroVector);
             Explorer.SetWorldLocationAndRotation(Footing+FVector(0,0,162),FRotator(Explorer.Pitch,Explorer.Yaw,0));
         }
-        else if (!Entry && WaterView!=TEXT("chase"))
+        else if (!Entry && !Flare && WaterView!=TEXT("chase"))
         {
             WaterCamera=GetWorld()->SpawnActor<ACameraActor>();
             WaterCamera->GetCameraComponent()->bConstrainAspectRatio=false;
@@ -379,6 +396,13 @@ void USailingViewportClient::UpdateWaterView()
         }
     }
     const float Age=Now-WaterViewStart;
+    if (Flare && !bReplayFlareFired && Age>=8.f)
+    {
+        bReplayFlareFired = true;
+        Player->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::F, IE_Pressed, 1.f));
+        Player->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::F, IE_Released, 0.f));
+        return;
+    }
     if (ShoreWalk)
     {
         const bool Walk = Age>=8.f && Age<13.f;
@@ -435,7 +459,7 @@ void USailingViewportClient::UpdateWaterView()
         {
             // Observe the same flight path from one station for the whole pass.
             Eye={-12.,9.,5.8};
-            const FName Subject=WaterView==TEXT("contrail") ? TEXT("Cruising airliner") :
+            const FName Subject=Contrail ? TEXT("Cruising airliner") :
                 WaterView==TEXT("stunt") ? TEXT("Aerobatic plane") : TEXT("Sightseeing floatplane");
             TActorIterator<ASailingWeather> Weather(GetWorld());
             if (Weather)
@@ -445,7 +469,8 @@ void USailingViewportClient::UpdateWaterView()
                     if (Model->GetFName()==Subject)
                     {
                         Aim=Model->GetComponentLocation()*.01;
-                        SubjectReady=Model->IsVisible() && (WaterView==TEXT("contrail") || FVector::Dist2D(Aim,Eye)<164.);
+                        SubjectReady=Model->IsVisible() && (Contrail || FVector::Dist2D(Aim,Eye)<164.);
+                        if (Contrail) Aim -= Model->GetForwardVector() * 720.;
                     }
             }
         }

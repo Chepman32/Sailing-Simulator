@@ -2,7 +2,15 @@
 
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Misc/ConfigCacheIni.h"
+#include "SailingCrabs.h"
 #include "SailingWallet.generated.h"
+
+struct FSailingCrabStack
+{
+    static constexpr int32 Capacity = 100;
+    ESailingCrab Kind;
+    int32 Count = 1;
+};
 
 UCLASS()
 class USailingWallet : public UGameInstanceSubsystem
@@ -24,6 +32,30 @@ public:
         Coins -= Price;
         return true;
     }
+    static int32 CrabPrice(ESailingCrab Kind) { return Kind == ESailingCrab::Shore ? 1 : 3; }
+    TConstArrayView<FSailingCrabStack> Crabs() const { return CrabStacks; }
+    void AddCrab(ESailingCrab Kind)
+    {
+        auto* Stack = CrabStacks.FindByPredicate([Kind](const FSailingCrabStack& Entry) {
+            return Entry.Kind == Kind && Entry.Count < FSailingCrabStack::Capacity;
+        });
+        if (Stack) ++Stack->Count;
+        else CrabStacks.Add({Kind, 1});
+    }
+    int32 CrabSaleValue() const
+    {
+        int32 Value = 0;
+        for (const FSailingCrabStack& Stack : CrabStacks) Value += Stack.Count * CrabPrice(Stack.Kind);
+        return Value;
+    }
+    int32 SellCrabs()
+    {
+        const int32 Value = CrabSaleValue();
+        Coins += Value;
+        CrabStacks.Reset();
+        return Value;
+    }
 private:
     int32 Coins = 0;
+    TArray<FSailingCrabStack> CrabStacks;
 };

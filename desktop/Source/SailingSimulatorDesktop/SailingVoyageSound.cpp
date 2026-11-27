@@ -12,7 +12,9 @@
 #include "SailingExplorer.h"
 #include "SailingJetSki.h"
 #include "SailingMusicLibrary.h"
+#include "SailingPlayerController.h"
 #include "SailingTrial.h"
+#include "SailingWeather.h"
 
 namespace
 {
@@ -126,6 +128,7 @@ void USailingVoyageSound::UpdateVoiceVolumes()
     if (UnderwaterWhale) UnderwaterWhale->SetVolumeMultiplier(.55f * ImmersionGain * World);
     if (Diesel) Diesel->SetVolumeMultiplier(DieselGain * Engine);
     if (JetSkiVoice) JetSkiVoice->SetVolumeMultiplier(JetSkiGain * Engine);
+    if (AircraftVoice) AircraftVoice->SetVolumeMultiplier(AircraftGain * World);
     if (Radio) Radio->SetVolumeMultiplier(RadioGain * Music);
 #if PLATFORM_MAC
     if (LocalMusic) LocalMusic->SetVolume(.72f * Music);
@@ -206,6 +209,7 @@ void USailingVoyageSound::SetEnabled(bool bEnable)
         if (UnderwaterBed) UnderwaterBed->Stop();
         if (UnderwaterWhale) UnderwaterWhale->Stop();
         if (JetSkiVoice) JetSkiVoice->Stop();
+        if (AircraftVoice) AircraftVoice->Stop();
         for (UAudioComponent* Voice : FootstepVoices)
             Voice->Stop();
         for (auto& Playback : FootstepPlayback)
@@ -551,6 +555,64 @@ void USailingVoyageSound::FillBlock(float Speed, float Weather, float Depth)
     Wave->QueueAudio(reinterpret_cast<uint8*>(PCM.GetData()), Block * sizeof(int16));
 }
 
+void USailingVoyageSound::UpdateAircraft(const ASailingPlayerController& Player, float Depth)
+{
+    const auto* Weather = Player.WorldWeather();
+    const auto* Flight = Weather && Weather->AircraftSound() ? &Weather->AircraftSound().GetValue() : nullptr;
+    FVector Listener;
+    FRotator Rotation;
+    Player.GetPlayerViewPoint(Listener, Rotation);
+    constexpr float NearCm = 4500.f, FalloffCm = 65000.f;
+    if (!Flight || Flight->Gain <= 0.f || FVector::DistSquared(Listener, Flight->PositionCm) >= FMath::Square(NearCm + FalloffCm))
+    {
+        if (AircraftVoice && AircraftVoice->IsPlaying()) AircraftVoice->Stop();
+        return;
+    }
+    if (!AircraftVoice)
+    {
+        if (!GetWorld()->AllowAudioPlayback()) return;
+        AircraftWave = NewObject<USoundWaveProcedural>(this);
+        AircraftWave->SetSampleRate(Rate);
+        AircraftWave->NumChannels = 1;
+        AircraftWave->Duration = INDEFINITELY_LOOPING_DURATION;
+        AircraftVoice = MakeVoice(AircraftWave, TEXT("PropellerVoice"));
+        AircraftVoice->bAllowSpatialization = true;
+        FSoundAttenuationSettings Attenuation;
+        Attenuation.bSpatialize = Attenuation.bAttenuate = Attenuation.bAttenuateWithLPF = true;
+        Attenuation.AttenuationShapeExtents = FVector(NearCm, 0, 0);
+        Attenuation.FalloffDistance = FalloffCm;
+        Attenuation.LPFRadiusMin = NearCm;
+        Attenuation.LPFRadiusMax = NearCm + FalloffCm;
+        Attenuation.LPFFrequencyAtMin = 10000.f;
+        Attenuation.LPFFrequencyAtMax = 1250.f;
+        AircraftVoice->AdjustAttenuation(Attenuation);
+        AircraftVoice->SetLowPassFilterEnabled(true);
+
+        // A seamless half-second loop of the engine firing and propeller blade passes.
+        AircraftTone.SetNumUninitialized(Rate / 2);
+        for (int32 I = 0; I < AircraftTone.Num(); ++I)
+        {
+            const double T = double(I) / Rate;
+            const double Beat = 84. * T + .07 * SinTone(4. * T);
+            const float Propeller = .32f * SinTone(Beat) + .20f * SinTone(Beat * 2. + .12) +
+                .11f * SinTone(Beat * 3.) + .07f * SinTone(Beat * 5. + .28);
+            const float Motor = .13f * SinTone(42. * T) + .06f * SinTone(126. * T + .1);
+            AircraftTone[I] = int16((Motor + Propeller * (.87f + .13f * SinTone(6. * T))) * 32767);
+        }
+    }
+    const int32 LoopBytes = AircraftTone.Num() * sizeof(int16);
+    if (AircraftWave->GetAvailableAudioByteCount() < LoopBytes / 2)
+        AircraftWave->QueueAudio(reinterpret_cast<const uint8*>(AircraftTone.GetData()), LoopBytes);
+    constexpr double SoundSpeedCmS = 34300.;
+    const double TowardListener = FVector::DotProduct(Flight->VelocityCmS, (Listener - Flight->PositionCm).GetSafeNormal());
+    AircraftGain = .62f * Flight->Gain / (1.f + 4.f * Depth);
+    AircraftVoice->SetWorldLocation(Flight->PositionCm);
+    AircraftVoice->SetVolumeMultiplier(AircraftGain * Volume(ESailingAudioBus::World));
+    AircraftVoice->SetLowPassFilterFrequency(FMath::Lerp(14500.f, 650.f, FMath::SmoothStep(.07f, .9f, Depth)));
+    AircraftVoice->SetPitchMultiplier((Flight->bStunt ? 1.18 : .94) * SoundSpeedCmS / (SoundSpeedCmS - TowardListener));
+    if (!AircraftVoice->IsPlaying()) AircraftVoice->Play();
+}
+
 void USailingVoyageSound::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTick)
 {
     Super::TickComponent(DeltaTime, TickType, ThisTick);
@@ -558,11 +620,11 @@ void USailingVoyageSound::TickComponent(float DeltaTime, ELevelTick TickType, FA
     if (LocalMusic) LocalMusic->Tick();
 #endif
     if (TickType == LEVELTICK_PauseTick) return;
-    const auto* Player = Cast<APlayerController>(GetOwner());
-    if (const auto* Yacht = Player ? Player->GetPawn<ASailingYachtPawn>() : nullptr) Update(*Yacht, DeltaTime);
+    const auto* Player = Cast<ASailingPlayerController>(GetOwner());
+    if (const auto* Yacht = Player ? Player->GetPawn<ASailingYachtPawn>() : nullptr) Update(*Player, *Yacht, DeltaTime);
 }
 
-void USailingVoyageSound::Update(const ASailingYachtPawn& Yacht, float DeltaTime)
+void USailingVoyageSound::Update(const ASailingPlayerController& Player, const ASailingYachtPawn& Yacht, float DeltaTime)
 {
     if (!bEnabled) return;
     if (!Speaker->IsPlaying() && FPlatformTime::Seconds() >= NextSpeakerStart)
@@ -589,6 +651,7 @@ void USailingVoyageSound::Update(const ASailingYachtPawn& Yacht, float DeltaTime
     const ASailingJetSki* Ski = Yacht.Explorer().MountedJetSki();
     UpdateJetSki(Ski);
     const auto& Helm = Yacht.ReadHelm();
+    UpdateAircraft(Player, Depth);
     const float Engine = !Ski && Helm.bEngineOn && bEngineAudible ? .25f + .75f * FMath::Abs(Helm.Throttle) : 0;
     if (Engine > 0)
     {
@@ -614,7 +677,7 @@ void USailingVoyageSound::EndPlay(const EEndPlayReason::Type Reason)
     for (UAudioComponent* Voice : FootstepVoices)
         Voice->DestroyComponent();
     for (auto* Voice : {Diesel.Get(), Horn.Get(), Bell.Get(), Speaker.Get(), Whale.Get(), UnderwaterBed.Get(),
-                        UnderwaterWhale.Get(), JetSkiVoice.Get()})
+                        UnderwaterWhale.Get(), JetSkiVoice.Get(), AircraftVoice.Get()})
         if (Voice) Voice->DestroyComponent();
     Super::EndPlay(Reason);
 }

@@ -19,9 +19,9 @@ bool FSailingDisplayTest::RunTest(const FString&)
 {
     const TArray<FIntPoint> Reported{{5120,2880},{1920,1200},{3840,2160},{960,600},{3440,1440},
         {1280,720},{1920,1200},{4096,2160},{1366,768}};
-    const TArray<FIntPoint> Wide{{1280,720},{1366,768},{1920,1200},{3440,1440},{3840,2160}};
-    const TArray<FIntPoint> Laptop{{1280,720},{1366,768},{1920,1200}};
-    TestTrue(TEXT("Only reported pixel modes between HD and UHD, unique across refresh rates"),
+    const TArray<FIntPoint> Wide{{1280,720},{1920,1200},{3440,1440},{3840,2160}};
+    const TArray<FIntPoint> Laptop{{1280,720},{1920,1200}};
+    TestTrue(TEXT("The display offers one reported size per resolution tier"),
         Sailing::SelectableResolutions(Reported,{5120,2880}) == Wide);
     TestTrue(TEXT("Scaled modes beyond a smaller panel are omitted"),
         Sailing::SelectableResolutions(Reported,{1920,1200}) == Laptop);
@@ -134,6 +134,7 @@ bool FSailingWorldTest::RunTest(const FString&)
         Display.MonitorIndex!=INDEX_NONE && Display.Desktop.GetMin()>0);
     if (!Display.Sizes.IsEmpty())
     {
+        TestTrue(TEXT("At most four fixed resolutions leave room for Adaptive"), Display.Sizes.Num() <= 4);
         const FIntPoint OriginalSize=Player->WorldResolution();
         const FIntPoint OriginalOutput=View->GetSizeXY();
         const FIntPoint OriginalSystemResolution(GSystemResolution.ResX,GSystemResolution.ResY);

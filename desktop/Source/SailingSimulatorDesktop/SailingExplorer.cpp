@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Materials/Material.h"
+#include "SailingCrabs.h"
 #include "SailingTrial.h"
 #include "SailingEntryBubbles.h"
 #include "SailingJetSki.h"
@@ -26,6 +27,9 @@ constexpr double CameraFootprintM = .20;
 constexpr double EntryDepthCm = 200;
 constexpr double EntryContactCm = 22;
 constexpr double MovementSpeedScale = 1.5;
+constexpr double WalkRunMultiplier = 1.5;
+constexpr double WalkRunSpeedScale = MovementSpeedScale * WalkRunMultiplier;
+constexpr double WalkSpeedCmS = 290. * WalkRunSpeedScale;
 constexpr double VerticalSwimSpeedCmS = 135 * MovementSpeedScale;
 constexpr double WadeStepDepthCm = 5;
 constexpr float DuckDiveSeconds = .9f;
@@ -337,7 +341,8 @@ void USailingExplorer::StepWalk(const ASailingYachtPawn& Yacht, float Dt)
     if (bDeck) Direction = FRotator(0, -Yacht.GetActorRotation().Yaw, 0).RotateVector(Direction);
     const double Uphill = bGrounded ? FMath::Clamp(-FVector::DotProduct(Direction, FloorNormal), 0., .75) : 0.;
     const double Run = bSprint && !bCrouched ? FMath::Clamp(Movement.X,0.,1.) : 0.;
-    const double Speed = MovementSpeedScale * (bCrouched ? 135. : 290.+160.*Run) * (1-.55*Wade) * (1-.54*Uphill);
+    const double Pace = bCrouched ? 135. * MovementSpeedScale : WalkSpeedCmS + 160. * WalkRunSpeedScale * Run;
+    const double Speed = Pace * (1-.55*Wade) * (1-.54*Uphill);
     FVector Target = Direction*Speed;
     // A planted foot holds in ankle-deep wash. Deeper water pushes against
     // the legs even between steps, with the direction reversing in backwash.
@@ -350,7 +355,7 @@ void USailingExplorer::StepWalk(const ASailingYachtPawn& Yacht, float Dt)
     }
     FVector Horizontal(Velocity.X, Velocity.Y, 0);
     const bool bInput = !Direction.IsNearlyZero();
-    const double Acceleration = bGrounded ? (bInput ? 1980. : 2650.) * (1-.32*Wade) : 385.;
+    const double Acceleration = bGrounded ? (bInput ? 1980. : 2650.) * (bCrouched ? 1. : WalkRunMultiplier) * (1-.32*Wade) : 385.;
     if (bGrounded || bInput)
         Horizontal = FMath::VInterpConstantTo(Horizontal, Target, Dt, Acceleration);
     FVector Next = Feet + Horizontal*Dt;
@@ -464,7 +469,7 @@ void USailingExplorer::StepWalk(const ASailingYachtPawn& Yacht, float Dt)
     EyeHeightCm = FMath::Lerp(EyeHeightCm,bCrouched ? CrouchEyeHeight : EyeHeight,Response);
     StepOffsetCm *= 1.-Response;
     LandingOffsetCm *= FMath::Exp(-8.*Dt);
-    const double Gait = bGrounded ? FMath::Clamp(TravelCm/(Dt*435.),0.,1.25) : 0.;
+    const double Gait = bGrounded ? FMath::Clamp(TravelCm / (Dt * WalkSpeedCmS), 0., 1.25) : 0.;
     WalkSway = FMath::Lerp(WalkSway,Gait,Response);
     const double Phase = UE_PI*(StepTravelCm/Stride + (Footfall.Sequence&1));
     const double Bob = -1.25*WalkSway*FMath::Cos(2.*Phase);
@@ -739,25 +744,40 @@ const TCHAR* USailingExplorer::Prompt(const ASailingYachtPawn& Yacht) const
     if (AtLadder(Yacht)) return TEXT("E   Climb aboard");
     if (AtHelm()) return TEXT("E   Take the helm");
     if (NearbyJetSki(Yacht)) return TEXT("Press E to ride the jet ski");
+    if (const auto Kind = CrabHabitat(); Kind && Yacht.Crabs().CanCollect(*Kind, CrabReachOrigin()))
+        return *Kind == ESailingCrab::Shore ? TEXT("E   Collect shore crab") : TEXT("E   Collect seabed crab");
     return nullptr;
 }
 
-void USailingExplorer::Interact(ASailingYachtPawn& Yacht)
+TOptional<ESailingCrab> USailingExplorer::CrabHabitat() const
+{
+    if (State == ESkipperMode::Shore && bGrounded) return ESailingCrab::Shore;
+    if (State == ESkipperMode::Swim) return ESailingCrab::Seabed;
+    return {};
+}
+
+FVector USailingExplorer::CrabReachOrigin() const
+{
+    return State == ESkipperMode::Shore ? Feet : GetComponentLocation();
+}
+
+TOptional<ESailingCrab> USailingExplorer::Interact(ASailingYachtPawn& Yacht)
 {
     if (auto* Ski = Ride.Get())
     {
         DismountJetSki(Yacht, *Ski);
-        return;
+        return {};
     }
     if (AtHelm())
     {
         Yacht.ToggleExplorer();
-        return;
+        return {};
     }
     if (!AtLadder(Yacht))
     {
         if (auto* Ski = NearbyJetSki(Yacht)) MountJetSki(*Ski);
-        return;
+        else if (const auto Kind = CrabHabitat(); Kind && Yacht.Crabs().Collect(*Kind, CrabReachOrigin())) return Kind;
+        return {};
     }
     const FVector Local = Yacht.GetActorTransform().InverseTransformPosition(GetComponentLocation());
     FVector LadderFeet(-506, Local.Y < 0 ? -190 : 190, 70);
@@ -768,4 +788,5 @@ void USailingExplorer::Interact(ASailingYachtPawn& Yacht)
     Pitch = -4;
     SetWorldLocationAndRotation(Yacht.GetActorTransform().TransformPosition(Feet + FVector::UpVector * EyeHeight),
                                 FRotator(Pitch, Yaw, 0));
+    return {};
 }

@@ -388,16 +388,14 @@ void ASailingPlayerController::Signal(ASailingYachtPawn& Yacht, FKey Key)
         Flares[0]->Destroy();
         Flares.RemoveAt(0);
     }
-    const FVector Origin = Yacht.GetActorTransform().TransformPosition({-380, 165, 240});
-    auto* Flare = GetWorld()->SpawnActor<ASailingSignal>(Origin, FRotator::ZeroRotator);
+    auto* Flare = GetWorld()->SpawnActor<ASailingSignal>(Yacht.GetActorLocation(), FRotator::ZeroRotator);
     if (!Flare) return;
     const bool bGreen = Key == EKeys::G;
-    Flare->Light(bGreen, Yacht.GetActorForwardVector());
+    Flare->Light(bGreen, Yacht);
     Flares.Add(Flare);
     SignalShot = Flare;
     LastFlareTime = Now;
-    SetViewTargetWithBlend(Flare, .38f);
-    VoyageSound->Cue(ESailingCue::Flare);
+    SetViewTarget(Flare);
     Notice(bGreen ? TEXT("Green flare") : TEXT("Red flare"));
 }
 
@@ -488,6 +486,7 @@ void ASailingPlayerController::ToggleInventory()
     if (FSlateApplication::IsInitialized()) GearPreviousFocus = FSlateApplication::Get().GetKeyboardFocusedWidget();
     bGearCinematic = Yacht->IsCinematic();
     if (bGearCinematic) Yacht->SetCinematic(false);
+    CrabPage = 0;
     OpenPanel(ESailingPanel::Gear);
 }
 
@@ -511,9 +510,19 @@ void ASailingPlayerController::QuitToDesktop()
     UKismetSystemLibrary::QuitGame(this, this, EQuitPreference::Quit, false);
 }
 
-int32 ASailingPlayerController::Coins() const
+const USailingWallet& ASailingPlayerController::Wallet() const
 {
-    return GetGameInstance()->GetSubsystem<USailingWallet>()->Balance();
+    return *GetGameInstance()->GetSubsystem<USailingWallet>();
+}
+
+const ASailingWeather* ASailingPlayerController::WorldWeather() const { return Weather.Get(); }
+
+int32 ASailingPlayerController::Coins() const { return Wallet().Balance(); }
+
+void ASailingPlayerController::ChangeCrabPage(int32 Step)
+{
+    const int32 Last = FMath::Max(0, Wallet().Crabs().Num() - 1) / CrabStacksPerPage;
+    CrabPage = FMath::Clamp(CrabPage + Step, 0, Last);
 }
 
 void ASailingPlayerController::ClosePanel()
@@ -690,6 +699,11 @@ bool ASailingPlayerController::InputKey(const FInputKeyEventArgs& Params)
     }
     if (Panel == ESailingPanel::Gear)
     {
+        if (Key == EKeys::PageUp || Key == EKeys::PageDown)
+        {
+            ChangeCrabPage(Key == EKeys::PageDown ? 1 : -1);
+            return true;
+        }
         if (Key == EKeys::Enter)
         {
             UseGear(*Yacht);
@@ -739,7 +753,11 @@ bool ASailingPlayerController::InputKey(const FInputKeyEventArgs& Params)
     {
         if (Key == EKeys::E)
         {
-            Explorer.Interact(*Yacht);
+            if (const auto Kind = Explorer.Interact(*Yacht))
+            {
+                GetGameInstance()->GetSubsystem<USailingWallet>()->AddCrab(*Kind);
+                Notice(*Kind == ESailingCrab::Shore ? TEXT("Shore crab collected") : TEXT("Seabed crab collected"));
+            }
             if (!Explorer.Away())
             {
                 FlushPressedKeys();
@@ -881,6 +899,14 @@ bool ASailingPlayerController::PanelButton(FName Name, ASailingYachtPawn& Yacht,
     else if (Name == TEXT("ZoomIn")) Chart.Zoom(1, FVector2D::ZeroVector);
     else if (Name == TEXT("ZoomOut")) Chart.Zoom(-1, FVector2D::ZeroVector);
     else if (Name == TEXT("UseGear")) UseGear(Yacht);
+    else if (Panel == ESailingPanel::Gear && Name == TEXT("CrabPrev")) ChangeCrabPage(-1);
+    else if (Panel == ESailingPanel::Gear && Name == TEXT("CrabNext")) ChangeCrabPage(1);
+    else if (Panel == ESailingPanel::Gear && Name == TEXT("SellCrabs"))
+    {
+        const int32 Proceeds = GetGameInstance()->GetSubsystem<USailingWallet>()->SellCrabs();
+        CrabPage = 0;
+        if (Proceeds > 0) Notice(FString::Printf(TEXT("Crabs sold for %d coins"), Proceeds));
+    }
     else if (const int32 Index = Name.GetNumber() - 1; Index >= 0)
     {
         const FString Group = Name.GetPlainNameString();

@@ -62,6 +62,7 @@ void USailingCrabs::Place(FCrab& C,FIntPoint Cell)
 {
     C={};
     C.Cell=Cell;
+    if (CollectedCells.Contains(Cell)) return;
     FRandomStream R(HashCombineFast(GetTypeHash(Cell.X),GetTypeHash(Cell.Y))^0x7d93ce1b);
     const FVector2D XY((Cell.X+R.FRandRange(.15f,.85f))*PatchCm,(Cell.Y+R.FRandRange(.15f,.85f))*PatchCm);
     if (!Ground(XY,C.Home,C.Normal)) return;
@@ -91,7 +92,6 @@ void USailingCrabs::Advance(const ASailingYachtPawn& Yacht,float Dt)
     const float Step=FMath::Min(.14f,.055f-ScanIn);
     ScanIn=.055f;
     const int32 X=FMath::FloorToInt(Eye.X/PatchCm), Y=FMath::FloorToInt(Eye.Y/PatchCm);
-    bool Changed[2]{};
     bool InView[2]{};
     for (int32 Dy=-Side/2; Dy<=Side/2; ++Dy)
     for (int32 Dx=-Side/2; Dx<=Side/2; ++Dx)
@@ -102,10 +102,7 @@ void USailingCrabs::Advance(const ASailingYachtPawn& Yacht,float Dt)
         if (Cell!=C.Cell)
         {
             if (C.Species!=INDEX_NONE && C.bVisible)
-            {
-                Changed[C.Species]=true;
                 Meshes[C.Species]->UpdateInstanceTransform(I,FTransform(FQuat::Identity,C.Position,FVector::ZeroVector),false,false,true);
-            }
             Place(C,Cell);
         }
         if (C.Species==INDEX_NONE) continue;
@@ -114,7 +111,6 @@ void USailingCrabs::Advance(const ASailingYachtPawn& Yacht,float Dt)
         InView[C.Species]|=Visible;
         if (!Visible && !C.bVisible) continue;
         C.bVisible=Visible;
-        Changed[C.Species]=true;
         auto* Mesh=Meshes[C.Species].Get();
         const FVector2D ToEye(Eye-C.Position);
         if (Visible)
@@ -143,19 +139,15 @@ void USailingCrabs::Advance(const ASailingYachtPawn& Yacht,float Dt)
                 }
                 else { C.Heading+=UE_PI*.73f; C.bMoving=false; C.Decision=.6f; }
             }
-            Mesh->SetCustomDataValue(I,0,C.Gait,false);
-            Mesh->SetCustomDataValue(I,1,C.bMoving||Flee ? 1.f : 0.f,false);
+            float Animation[] = {C.Gait, C.bMoving || Flee ? 1.f : 0.f};
+            Mesh->SetCustomData(I, Animation, false);
         }
         const FVector BodyForward(FMath::Sin(C.Heading),-FMath::Cos(C.Heading),0);
         const auto Rotation=FRotationMatrix::MakeFromZX(C.Normal,BodyForward).ToQuat();
         Mesh->UpdateInstanceTransform(I,FTransform(Rotation,C.Position+C.Normal*.45,
             FVector(Visible ? C.Width : 0.f)),false,false,true);
     }
-    for (int32 K=0; K<2; ++K)
-    {
-        if (Meshes[K]->IsVisible()!=InView[K]) Meshes[K]->SetVisibility(InView[K]);
-        else if (Changed[K] && InView[K]) Meshes[K]->MarkRenderStateDirty();
-    }
+    for (int32 K=0; K<2; ++K) Meshes[K]->SetVisibility(InView[K]);
 }
 
 bool USailingCrabs::Nearest(bool Underwater,FVector From,FVector& Found) const
@@ -168,4 +160,39 @@ bool USailingCrabs::Nearest(bool Underwater,FVector From,FVector& Found) const
         if (D<Distance) {Distance=D; Found=C.Position;}
     }
     return Distance<UE_DOUBLE_BIG_NUMBER;
+}
+
+int32 USailingCrabs::CollectibleIndex(ESailingCrab Kind, FVector From) const
+{
+    const double ReachCm = Kind == ESailingCrab::Shore ? 155. : 185.;
+    double BestDistance = FMath::Square(ReachCm);
+    int32 Best = INDEX_NONE;
+    for (int32 Index = 0; Index < UE_ARRAY_COUNT(Animals); ++Index)
+    {
+        const FCrab& Crab = Animals[Index];
+        if (!Crab.bVisible || Crab.Species != int32(Kind)) continue;
+        const double Distance = FVector::DistSquared(From, Crab.Position);
+        if (Distance >= BestDistance) continue;
+        BestDistance = Distance;
+        Best = Index;
+    }
+    return Best;
+}
+
+bool USailingCrabs::CanCollect(ESailingCrab Kind, FVector From) const
+{
+    return CollectibleIndex(Kind, From) != INDEX_NONE;
+}
+
+bool USailingCrabs::Collect(ESailingCrab Kind, FVector From)
+{
+    const int32 Index = CollectibleIndex(Kind, From);
+    if (Index == INDEX_NONE) return false;
+    FCrab& Crab = Animals[Index];
+    CollectedCells.Add(Crab.Cell);
+    Meshes[Crab.Species]->UpdateInstanceTransform(Index,
+        FTransform(FQuat::Identity, Crab.Position, FVector::ZeroVector), false, false, true);
+    Crab.Species = INDEX_NONE;
+    Crab.bVisible = false;
+    return true;
 }

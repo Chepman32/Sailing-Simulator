@@ -36,6 +36,7 @@ private:
     float WaterViewStart = -1, EntryTime = -1;
     int32 CapturedFrames = 0, WaterFrameCount = 150;
     bool bCaptureJpeg = false;
+    bool bReplayFlareFired = false;
     bool bStartAlongside = false;
 #if PLATFORM_MAC
     bool bActivatePreview = false;

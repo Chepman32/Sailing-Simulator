@@ -1,5 +1,6 @@
 """Replace the legacy plants and markers in the existing desktop maps."""
 
+import os
 from pathlib import Path
 import re
 import sys
@@ -7,10 +8,10 @@ import sys
 import unreal
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from create_coral_pass import (ACTORS, CHANNEL_MOORINGS, FOLIAGE_WIND_DISTANCE_CM, LEVELS, SOURCES, UNDERSTORY_TAG, attach_buoy_lens, cm,
+from create_coral_pass import (ACTORS, FOLIAGE_WIND_DISTANCE_CM, LEVELS, SOURCES, UNDERSTORY_TAG,
                               coastal_weather_collection, configure_buoy, cpp, import_coastal_models, spawn,
                               plant_understory, woodland_groups)
-from coastal_materials import forest_floor_maps, ground, import_textures
+from coastal_materials import CHANNEL_BUOY_MODELS, forest_floor_maps, ground, import_textures
 
 
 PALMS = {f"SM_CoconutPalm{index}" for index in range(1, 4)}
@@ -38,16 +39,10 @@ def relocate_woodland(actor, instances, trees):
     return len(transforms)
 
 
-def replace_map(level, models):
-    if not LEVELS.load_level(level):
-        raise RuntimeError(f"Could not open {level}")
-    coral = level.endswith("CoralPass")
-    actors = ACTORS.get_all_level_actors()
-    by_label = {actor.get_actor_label(): actor for actor in actors}
+def replace_vegetation(actors, models, coral):
     trees = (models["IslandTree02"], models["JacarandaTree"])
     weather_class = cpp("SailingWeather")
-    retired_parts = []
-    palms = woodland = buoys = 0
+    palms = woodland = 0
     for actor in actors:
         if actor.get_class() == weather_class:
             actor.set_editor_property("coastal_weather", coastal_weather_collection())
@@ -88,39 +83,53 @@ def replace_map(level, models):
         if component.get_editor_property("static_mesh") in (models["CoconutPalm"], *trees):
             component.set_world_position_offset_disable_distance(FOLIAGE_WIND_DISTANCE_CM)
 
-        match = re.fullmatch(r"Channel (?:float|marker) (\d+)", actor.get_actor_label())
-        if match:
-            index = int(match[1])
-            if name != "SM_LateralSeaMarker":
-                actor.set_actor_rotation(unreal.Rotator(yaw=index * 43), False)
-                configure_buoy(actor, models["LateralSeaMarker"], (index % 2 == 1) == coral, scale=.58 if coral else .45)
-                buoys += 1
-            if coral:
-                actor.set_actor_location(cm((*CHANNEL_MOORINGS[index - 1], 0)), False, True)
-                lens = by_label.get(f"Channel lens {index}")
-                if lens:
-                    attach_buoy_lens(actor, lens, models["LateralSeaMarker"], index)
-                for part in ("stem", "topmark"):
-                    obsolete = by_label.get(f"Channel {part} {index}")
-                    if obsolete:
-                        retired_parts.append(obsolete)
-    for obsolete in retired_parts:
-        ACTORS.destroy_actor(obsolete)
     if coral:
         for actor in actors:
             if unreal.SystemLibrary.is_valid(actor) and actor.actor_has_tag(UNDERSTORY_TAG):
                 ACTORS.destroy_actor(actor)
         plant_understory(models)
-    if (coral or buoys > 0) and not LEVELS.save_current_level():
+    return palms, woodland
+
+
+def replace_buoys(actors, models, coral):
+    count = 0
+    for actor in actors:
+        if not isinstance(actor, unreal.StaticMeshActor):
+            continue
+        label = actor.get_actor_label()
+        match = re.fullmatch(r"Channel (?:float|marker) (\d+)", label)
+        if match:
+            index = int(match[1])
+            configure_buoy(actor, models, index, green=(index % 2 == 1) == coral)
+            count += 1
+        elif re.fullmatch(r"Channel (?:lens|stem|topmark) \d+", label):
+            ACTORS.destroy_actor(actor)
+    return count
+
+
+def replace_map(level, models, *, buoys_only=False):
+    if not LEVELS.load_level(level):
+        raise RuntimeError(f"Could not open {level}")
+    coral = level.endswith("CoralPass")
+    actors = ACTORS.get_all_level_actors()
+    palms, woodland = (0, 0) if buoys_only else replace_vegetation(actors, models, coral)
+    buoys = replace_buoys(actors, models, coral)
+    if not buoys:
+        raise RuntimeError(f"No channel markers found in {level}")
+    if not LEVELS.save_current_level():
         raise RuntimeError(f"Could not save {level}")
     unreal.log(f"Coastal replacements in {level}: {palms} palms, {woodland} trees, {buoys} buoys")
 
 
 def main():
-    models = import_coastal_models()
-    ground(import_textures(SOURCES), forest_floor_maps(SOURCES))
-    replace_map("/Game/Maps/SeaTrial", models)
-    replace_map("/Game/Maps/CoralPass", models)
+    buoys_only = os.environ.get("SAILING_BUOYS_ONLY") == "1"
+    if buoys_only:
+        models = import_coastal_models(CHANNEL_BUOY_MODELS)
+    else:
+        models = import_coastal_models()
+        ground(import_textures(SOURCES), forest_floor_maps(SOURCES))
+    for level in ("/Game/Maps/SeaTrial", "/Game/Maps/CoralPass"):
+        replace_map(level, models, buoys_only=buoys_only)
 
 
 if __name__ == "__main__":

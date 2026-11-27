@@ -11,6 +11,7 @@ class ASailingWeather;
 class ASailingYachtPawn;
 class ASailingSignal;
 class USailingVoyageSound;
+class USailingWallet;
 class SWidget;
 class FSailingGameKeyboard;
 
@@ -38,13 +39,17 @@ public:
     void BackFromPause();
     void ToggleInventory();
     void QuitToDesktop();
+    const USailingWallet& Wallet() const;
     int32 Coins() const;
     static constexpr int32 TravelFare = 10;
+    static constexpr int32 CrabStacksPerPage = 4;
+    int32 CrabStackPage() const { return CrabPage; }
     bool CanUseGear(ESailingGear Gear) const;
     bool CanUseGear() const { return CanUseGear(GearSelection); }
     const FSailingChart& ChartView() const { return Chart; }
     USailingVoyageSound& Sound() { return *VoyageSound; }
     const USailingVoyageSound& Sound() const { return *VoyageSound; }
+    const ASailingWeather* WorldWeather() const;
     const ASailingSignal* CurrentSignal() const { return SignalShot.Get(); }
     FString NoticeText() const;
     void ToggleWorld();
@@ -63,12 +68,14 @@ private:
     void ClosePanel();
     void TravelToPin(ASailingYachtPawn& Yacht);
     void UseGear(ASailingYachtPawn& Yacht);
+    void ChangeCrabPage(int32 Step);
     bool PanelButton(FName Name, ASailingYachtPawn& Yacht, const ASailingTrialHUD& HUD);
     FBox2D ChartPlot(const ASailingTrialHUD* HUD) const;
     void ApplyGraphics(int32 Choice);
     TSharedPtr<SWidget> SettingsWidget;
     TSharedPtr<FSailingGameKeyboard> GameKeyboard;
     ESailingPanel GearReturn = ESailingPanel::None;
+    int32 CrabPage = 0;
     ESailingPausePage GearPausePage = ESailingPausePage::Menu;
     TSharedPtr<SWidget> GearPreviousSettings;
     TWeakPtr<SWidget> GearPreviousFocus;

@@ -11,7 +11,7 @@ import unreal
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from coastal_layout import CAYS, LIGHTHOUSE, VOLCANO_X, VOLCANO_Y, VOLCANO_RIM, reef_floor, relief, terrain_noise, volcano_relief
-from coastal_materials import (ASSETS, ROOT, TOOLS, channel_beacon_material, coastal_weather_collection,
+from coastal_materials import (ASSETS, CHANNEL_BUOY_MODELS, ROOT, TOOLS, coastal_weather_collection,
                                create_materials, downloaded_coastal_materials)
 
 
@@ -21,11 +21,10 @@ LEVELS = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
 ACTORS = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 SHAPES = "/Engine/BasicShapes"
 REIMPORT = {name.strip() for name in os.environ.get("SAILING_REIMPORT_MESHES", "").split(",")}
-COASTAL_MODELS = ("CoconutPalm", "IslandTree02", "JacarandaTree", "LateralSeaMarker")
+COASTAL_MODELS = ("CoconutPalm", "IslandTree02", "JacarandaTree")
 UNDERSTORY_MODELS = ("Fern02", "Anthurium")
 UNDERSTORY_TAG = "SailingUnderstory"
 REEF_GROWTH_TAG = "SailingReefGrowth"
-BUOY_SCALE = .58
 CHANNEL_MOORINGS = ((129, 42), (178, -34), (252, 64), (273, -38), (378, 63), (397, -51))
 FOLIAGE_WIND_DISTANCE_CM = 8000
 
@@ -139,18 +138,18 @@ def import_mesh(name, material, *, nanite=True, collision=False, foliage=False):
     return mesh
 
 
-def import_coastal_models():
-    paths = {name: f"{ROOT}/Meshes/SM_{name}" for name in (*COASTAL_MODELS, *UNDERSTORY_MODELS)}
+def import_coastal_models(names=(*COASTAL_MODELS, *UNDERSTORY_MODELS, *CHANNEL_BUOY_MODELS)):
+    paths = {name: f"{ROOT}/Meshes/SM_{name}" for name in names}
     rebuild = ("1" in REIMPORT or any(name in REIMPORT for name in paths)
                or bool(os.environ.get("SAILING_REFRESH_COASTAL_MATERIALS")))
     if not rebuild and all(ASSETS.does_asset_exist(path) for path in paths.values()):
         return {name: ASSETS.load_asset(path) for name, path in paths.items()}
-    textures = downloaded_coastal_materials(SOURCES)
+    textures = downloaded_coastal_materials(SOURCES, names)
     models = {}
     for name, path in paths.items():
         refresh = "1" in REIMPORT or name in REIMPORT or not ASSETS.does_asset_exist(path)
-        foliage = name != "LateralSeaMarker"
-        mesh = import_mesh(name, textures[name], foliage=foliage)
+        foliage = name not in CHANNEL_BUOY_MODELS
+        mesh = import_mesh(name, textures[name], nanite=foliage, foliage=foliage)
         if foliage:
             settings = mesh.get_editor_property("nanite_settings")
             if (settings.get_editor_property("fallback_target") != unreal.NaniteFallbackTarget.PERCENT_TRIANGLES
@@ -159,7 +158,9 @@ def import_coastal_models():
                           fallback_percent_triangles=.10)
                 mesh.set_editor_property("nanite_settings", settings)
             reduction_lods(mesh, ((1., 1.), (.28, .47), (.078, .17), (.018, .061)), refresh=refresh)
-            ASSETS.save_loaded_asset(mesh)
+        else:
+            reduction_lods(mesh, ((1., 1.), (.35, .30), (.10, .10)), refresh=refresh)
+        ASSETS.save_loaded_asset(mesh)
         models[name] = mesh
     return models
 
@@ -175,32 +176,20 @@ def static(label, mesh, position, *, yaw=0, scale=(1, 1, 1), material=None, coll
     return actor
 
 
-def configure_buoy(actor, mesh, green, scale=BUOY_SCALE):
+def configure_buoy(actor, models, index, *, green):
     component = actor.static_mesh_component
     component.set_mobility(unreal.ComponentMobility.MOVABLE)
+    mesh = models["GreenBuoy" if green else "OceanBuoy"]
     component.set_static_mesh(mesh)
-    component.set_material(0, mesh.get_material(0))
-    component.set_default_custom_primitive_data_float(0, float(green))
+    component.set_material(0, None)
+    component.set_default_custom_primitive_data_float(0, (index // 2) * 1.19)
     component.set_collision_profile_name("NoCollision")
-    actor.set_actor_scale3d(unreal.Vector(scale, scale, scale))
+    actor.set_actor_scale3d(unreal.Vector(1, 1, 1))
     location = actor.get_actor_location()
     actor.set_actor_location(unreal.Vector(location.x, location.y, 0), False, True)
     tags = actor.get_editor_property("tags")
     if "SailingChannelBuoy" not in [str(tag) for tag in tags]:
         actor.set_editor_property("tags", [*tags, "SailingChannelBuoy"])
-
-
-def attach_buoy_lens(actor, lens, mesh, index):
-    component = lens.static_mesh_component
-    component.set_mobility(unreal.ComponentMobility.MOVABLE)
-    component.set_material(0, channel_beacon_material())
-    component.set_default_custom_primitive_data_float(0, float(index % 2 == 1))
-    component.set_default_custom_primitive_data_float(1, (index // 2) * 1.19)
-    top = mesh.get_bounding_box().max.z * actor.get_actor_scale3d().z
-    lens.set_actor_location(actor.get_actor_location() + unreal.Vector(0, 0, top + 5.), False, True)
-    lens.set_actor_scale3d(unreal.Vector(.145, .145, .11))
-    keep = unreal.AttachmentRule.KEEP_WORLD
-    lens.attach_to_actor(actor, "", keep, keep, keep, False)
 
 
 def woodland_groups(transforms):
@@ -278,7 +267,7 @@ def plant_understory(models):
     unreal.log(f"Coral Pass understory: {count} planted patches")
 
 
-def make_dock(material, buoy):
+def make_dock(material, coastal_models):
     cube, post = (unreal.load_asset(f"{SHAPES}/{name}") for name in ("Cube", "Cylinder"))
     # The quay and light mark the harbor beyond the starting run of open water.
     for i in range(10):
@@ -291,10 +280,8 @@ def make_dock(material, buoy):
         static(f"Harbor warehouse {i+1}", cube, (471,y,5.8), scale=(14,width,6.5), material=material["plaster"])
         static(f"Warehouse roof {i+1}", cube, (471,y,9.21), scale=(14.9,width+.64,.44), material=material["concrete"])
     for index, (x, y) in enumerate(CHANNEL_MOORINGS, 1):
-        marker = static(f"Channel float {index}", buoy, (x, y, 0), yaw=43 * index)
-        configure_buoy(marker, buoy, green=index % 2 == 1)
-        lens = static(f"Channel lens {index}", post, (x, y, 0))
-        attach_buoy_lens(marker, lens, buoy, index)
+        marker = spawn(unreal.StaticMeshActor, f"Channel float {index}", (x, y, 0), yaw=43 * index)
+        configure_buoy(marker, coastal_models, index, green=index % 2 == 1)
 
 
 def plant_grass(cay, mesh):
@@ -638,7 +625,7 @@ def build_level(material, meshes, cays, palms, trees, coastal_models):
                   (777, 150, .24, 32, 1.42), (905, 147, 0.10, -41, 1.0)]
     for i, (x, y, z, yaw, scale) in enumerate(placements):
         static(f"Scanned headland {i + 1}", meshes["rocks"], (x, y, z), yaw=yaw, scale=(scale, scale, scale), collision=True)
-    make_dock(material, meshes["buoy"])
+    make_dock(material, coastal_models)
     spawn(unreal.PlayerStart, "Free sailing start", (0, 0, .14), yaw=25)
     sea = spawn(cpp("SailingSea"), "Open sea")
     configure(sea, water_material=material["water"])
@@ -667,7 +654,6 @@ def main():
     coastal_models = import_coastal_models()
     meshes = {
         "reef": import_mesh("ReefShelf",material["ground"], collision=True),
-        "buoy": coastal_models["LateralSeaMarker"],
         "grass": import_mesh("DuneGrass",material["dune_grass"],foliage=True),
         "sea_grass": import_mesh("SeaGrass",material["sea_grass"],foliage=True),
         "reef_coral": import_mesh("ReefCoral",material["reef_coral"]),

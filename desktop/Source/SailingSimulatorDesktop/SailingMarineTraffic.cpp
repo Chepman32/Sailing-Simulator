@@ -26,7 +26,7 @@ FVector2D Position(const FLane& Lane,double T,FVector2D& Forward)
     Forward=FVector2D(-Arm.Y,Arm.X)*FMath::Sign(Lane.Speed);
     return Lane.Center+Arm*Lane.Radius;
 }
-constexpr int32 Width=Sailing::FTrafficTrail::Samples*2+2;
+constexpr int32 TrailTextureWidth=Sailing::FTrafficTrail::Samples*2+2;
 }
 
 USailingMarineTraffic::USailingMarineTraffic()
@@ -40,7 +40,7 @@ void USailingMarineTraffic::Launch(ASailingYachtPawn& Yacht)
 {
     check(Yacht.JetSkis().Num()<=Sailing::FTrafficWater::JetSkiCount);
     constexpr int32 Height=Sailing::FTrafficWater::Capacity;
-    TrackMap=UTexture2D::CreateTransient(Width,Height,PF_A32B32G32R32F);
+    TrackMap=UTexture2D::CreateTransient(TrailTextureWidth,Height,PF_A32B32G32R32F);
     TrackMap->SRGB=false;
     TrackMap->Filter=TF_Nearest;
     TrackMap->NeverStream=true;
@@ -61,7 +61,7 @@ void USailingMarineTraffic::Launch(ASailingYachtPawn& Yacht)
         // Traffic has been under way before the player arrives.
         auto& Trail=Wakes.Trails[I];
         Trail.LengthM=L.Length; Trail.BeamM=L.Beam;
-        for (int32 T=-60; T<=0; ++T)
+        for (int32 T=-120; T<=0; ++T)
         {
             const FVector2D Center=Position(L,T,Dir);
             Trail.Record(Center-Dir*(L.Length*.47),Dir,FMath::Abs(L.Speed),.8f,T);
@@ -119,7 +119,7 @@ void USailingMarineTraffic::Publish(UMaterialInstanceDynamic& Water,float Time)
     if (!New && Time>=LastUpload && Time-LastUpload<1.f/20.f) return;
     LastUpload=Time;
     auto Data=MakeShared<TArray<FLinearColor>,ESPMode::ThreadSafe>();
-    Data->SetNumZeroed(Width*Sailing::FTrafficWater::Capacity);
+    Data->SetNumZeroed(TrailTextureWidth*Sailing::FTrafficWater::Capacity);
     static const FName Names[]={TEXT("TrainBox0"),TEXT("TrainBox1"),TEXT("TrainBox2"),TEXT("TrainBox3")};
     FBox2D Skis(ForceInit);
     for (int32 I=0; I<Sailing::FTrafficWater::Capacity; ++I)
@@ -130,8 +130,8 @@ void USailingMarineTraffic::Publish(UMaterialInstanceDynamic& Water,float Time)
                 : FLinearColor(1,1,-1,-1);
         if (I<3) Water.SetVectorParameterValue(Names[I],Bounds);
         else if (Box.bIsValid) Skis+=Box;
-        const int32 Row=I*Width;
-        (*Data)[Row+Width-1]=Bounds;
+        const int32 Row=I*TrailTextureWidth;
+        (*Data)[Row+TrailTextureWidth-1]=Bounds;
         (*Data)[Row]={Trail.LengthM,Trail.BeamM,0,0};
         for (int32 J=0; J<Sailing::FTrafficTrail::Samples; ++J)
         {
@@ -140,8 +140,8 @@ void USailingMarineTraffic::Publish(UMaterialInstanceDynamic& Water,float Time)
         }
     }
     Water.SetVectorParameterValue(Names[3],Skis.bIsValid ? FLinearColor(Skis.Min.X,Skis.Min.Y,Skis.Max.X,Skis.Max.Y) : FLinearColor(1,1,-1,-1));
-    static const FUpdateTextureRegion2D Region(0,0,0,0,Width,Sailing::FTrafficWater::Capacity);
-    TrackMap->UpdateTextureRegions(0,1,&Region,Width*sizeof(FLinearColor),sizeof(FLinearColor),
+    static const FUpdateTextureRegion2D Region(0,0,0,0,TrailTextureWidth,Sailing::FTrafficWater::Capacity);
+    TrackMap->UpdateTextureRegions(0,1,&Region,TrailTextureWidth*sizeof(FLinearColor),sizeof(FLinearColor),
         reinterpret_cast<uint8*>(Data->GetData()),[Data](uint8*,const FUpdateTextureRegion2D*){});
     if (New) { Water.SetTextureParameterValue(TEXT("TrainTracks"),TrackMap); BoundWater=&Water; }
 }

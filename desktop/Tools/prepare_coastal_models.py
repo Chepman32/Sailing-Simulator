@@ -22,11 +22,14 @@ MODELS = (
     ("CoconutPalm", "realistic_coconut_palm_tree_3d_model_free.glb", 10.1, 330_000),
     ("IslandTree02", "island_tree_02_4k.gltf.zip", 6.0, 225_000),
     ("JacarandaTree", "jacaranda_tree_4k.gltf.zip", 10.8, 390_000),
-    ("LateralSeaMarker", "lateral_sea_marker_4k.gltf.zip", None, None),
+    ("OceanBuoy", "ocean_buoy.glb", None, None),
+    ("GreenBuoy", "buoy.glb", None, 36_000),
     ("Fern02", "fern_02_4k.gltf.zip", .72, None),
     ("Anthurium", "anthurium_botany_01_4k.gltf.zip", .94, 18_000),
 )
 OPACITY_MAPS = {"Fern02": "fern_02_alpha_4k.png", "Anthurium": "anthurium_botany_01_alpha_4k.png"}
+# Source coordinates at the center of the float and the mean waterline, followed by the scale to metres.
+BUOY_FITS = {"OceanBuoy": ((0., 0., .075), 2.95), "GreenBuoy": ((-.07954, -2.35606, .31), .57)}
 
 
 def source_model(source, directory):
@@ -58,7 +61,7 @@ def source_model(source, directory):
     return directory / model_path, model, None
 
 
-def texture(model_path, model, binary, entry, name):
+def texture(model_path, model, binary, entry, name, size=None):
     image = model["images"][model["textures"][entry["index"]]["source"]]
     if binary is None:
         source = model_path.parent / image["uri"]
@@ -68,7 +71,13 @@ def texture(model_path, model, binary, entry, name):
         start = view.get("byteOffset", 0)
         extension = {"image/jpeg": ".jpg", "image/png": ".png"}[image["mimeType"]]
         data = binary[start:start + view["byteLength"]]
-    (WORK / "Textures" / f"{name}{extension}").write_bytes(data)
+    output = WORK / "Textures" / f"{name}{extension}"
+    if size:
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", "pipe:0", "-vf",
+                        f"scale={size}:{size}:flags=lanczos", "-frames:v", "1", "-update", "1",
+                        str(output.with_suffix(".png"))], input=data, check=True)
+    else:
+        output.write_bytes(data)
 
 
 def materials(model_path, model, binary, name):
@@ -79,10 +88,12 @@ def materials(model_path, model, binary, name):
         finish = {}
         for key, entry in (("color", pbr["baseColorTexture"]),
                            ("roughness", pbr["metallicRoughnessTexture"]),
-                           ("normal", material.get("normalTexture"))):
+                           ("normal", material.get("normalTexture")),
+                           ("emissive", material.get("emissiveTexture") if name in BUOY_FITS else None)):
             if entry:
                 finish[key] = f"T_{name}_{index}_{key}"
-                texture(model_path, model, binary, entry, finish[key])
+                size = (1024 if key == "emissive" else 2048) if name in BUOY_FITS else None
+                texture(model_path, model, binary, entry, finish[key], size)
         transform = pbr["baseColorTexture"].get("extensions", {}).get("KHR_texture_transform")
         if name in OPACITY_MAPS:
             finish["opacity"] = f"T_{name}_{index}_opacity"
@@ -113,7 +124,22 @@ def prepare_mesh(name, model_path, height, triangle_budget):
         raise RuntimeError(f"No mesh in {model_path}")
 
     source_tris = sum(len(o.data.polygons) for o in objects)
-    if height is not None:
+    if name in BUOY_FITS:
+        pivot, scale = BUOY_FITS[name]
+        fit = Matrix.Scale(scale, 4) @ Matrix.Translation(-Vector(pivot))
+        for obj in objects:
+            if name == "GreenBuoy":
+                # The lens is the short cylinder at the center of the upper railing.
+                points = coordinates(obj)
+                radius = np.linalg.norm(points[:, :2] - pivot[:2], axis=1)
+                lens = (radius < .115) & (points[:, 2] > 5.02) & (points[:, 2] < 5.37)
+                glow = obj.data.color_attributes.new(name="Lens", type="FLOAT_COLOR", domain="POINT")
+                colors = np.ones((len(points), 4), dtype=np.float32)
+                colors[:, 3] = lens
+                glow.data.foreach_set("color", colors.ravel())
+                obj.data.color_attributes.active_color = glow
+            obj.matrix_world = fit @ obj.matrix_world
+    elif height is not None:
         points = np.concatenate([coordinates(o) for o in objects])
         bottom, top = np.min(points[:, 2]), np.max(points[:, 2])
         base = points[points[:, 2] <= bottom + .025 * (top - bottom)]
@@ -121,13 +147,16 @@ def prepare_mesh(name, model_path, height, triangle_budget):
         fit = Matrix.Scale(height / (top - bottom), 4) @ Matrix.Translation(-anchor)
         for obj in objects:
             obj.matrix_world = fit @ obj.matrix_world
-        if triangle_budget is not None and source_tris > triangle_budget:
-            for obj in objects:
-                bpy.context.view_layer.objects.active = obj
-                modifier = obj.modifiers.new("Game mesh", "DECIMATE")
-                modifier.ratio = triangle_budget / source_tris
-                modifier.use_collapse_triangulate = True
-                bpy.ops.object.modifier_apply(modifier=modifier.name)
+
+    if triangle_budget is not None and source_tris > triangle_budget:
+        for obj in objects:
+            bpy.context.view_layer.objects.active = obj
+            modifier = obj.modifiers.new("Game mesh", "DECIMATE")
+            modifier.ratio = triangle_budget / source_tris
+            modifier.use_collapse_triangulate = True
+            bpy.ops.object.modifier_apply(modifier=modifier.name)
+
+    if height is not None:
         for obj in objects:
             # Per-vertex flexibility stays anchored at the trunk base in every instance.
             fraction = np.clip((coordinates(obj)[:, 2] / height - .12) / .88, 0, 1)

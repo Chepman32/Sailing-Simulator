@@ -336,40 +336,53 @@ struct SailingWaterMath
     // directions satisfy 2*s*tan(theta)^2 - tan(theta) + s = 0.
     // The envelope is smooth through the Kelvin cusp. The finite hull filters
     // short, steep waves and narrows the visible wedge of a planing craft.
-    Real4 WaveBranch(Real aft, Real beam, Real speed, Real hull, Real breadth)
+    Real4 WaveBranch(Real aft, Real beam, Real speed, Real hull, Real breadth, Real footprint)
     {
-        if (speed<.65 || aft<=0 || aft>max(36.,4.8*hull+10*speed)) return Real4(0,0,0,0);
-        Real lateral=sqrt(beam*beam+.0025), run=aft+.035*hull;
-        Real s=lateral/run, fr=speed/sqrt(9.81*hull);
-        Real apparent=min(.354,.19/max(.45,fr));
-        Real edge=1-smoothstep(.86*apparent,1.10*apparent+.026,s);
-        if (edge<=0) return Real4(0,0,0,0);
-        Real k=9.81/(speed*speed), root=sqrt(max(.0009,1-8*s*s));
-        Real t1=2*s/(1+root), t2=min(5.,(1+root)/max(.03,4*s));
+        Real range=max(36.,2.7*hull+8*speed);
+        if (aft<=0 || aft>=range) return Real4(0,0,0,0);
+        Real lateral=sqrt(beam*beam+.0025), run=aft+.30*breadth+.018*hull;
+        Real s=lateral/run;
+        if (s>=.375) return Real4(0,0,0,0);
+        Real fr=speed/sqrt(9.81*hull), planing=smoothstep(.48,1.28,fr);
+        Real apparent=min(.354,.23/max(.5,fr));
+        Real edge=(1-smoothstep(.326,.375,s))*(1-.88*planing*smoothstep(.76*apparent,1.65*apparent,s));
+        Real q=min(s,.3534), k=9.81/(speed*speed), root=sqrt(1-8*q*q);
+        Real t1=2*q/(1+root), t2=min(9.,(1+root)/max(.03,4*q));
         Real c1=sqrt(1+t1*t1), c2=sqrt(1+t2*t2);
+        Real k1=k*c1*c1, k2=k*c2*c2;
+        Real resolve1=1-smoothstep(.85,2.8,k1*footprint), resolve2=1-smoothstep(.85,2.8,k2*footprint);
+        if (resolve1+resolve2<=0) return Real4(0,0,0,0);
         Real phase1=k*c1*(run-t1*lateral)-.7854;
         Real phase2=k*c2*(run-t2*lateral)+.7854;
-        Real wing=smoothstep(.018,.86*apparent,s)*exp(-.048*k*breadth*c2*c2);
-        Real cross=(1-.75*smoothstep(.40,1.10,fr))/(1+.62*t1*t1);
-        Real birth=smoothstep(0,max(1.,.19*hull),aft);
-        Real range=max(36.,4.8*hull+10*speed);
-        Real gain=min(.72,.075*breadth+.017*speed)*smoothstep(.65,3.8,speed)*birth*edge
-                 *(1-smoothstep(.66*range,range,aft))/sqrt(1+aft/(3.+.34*hull));
+        Real wing=resolve2*1.28*smoothstep(.018,.13,s)*exp(-.031*breadth*k2);
+        Real cross=resolve1*.76*(1-.85*planing)*(1-.38*smoothstep(.14,.36,s));
+        Real birth=smoothstep(0,max(1.35,.49*breadth),aft);
+        Real gain=min(.025*speed*speed,.14+.029*breadth)*smoothstep(.65,3.6,speed)*birth*edge
+                 *(1-smoothstep(.67*range,range,aft))/sqrt(1+aft/(3.+.42*hull));
         // At a stationary phase point d(phase)/d(theta) vanishes; gradients
-        // therefore use the local physical wave vectors on each branch.
-        Real d1=-gain*cross*sin(phase1)*k*c1, d2=-gain*wing*sin(phase2)*k*c2;
-        return Real4(gain*(cross*cos(phase1)+wing*cos(phase2)),d1+d2,
+        // therefore use the local physical wave vectors on each branch. A
+        // small bound harmonic sharpens divergent crests and widens their troughs.
+        Real face=cos(phase2);
+        Real d1=-gain*cross*sin(phase1)*k*c1, d2=-gain*wing*sin(phase2)*k*c2*(1+.24*face);
+        return Real4(gain*(cross*cos(phase1)+wing*(face+.12*(face*face-.5))),d1+d2,
                      -(d1*t1+d2*t2)*beam/lateral,0);
     }
 
-    Real4 Kelvin(Real aft, Real beam, Real speed, Real hull, Real breadth)
+    Real4 Kelvin(Real aft, Real beam, Real speed, Real hull, Real breadth, Real footprint)
     {
+        if (speed<.65 || hull<=0 || breadth<=0) return Real4(0,0,0,0);
         // The bow parts the water. At the stern the same displaced water closes in.
         // The spacing between the two pressure sources sets their interference.
-        Real4 bow=WaveBranch(aft+.92*hull,beam,speed,hull,breadth);
-        Real4 stern=WaveBranch(aft,beam,speed,hull,breadth);
-        Real weight=aft>=0 ? 1. : smoothstep(.20*breadth,.54*breadth,abs(beam));
-        return Real4(bow.x*weight-.58*stern.x,bow.y*weight-.58*stern.y,bow.z*weight-.58*stern.z,0);
+        Real fromBow=aft+.92*hull;
+        Real4 bow=WaveBranch(fromBow,beam,speed,hull,breadth,footprint);
+        Real4 stern=WaveBranch(aft,beam,speed,hull,breadth,footprint);
+        Real hullWidth=breadth*(.32+.68*smoothstep(0,.21*hull,fromBow));
+        Real side=smoothstep(.17*hullWidth,.50*hullWidth,abs(beam));
+        Real weight=side+(1-side)*smoothstep(-.37*breadth,.48*breadth,aft);
+        // Air is entrained on steep crests by the bow shoulder. The free wave
+        // train carries its shape into the distance after the bubbles disperse.
+        Real cap=.36*side*smoothstep(.08,.52,bow.x)*(1-smoothstep(.36*breadth,1.50*breadth,fromBow));
+        return Real4(bow.x*weight-.56*stern.x,bow.y*weight-.56*stern.y,bow.z*weight-.56*stern.z,cap);
     }
 
     // A finite wave packet emitted at a fixed world position. Its rings spread

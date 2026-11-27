@@ -16,17 +16,26 @@ namespace Sailing
 {
 TArray<FIntPoint> SelectableResolutions(TConstArrayView<FIntPoint> Reported, FIntPoint Native)
 {
-    TArray<FIntPoint> Sizes;
+    constexpr int32 Heights[] = {720, 1080, 1440, 2160};
+    FIntPoint Tiers[] = {{0,0}, {0,0}, {0,0}, {0,0}};
     for (const FIntPoint Size : Reported)
     {
         const int32 Long = Size.GetMax(), Short = Size.GetMin();
         if (Long >= 1280 && Short >= 720 && Long <= 3840 && Short <= 2160 &&
             Size.X <= Native.X && Size.Y <= Native.Y)
-            Sizes.AddUnique(Size);
+        {
+            const int32 Tier = Short < 900 ? 0 : Short < 1260 ? 1 : Short < 1800 ? 2 : 3;
+            FIntPoint& Pick = Tiers[Tier];
+            // Pick one mode near each standard height, keeping the wider mode on a tie.
+            const int32 Target = Heights[Tier];
+            const int32 Error = FMath::Abs(Short - Target);
+            const int32 OldError = FMath::Abs(Pick.GetMin() - Target);
+            if (Error < OldError || (Error == OldError && Size.GetMax() > Pick.GetMax())) Pick = Size;
+        }
     }
-    Sizes.Sort([](FIntPoint A,FIntPoint B) {
-        return A.X == B.X ? A.Y < B.Y : A.X < B.X;
-    });
+    TArray<FIntPoint> Sizes;
+    for (FIntPoint Size : Tiers)
+        if (Size.GetMin() > 0) Sizes.Add(Size);
     return Sizes;
 }
 
@@ -118,7 +127,12 @@ FDisplayModes ReadDisplayModes(const FViewport& Viewport, const SWindow& Window)
 #endif
     if (Native.GetMin() <= 0) Native = Display.Desktop;
     Display.Sizes = SelectableResolutions(Modes, {FMath::Min(Native.X, Display.Desktop.X), FMath::Min(Native.Y, Display.Desktop.Y)});
-    if (Display.Desktop.GetMin() > 0) Display.Sizes.AddUnique(Display.Desktop);
+    if (Display.Desktop.GetMin() > 0)
+    {
+        Display.Sizes.Remove(Display.Desktop);
+        if (Display.Sizes.Num() > 3) Display.Sizes.RemoveAt(0);
+        Display.Sizes.Add(Display.Desktop);
+    }
     return Display;
 }
 }

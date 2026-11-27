@@ -7,6 +7,7 @@
 
 class ASailingYachtPawn;
 class ASailingJetSki;
+class ASailingPlayerController;
 class UAudioComponent;
 class UMediaPlayer;
 class UMediaSoundComponent;
@@ -68,9 +69,10 @@ private:
     static constexpr int32 FootstepVoiceCount = 6;
 
     void StartSpeaker();
-    void Update(const ASailingYachtPawn& Yacht, float DeltaTime);
+    void Update(const ASailingPlayerController& Player, const ASailingYachtPawn& Yacht, float DeltaTime);
     void UpdateUnderwater(float Depth, float DeltaTime);
     void UpdateJetSki(const ASailingJetSki* Ski);
+    void UpdateAircraft(const ASailingPlayerController& Player, float Depth);
     void UpdateFootsteps(const ASailingYachtPawn& Yacht, float DeltaTime);
     void PlayFootstep(EFootstepSample Sample, float Gain, float Pitch,
                       float LowPass = 0.f, float HighPass = 0.f, float MaxSeconds = 0.f);
@@ -99,12 +101,15 @@ private:
     UPROPERTY() TObjectPtr<UAudioComponent> UnderwaterBed;
     UPROPERTY() TObjectPtr<UAudioComponent> UnderwaterWhale;
     UPROPERTY() TObjectPtr<UAudioComponent> JetSkiVoice;
+    UPROPERTY() TObjectPtr<UAudioComponent> AircraftVoice;
+    UPROPERTY() TObjectPtr<USoundWaveProcedural> AircraftWave;
     UPROPERTY() TArray<TObjectPtr<UAudioComponent>> FootstepVoices;
 #if PLATFORM_MAC
     TSharedPtr<FSailingMusicLibrary> LocalMusic;
 #endif
     FTimerHandle WhaleDelay;
     TArray<int16> PCM;
+    TArray<int16> AircraftTone;
     int Selected = -1, Server = 0;
     int64 SampleIndex = 0, BurstStart = -1000000, SongStart = 0;
     double ConnectingSince = 0;
@@ -113,6 +118,7 @@ private:
     float ImmersionGain = 0, NextCallIn = 0;
     float Levels[int32(ESailingAudioBus::Count)] = {1.f, 1.f, 1.f};
     float DieselGain = 0, JetSkiGain = 0, WhaleGain = 0;
+    float AircraftGain = 0;
     int32 NextWhaleCall = 0;
     int32 NextFootstepVoice = 0;
     FRandomStream FootstepRandom;

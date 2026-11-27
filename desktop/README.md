@@ -20,11 +20,11 @@ Launch **Sailing Simulator Pro** from Applications on Apple Silicon, or open `Sa
 | T | Go over the side in first person. Press T again from anywhere to return to the helm. The yacht holds position. |
 | WASD / arrows, mouse, Shift | Walk or swim and look around. Hold Shift while moving to go faster. The mouse is captured while exploring and released for panels. |
 | Space, C / Ctrl | Jump or swim up. Tap C or Ctrl to dive from the surface or from deeper wading water. Hold it to swim deeper. You can also dive by looking down and swimming forward. Ashore, tap C or Ctrl to crouch. |
-| E, F away from the helm | Climb aboard at a stern step or retake the wheel beside the helm. F switches the dive torch on or off. |
+| E, F away from the helm | Climb aboard at a stern step, retake the wheel, or collect a crab within reach. F switches the dive torch on or off. |
 | E beside a jet ski | Mount from the shore or water surface. While riding, hold W for gas, S to brake or reverse, A / D to steer, and press E to dismount at low speed. |
 | Q / N | Open the map. Drag to pan, scroll to zoom, click to mark a waypoint, and use Delete to clear it. R follows the player, and F fits the islands. |
 | Tab | Open the equipment grid to check air, use the dive torch, or launch a signal flare. Select a slot with the mouse or arrow keys. Enter uses the selected item. |
-| J / B, F / G at the helm | Sound the horn or ring the bell. Send a red or green signal flare. The camera follows its rise, then returns to the yacht. |
+| J / B, F / G at the helm | Sound the horn or ring the bell. Send a red or green signal flare. The camera frames the stern for ignition, follows its rise, and returns to the yacht. |
 | M, O or 0 / Shift+O | Toggle sound. Select the next or previous radio station. The radio cycles through three SomaFM streams, the onboard shanty band, My music when tracks have been added, and off. |
 | 1 / 2 / 3 / 4 | Trade winds / golden hour / squall / moonlight |
 | L | Trigger a lightning strike during a squall |
@@ -33,7 +33,7 @@ Sound starts on. **M** and the sound button toggle it. The diesel, bell and horn
 
 Graphics and Sound open inside the pause menu. Graphics controls the quality preset and resolution. Sound saves independent levels for music, the world and both motors. In **Sound settings → My music**, choose files or a folder on your Mac. The library can play MP3, AAC, M4A, WAV, FLAC and AIFF in place and remembers the selected sources. Pick a track or press Play to listen.
 
-Inventory shows current depth, remaining air and time at that depth. The map shows the sailed track, shallow water, landmarks, ships and jet skis. A waypoint shows distance and bearing in the sailing HUD.
+Inventory shows current depth, remaining air and time at that depth. It groups crabs by habitat in stacks of up to 100. Sell the catch from inventory for 1 coin per shore crab or 3 coins per seabed crab. The map shows the sailed track, shallow water, landmarks, ships and jet skis. A waypoint shows distance and bearing in the sailing HUD.
 
 Underwater, the Saturn 3 ambience loops and three whale calls take turns with pauses. At the surface the recordings fade out, and the ambient loop pauses until the next dive.
 
@@ -45,7 +45,7 @@ The foam pattern uses grains one twenty-fourth of the previous size across waves
 
 The loaded catamaran displaces 9.8 tonnes. Eight points under the two hulls measure the supporting water surface. Pitch and roll damping follow the rotation of the long swell. The bows lose headway when they meet a rising face. The working sail area and centre of effort decrease in a gale, with the shorter main and jib visible on the rig. The exterior camera clears incoming waves at its own position.
 
-Holding a steering key moves the rudder from centre to full deflection in about a quarter of a second. The helm targets a turn rate as well as applying rudder force. It counters lateral drift and keeps a commanded turn responsive in cross seas. Propeller wash provides steering at low speed.
+Holding a steering key moves the rudder from centre to full deflection. The helm targets a turn rate as well as applying rudder force, with authority at less than a knot under sail. The command follows sternway when the yacht drifts backward during a tack. Propeller wash provides steering at low speed under power.
 
 Two animated Fourier wave fields supply the smaller ripples that break up reflections. Each wavelength travels at its own speed. The wind-chop field also carries foam with the orbital velocity of the waves and lets it drain after a crest passes. This motion is baked into the same texture sample as the ripples. Nearby pixels reuse the ocean mesh’s long-wave slopes and evaluate the shorter waves individually. At grazing angles the material samples along the long axis of each pixel’s footprint, keeping the crosswise ripples visible in the sun path. At a distance, unresolved ripples broaden the reflected sunlight. Single Layer Water refracts the reef, sand channels, dolphins and sharks. A single 5.44 m reef shark cruises about 30 m from the yacht for 30 seconds. It takes five seconds to dive, spends a minute at depth and then rises again. The dolphin pod visits during the shark’s deep interval. Its slate back and pale underside use 4096 × 4096 colour and roughness maps.
 
@@ -61,13 +61,13 @@ The volcanic island pairs surveyed Mount St. Helens relief with a matching aeria
 
 The coconut palms, coastal trees and jacarandas use downloaded models with 4K materials. Ferns and anthuriums grow on the sheltered slopes among patches of leaf litter. Leaves transmit sunlight, bend with the local wind and darken as rain accumulates. Coastal channel buoys retain their red and green marks and rock with the sea surface at their moorings.
 
-The standalone preview and packaged game open in borderless fullscreen. **Render resolution** lists the active display’s sizes and remembers the selection across launches. At a fixed render size, the scene, temporal anti-aliasing and post-processing use that size before the final upscale to the display. The selected size preserves the screen aspect ratio. The instruments and menus use display resolution. Select **Adaptive** to let the chosen quality preset adjust resolution under load.
+The standalone preview and packaged game open in borderless fullscreen. **Render resolution** offers Adaptive, Native and up to three smaller sizes for the active display. It remembers the selection across launches. At a fixed size, the scene, temporal anti-aliasing and post-processing use the selected pixel budget while preserving the display aspect ratio. On macOS, fixed sizes at or above the 2560 × 1440 pixel budget use temporal anti-aliasing in place of TSR. Adaptive mode adjusts the scene’s shading and reconstruction sizes under load. The instruments and menus use display resolution.
 
 **High** adds filtered sun shadows (cascaded on macOS and virtual on other platforms), Lumen bounce lighting and ambient occlusion, and detailed screen-space water reflections. A shallow bank of sea mist catches the low sun and takes shadows from clouds and foliage. Local exposure retains detail in shaded leaves and bright water. **Ultra** increases shadow and reflection detail, uses Lumen reflections on the water, and enables hardware Lumen ray tracing on supported non-Metal platforms. High and Ultra also use Nanite displacement on the volcanic island, parallax occlusion on harbor masonry, and subsurface scattering on leaves and the skipper’s skin. Press **P** for cinematic depth of field focused on the yacht. Low and Medium use simpler shadows and reflections from the captured sky. Adaptive resolution gives Ultra a 12 ms GPU budget. On Retina displays it adjusts shading and reconstruction independently to leave time for display compositing. An explicit frame limit takes priority. Boat physics runs at 60 Hz.
 
 **Tab** opens the inventory at the helm, while exploring, and over the map or a paused settings page. Close it with **Tab** or **Esc** to return. In **Map**, place a pin to preview a safe arrival and choose **Fast travel** for 10 coins. The test wallet starts each application session with 1000 coins. Travel takes the occupied vessel or, on foot and in the water, the skipper. Leaving the yacht cuts its engine. **Exit** in the pause menu quits the game.
 
-The daylight flight sequence includes a floatplane towing a cloth advertising banner and an aerobatic pass with a rolling climb and smoke. At cruising altitude, the two contrails merge and spread as the air carries them away.
+In daylight, low aircraft pass every 27 seconds. The floatplane can tow a cloth advertising banner and the aerobatic plane makes a rolling climb with smoke. Their propellers are audible on the World sound channel, with distance attenuation and Doppler shift. At cruising altitude, the two contrails bend as the wind carries them sideways, then broaden and fade along their length.
 
 ## Build and run on macOS
 
@@ -101,6 +101,8 @@ To replay the lighthouse beach approach at full throttle, use `-SailingWaterView
 
 The `pirate` water view frames the yacht alongside the two masts of *The Siren’s Light*. The `ship-shadow` view frames the shaded side of the anchored tanker. The `buoy` view frames the nearest channel marker and its moving waterline. The `canopy` view looks through the coastal woodland on Long Cay from walking height. Run `swift desktop/Tools/test_ship_shadow.swift` to render and check the tanker view, or pass a PNG from that daylight replay to check a packaged build.
 
+Use `-SailingWaterView=flare` to capture the normal launch camera from its first frame. `-SailingWaterView=contrail` frames the airliner and its wake.
+
 ## Rebuild the source content
 
 The included Unreal packages open directly. Run the following from the repository root to regenerate the source meshes for editing or reimporting.
@@ -122,5 +124,7 @@ EDITOR="$UE_ROOT/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEdito
 The level script replaces actors tagged `CoralPassGenerated` and reuses existing textures, materials, and meshes. Set `SAILING_REIMPORT_MESHES` to a comma-separated list such as `Catamaran,CatamaranRig` after rebaking those meshes, or to `1` to reimport every mesh. To rebuild selected material graphs in place, compile the editor target and set `SAILING_REBUILD_MATERIALS` to their roles, for example `water,foam,ash`.
 
 To prepare the coastal meshes again, run `desktop/Tools/prepare_coastal_models.py` in Blender with `--background --factory-startup --disable-autoexec --python-exit-code 1`. It reads the source archives from Downloads or `SAILING_DOWNLOADS`. Put `fern_02_alpha_4k.png` and `anthurium_botany_01_alpha_4k.png` beside the archives or in `SAILING_FOLIAGE_TEXTURES`. The leaf-litter normal map requires ffmpeg. Run `replace_coastal_models.py` with Unreal's `-ExecutePythonScript` to apply the models and ground finish to existing maps. Set `SAILING_REFRESH_COASTAL_MATERIALS=1` to rebuild the model materials.
+
+To prepare the channel buoys from `ocean_buoy.glb` and `buoy.glb`, pass `-- OceanBuoy GreenBuoy` after the Blender script. This uses ffmpeg to resize their textures. Run `replace_coastal_models.py` with `SAILING_BUOYS_ONLY=1` to apply them at the existing moorings in Coral Pass and Sea Trial.
 
 To rebake the advected shore foam, run `desktop/Tools/surf_transport.py` with Blender’s Python and rebuild the `water` material with `SAILING_REIMPORT_TEXTURES=VT_SurfTransport`. To rebake just the wind waves, run `desktop/Tools/ocean_spectrum.py` with Blender’s Python. Rebuild the `water` material with `SAILING_REIMPORT_TEXTURES=VT_WindChop,VT_Capillary` to import both updated sequences. To rebake the foam and spray textures, run `desktop/Tools/breaker_foam.py` with the same Python, then rebuild the `water,spindrift` materials with `SAILING_REIMPORT_TEXTURES=T_BreakerFoam,T_BreakerSpray`.

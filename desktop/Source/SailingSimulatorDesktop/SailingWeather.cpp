@@ -487,7 +487,8 @@ void ASailingWeather::Tick(float DeltaSeconds)
         if (CoastalWeather)
         {
             auto* Parameters = GetWorld()->GetParameterCollectionInstance(CoastalWeather);
-            Parameters->SetVectorParameterValue(TEXT("WindAndRain"),FLinearColor(Wind.X,Wind.Y,Film,1.f));
+            const float Daylight = 1.f - Strengths[3];
+            Parameters->SetVectorParameterValue(TEXT("WindAndRain"),FLinearColor(Wind.X,Wind.Y,Film,Daylight));
             const auto& Explorer = Yacht->Explorer();
             const bool bWalking = Explorer.Mode() == ESkipperMode::Shore;
             const FVector FeetM = Explorer.ShoreFooting()*.01;

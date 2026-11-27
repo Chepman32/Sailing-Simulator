@@ -365,10 +365,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingShipTrainTest,"Sailing.Sea.TrafficWake"
     EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
 bool FSailingShipTrainTest::RunTest(const FString&)
 {
-    for (const float L : {3.15f,11.2f,176.f})
+    const FVector2f Hulls[] = {{3.15f,1.16f},{11.2f,4.65f},{176.f,29.f}};
+    double Spread[UE_ARRAY_COUNT(Hulls)]{};
+    for (int32 I=0; I<UE_ARRAY_COUNT(Hulls); ++I)
     {
         Sailing::FTrafficTrail Trail;
-        Trail.LengthM=L; Trail.BeamM=.22f*L;
+        Trail.LengthM=Hulls[I].X; Trail.BeamM=Hulls[I].Y;
         for (int T=0; T<=50; ++T) Trail.Record({5.*T,0},{1,0},5,.8f,T);
         double Max=0,Min=0;
         for (double A=4; A<65; A+=.29)
@@ -377,10 +379,14 @@ bool FSailingShipTrainTest::RunTest(const FString&)
             Max=FMath::Max(Max,H); Min=FMath::Min(Min,H);
         }
         TestTrue(TEXT("Each moving craft sheds crests and troughs outside its propeller wash"),Max>.012 && Min<-.012);
+        for (double B=35; B<70; B+=1.)
+            Spread[I]=FMath::Max(Spread[I],FMath::Abs(Trail.At({185.,B},50).HeightM));
         TestEqual(TEXT("Waves stay within the ship wedge"),Trail.At({240,100},50).HeightM,0.);
         Trail.Record({0,500},{0,1},0,0,51);
         TestEqual(TEXT("A relocated craft leaves no wave bridge"),Trail.At({229,5},51).HeightM,0.);
     }
+    TestTrue(TEXT("At the same speed a tanker sends appreciable waves much farther abeam"),
+        Spread[2]>.08 && Spread[0]<.01 && Spread[1]<.01);
     return true;
 }
 
@@ -478,6 +484,15 @@ bool FSailingForcesTest::RunTest(const FString& Parameters)
     Helm.Rudder = 1.0;
     TestEqual(TEXT("The rudder needs flow to turn the yacht"),
         Sailing::CalculateLoads(Hull, Helm, Time, 0.).TorqueNm.Z, NeutralAtRest, 1e-6);
+    for (const double SlowWay : {.32, -.32})
+    {
+        Hull.VelocityMps.X = SlowWay;
+        Helm.Rudder = 0.;
+        const double Neutral = Sailing::CalculateLoads(Hull, Helm, Time, 0.).TorqueNm.Z;
+        Helm.Rudder = 1.;
+        TestTrue(TEXT("The engine-off helm has authority at less than one knot in both directions"),
+            (Sailing::CalculateLoads(Hull, Helm, Time, 0.).TorqueNm.Z - Neutral) * FMath::Sign(SlowWay) > 25000.);
+    }
     Helm.Rudder = 0.0;
     Helm.bEngineOn = true;
     Helm.Throttle = 1.;

@@ -8,6 +8,8 @@
 namespace
 {
 constexpr int32 ClothSections=30, SmokeSections=40;
+constexpr double PassInterval = 27.;
+constexpr double ClosestApproach = 12.;
 TArray<int32> StripIndices(int32 Sections)
 {
     TArray<int32> Indices;
@@ -46,12 +48,12 @@ void ASailingWeather::PrepareAircraft()
 
 FVector ASailingWeather::FlightPosition(double Age, bool Stunt) const
 {
-    const double Speed=Stunt ? 39. : 28.;
-    FVector P=FlightOrigin+FlightAxis*((Age-16.)*Speed);
+    const double Speed=Stunt ? 49. : 39.;
+    FVector P=FlightOrigin+FlightAxis*((Age-ClosestApproach)*Speed);
     P.Z=FlightAltitude + 3.*FMath::Sin(Age*.15);
     if (Stunt)
     {
-        const double Phase=(Age-14.)/5.;
+        const double Phase=(Age-10.)/4.;
         const double Pullup=FMath::Exp(-Phase*Phase);
         P+=FlightAcross*(13.*FMath::Sin(Age*.23));
         P.Z+=37.*Pullup;
@@ -108,8 +110,8 @@ void ASailingWeather::UpdateSmoke(double Age,const FVector& Eye)
 
 void ASailingWeather::UpdateAircraft(float Time, const FVector& Eye)
 {
-    const int32 Pass=FMath::FloorToInt(Time/41.);
-    const double Age=Time-Pass*41.;
+    const int32 Pass=FMath::FloorToInt(Time/PassInterval);
+    const double Age=Time-Pass*PassInterval;
     const bool Stunt=Pass%4==1, Banner=Pass%4==0 || Pass%4==2;
     if (Pass!=FlightNumber)
     {
@@ -121,7 +123,7 @@ void ASailingWeather::UpdateAircraft(float Time, const FVector& Eye)
         FlightOrigin=Eye*.01+FlightAcross*(Stunt ? 105. : 126.);
         FlightAltitude=FMath::Max(48.,Eye.Z*.01+36.);
         FCollisionQueryParams Query(SCENE_QUERY_STAT(SailingFlightClearance),false,this);
-        for (int32 I=-4; I<=6; ++I)
+        for (int32 I=-6; I<=7; ++I)
         {
             const FVector P=(FlightOrigin+FlightAxis*(I*110.))*100.;
             FHitResult Ground;
@@ -129,7 +131,7 @@ void ASailingWeather::UpdateAircraft(float Time, const FVector& Eye)
                 ECC_WorldStatic,Query)) FlightAltitude=FMath::Max(FlightAltitude,Ground.ImpactPoint.Z*.01+(Banner?31.:24.));
         }
     }
-    const bool Visible=Condition!=3 && Age<38.;
+    const bool Visible=Condition!=3 && Age<PassInterval-1.;
     Floatplane->SetVisibility(Visible && !Stunt);
     StuntPlane->SetVisibility(Visible && Stunt);
     TowBanner->SetVisibility(Visible && Banner);
@@ -140,11 +142,14 @@ void ASailingWeather::UpdateAircraft(float Time, const FVector& Eye)
         const FVector P=FlightPosition(Age,Stunt);
         const FVector Direction=FlightPosition(Age+.02,Stunt)-FlightPosition(Age-.02,Stunt);
         FRotator Rotation=Direction.Rotation();
-        Rotation.Roll=Stunt ? -360.*FMath::SmoothStep(10.,16.,Age)-21.*FMath::Sin(Age*.23) : 4.*FMath::Sin(Age*.20);
+        Rotation.Roll=Stunt ? -360.*FMath::SmoothStep(7.,13.,Age)-21.*FMath::Sin(Age*.23) : 4.*FMath::Sin(Age*.20);
         Plane->SetWorldLocationAndRotation(P*100.,Rotation);
+        const float Gain = FMath::SmoothStep(0., 2., Age) * (1. - FMath::SmoothStep(PassInterval - 4., PassInterval - 1., Age));
+        LowAircraft = FAircraftSound{P * 100., Direction * (100. / .04), Gain, Stunt};
         if (Banner) UpdateBanner(Age);
         if (Stunt) UpdateSmoke(Age,Eye);
     }
+    else LowAircraft.Reset();
     const FVector Course(.932327,.361615,0.);
     const double Run=FMath::Fmod(Time*172.+18400.,38000.);
     const FVector Jet=FVector(80.,-1250.,2700.)+Course*(Run-19000.);

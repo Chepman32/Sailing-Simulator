@@ -521,7 +521,7 @@ void FTrafficTrail::Record(FVector2D Stern, FVector2D Direction, float Speed, fl
         for (int32 I=0; I<Samples; ++I) Mark[I]=Axis[I]=FLinearColor::Transparent;
         LastSample=-1;
     }
-    const float Interval=FMath::Clamp(.52f*LengthM/FMath::Max(2.f,Speed),1.25f,7.f);
+    const float Interval=FMath::Clamp(.52f*LengthM/FMath::Max(2.f,Speed),1.25f,13.5f);
     if (Axis[1].A<=0 || Now-LastSample>=Interval)
     {
         for (int32 I=Samples-1; I>=2; --I) { Mark[I]=Mark[I-1]; Axis[I]=Axis[I-1]; }
@@ -540,6 +540,24 @@ void FTrafficTrail::Record(FVector2D Stern, FVector2D Direction, float Speed, fl
         const FVector2D Dir(Axis[I].R,Axis[I].G), P(M.R,M.G);
         const double Age=FMath::Max(0.f,Now-M.B);
         const FVector2D Group=P+Dir*(.40*M.A*Age);
+        if (LengthM>=65.f)
+        {
+            // The longest trails follow the merchant lanes. Bound their wake
+            // along its heading, with room for the bend between two samples.
+            const double Span=.42*LengthM+1.3*M.A, Bow=.92*LengthM;
+            const double Forward=Bow+FMath::Min(Span,.60*M.A*Age);
+            const double HalfWidth=.375*(Bow+Span+.60*M.A*Age+.30*BeamM+.018*LengthM);
+            const FVector2D AbsDir(FMath::Abs(Dir.X),FMath::Abs(Dir.Y));
+            const FVector2D Extent=AbsDir*(.5*(Forward+Span))
+                +FVector2D(AbsDir.Y,AbsDir.X)*HalfWidth+FVector2D(.12*LengthM+4.);
+            const FVector2D Center=Group+Dir*(.5*(Forward-Span));
+            Bounds+=Center-Extent;
+            Bounds+=Center+Extent;
+            const FVector2D Wash(.22*BeamM+FMath::Sqrt(Age)*(.20+.045*BeamM)+2.);
+            Bounds+=P-Wash;
+            Bounds+=P+Wash;
+            continue;
+        }
         const double Reach=BeamM+LengthM*.55+.5*M.A*(Age+Interval);
         Bounds+=Group-FVector2D(Reach,Reach);
         Bounds+=Group+FVector2D(Reach,Reach);
@@ -572,7 +590,7 @@ FSeaSample FTrafficTrail::At(FVector2D P, float Now) const
         const double Along=FVector2D::DotProduct(Delta,Dir), Aft=U*Age-Along;
         const double Span=FMath::Max(2.,.42*LengthM+1.3*U);
         const double Envelope=1.-FMath::SmoothStep(.22*Span,Span,FMath::Max(.40*U*Age-Along,Along-.40*U*Age-.92*LengthM));
-        const Real4 Wave=SailingWaterMath().Kelvin(Aft,FVector2D::DotProduct(Delta,Across),U,LengthM,BeamM);
+        const Real4 Wave=SailingWaterMath().Kelvin(Aft,FVector2D::DotProduct(Delta,Across),U,LengthM,BeamM,0.);
         Out.HeightM=Envelope*Wave.x;
         Out.Gradient=Envelope*(-Dir*Wave.y+Across*Wave.z);
     }
@@ -892,15 +910,20 @@ FLoads CalculateLoads(const FRigidState& State, const FHelm& Helm, double TimeS,
         const double GroundSurge = FVector::DotProduct(State.VelocityMps, Heading);
         const double SwaySpeed = FVector::DotProduct(State.VelocityMps, Beam);
         const double Drive = Helm.bEngineOn ? Throttle : 0.;
-        // Over-ground surge oscillates through zero as a crest passes. A selected
-        // gear owns the helm direction at low speed, including slow astern.
-        const double Direction = FMath::Abs(Drive) > .02 ? FMath::Sign(Drive) : (GroundSurge < -.85 ? -1. : 1.);
+        // A selected gear gives direction at a crawl. Under sail the rudders
+        // use the yacht's own headway, including when she makes sternway in a tack.
+        const bool bPowered = FMath::Abs(Drive) > .02;
+        const double Speed = FMath::Abs(GroundSurge);
+        const double Direction = bPowered ? FMath::Sign(Drive) : (GroundSurge < 0. ? -1. : 1.);
         const double Steer = FMath::Clamp(Helm.Rudder, -1., 1.);
-        const double Way = FMath::SmoothStep(.05, 1.1, FMath::Abs(GroundSurge));
+        const double Way = FMath::SmoothStep(.05, 1.1, Speed);
         const double Authority = FMath::Max(Way, FMath::SmoothStep(0., .08, FMath::Abs(Drive)));
-        const double Command = Direction * Steer * FMath::Lerp(.54, .39, FMath::SmoothStep(2., 9., FMath::Abs(GroundSurge)));
+        const double SailAuthority = HullWet * FMath::SmoothStep(.025, .52, Speed);
+        const double SlowTurn = bPowered ? 1. : FMath::Lerp(.48, 1., FMath::SmoothStep(0., 1.4, Speed));
+        const double Command = Direction * Steer * SlowTurn * FMath::Lerp(.54, .39, FMath::SmoothStep(2., 9., Speed));
         const double YawTorque = FMath::Clamp((Command-State.AngularVelocityRad.Z)*320000., -148000., 148000.);
-        Loads.TorqueNm.Z = FMath::Lerp(Loads.TorqueNm.Z, YawTorque, Authority);
+        const double SteeringAuthority = bPowered ? Authority : FMath::Max(SailAuthority, HullWet * Authority);
+        Loads.TorqueNm.Z = FMath::Lerp(Loads.TorqueNm.Z, YawTorque, SteeringAuthority);
         if (Authority > 0.)
         {
             const double ForceAcross = FVector::DotProduct(Loads.ForceN, Beam);

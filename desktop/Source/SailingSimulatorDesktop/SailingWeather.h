@@ -42,6 +42,14 @@ public:
     int32 WeatherChoice() const { return bAutoWeather ? AutoChoice : (Climate == 7 ? CalmChoice : Climate); }
     const TCHAR* ClimateName() const;
     static const TCHAR* WeatherName(int32 Index);
+    struct FAircraftSound
+    {
+        FVector PositionCm;
+        FVector VelocityCmS;
+        float Gain;
+        bool bStunt;
+    };
+    const TOptional<FAircraftSound>& AircraftSound() const { return LowAircraft; }
     void WhaleSpray(FVector SourceM, FVector Course, Sailing::FSeaFrame Frame, bool bBlow, float Strength);
     void BreachSpray(const ASailingYachtPawn& Yacht, FVector SourceM, FVector Course, bool bLanding, float Force);
     void SkipperSplash(const ASailingYachtPawn& Yacht, FVector ContactCm, FVector VelocityCmS, float Force, bool bEntry);
@@ -56,6 +64,7 @@ private:
     FVector FlightOrigin=FVector::ZeroVector, FlightAxis=FVector::RightVector, FlightAcross=FVector::ForwardVector;
     int32 FlightNumber=INDEX_NONE;
     double FlightAltitude=56;
+    TOptional<FAircraftSound> LowAircraft;
     TArray<FVector> BannerVertices, BannerNormals, SmokeVertices;
     TArray<FVector2D> BannerUVs, SmokeUVs;
     TArray<FLinearColor> SmokeColors;

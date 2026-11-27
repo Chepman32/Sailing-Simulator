@@ -1,5 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
+#include "Camera/PlayerCameraManager.h"
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "InputKeyEventArgs.h"
@@ -10,10 +12,83 @@
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "SailingPlayerController.h"
+#include "SailingExplorer.h"
 #include "SailingTrial.h"
 #include "SailingVoyageSound.h"
+#include "SailingWallet.h"
 #include "Slate/SceneViewport.h"
 #include "UnrealClient.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingCrabStacksTest, "Sailing.Voyage.CrabStacks",
+    EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+
+bool FSailingCrabStacksTest::RunTest(const FString&)
+{
+    auto* Wallet = NewObject<USailingWallet>(NewObject<UGameInstance>(GEngine));
+    for (int32 Index = 0; Index < 101; ++Index)
+    {
+        Wallet->AddCrab(ESailingCrab::Shore);
+        Wallet->AddCrab(ESailingCrab::Seabed);
+    }
+    const auto Stacks = Wallet->Crabs();
+    if (TestEqual(TEXT("Catch uses independent stacks for the two habitats"), Stacks.Num(), 4))
+    {
+        TestTrue(TEXT("Each crab fills its own stack up to 100"),
+            Stacks[0].Kind == ESailingCrab::Shore && Stacks[1].Kind == ESailingCrab::Seabed &&
+            Stacks[0].Count == 100 && Stacks[1].Count == 100 && Stacks[2].Count == 1 && Stacks[3].Count == 1);
+    }
+    TestEqual(TEXT("The sale pays more per seabed crab"), Wallet->SellCrabs(), 404);
+    TestTrue(TEXT("The sale credits the wallet and clears the catch"), Wallet->Balance() == 404 && Wallet->Crabs().IsEmpty());
+    TestEqual(TEXT("A second sale cannot pay for the same crabs again"), Wallet->SellCrabs(), 0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingCrabPickupTest, "Sailing.Voyage.CrabPickup",
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::NonNullRHI | EAutomationTestFlags::EngineFilter)
+
+bool FSailingCrabPickupTest::RunTest(const FString&)
+{
+    auto* World = GEngine->GameViewport ? GEngine->GameViewport->GetWorld() : nullptr;
+    auto* Player = World ? Cast<ASailingPlayerController>(World->GetFirstPlayerController()) : nullptr;
+    auto* Yacht = Player ? Player->GetPawn<ASailingYachtPawn>() : nullptr;
+    if (!TestNotNull(TEXT("A live yacht and its crab populations"), Yacht)) return false;
+    auto& Explorer = Yacht->Explorer();
+    auto& Crabs = Yacht->Crabs();
+    const auto Tap = [Player](FKey Key) {
+        Player->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Pressed, 1));
+        Player->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Released, 0));
+    };
+    const auto Approach = [&](FVector Feet, bool bShore) {
+        Explorer.Arrive(*Yacht, Feet, bShore);
+        Player->PlayerCameraManager->UpdateCamera(0.0f);
+        Crabs.Advance(*Yacht, .1f);
+    };
+    if (!Explorer.Away()) Tap(EKeys::T);
+    for (bool bShore : {true, false})
+    {
+        const FVector Bank = bShore ? FVector(32000, 8200, 220) : FVector(1400, 1500, -170);
+        const ESailingCrab Kind = bShore ? ESailingCrab::Shore : ESailingCrab::Seabed;
+        Approach(Bank, bShore);
+        FVector Crab;
+        if (!TestTrue(TEXT("The habitat contains a live crab"), Crabs.Nearest(!bShore, Bank, Crab))) continue;
+        Approach(Crab + FVector(0, 0, bShore ? 0. : 60.), bShore);
+        const FVector Reach = bShore ? Explorer.ShoreFooting() : Explorer.GetComponentLocation();
+        TestTrue(TEXT("A nearby crab shows the collect prompt"),
+            FString(Explorer.Prompt(*Yacht)).Contains(TEXT("Collect")));
+        const int32 OldValue = Player->Wallet().CrabSaleValue();
+        Tap(EKeys::E);
+        TestEqual(TEXT("E adds the crab to the correct inventory stack"),
+            Player->Wallet().CrabSaleValue() - OldValue, USailingWallet::CrabPrice(Kind));
+        TestFalse(TEXT("The collected crab leaves the scene immediately"), Crabs.CanCollect(Kind, Reach));
+        Approach(Bank + FVector(5100, 5100, 0), bShore);
+        Approach(Crab + FVector(0, 0, bShore ? 0. : 60.), bShore);
+        TestFalse(TEXT("Leaving the cell and returning cannot collect it again"), Crabs.CanCollect(Kind, Reach));
+    }
+    Tap(EKeys::T);
+    auto* Wallet = Player->GetGameInstance()->GetSubsystem<USailingWallet>();
+    Wallet->Spend(Wallet->SellCrabs());
+    return true;
+}
 
 namespace
 {
@@ -90,6 +165,9 @@ public:
             Tap(EKeys::Tab);
             Test.TestTrue(TEXT("Tab opens the inventory directly with the air tank selected"),
                 Player->GetPanel() == ESailingPanel::Gear && Player->SelectedGear() == ESailingGear::Tank);
+            for (int32 Index = 0; Index < FSailingCrabStack::Capacity; ++Index)
+                Player->GetGameInstance()->GetSubsystem<USailingWallet>()->AddCrab(ESailingCrab::Shore);
+            Player->GetGameInstance()->GetSubsystem<USailingWallet>()->AddCrab(ESailingCrab::Seabed);
             break;
         case 9:
             if (const auto* HUD = Cast<ASailingTrialHUD>(Player->GetHUD()))
@@ -103,6 +181,17 @@ public:
             Photo(TEXT("inventory.png"));
             break;
         case 10:
+            {
+                auto* Wallet = Player->GetGameInstance()->GetSubsystem<USailingWallet>();
+                const int32 Balance = Wallet->Balance(), Value = Wallet->CrabSaleValue();
+                const auto* Hud = Cast<ASailingTrialHUD>(Player->GetHUD());
+                const auto* Button = Hud ? Hud->GetHitBoxWithName(TEXT("SellCrabs")) : nullptr;
+                if (Test.TestNotNull(TEXT("The catch has a sell button"), Button)) Click(*Button);
+                Test.TestTrue(TEXT("The sell button credits the displayed price and empties the catch"),
+                    Wallet->Balance() == Balance + Value && Wallet->Crabs().IsEmpty());
+                Wallet->SellCrabs();
+                Wallet->Spend(Value);
+            }
             Tap(EKeys::Right);
             Test.TestTrue(TEXT("Right selects the torch in the equipment row"),
                 Player->SelectedGear() == ESailingGear::Torch && !Player->CanUseGear());
@@ -141,16 +230,7 @@ public:
                 const FVector Expected=*Player->ChartView().Arrival();
                 const int32 Before=Player->Coins();
                 Test.TestEqual(TEXT("A test voyage starts with the configured purse"),Before,1000);
-                FSceneViewport* View=Player->GetWorld()->GetGameViewport()->GetGameViewport();
-                const FVector2D Pixels(View->GetSizeXY());
-                FVector2D Click=FVector2D::ZeroVector;
-                for (int32 Y=0; Y<Pixels.Y && Click.IsZero(); Y+=8)
-                    for (int32 X=0; X<Pixels.X; X+=8)
-                        if (Button->Contains(FVector2D(X,Y))) { Click={double(X),double(Y)}; break; }
-                const FGeometry Geometry=FGeometry::MakeRoot(Pixels,FSlateLayoutTransform());
-                const TSet<FKey> Buttons{EKeys::LeftMouseButton};
-                View->OnMouseButtonDown(Geometry,FPointerEvent(0,Click,Click,Buttons,EKeys::LeftMouseButton,0,{}));
-                View->OnMouseButtonUp(Geometry,FPointerEvent(0,Click,Click,Buttons,EKeys::LeftMouseButton,0,{}));
+                Click(*Button);
                 Test.TestEqual(TEXT("Successful travel charges one fare"),Player->Coins(),Before-ASailingPlayerController::TravelFare);
                 Test.TestTrue(TEXT("The yacht arrives at the previewed water"),FVector::Dist2D(
                     Player->GetPawn()->GetActorLocation(),Expected)<1.);
@@ -199,6 +279,24 @@ private:
     {
         Player->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Pressed, 1));
         Player->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Released, 0));
+    }
+
+    void Click(const FHUDHitBox& Button)
+    {
+        auto* View = Player->GetWorld()->GetGameViewport()->GetGameViewport();
+        const FVector2D Pixels(View->GetSizeXY());
+        for (int32 Y = 0; Y < Pixels.Y; Y += 8)
+        for (int32 X = 0; X < Pixels.X; X += 8)
+        {
+            const FVector2D Position(X, Y);
+            if (!Button.Contains(Position)) continue;
+            const FGeometry Geometry = FGeometry::MakeRoot(Pixels, FSlateLayoutTransform());
+            const TSet<FKey> Buttons{EKeys::LeftMouseButton};
+            const FPointerEvent Event(0, Position, Position, Buttons, EKeys::LeftMouseButton, 0, {});
+            View->OnMouseButtonDown(Geometry, Event);
+            View->OnMouseButtonUp(Geometry, Event);
+            return;
+        }
     }
 
     void ChartGesture(FVector2D Drag)

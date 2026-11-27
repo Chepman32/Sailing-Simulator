@@ -5,6 +5,7 @@
 #include "Engine/Font.h"
 #include "SailingExplorer.h"
 #include "SailingPlayerController.h"
+#include "SailingWallet.h"
 
 namespace
 {
@@ -99,7 +100,7 @@ void DrawGear(const FDeckPainter& Paint, const ASailingPlayerController& Player,
     const auto& Entry = Gear[int32(Selected)];
     Paint.Rect(0, 0, Size.X, Size.Y, Base.CopyWithNewOpacity(.92f));
     Paint.Text(TEXT("Inventory"), 32, 22, 40, Ink, true);
-    Paint.Text(FString::Printf(TEXT("%d coins"), Player.Coins()), 258, 47, 18, Amber, true);
+    Paint.Text(FString::Printf(TEXT("%d coins"), Player.Coins()), 280, 47, 18, Amber, true);
     Paint.Button(TEXT("ChartPage"), TEXT("Map  ·  Q"), Size.X - 348, 25, 146);
     Paint.Button(TEXT("Close"), TEXT("Close  ·  Esc"), Size.X - 190, 25, 158);
     Paint.Line({32, 88}, {Size.X - 32, 88}, LineInk);
@@ -123,9 +124,6 @@ void DrawGear(const FDeckPainter& Paint, const ASailingPlayerController& Player,
         EmptySlot(X, First);
         EmptySlot(X, Second);
     }
-    for (int32 Column = 0; Column < 4; ++Column)
-        EmptySlot(Left + Column * (Cell + Gap), Second + Cell + Gap);
-
     for (int32 Index = 0; Index < UE_ARRAY_COUNT(Gear); ++Index)
     {
         const bool bDive = Index < int32(ESailingGear::RedFlare);
@@ -142,6 +140,46 @@ void DrawGear(const FDeckPainter& Paint, const ASailingPlayerController& Player,
         Paint.Text(Gear[Index].Label, X + 11., Y + Cell - 49., 16., Ink, true);
         Paint.Text(SlotStatus(ESailingGear(Index), Player, Explorer), X + 11., Y + Cell - 25., 13., bSelected ? Crown : Muted);
         Paint.Target(FName(TEXT("GearEntry"), Index + 1), X, Y, Cell, Cell);
+    }
+
+    const double CatchY = Second + Cell + 30.;
+    const auto& Wallet = Player.Wallet();
+    const auto Stacks = Wallet.Crabs();
+    Paint.Text(TEXT("Crab catch"), Left, CatchY, 20, Ink, true);
+    if (Stacks.IsEmpty())
+    {
+        Paint.Text(TEXT("Press E near a crab to collect it."), Left, CatchY + 48, 16, Muted);
+        Paint.Text(FString::Printf(TEXT("Shore  %d coin each    ·    Seabed  %d coins each"),
+            Wallet.CrabPrice(ESailingCrab::Shore), Wallet.CrabPrice(ESailingCrab::Seabed)), Left, CatchY + 75, 14, Muted);
+    }
+    else
+    {
+        constexpr int32 PerPage = ASailingPlayerController::CrabStacksPerPage;
+        const int32 Page = Player.CrabStackPage(), Pages = FMath::DivideAndRoundUp(Stacks.Num(), PerPage);
+        if (Pages > 1)
+        {
+            Paint.Button(TEXT("CrabPrev"), TEXT("‹"), Left + 169, CatchY - 3, 40, 34, Page > 0);
+            Paint.Text(FString::Printf(TEXT("%d / %d"), Page + 1, Pages), Left + 221, CatchY + 3, 14, Muted);
+            Paint.Button(TEXT("CrabNext"), TEXT("›"), Left + 281, CatchY - 3, 40, 34, Page + 1 < Pages);
+        }
+        Paint.Button(TEXT("SellCrabs"), FString::Printf(TEXT("Sell all · %d coins"), Wallet.CrabSaleValue()),
+            Left + GridWidth - 230, CatchY - 3, 230, 34, true, true);
+        for (int32 Column = 0; Column < PerPage; ++Column)
+        {
+            const int32 Index = Page * PerPage + Column;
+            if (!Stacks.IsValidIndex(Index)) break;
+            const auto& Stack = Stacks[Index];
+            const bool bShore = Stack.Kind == ESailingCrab::Shore;
+            const double SlotX = Left + Column * (Cell + Gap);
+            Paint.Rect(SlotX, CatchY + 42, Cell, 96, Surface);
+            Paint.Rect(SlotX, CatchY + 42, Cell, 2., bShore ? Amber : Accent);
+            Paint.Text(bShore ? TEXT("Shore crab") : TEXT("Seabed crab"), SlotX + 12, CatchY + 51, 15, Ink, true);
+            Paint.Text(FString::Printf(TEXT("%d / %d"), Stack.Count, FSailingCrabStack::Capacity),
+                SlotX + 12, CatchY + 76, 19, bShore ? Amber : Accent, true);
+            const int32 Price = Wallet.CrabPrice(Stack.Kind);
+            Paint.Text(FString::Printf(TEXT("%d %s each"), Price, Price == 1 ? TEXT("coin") : TEXT("coins")),
+                SlotX + 12, CatchY + 111, 12, Muted);
+        }
     }
 
     const double X = Left + GridWidth + 26., Y = 113., W = Size.X - X - 32.;

@@ -18,6 +18,7 @@
 #include "SailingSignal.h"
 #include "SailingTrial.h"
 #include "SailingVoyageSound.h"
+#include "SailingWeather.h"
 #include "Slate/SceneViewport.h"
 #include "UnrealClient.h"
 
@@ -491,6 +492,43 @@ bool FSailingAudioOutputTest::RunTest(const FString&)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingAircraftSoundTest, "Sailing.Audio.AircraftPass",
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::NonNullRHI | EAutomationTestFlags::EngineFilter)
+
+bool FSailingAircraftSoundTest::RunTest(const FString&)
+{
+    UWorld* World = GEngine->GameViewport ? GEngine->GameViewport->GetWorld() : nullptr;
+    auto* Player = World ? Cast<ASailingPlayerController>(World->GetFirstPlayerController()) : nullptr;
+    if (!TestNotNull(TEXT("Local sailing player"), Player)) return false;
+    if (!World->AllowAudioPlayback())
+    {
+        AddInfo(TEXT("Audio is disabled for this test run"));
+        return true;
+    }
+    const auto* Weather = Player->WorldWeather();
+    if (!TestTrue(TEXT("A daylight flight is passing the yacht"), Weather && Weather->AircraftSound().IsSet())) return false;
+    auto& Sound = Player->Sound();
+    const bool bWasEnabled = Sound.Enabled();
+    const float Initial = Sound.Volume(ESailingAudioBus::World);
+    Sound.SetEnabled(true);
+    Sound.SetVolume(ESailingAudioBus::World, 1.f);
+    Sound.TickComponent(1.f / 60.f, LEVELTICK_All, nullptr);
+    UAudioComponent* Propeller = nullptr;
+    for (auto* Voice : TInlineComponentArray<UAudioComponent*>(Player))
+        if (Voice->GetFName() == TEXT("PropellerVoice")) Propeller = Voice;
+    if (TestNotNull(TEXT("The passing plane has a voice"), Propeller))
+    {
+        TestTrue(TEXT("The propeller loop plays from the aircraft position"), Propeller->IsPlaying() &&
+            Propeller->bAllowSpatialization && Propeller->GetComponentLocation().Equals(Weather->AircraftSound()->PositionCm, 1.));
+        const float Gain = Propeller->VolumeMultiplier;
+        Sound.SetVolume(ESailingAudioBus::World, .2f);
+        TestTrue(TEXT("The world bus scales the audible propeller"), Gain > 0 && FMath::IsNearlyEqual(Propeller->VolumeMultiplier, .2f * Gain));
+    }
+    Sound.SetVolume(ESailingAudioBus::World, Initial);
+    Sound.SetEnabled(bWasEnabled);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingUnderwaterAudioTest, "Sailing.Audio.UnderwaterAmbience",
     EAutomationTestFlags::ClientContext | EAutomationTestFlags::NonNullRHI | EAutomationTestFlags::EngineFilter)
 
@@ -567,10 +605,10 @@ bool FSailingFootstepAudioTest::RunTest(const FString&)
     Advance(18);
     const FVector AtPace = Explorer.GetComponentLocation();
     const double AccelerationTravel = FVector::Dist2D(WalkStart, AtPace);
-    TestTrue(TEXT("The first walking stride accelerates from rest"), AccelerationTravel > 50 && AccelerationTravel < 115);
+    TestTrue(TEXT("The first walking stride accelerates from rest"), AccelerationTravel > 95 && AccelerationTravel < 160);
     Advance(42);
-    TestEqual(TEXT("Walking on dry ground reaches 4.35 m/s"), FVector::Dist2D(AtPace, Explorer.GetComponentLocation()), 304.5, 1.);
-    TestEqual(TEXT("Footfalls follow the walking stride"), int32(Explorer.LastFootfall().Sequence - Before), 2);
+    TestEqual(TEXT("Walking on dry ground reaches 6.525 m/s"), FVector::Dist2D(AtPace, Explorer.GetComponentLocation()), 456.75, 1.);
+    TestEqual(TEXT("Footfalls follow the distance walked"), int32(Explorer.LastFootfall().Sequence - Before), 3);
     for (int32 I = 0; I < 7; ++I)
     {
         Explorer.SetMovement({I % 2 == 0 ? -1. : 1., 0.}, false, false, false);
@@ -581,7 +619,7 @@ bool FSailingFootstepAudioTest::RunTest(const FString&)
     Advance(20);
     const FVector Stopped = Explorer.GetComponentLocation();
     const double BrakeTravel = FVector::Dist2D(BrakeStart, Stopped);
-    TestTrue(TEXT("The skipper settles within the last half step"), BrakeTravel > 12 && BrakeTravel < 50);
+    TestTrue(TEXT("The skipper settles within the last half step"), BrakeTravel > 18 && BrakeTravel < 75);
     Advance(10);
     TestTrue(TEXT("The skipper comes to a full stop"), FVector::Dist2D(Stopped, Explorer.GetComponentLocation()) < .1);
     TSet<const USoundWave*> GroundClips;
@@ -607,6 +645,14 @@ bool FSailingFootstepAudioTest::RunTest(const FString&)
         TestEqual(TEXT("World volume scales footfalls"), Footstep->VolumeMultiplier, Gain * .2f, .001f);
         Sound.SetVolume(ESailingAudioBus::World, 1.f);
     }
+
+    Explorer.Arrive(*Yacht, {XY.X, XY.Y, Water + 105.}, true);
+    Explorer.SetMovement({1., 0.}, true, false, false);
+    Advance(25);
+    const FVector RunStart = Explorer.GetComponentLocation();
+    Advance(15);
+    TestEqual(TEXT("Running on dry ground reaches 10.125 m/s"),
+        FVector::Dist2D(RunStart, Explorer.GetComponentLocation()), 253.125, 1.);
 
     TapKey(*Player, EKeys::T);
     TapKey(*Player, EKeys::T);
@@ -899,7 +945,14 @@ bool FSailingVoyageTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("A released Shift immediately restores forward radio tuning"), Player->Sound().Station(), -1);
     Tap(EKeys::G);
     const ASailingSignal* Green = Player->CurrentSignal();
-    if (TestNotNull(TEXT("G launches a visible signal"), Green)) TestTrue(TEXT("G selects green"), Green->IsGreen());
+    if (TestNotNull(TEXT("G stages a signal"), Green))
+    {
+        TestTrue(TEXT("G selects green"), Green->IsGreen());
+        TestTrue(TEXT("The camera cuts to the launch immediately"), Player->GetViewTarget() == Green);
+        TestTrue(TEXT("The first frame places the signal on the yacht"), Green->GetActorLocation().Equals(
+            Yacht->GetActorTransform().TransformPosition({-380, 165, 291}), 1.));
+        TestEqual(TEXT("The rocket has not moved on the opening frame"), Green->Age(), 0.f);
+    }
     Yacht->SetEngineRunning(true);
     Yacht->SetThrottle(.65);
     const uint32 BeforeWaterEntry = Explorer.LastWaterEntry().Sequence;
