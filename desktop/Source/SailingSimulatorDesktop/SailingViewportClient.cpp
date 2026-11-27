@@ -37,6 +37,11 @@
 
 namespace
 {
+FIntPoint ScaledSize(FIntPoint Size, float Fraction)
+{
+    return {FMath::RoundToInt(Size.X * Fraction), FMath::RoundToInt(Size.Y * Fraction)};
+}
+
 AStaticMeshActor* NearestTaggedMesh(UWorld* World, FName Tag)
 {
     AStaticMeshActor* Nearest = nullptr;
@@ -104,6 +109,7 @@ void USailingViewportClient::InitializeDisplay()
 {
     auto* Settings = GEngine->GetGameUserSettings();
     const auto PreviousMode = Settings->GetFullscreenMode();
+    GConfig->GetBool(TEXT("Sailing.World"), TEXT("NativeShading"), bNativeShading, GGameUserSettingsIni);
     FString Saved;
     if (GConfig->GetString(TEXT("Sailing.World"), TEXT("RenderResolution"), Saved, GGameUserSettingsIni))
     {
@@ -150,9 +156,33 @@ void USailingViewportClient::ApplyRenderResolution()
     auto* DynamicResolution = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DynamicRes.OperationMode"));
     if (DynamicResolution) DynamicResolution->Set(RequestedResolution.GetMin() > 0 ? 0 : 2, ECVF_SetByGameOverride);
     ReconstructionScale = 1;
+    BudgetOutput = FIntPoint::ZeroValue;
+    FixedShadingFraction = 1.f;
     PreviousSize = FIntPoint::ZeroValue;
     GpuTotalMs = 0;
     GpuSamples = 0;
+}
+
+bool USailingViewportClient::OffersShadingBudget() const
+{
+    if (!PLATFORM_MAC || !bUltra || RequestedResolution.GetMin() <= 0 || !Viewport) return false;
+    const FIntPoint Size = Viewport->GetSizeXY();
+    return Sailing::FShadingBudget::AppliesTo(ScaledSize(Size, Sailing::RenderResolutionFraction(RequestedResolution, Size)));
+}
+
+void USailingViewportClient::SetUltra(bool bEnabled)
+{
+    if (bUltra != bEnabled) BudgetOutput = FIntPoint::ZeroValue;
+    bUltra = bEnabled;
+}
+
+void USailingViewportClient::SetNativeShading(bool bNative)
+{
+    if (bNativeShading == bNative) return;
+    bNativeShading = bNative;
+    BudgetOutput = FIntPoint::ZeroValue;
+    GConfig->SetBool(TEXT("Sailing.World"), TEXT("NativeShading"), bNative, GGameUserSettingsIni);
+    GEngine->GetGameUserSettings()->SaveSettings();
 }
 
 void USailingViewportClient::ShowStartupOverlay()
@@ -225,25 +255,22 @@ void USailingViewportClient::FinalizeViews(FSceneViewFamily* Family, const TMap<
         if (!Family->GetScreenPercentageInterface())
         {
             Family->EngineShowFlags.ScreenPercentage = true;
-            // Run temporal AA and post-processing at the selected size too.
-            // Slate still composites the HUD into the full-resolution window.
             const float Fraction = Sailing::RenderResolutionFraction(RequestedResolution, Size);
             Family->SecondaryViewFraction = Fraction;
-#if PLATFORM_MAC
-            // Fixed high-resolution views already shade one sample per output pixel.
-            // Use temporal AA without the extra reconstruction passes at that size.
-            if (double(Size.X) * Size.Y * FMath::Square(Fraction) >= 2560. * 1440.)
+            FixedShadingFraction = 1.f;
+            float UpperBound = 1.f;
+            const FIntPoint Output = ScaledSize(Size, Fraction);
+            if (PLATFORM_MAC && bUltra && !bNativeShading && Sailing::FShadingBudget::AppliesTo(Output))
             {
-                for (const auto& Entry : PlayerViews)
+                if (Output != BudgetOutput)
                 {
-                    FSceneView& View = *Entry.Value;
-                    if (View.AntiAliasingMethod != AAM_TSR) continue;
-                    View.AntiAliasingMethod = AAM_TemporalAA;
-                    View.PrimaryScreenPercentageMethod = EPrimaryScreenPercentageMethod::SpatialUpscale;
+                    BudgetOutput = Output;
+                    ShadingBudget.Reset(Output);
                 }
+                FixedShadingFraction = ShadingBudget.Update(FPlatformTime::ToMilliseconds(RHIGetGPUFrameCycles()));
+                UpperBound = ShadingBudget.AllocationFraction();
             }
-#endif
-            Family->SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(*Family, 1.f));
+            Family->SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(*Family, FixedShadingFraction, UpperBound));
         }
         return;
     }
@@ -313,6 +340,7 @@ void USailingViewportClient::UpdateWaterView()
     const bool CoastView=Beach || Strand || RockWash || Canopy || Underwater || Reef || MerchantWake || CrabView;
     const bool ShoreApproach=WaterView==TEXT("shore-approach");
     const bool Waterline = WaterView == TEXT("waterline");
+    const bool SailOrbit = WaterView == TEXT("sail-orbit");
     const bool Pirate=WaterView==TEXT("pirate");
     const bool BuoyView=WaterView==TEXT("buoy");
     const bool MooredView=BuoyView || Pirate || WaterView==TEXT("ship-shadow");
@@ -390,7 +418,7 @@ void USailingViewportClient::UpdateWaterView()
             Yacht->SetActorLocationAndRotation(Start,Heading,false,nullptr,ETeleportType::TeleportPhysics);
             auto* Body=CastChecked<UPrimitiveComponent>(Yacht->GetRootComponent());
             Body->SetPhysicsLinearVelocity(FVector(SurgeCmS,0,0));
-            Yacht->SetEngineRunning(!CoastView && !AircraftView && !MooredView && !Shark && !Dolphin && !Whale && !Waterline && WaterView!=TEXT("sail"));
+            Yacht->SetEngineRunning(!CoastView && !AircraftView && !MooredView && !Shark && !Dolphin && !Whale && !Waterline && !SailOrbit && WaterView!=TEXT("sail"));
             Yacht->SetThrottle(Yacht->ReadHelm().bEngineOn ? Throttle : 0);
             Player->SetViewTarget(WaterCamera.Get());
         }
@@ -450,6 +478,15 @@ void USailingViewportClient::UpdateWaterView()
         const FVector Beam(-Forward.Y,Forward.X,0), Center=Yacht->GetActorLocation()*0.01;
         FVector Eye=Beach ? FVector(322,61,2.7) : Center-Forward*25+Beam*4+FVector(0,0,14);
         FVector Aim=Beach ? FVector(344,73,.32) : Center-Forward*6;
+        if (SailOrbit)
+        {
+            // Sweep the sail across sky and sea, then hold the camera at each end.
+            const double Phase = FMath::Fmod(double(Age), 4.);
+            const double Pan = FMath::SmoothStep(.35, 1.2, Phase) - FMath::SmoothStep(2.35, 3.2, Phase);
+            const double Angle = FMath::Lerp(-.85, .85, Pan);
+            Eye = Center + 16. * (Beam * FMath::Cos(Angle) + Forward * FMath::Sin(Angle)) + FVector(0,0,5.);
+            Aim = Center + Forward * FMath::Lerp(-4., 4., Pan) + FVector(0,0,6.);
+        }
         if (Strand)
         {
             Eye={322,78.7,1.76};
@@ -614,7 +651,7 @@ void USailingViewportClient::RecordBenchmark(FIntPoint Size, double Now)
     FDynamicResolutionStateInfos Dynamic;
     GEngine->GetDynamicResolutionCurrentStateInfos(Dynamic);
     const double Primary = Dynamic.Status==EDynamicResolutionStatus::Enabled || Dynamic.Status==EDynamicResolutionStatus::DebugForceEnabled
-        ? Dynamic.ResolutionFractionApproximations[GDynamicPrimaryResolutionFraction] : 1.;
+        ? Dynamic.ResolutionFractionApproximations[GDynamicPrimaryResolutionFraction] : FixedShadingFraction;
     const float Output=RequestedResolution.GetMin()>0 ? Sailing::RenderResolutionFraction(RequestedResolution,Size) : ReconstructionScale;
     ShadingFractionSum+=Primary*Output;
     OutputFractionSum+=Output;

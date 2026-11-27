@@ -18,7 +18,7 @@ class FSailingGameKeyboard;
 enum class ESailingPanel : uint8 { None, Controls, Pause, Chart, Gear, World };
 enum class ESailingGear : uint8 { Tank, Torch, RedFlare, GreenFlare, Count };
 enum class ESailingPausePage : uint8 { Menu, Graphics, Sound, Music };
-enum class EWorldSetting : uint8 { Lighting, Weather, Audio, Graphics, Camera };
+enum class EWorldSetting : uint8 { Lighting, Weather, Audio, Graphics, Camera, Shading };
 
 UCLASS()
 class ASailingPlayerController : public APlayerController
@@ -57,6 +57,7 @@ public:
     void SetWorldChoice(EWorldSetting Row, int32 Index);
     bool WorldChoiceSelected(EWorldSetting Row, int32 Index) const;
     bool CanChangeResolution() const;
+    bool CanChooseShading() const;
     Sailing::FDisplayModes WorldDisplayModes() const;
     FIntPoint WorldResolution() const;
     void SetWorldResolution(FIntPoint Size);

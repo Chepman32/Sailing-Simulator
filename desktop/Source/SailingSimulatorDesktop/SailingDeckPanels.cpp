@@ -7,7 +7,7 @@
 #include "SailingPlayerController.h"
 #include "SailingWallet.h"
 
-namespace
+namespace SailingDeck
 {
 const FLinearColor Ink(.88, .95, .94), Muted(.55, .72, .73), Disabled(.35, .48, .49);
 const FLinearColor Base(.015, .042, .051), Surface(.028, .075, .088), Raised(.042, .110, .124);
@@ -287,8 +287,8 @@ bool ASailingTrialHUD::DrawDeckPanel(const ASailingPlayerController& Player, con
     if (Panel != ESailingPanel::Gear && Panel != ESailingPanel::Chart) return false;
     FVector2D Mouse(-1., -1.);
     Player.GetMousePosition(Mouse.X, Mouse.Y);
-    const FDeckPainter Paint{*this, *Canvas, *HelmFont, InventoryArt, Mouse / InputScale()};
-    if (Panel == ESailingPanel::Gear) DrawGear(Paint, Player, Yacht, Size);
-    else DrawChart(Paint, Player, Yacht, Size);
+    const SailingDeck::FDeckPainter Paint{*this, *Canvas, *HelmFont, InventoryArt, Mouse / InputScale()};
+    if (Panel == ESailingPanel::Gear) SailingDeck::DrawGear(Paint, Player, Yacht, Size);
+    else SailingDeck::DrawChart(Paint, Player, Yacht, Size);
     return true;
 }

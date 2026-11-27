@@ -46,6 +46,61 @@ float RenderResolutionFraction(FIntPoint Target, FIntPoint Output)
     return FMath::Min3(1.f, float(Target.X) / Output.X, float(Target.Y) / Output.Y);
 }
 
+bool FShadingBudget::AppliesTo(FIntPoint Output)
+{
+    return Output.GetMin() > 0 && int64(Output.X) * Output.Y >= 2560 * 1440;
+}
+
+void FShadingBudget::Reset(FIntPoint Output)
+{
+    const double Pixels = FMath::Max(1., double(Output.X) * Output.Y);
+    NormalFloor = FMath::Min(1., FMath::Sqrt(960. * 540. / Pixels));
+    EmergencyFloor = FMath::Min(1., FMath::Sqrt(832. * 468. / Pixels));
+    InitialFraction = FMath::Min(1., FMath::Sqrt(1280. * 720. / Pixels));
+    Fraction = InitialFraction;
+    Samples = FastWindows = SlowWindows = 0;
+    PeakMs = 0.f;
+}
+
+float FShadingBudget::Update(float GpuMs)
+{
+    if (!FMath::IsFinite(GpuMs) || GpuMs <= 0.f) return Fraction;
+    PeakMs = FMath::Max(PeakMs, GpuMs);
+    // Leave room for presentation, new visible surfaces and GPU timing latency.
+    // Six frames also allow in-flight work at the old size to drain.
+    if (++Samples < 6) return Fraction;
+    constexpr float TargetMs = 22.f;
+    // Stay above the normal floor for isolated stalls. A sustained costly view
+    // can use the emergency range before its frames start missing 30 Hz.
+    SlowWindows = PeakMs > 26.f ? FMath::Min(SlowWindows + 1, 2) : 0;
+    if (PeakMs > TargetMs * 1.12f)
+    {
+        const float Floor = SlowWindows == 2 ? EmergencyFloor : FMath::Min(Fraction, NormalFloor);
+        Fraction = FMath::Max(Floor, FMath::FloorToFloat(64.f * Fraction *
+            FMath::Clamp(FMath::Sqrt(TargetMs / PeakMs), .72f, .98f)) / 64.f);
+        FastWindows = 0;
+    }
+    else if (PeakMs < TargetMs * .86f)
+    {
+        if (++FastWindows >= 5)
+        {
+            Fraction = FMath::Min(1.f, Fraction + 1.f / 64.f);
+            FastWindows = 0;
+        }
+    }
+    else FastWindows = 0;
+    Samples = 0;
+    PeakMs = 0.f;
+    return Fraction;
+}
+
+float FShadingBudget::AllocationFraction() const
+{
+    // Keep enough target space to recover after an orbit or a storm. Crossing
+    // the normal floor must not repeatedly reallocate the scene textures.
+    return FMath::CeilToFloat(8.f * FMath::Max(Fraction, InitialFraction)) / 8.f;
+}
+
 FDisplayModes ReadDisplayModes(const FViewport& Viewport, const SWindow& Window)
 {
     FDisplayModes Display;

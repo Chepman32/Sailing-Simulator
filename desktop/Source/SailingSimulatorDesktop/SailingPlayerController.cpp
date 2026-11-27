@@ -202,6 +202,8 @@ void ASailingPlayerController::ApplyGraphics(int32 Choice)
     Set(TEXT("r.DynamicRes.MaxScreenPercentage"),P.Max);
     const bool bDetailedWater = P.ScalabilityLevel >= 2;
     const bool bUltra = P.ScalabilityLevel == 3;
+    if (auto* Client = Cast<USailingViewportClient>(GetWorld()->GetGameViewport()))
+        Client->SetUltra(bUltra);
     // Reserve time for the display composite and frame-to-frame GPU variance.
     const float BudgetMs = bUltra ? 12.0f : bDetailedWater ? 33.33f : 16.67f;
     Set(TEXT("r.DynamicRes.FrameTimeBudget"),BudgetMs);
@@ -247,6 +249,10 @@ bool ASailingPlayerController::WorldChoiceSelected(EWorldSetting Row,int32 Index
     case EWorldSetting::Lighting: return Weather && Weather->LightingChoice()==Index;
     case EWorldSetting::Weather: return Weather && Weather->WeatherChoice()==Index;
     case EWorldSetting::Graphics: return GraphicsChoice==Index;
+    case EWorldSetting::Shading:
+        if (const auto* Client = Cast<USailingViewportClient>(GetWorld()->GetGameViewport()))
+            return Index == int32(Client->UsesNativeShading());
+        return false;
     case EWorldSetting::Camera: return Yacht && int32(Yacht->CurrentView())==Index;
     case EWorldSetting::Audio: return (Index==0 && VoyageSound->Enabled()) || (Index==1 && VoyageSound->EngineAudible());
     }
@@ -256,11 +262,16 @@ bool ASailingPlayerController::WorldChoiceSelected(EWorldSetting Row,int32 Index
 void ASailingPlayerController::SetWorldChoice(EWorldSetting Row,int32 Index)
 {
     if (Panel != ESailingPanel::World &&
-        !(Panel == ESailingPanel::Pause && Pause == ESailingPausePage::Graphics && Row == EWorldSetting::Graphics)) return;
+        !(Panel == ESailingPanel::Pause && Pause == ESailingPausePage::Graphics &&
+            (Row == EWorldSetting::Graphics || Row == EWorldSetting::Shading))) return;
     switch (Row)
     {
     case EWorldSetting::Lighting: if (Weather) Weather->SelectLighting(Index); break;
     case EWorldSetting::Weather: if (Weather) Weather->SelectWeather(Index); break;
+    case EWorldSetting::Shading:
+        if (CanChooseShading() && (Index == 0 || Index == 1))
+            CastChecked<USailingViewportClient>(GetWorld()->GetGameViewport())->SetNativeShading(Index == 1);
+        break;
     case EWorldSetting::Graphics:
         ApplyGraphics(Index);
         GConfig->SetInt(TEXT("Sailing.World"),TEXT("Graphics"),GraphicsChoice,GGameUserSettingsIni);
@@ -283,6 +294,12 @@ bool ASailingPlayerController::CanChangeResolution() const
     const auto* Viewport = Cast<USailingViewportClient>(GetWorld()->GetGameViewport());
     return GetWorld()->WorldType == EWorldType::Game && Viewport && Viewport->Viewport &&
         Viewport->GetWindow().IsValid() && FSlateApplication::IsInitialized();
+}
+
+bool ASailingPlayerController::CanChooseShading() const
+{
+    const auto* Client = Cast<USailingViewportClient>(GetWorld()->GetGameViewport());
+    return Client && Client->OffersShadingBudget();
 }
 
 FIntPoint ASailingPlayerController::WorldResolution() const

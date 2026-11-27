@@ -956,6 +956,13 @@ struct Surface {
         // The last channel is the convergence of the wave's horizontal orbital displacement.
         return float4(a*(c+sharpness*(c*c-.5)), -a*s*(1+2*sharpness*c)*k, a*waveNumber*c);
     }
+    float4 Unresolved(float2 mode, float2 k, float waveNumber, float omega, float previousAmplitude,
+                      float2 p, float pixel, float2 history, float cell) {
+        float wavelength = 6.2831853 / waveNumber;
+        float missing = smoothstep(wavelength*.25, wavelength*.50, cell);
+        if (missing==0) return 0;
+        return missing * Wave(mode,k,waveNumber,omega,previousAmplitude,p,pixel,history);
+    }
 };
 Surface s;
 SailingWaterMath water;
@@ -965,18 +972,20 @@ LONG_WIND_COUNT = 6
 WIND_WAVE_COUNT = 14
 # Only amplitude and phase change as the yacht sails. Cook the constant wave
 # vectors directly from the native sampler for the surface and its depth pass.
-WAVE_VECTORS = unreal.CoralMaterialAuthoring.get_sea_wave_vectors()
+WAVE_VECTORS = list(unreal.CoralMaterialAuthoring.get_sea_wave_vectors())
 WAVE_COUNT = len(WAVE_VECTORS)
 
 
-def wave_terms(indices):
+def wave_terms(indices, unresolved=False):
     terms = []
     for i in indices:
         k = WAVE_VECTORS[i]
         length = math.hypot(k.x,k.y)
         omega = math.sqrt(9.81*length)
-        terms.append(f"s.Wave(Wave{i}.zw,float2({k.x:.10g},{k.y:.10g}),{length:.10g},{omega:.10g},"
-                     f"PrevAmp{i//4}.{'xyzw'[i%4]},p,Footprint.x,History)")
+        method = "Unresolved" if unresolved else "Wave"
+        cell = ",Grid.x" if unresolved else ""
+        terms.append(f"s.{method}(Wave{i}.zw,float2({k.x:.10g},{k.y:.10g}),{length:.10g},{omega:.10g},"
+                     f"PrevAmp{i//4}.{'xyzw'[i%4]},p,Footprint.x,History{cell})")
     return " + ".join(terms)
 
 
@@ -1275,20 +1284,32 @@ def water_fields(asset, world, grid, pixel, time, scale):
     # eight UV channels, including in Metal's lightmap-density permutation.
     local_film = interpolate_water(asset,shader(asset,"return float4(Motion.z,Local.yz, Fleet.a);",
         {"Motion":orbital,"Local":local,"Fleet":fleet},OUTPUT.CMOT_FLOAT4))
-    resolved=interpolate_water(asset,shader(asset,"return Water+float4(Chop.w,Chop.yz,Gust.w)+float4(0,Fleet.yz,0);",
-        {"Water":long_vertex,"Chop":short_vertex,"Gust":local,"Fleet":fleet},OUTPUT.CMOT_FLOAT4))
+    resolved=interpolate_water(asset,shader(asset,"""
+        float wakeWeight=1-smoothstep(.65,1.30,Grid.x);
+        return Water+float4(Chop.w,Chop.yz,Gust.w)+float4(0,wakeWeight*Fleet.yz,0);
+        """,{"Water":long_vertex,"Chop":short_vertex,"Gust":local,"Fleet":fleet,"Grid":grid},OUTPUT.CMOT_FLOAT4))
     orbit_xy = interpolate_water(asset,shader(asset,"return Motion.xy;",{"Motion":orbital},OUTPUT.CMOT_FLOAT2))
     film = shader(asset,"return float3(Orbit,Local.x);",{"Orbit":orbit_xy,"Local":local_film},OUTPUT.CMOT_FLOAT3)
     # Reuse the surface already solved for displacement in the fine foreground mesh.
     # Only coarse triangles need the short crests and gravity waves restored per pixel.
     distant_fleet=shader(asset, "[branch] if (Cell.x<=.65) return float4(0,0,0,Local.a);\n"+TRAFFIC_WATER,
                          {**tracks,"Cell":grid,"Local":local_film,"Footprint":pixel},OUTPUT.CMOT_FLOAT4)
-    surface = shader(asset,WAVE_MATH+"""
+    # The mesh already carries the long swell, surf profile and impact gradients.
+    # Restore only the fraction of each wind wave removed by the mesh filter.
+    # The expensive surveyed breaker and rock solve stays on the vertices.
+    surface = shader(asset,WAVE_MATH+f"""
         float restore=smoothstep(.65,1.30,Grid.x);
-        if (restore<=0) return Resolved+float4(0,Local.yz,0);
-        """+SHORT_WAVES+LONG_WAVES+"""
-        float4 fine=float4(sea.w+chop.w,sea.yz+chop.yz+Fleet.yz,foam);
-        return lerp(Resolved,fine,restore)+float4(0,Local.yz,0);
+        float4 result=Resolved+float4(0,Local.yz+restore*Fleet.yz,0);
+        [branch] if (restore<=0 || Coast.x<=-8) return result;
+        float4 wind={wave_terms(range(WIND_WAVE_COUNT), unresolved=True)};
+        float swell=water.Swell(Coast.x);
+        result.xyz+=restore*float3(wind.w*swell,wind.yz*swell+wind.x*Coast.yz*water.SwellSlope(Coast.x));
+        [branch] if (SeaScale>1.6 && Grid.x>{min(2*math.pi/math.hypot(k.x,k.y) for k in WAVE_VECTORS[WIND_WAVE_COUNT:])*.25:.6g}) {{
+            float4 storm={wave_terms(range(WIND_WAVE_COUNT,WAVE_COUNT), unresolved=True)};
+            float3 transfer=water.StormTransfer(p.x,p.y,Coast,SeaScale).xyz;
+            result.xyz+=restore*float3(storm.w*transfer.x,storm.yz*transfer.x+storm.x*transfer.yz);
+        }}
+        return result;
         """,{**waves,"Coast":pixel_coast,"Footprint":pixel,"Grid":grid,"Resolved":resolved,"Local":local_film,"Fleet":distant_fleet},OUTPUT.CMOT_FLOAT4)
     return surface, pixel_coast, offset, film, distant_fleet, {name:contacts[name] for name in ("NearWhalePrint","FarWhalePrint")}
 
@@ -2167,8 +2188,10 @@ def canvas():
     link(number(asset,(0.,0.,0.)),local_origin,"")
     reef = expression(asset,unreal.MaterialExpressionScalarParameter,parameter_name="ReefSpanReduction",
                       use_custom_primitive_data=True,primitive_data_index=1)
+    last_reef = expression(asset,unreal.MaterialExpressionScalarParameter,parameter_name="PreviousReefSpanReduction",
+                           use_custom_primitive_data=True,primitive_data_index=2)
     offset = shader(asset,"return (Pivot-P)*Reef + Flutter*(1-Reef);",
-                    {"Pivot":local_origin,"P":pos,"Reef":reef,"Flutter":flutter},OUTPUT.CMOT_FLOAT3)
+                    {"Pivot":local_origin,"P":pos,"Reef":previous_frame(asset,reef,last_reef),"Flutter":flutter},OUTPUT.CMOT_FLOAT3)
     asset.set_editor_property("max_world_position_offset_displacement", 0)
     assign(offset, PROP.MP_WORLD_POSITION_OFFSET)
     return save(asset)

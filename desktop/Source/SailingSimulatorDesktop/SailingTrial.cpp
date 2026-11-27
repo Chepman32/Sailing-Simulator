@@ -637,10 +637,12 @@ void ASailingYachtPawn::Tick(float DeltaSeconds)
     Boom->SetRelativeRotation(FRotator(0, BoomAngle, 0));
     // Ease the visual reef over several seconds. The cloth draws in towards
     // the gooseneck, leaving the boom and standing rigging at their full size.
+    const float PreviousReef = float(1. - SailSpan);
     SailSpan = FMath::Lerp(SailSpan,FMath::Sqrt(Sail.WorkingAreaFraction),1.-FMath::Exp(-DeltaSeconds*.48));
     MainSail->SetRelativeScale3D(FVector(SailSpan,-LeewardSide*SailSpan,SailSpan));
     Rig->SetRelativeScale3D(FVector(1.0, -LeewardSide, 1.0));
-    Rig->SetCustomPrimitiveDataFloat(1,1.-SailSpan);
+    const float ReefFrames[] = {float(1. - SailSpan), PreviousReef};
+    Rig->SetCustomPrimitiveDataFloatArray(1, MakeArrayView(ReefFrames));
     // Scale about the authored tack. The shorter working jib still follows the forestay.
     Jib->SetRelativeLocation(FVector(567,0,159)*(1.-SailSpan));
     Jib->SetRelativeScale3D(FVector(SailSpan,-LeewardSide*SailSpan,SailSpan));

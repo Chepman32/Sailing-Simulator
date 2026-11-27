@@ -24,7 +24,7 @@ namespace
 FText ResolutionLabel(FIntPoint Size, FIntPoint Desktop)
 {
     if (Size == FIntPoint::ZeroValue) return FText::FromString(TEXT("Adaptive"));
-    return FText::FromString(FString::Printf(TEXT("%d × %d%s"), Size.X, Size.Y, Size == Desktop ? TEXT(" · Native") : TEXT("")));
+    return FText::FromString(FString::Printf(TEXT("%d × %d%s"), Size.X, Size.Y, Size == Desktop ? TEXT(" · Display") : TEXT("")));
 }
 
 const FLinearColor TextInk(.86f, .95f, .94f);
@@ -71,6 +71,7 @@ public:
     {
         Player = InPlayer;
         const TCHAR* Presets[] = {TEXT("Auto"), TEXT("Low"), TEXT("Medium"), TEXT("High"), TEXT("Ultra")};
+        const TCHAR* ShadingModes[] = {TEXT("Target 30 FPS"), TEXT("Native shading")};
         const auto Selected = RefreshResolutions();
         ChildSlot[SNew(SVerticalBox)
             + SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 4)
@@ -80,7 +81,7 @@ public:
             + SVerticalBox::Slot().AutoHeight().Padding(0, bPaused ? 16 : 5, 4, 2)
             [SNew(SHorizontalBox)
                 + SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
-                [SNew(STextBlock).Text(FText::FromString(TEXT("Render resolution")))
+                [SNew(STextBlock).Text(FText::FromString(TEXT("Output resolution")))
                     .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11)).ColorAndOpacity(TextQuiet)]
                 + SHorizontalBox::Slot().AutoWidth()
                 [SNew(SBox).WidthOverride(215)
@@ -105,7 +106,12 @@ public:
                         [SNew(STextBlock).Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
                             .Text_Lambda([this] {
                                 return Player.IsValid() ? ResolutionLabel(Player->WorldResolution(), Desktop) : FText::GetEmpty();
-                            })]]]]];
+                            })]]]]
+            + SVerticalBox::Slot().AutoHeight().Padding(0, 3, 0, 0)
+            [SNew(SBox).Visibility_Lambda([this] {
+                return Player.IsValid() && Player->CanChooseShading() ? EVisibility::Visible : EVisibility::Collapsed;
+            }).ToolTipText(FText::FromString(TEXT("Target 30 FPS adjusts scene shading and reconstructs the selected output size. Native shading renders every pixel at that size.")))
+                [ChoiceGrid(Player, EWorldSetting::Shading, MakeArrayView(ShadingModes), 2)]]];
     }
 
 private:

@@ -9,8 +9,10 @@
 #include "Misc/ConfigCacheIni.h"
 #include "SailingPlayerController.h"
 #include "SailingTrial.h"
+#include "SailingViewportClient.h"
 #include "SailingVoyageSound.h"
 #include "SailingWeather.h"
+#include "SceneUtils.h"
 #include "Slate/SceneViewport.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingDisplayTest,"Sailing.Controls.DisplayModes",
@@ -35,6 +37,32 @@ bool FSailingDisplayTest::RunTest(const FString&)
         Sailing::RenderResolutionFraction({3840,2160},{3840,2160}),1.f);
     TestEqual(TEXT("An old selection above the current display is capped at native"),
         Sailing::RenderResolutionFraction({3840,2160},{1920,1080}),1.f);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSailingShadingBudgetTest,"Sailing.Controls.UltraShadingBudget",
+    EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+bool FSailingShadingBudgetTest::RunTest(const FString&)
+{
+    const FIntPoint UHD(3840,2160);
+    TestTrue(TEXT("4K enables the shading choice"), Sailing::FShadingBudget::AppliesTo(UHD));
+    TestFalse(TEXT("1080p keeps the selected pixel density"), Sailing::FShadingBudget::AppliesTo({1920,1080}));
+    Sailing::FShadingBudget Budget;
+    Budget.Reset(UHD);
+    const float Initial = Budget.Update(0);
+    TestEqual(TEXT("A 4K view starts with a 720p shading grid"), Initial, 1.f/3.f, .001f);
+    const float StartingAllocation = Budget.AllocationFraction();
+    for (int32 I=0; I<5; ++I) TestEqual(TEXT("Wait for outstanding GPU measurements"), Budget.Update(55), Initial);
+    TestTrue(TEXT("An expensive window reduces the grid"), Budget.Update(55) < Initial);
+    for (int32 I=0; I<60; ++I) Budget.Update(90);
+    const float Floor = Budget.Update(0);
+    TestEqual(TEXT("Sustained overload can use the emergency grid"), Floor, 832.f/3840.f, .001f);
+    TestEqual(TEXT("Dropping the shading grid reuses the existing allocation"), Budget.AllocationFraction(), StartingAllocation);
+    for (int32 I=0; I<24; ++I) TestEqual(TEXT("Short headroom does not cause oscillation"), Budget.Update(8), Floor);
+    for (int32 I=0; I<2400; ++I) Budget.Update(8);
+    TestEqual(TEXT("A fast GPU can return to one sample per output pixel"), Budget.Update(0), 1.f);
+    Budget.Reset({2560,1440});
+    TestEqual(TEXT("Moving the window resets timing history and pixel budget"), Budget.Update(0), .5f);
     return true;
 }
 
@@ -119,6 +147,24 @@ bool FSailingWorldTest::RunTest(const FString&)
         CVars.FindConsoleVariable(TEXT("r.DynamicRes.FrameTimeBudget"))->GetFloat(),12.f);
     TestEqual(TEXT("Ultra selects the platform's TSR history quality"),
         ReadCVar(TEXT("r.TSR.History.UpdateQuality")),PLATFORM_MAC ? 1 : 3);
+#if PLATFORM_MAC
+    TestEqual(TEXT("Sail silhouettes use current-frame antialiasing on Metal"),
+        ReadCVar(TEXT("r.AntiAliasingMethod")), int32(AAM_SMAA));
+    if (Player->CanChooseShading())
+    {
+        bool bOriginalNative = false;
+        const bool bHadShading = GConfig->GetBool(TEXT("Sailing.World"), TEXT("NativeShading"), bOriginalNative, GGameUserSettingsIni);
+        const FIntPoint SelectedOutput = Player->WorldResolution();
+        for (int32 Mode : {1, 0})
+        {
+            Player->SetWorldChoice(EWorldSetting::Shading, Mode);
+            TestTrue(TEXT("Both shading modes are selectable"), Player->WorldChoiceSelected(EWorldSetting::Shading, Mode));
+            TestEqual(TEXT("Shading changes preserve the selected output"), Player->WorldResolution(), SelectedOutput);
+        }
+        Player->SetWorldChoice(EWorldSetting::Shading, int32(bOriginalNative));
+        if (!bHadShading) GConfig->RemoveKey(TEXT("Sailing.World"), TEXT("NativeShading"), GGameUserSettingsIni);
+    }
+#endif
     Player->SetWorldChoice(EWorldSetting::Graphics,1);
     TestEqual(TEXT("Switching down releases screen-space reflections"),ReadCVar(TEXT("r.SSR.Quality")),0);
     TestEqual(TEXT("Switching down releases Ultra's optics"),ReadCVar(TEXT("r.LensFlareQuality")),0);
@@ -161,7 +207,7 @@ bool FSailingWorldTest::RunTest(const FString&)
             TestEqual(TEXT("The display mode is unchanged"),View->GetWindowMode(),OriginalMode);
             TestEqual(TEXT("No physical display mode change is requested"),
                 FIntPoint(GSystemResolution.ResX,GSystemResolution.ResY),OriginalSystemResolution);
-            TestEqual(TEXT("A fixed resolution disables adaptation"),ReadCVar(TEXT("r.DynamicRes.OperationMode")),0);
+            TestEqual(TEXT("A fixed output bypasses the engine's adaptive resolution"),ReadCVar(TEXT("r.DynamicRes.OperationMode")),0);
             FString SavedResolution;
             GConfig->GetString(TEXT("Sailing.World"),TEXT("RenderResolution"),SavedResolution,GGameUserSettingsIni);
             TestEqual(TEXT("The render size is saved for the next launch"),SavedResolution,Other->ToString());
@@ -169,8 +215,10 @@ bool FSailingWorldTest::RunTest(const FString&)
             TestEqual(TEXT("An unsupported selection keeps the previous render size"),Player->WorldResolution(),*Other);
             Player->SetWorldResolution(FIntPoint::ZeroValue);
             TestEqual(TEXT("Adaptive re-enables the resolution governor"),ReadCVar(TEXT("r.DynamicRes.OperationMode")),2);
-            Player->SetWorldResolution(OriginalSize);
-            if (!bHadSetting) GConfig->RemoveKey(TEXT("Sailing.World"),TEXT("RenderResolution"),GGameUserSettingsIni);
+            // A saved size can belong to a disconnected display or an offscreen run.
+            CastChecked<USailingViewportClient>(Client)->SetRenderResolution(OriginalSize);
+            if (bHadSetting) GConfig->SetString(TEXT("Sailing.World"),TEXT("RenderResolution"),*OriginalSetting,GGameUserSettingsIni);
+            else GConfig->RemoveKey(TEXT("Sailing.World"),TEXT("RenderResolution"),GGameUserSettingsIni);
             GConfig->Flush(false,GGameUserSettingsIni);
         }
     }
